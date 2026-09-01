@@ -1,0 +1,66 @@
+# Environment / Secrets
+.env
+.env.local
+.env.production
+.test_tmp/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+*.egg
+
+# Node
+node_modules/
+frontend/node_modules/
+
+# Build artifacts
+/build/
+
+# LaTeX artifacts
+*.aux
+*.fdb_latexmk
+*.fls
+*.lof
+*.log
+*.lot
+*.nav
+*.out
+*.snm
+*.synctex.gz
+*.toc
+*.vrb
+*.xdv
+
+# LaTeX source (course reports, not part of the project)
+*.tex
+.latexmkrc
+
+# IDE / Editor
+.vscode/
+.idea/
+
+# Claude Code / Superpowers / Worktrees
+.claude/
+.superpowers/
+.worktrees/
+docs/superpowers/
+
+# Assets (large binary files)
+素材/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Misc
+config.md
+docs/
+/scripts/
+
+.venv/
+
+# user uploads (runtime data)
+backend/uploads/

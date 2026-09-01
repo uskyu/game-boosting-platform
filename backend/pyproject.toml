@@ -1,0 +1,37 @@
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+src = ["app"]
+
+[tool.ruff.lint]
+select = [
+  "E",      # pycodestyle errors
+  "W",      # pycodestyle warnings
+  "F",      # pyflakes
+  "I",      # isort (import sorting)
+  "N",      # pep8-naming
+  "UP",     # pyupgrade (modernize syntax)
+  "B",      # flake8-bugbear (common bugs)
+  "SIM",    # flake8-simplify
+  "T20",    # flake8-print (catch stray prints)
+  "RUF",    # ruff-specific rules
+]
+ignore = [
+  "E501",   # line too long (handled by formatter)
+  "B008",   # function call in default argument (FastAPI Depends)
+  "B905",   # zip without strict= (python <3.10 compat)
+  "RUF001", # ambiguous unicode in strings (Chinese punctuation is intentional)
+  "RUF002", # ambiguous unicode in docstrings
+  "RUF003", # ambiguous unicode in comments
+]
+
+[tool.ruff.lint.per-file-ignores]
+"alembic/**" = ["E", "W", "I"]   # migrations are auto-generated
+"scripts/**" = ["T20"]            # CLI scripts use print
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

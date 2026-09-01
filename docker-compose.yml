@@ -1,0 +1,131 @@
+# =============================================================================
+# Docker Compose - Game Boosting Platform
+# Production-ready configuration with health checks and custom network
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # Database Service - MySQL 8.0
+  # ===========================================================================
+  db:
+    image: mysql:8.0
+    container_name: game-boosting-db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-game_boosting}
+      MYSQL_USER: ${MYSQL_USER:-boosting_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-boosting_password}
+      MYSQL_CHARSET: utf8mb4
+      MYSQL_COLLATION: utf8mb4_unicode_ci
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./docker/mysql/init:/docker-entrypoint-initdb.d:ro
+      - ./docker/mysql/conf.d:/etc/mysql/conf.d:ro
+    networks:
+      - game-boosting-network
+    command: >
+      --default-authentication-plugin=mysql_native_password
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --innodb-buffer-pool-size=256M
+      --max-connections=200
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-rootpassword}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ===========================================================================
+  # Backend Service - FastAPI
+  # ===========================================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: production
+    container_name: game-boosting-backend
+    restart: unless-stopped
+    environment:
+      # Database configuration
+      DB_URL: mysql+aiomysql://${MYSQL_USER:-boosting_user}:${MYSQL_PASSWORD:-boosting_password}@db:3306/${MYSQL_DATABASE:-game_boosting}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
+      # API Keys
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-your_api_key_here}
+      SECRET_KEY: ${SECRET_KEY:-your_super_secret_key_change_in_production}
+      # Application settings
+      DEBUG: ${BACKEND_DEBUG:-false}
+      APP_NAME: "Game Boosting Platform"
+      API_V1_PREFIX: "/api/v1"
+      BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://localhost,http://127.0.0.1,http://localhost:3000,http://127.0.0.1:3000}
+      # JWT settings
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-7}
+      # Bootstrap admin account
+      DEFAULT_ADMIN_EMAIL: ${DEFAULT_ADMIN_EMAIL:-admin@gameboost.com}
+      DEFAULT_ADMIN_USERNAME: ${DEFAULT_ADMIN_USERNAME:-SystemAdmin}
+      DEFAULT_ADMIN_PASSWORD: ${DEFAULT_ADMIN_PASSWORD:-}
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    networks:
+      - game-boosting-network
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    volumes:
+      - backend_uploads:/app/uploads
+
+  # ===========================================================================
+  # Frontend Service - Vue.js + Nginx
+  # ===========================================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: production
+    container_name: game-boosting-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-80}:80"
+    networks:
+      - game-boosting-network
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/nginx-health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  game-boosting-network:
+    driver: bridge
+    name: game-boosting-network
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  mysql_data:
+    driver: local
+    name: game-boosting-mysql-data
+  backend_uploads:
+    driver: local
+    name: game-boosting-backend-uploads

@@ -1,0 +1,56 @@
+# =============================================================================
+# Docker Compose - Development Configuration
+# Use with: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # Database - Expose port for local development tools
+  # ===========================================================================
+  db:
+    ports:
+      - "3306:3306"
+
+  # ===========================================================================
+  # Backend - Development mode with hot reload
+  # ===========================================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: production
+    environment:
+      DEBUG: "true"
+    volumes:
+      # Mount source code for hot reload
+      - ./backend/app:/app/app:ro
+      - ./backend/alembic:/app/alembic:ro
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+  # ===========================================================================
+  # Disable production frontend in dev combined stack
+  # ===========================================================================
+  frontend:
+    profiles:
+      - prod
+
+  # ===========================================================================
+  # Frontend - Development with Vite dev server
+  # ===========================================================================
+  frontend-dev:
+    image: node:20-alpine
+    container_name: game-boosting-frontend-dev
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    networks:
+      - game-boosting-network
+    depends_on:
+      - backend
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    environment:
+      - VITE_API_BASE_URL=/api/v1
+      - VITE_PROXY_TARGET=http://backend:8000
