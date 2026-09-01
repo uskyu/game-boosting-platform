@@ -86,13 +86,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <AuthShell
-    show-characters
-    :is-typing="isTyping"
-    :show-password="showPassword"
-    :password-length="password.length"
-    :background-url="backgroundUrl"
-  >
+  <AuthShell>
     <div class="space-y-6">
       <div class="space-y-1.5">
         <p class="eyebrow">{{ copy.accountAccess }}</p>

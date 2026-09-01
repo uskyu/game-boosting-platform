@@ -7,6 +7,8 @@ from fastapi import APIRouter
 
 from app.api.endpoints import (
     admin_router,
+    admin_site_router,
+    admin_users_router,
     auth_router,
     chat_router,
     games_router,
@@ -14,6 +16,7 @@ from app.api.endpoints import (
     orders_router,
     reviews_router,
     search_router,
+    site_router,
     services_router,
     support_router,
     users_router,
@@ -29,11 +32,14 @@ api_router.include_router(auth_router)
 api_router.include_router(orders_router)
 api_router.include_router(users_router)
 api_router.include_router(admin_router)
+api_router.include_router(admin_site_router)
+api_router.include_router(admin_users_router)
 api_router.include_router(chat_router)
 api_router.include_router(games_router)
 api_router.include_router(notifications_router)
 api_router.include_router(services_router)
 api_router.include_router(search_router)
+api_router.include_router(site_router)
 api_router.include_router(reviews_router)
 api_router.include_router(support_router)
 api_router.include_router(wallet_router)

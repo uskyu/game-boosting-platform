@@ -17,6 +17,7 @@ from app.models.game import Game, GameCategory, GamePlatform
 from app.models.notification import Notification, NotificationType, UserPreference
 from app.models.order import Order, OrderStatus, PaymentStatus
 from app.models.review import Review
+from app.models.site_setting import SiteSetting
 from app.models.user import BoosterApplicationStatus, User, UserRole
 from app.models.wallet import Wallet, WalletTransaction, WalletTransactionType
 from app.models.withdrawal import WithdrawalChannel, WithdrawalRequest, WithdrawalStatus
@@ -40,6 +41,7 @@ __all__ = [
     "OrderStatus",
     "PaymentStatus",
     "Review",
+    "SiteSetting",
     "TimestampMixin",
     "User",
     "UserPreference",

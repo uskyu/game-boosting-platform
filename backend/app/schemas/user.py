@@ -5,7 +5,7 @@ Pydantic models for user-related API request/response validation.
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_serializer, field_validator
 
 from app.models.user import UserRole
 
@@ -149,13 +149,23 @@ class UserResponse(BaseModel):
     id: int = Field(description="用户ID")
     email: str = Field(description="邮箱地址")
     username: str = Field(description="用户名")
-    role: UserRole = Field(description="用户角色")
+    role: UserRole = Field(description="用户角色（非管理员均显示为打手）")
+    display_role: UserRole = Field(description="前端展示角色")
     is_active: bool = Field(description="是否激活")
     is_verified: bool = Field(description="是否验证")
     avatar_url: str | None = Field(default=None, description="头像URL")
     phone: str | None = Field(default=None, description="手机号")
     bio: str | None = Field(default=None, description="个人简介")
     created_at: datetime = Field(description="注册时间")
+
+    @field_serializer("role")
+    def serialize_role(self, role: UserRole) -> str:
+        """Show non-admin accounts as boosters in client-facing responses."""
+        return UserRole.ADMIN.value if role == UserRole.ADMIN else UserRole.BOOSTER.value
+
+    @field_serializer("display_role")
+    def serialize_display_role(self, role: UserRole) -> str:
+        return role.value
 
     model_config = ConfigDict(
         from_attributes=True,

@@ -23,15 +23,52 @@ const ordersStore = useOrdersStore()
 
 const searchGame = ref('')
 const selectedStatus = ref('')
+const showHistory = ref(false)
+// The hall starts in claimable-only mode so stale dispatch records are not
+// presented as actionable orders before the user changes the filter.
+const openOnly = ref(true)
 
 const orders = computed(() => ordersStore.orders)
+const terminalStatuses = ['COMPLETED', 'CANCELLED', 'EXPIRED', 'ARCHIVED']
+
+function isOrderClaimable(order) {
+  if (!order || order.status !== 'PENDING' || order.claim_status !== 'OPEN' || order.is_archived) return false
+  if (Number(order.claimed_count ?? 0) >= Number(order.max_claims ?? 0)) return false
+  if (!order.deadline) return true
+  const deadline = new Date(order.deadline)
+  return !Number.isNaN(deadline.getTime()) && deadline.getTime() > Date.now()
+}
+
+const visibleOrders = computed(() => orders.value.filter((order) => {
+  if (showHistory.value) return true
+  // "Only claimable" is the safe default for the public hall. Non-claimable
+  // orders remain available through the dedicated history/my-orders views.
+  if (openOnly.value) return isOrderClaimable(order)
+  return !terminalStatuses.includes(order.status)
+}))
+
+function getOrderDisplayStatus(order) {
+  if (order.is_archived) return '已归档'
+  if (order.claim_status === 'PAUSED') return '暂停抢单'
+  if (order.claim_status === 'FULL' || Number(order.claimed_count ?? 0) >= Number(order.max_claims ?? 0)) return '已满员'
+  if (order.claim_status === 'CLOSED') return '已截止'
+  if (order.deadline && new Date(order.deadline).getTime() <= Date.now()) return '已截止'
+  return getOrderStatusLabel(order.status)
+}
+
+function getOrderDisplayBadgeClass(order) {
+  if (order.is_archived || order.claim_status === 'CLOSED' || (order.deadline && new Date(order.deadline).getTime() <= Date.now())) return 'badge-cancelled'
+  if (order.claim_status === 'PAUSED' || order.claim_status === 'FULL') return 'badge-review'
+  return getOrderStatusBadgeClass(order.status)
+}
 const loading = computed(() => ordersStore.loading)
 const pagination = computed(() => ordersStore.pagination)
 const error = computed(() => ordersStore.error)
 const isAuthenticated = computed(() => authStore.isAuthenticated)
-const isBooster = computed(() => authStore.isBooster)
 const isAdmin = computed(() => authStore.isAdmin)
+const gameOptions = computed(() => [...new Set(orders.value.map((order) => order.game_name).filter(Boolean))])
 const currentUserId = computed(() => authStore.user?.id ?? null)
+const canClaimOrders = computed(() => isAuthenticated.value && !isAdmin.value)
 
 const unreadMap = computed(() => {
   return chatStore.conversations.reduce((result, conversation) => {
@@ -63,6 +100,42 @@ function gameBadgeStyle(gameName) {
     borderColor: `${color}66`,
     background: `linear-gradient(135deg, ${color}22, ${color}10)`,
   }
+}
+
+function getPriceLabel(order) {
+  const min = order.price_min ?? order.min_price
+  const max = order.price_max ?? order.max_price
+  if (min != null && max != null && min !== max) return `${formatPrice(min)} - ${formatPrice(max)}`
+  return formatPrice(order.price ?? min ?? max ?? 0)
+}
+
+function getRemainingSlots(order) {
+  const value = order.remaining_slots ?? order.remaining_quota ?? order.slots_remaining
+  if (value != null) return value
+  if (order.max_boosters != null && order.accepted_count != null) return Math.max(0, order.max_boosters - order.accepted_count)
+  return null
+}
+
+function getAttachment(order) {
+  const attachments = order.attachments || order.attachment_urls || []
+  const first = Array.isArray(attachments) ? attachments[0] : attachments
+  const url = typeof first === 'string' ? first : first?.url || ''
+  return typeof url === 'string' && url.startsWith('/uploads/orders/') ? url : ''
+}
+
+function getClaimMeta(order) {
+  const claimed = Number(order.claimed_count ?? order.accepted_count ?? 0)
+  const max = Number(order.max_claims ?? order.max_boosters ?? 0)
+  const remainingRaw = getRemainingSlots(order)
+  const remaining = remainingRaw != null ? Number(remainingRaw) : (max ? Math.max(0, max - claimed) : null)
+  return { claimed: Number.isNaN(claimed) ? 0 : claimed, max: Number.isNaN(max) ? 0 : max, remaining }
+}
+
+function isFullOrder(order) {
+  const { claimed, max } = getClaimMeta(order)
+  if (order.claim_status === 'FULL') return true
+  if (max > 0 && claimed >= max) return true
+  return false
 }
 
 function buildSummary(order) {
@@ -153,52 +226,22 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="page-shell space-y-6">
-    <!-- 页面标题区：eyebrow → 大标题 → 副文案（文档 3 节） -->
-    <section class="hero-panel p-6 sm:p-8">
-      <div class="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
-        <div class="space-y-3">
-          <p class="eyebrow">订单大厅</p>
-          <h1 class="section-title">挑一单，马上开干</h1>
-          <p class="section-copy max-w-xl">
-            {{ isBooster ? '实时滚动的平台需求，价格、段位一目了然，看中就抢单。' : '所有正在寻找打手的需求都在这里，点进卡片查看详情。' }}
-          </p>
-        </div>
+  <div class="page-shell order-hall-shell space-y-4 sm:space-y-5">
+    <section v-if="isAuthenticated && isAdmin" class="hall-heading flex justify-end">
+      <router-link :to="{ path: '/admin', query: { tab: 'orders' } }" class="btn-primary !px-5 !py-2">发布订单</router-link>
+    </section>
 
-        <!-- 顾客视角：发布需求入口（保持不变） -->
-        <router-link
-          v-if="isAuthenticated && !isBooster && !isAdmin"
-          to="/orders/create"
-          class="btn-primary shrink-0 self-start px-6"
-        >
-          发布需求
-        </router-link>
-
-        <!-- 管理员视角：去管理台发单（自动切到订单管理 tab） -->
-        <router-link
-          v-else-if="isAuthenticated && isAdmin"
-          :to="{ path: '/admin', query: { tab: 'orders' } }"
-          class="btn-primary shrink-0 self-start px-6"
-        >
-          发布订单
-        </router-link>
-      </div>
-
-      <!-- 统计条：待接单 / 进行中 / 今日完成（大数字 tabular-nums） -->
-      <div class="mt-6 grid grid-cols-3 gap-3 sm:gap-4">
-        <article v-for="item in hallStats" :key="item.key" class="stat-card">
-          <p class="stat-value" :class="item.tone">{{ item.value }}</p>
-          <p class="mt-1.5 text-[13px] text-ink-2">{{ item.label }}</p>
-        </article>
-      </div>
+    <section class="hall-summary" aria-label="大厅统计">
+      <article v-for="item in hallStats" :key="item.key" class="hall-summary__item"><strong :class="item.tone">{{ item.value }}</strong><span>{{ item.label }}</span></article>
     </section>
 
     <!-- 筛选一行：游戏 + 状态（窄屏横向滚动不折行，文档 7 节） -->
     <section class="surface-card p-4 sm:p-5">
-      <div class="scroll-x flex flex-nowrap items-end gap-3 lg:flex-wrap lg:items-end">
+      <div class="hall-filters scroll-x flex flex-nowrap items-end gap-3">
         <div class="w-56 shrink-0 sm:w-64">
           <label class="label" for="hall-game">游戏</label>
-          <input id="hall-game" v-model="searchGame" type="text" class="input" placeholder="搜索游戏" />
+          <input id="hall-game" v-model="searchGame" list="hall-games" type="text" class="input" placeholder="搜索游戏" />
+          <datalist id="hall-games"><option v-for="game in gameOptions" :key="game" :value="game" /></datalist>
         </div>
 
         <div class="w-36 shrink-0 sm:w-44">
@@ -208,10 +251,9 @@ onUnmounted(() => {
           </select>
         </div>
 
-        <div class="flex shrink-0 gap-2 pb-0.5">
-          <button class="btn-secondary !px-4" @click="handleSearch">筛选</button>
-          <button class="btn-ghost !px-4" @click="resetFilters">重置</button>
-        </div>
+        <label class="filter-check shrink-0"><input v-model="openOnly" type="checkbox" /> 仅看可抢</label>
+        <label class="filter-check shrink-0"><input v-model="showHistory" type="checkbox" /> 历史订单</label>
+        <div class="flex shrink-0 gap-2 pb-0.5"><button class="btn-secondary !px-4" @click="handleSearch">筛选</button><button class="btn-ghost !px-4" @click="resetFilters">重置</button></div>
       </div>
     </section>
 
@@ -232,20 +274,24 @@ onUnmounted(() => {
       </div>
     </section>
 
-    <section v-else-if="isAuthenticated && orders.length" class="grid grid-cols-1 gap-4 md:grid-cols-2">
+    <section v-else-if="isAuthenticated && visibleOrders.length" class="grid grid-cols-1 gap-4 md:grid-cols-2">
       <article
-        v-for="order in orders"
+        v-for="order in visibleOrders"
         :key="order.id"
-        class="catalog-card cursor-pointer"
+        :class="['catalog-card cursor-pointer hall-order-card', { 'hall-order-card--full': isFullOrder(order) }]"
         @click="goToOrder(order.id)"
       >
-        <!-- 层级 1：价格最大最显眼（--price 红 + tabular-nums，24px semibold） -->
-        <div class="flex items-start justify-between gap-3">
-          <p class="text-2xl font-semibold tabular-nums leading-7 text-price">{{ formatPrice(order.price) }}</p>
-          <div class="flex flex-wrap items-center justify-end gap-2">
-            <span :class="getOrderStatusBadgeClass(order.status)">
-              {{ getOrderStatusLabel(order.status) }}
-            </span>
+        <!-- 首行：¥价格 红24 tabular + 已接X/Y 剩Z席·待接单胶囊，满员整卡已抢空置灰 -->
+        <div class="flex items-start justify-between gap-2">
+          <p class="shrink-0 text-2xl font-semibold tabular-nums leading-7 text-price">{{ getPriceLabel(order) }}</p>
+          <div class="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
+            <span
+              v-if="getClaimMeta(order).max > 0"
+              class="tag !px-2.5 !py-1 tabular-nums"
+            >已接{{ getClaimMeta(order).claimed }}/{{ getClaimMeta(order).max }}</span>
+            <span
+              :class="isFullOrder(order) ? 'badge-cancelled' : (isOrderClaimable(order) ? 'badge-pending' : getOrderDisplayBadgeClass(order))"
+            >{{ isFullOrder(order) ? '已抢空' : (isOrderClaimable(order) ? (getClaimMeta(order).remaining != null ? '剩' + getClaimMeta(order).remaining + '席·待接单' : '待接单') : getOrderDisplayStatus(order)) }}</span>
             <span
               v-if="order.payment_status"
               :class="{
@@ -259,6 +305,8 @@ onUnmounted(() => {
             </span>
           </div>
         </div>
+
+        <div v-if="getAttachment(order)" class="order-attachment"><img :src="getAttachment(order)" alt="订单附件" loading="lazy" /></div>
 
         <!-- 层级 2：游戏名 + 需求摘要 -->
         <div class="mt-3 flex items-center gap-3">
@@ -279,25 +327,27 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <!-- 层级 3：目标段位 / 时间 -->
-        <div class="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-[13px] text-ink-2">
-          <span class="tabular-nums">{{ order.current_rank }} → {{ order.target_rank }}</span>
+        <!-- 层级 3：目标段位 / 时间（首行已含席位，此处不再重复剩余名额） -->
+        <div class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[13px] text-ink-2">
+          <span v-if="order.current_rank || order.target_rank" class="tabular-nums">{{ order.current_rank || '?' }} → {{ order.target_rank || '?' }}</span>
           <span class="text-ink-3">发布于 {{ formatShortDate(order.created_at) }}</span>
         </div>
 
-        <!-- 层级 4：打手视角主 CTA「立即抢单」/ 顾客视角详情入口 -->
+        <!-- 层级 4：非管理员均可抢单，管理员仅查看详情 -->
         <div class="mt-4 flex items-center justify-between gap-3 border-t border-line-1 pt-3.5">
           <p class="text-xs tabular-nums text-ink-3">#{{ order.id }}</p>
           <div class="flex gap-2">
+            <span v-if="canClaimOrders && isOrderClaimable(order) && order.user_id !== currentUserId" class="sr-only">可立即抢单</span>
             <button
-              v-if="isBooster && order.status === 'PENDING' && order.user_id !== currentUserId"
+              v-if="canClaimOrders && isOrderClaimable(order) && order.user_id !== currentUserId"
               class="btn-primary !px-5"
               @click="handleAcceptOrder(order.id, $event)"
             >
               立即抢单
             </button>
             <button
-              v-else-if="!isBooster || order.status !== 'PENDING' || order.user_id === currentUserId"
+              v-else
+
               class="btn-secondary !px-4"
               @click.stop="goToOrder(order.id)"
             >

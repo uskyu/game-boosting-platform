@@ -18,7 +18,7 @@ const showCategoryTemplates = ref(null)
 
 const greeting = computed(() => {
   const name = authStore.user?.username || '用户'
-  return `你好 ${name}！我是AI智能客服，请问有什么可以帮助您的？\n\n您可以选择下方的常见问题快速咨询，也可以直接输入您的问题。`
+  return `你好 ${name}！当前为人工沟通，请问有什么可以帮助您的？\n\n您可以选择下方的常见问题快速咨询，也可以直接输入您的问题。`
 })
 
 function scrollToBottom() {
@@ -87,7 +87,7 @@ async function sendFreeMessage() {
     addBotMessage(res.data)
   } catch {
     addBotMessage({
-      reply: '抱歉，AI客服暂时无法回答。建议您转接人工客服。',
+      reply: '抱歉，当前暂时无法回答。建议您联系管理员。',
       category: 'general',
       actions: [{ label: '转人工客服', type: 'transfer', link: '' }],
       need_human: true,
@@ -159,8 +159,8 @@ onMounted(async () => {
           🤖
         </div>
         <div>
-          <h1 class="text-lg font-semibold text-ink-1">AI 智能客服</h1>
-          <p class="text-xs text-ink-2">7x24小时在线 · 快速响应</p>
+          <h1 class="text-lg font-semibold text-ink-1">联系管理员</h1>
+          <p class="text-xs text-ink-2">当前为人工沟通 · 快速响应</p>
         </div>
         <button class="btn-ghost ml-auto !px-4 text-sm" @click="transferToHuman" :disabled="transferring">
           {{ transferring ? '转接中...' : '转人工客服' }}

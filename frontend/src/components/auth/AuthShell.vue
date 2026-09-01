@@ -2,89 +2,36 @@
 import AnimatedCharacters from './AnimatedCharacters.vue'
 
 defineProps({
-  eyebrow: {
-    type: String,
-    default: '',
-  },
-  title: {
-    type: String,
-    default: '',
-  },
-  description: {
-    type: String,
-    default: '',
-  },
-  spotlightLabel: {
-    type: String,
-    default: '',
-  },
-  spotlightTitle: {
-    type: String,
-    default: '',
-  },
-  spotlightMeta: {
-    type: String,
-    default: '',
-  },
-  backgroundUrl: {
-    type: String,
-    default: '',
-  },
-  compact: {
-    type: Boolean,
-    default: false,
-  },
-  showCharacters: {
-    type: Boolean,
-    default: false,
-  },
-  isTyping: {
-    type: Boolean,
-    default: false,
-  },
-  showPassword: {
-    type: Boolean,
-    default: false,
-  },
-  passwordLength: {
-    type: Number,
-    default: 0,
-  },
+  eyebrow: { type: String, default: 'GAME BOOSTING PLATFORM' },
+  title: { type: String, default: '让每一次游戏服务，都清晰可达。' },
+  description: { type: String, default: '连接需求与专业服务者，订单、结算与钱包在同一条可靠链路上。' },
+  spotlightLabel: { type: String, default: '' },
+  spotlightTitle: { type: String, default: '' },
+  spotlightMeta: { type: String, default: '' },
 })
+
+const benefits = ['大厅实时抢单', '完单自动结算', '提现人工处理']
 </script>
 
 <template>
-  <div
-    class="auth-stage"
-    :style="backgroundUrl ? { backgroundImage: `url('${backgroundUrl}')` } : undefined"
-  >
-    <div class="auth-stage__backdrop"></div>
-    <div class="auth-stage__mesh"></div>
-
+  <div class="auth-stage">
+    <div class="auth-stage__backdrop" aria-hidden="true"></div>
     <div class="auth-stage__inner shell-container">
-      <section v-if="showCharacters" class="auth-story hidden lg:flex items-center justify-center">
-        <AnimatedCharacters
-          :is-typing="isTyping"
-          :show-password="showPassword"
-          :password-length="passwordLength"
-        />
-      </section>
-
-      <section v-else class="auth-story">
-        <p v-if="eyebrow" class="auth-story__eyebrow">{{ eyebrow }}</p>
-        <h1 :class="compact ? 'auth-story__title auth-story__title-compact' : 'auth-story__title'">{{ title }}</h1>
-        <p v-if="description" class="auth-story__copy">{{ description }}</p>
-
-        <div v-if="spotlightTitle" class="auth-story__spotlight">
-          <p class="auth-story__label">{{ spotlightLabel }}</p>
-          <h2>{{ spotlightTitle }}</h2>
-          <p>{{ spotlightMeta }}</p>
+      <section class="auth-story">
+        <div class="auth-story__heading">
+          <p class="auth-story__eyebrow">{{ eyebrow }}</p>
+          <h1 class="auth-story__title">{{ title }}</h1>
+          <p class="auth-story__copy">{{ description }}</p>
         </div>
+        <AnimatedCharacters />
+        <ul class="auth-story__benefits" aria-label="平台服务特点">
+          <li v-for="benefit in benefits" :key="benefit">
+            <span class="auth-story__check" aria-hidden="true">✓</span>
+            <span>{{ benefit }}</span>
+          </li>
+        </ul>
       </section>
-
-      <section class="auth-panel">
-        <slot />
-      </section>
+      <section class="auth-panel"><slot /></section>
     </div>
   </div>
 </template>

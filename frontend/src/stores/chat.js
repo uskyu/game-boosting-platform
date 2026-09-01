@@ -11,6 +11,17 @@ const TYPING_VISIBLE_MS = 5000
 
 function sortConversations(items = []) {
   return [...items].sort((left, right) => {
+    const pinnedDifference = Number(Boolean(right.is_pinned)) - Number(Boolean(left.is_pinned))
+    if (pinnedDifference !== 0) {
+      return pinnedDifference
+    }
+
+    const leftPinnedAt = new Date(left.pinned_at || 0).getTime()
+    const rightPinnedAt = new Date(right.pinned_at || 0).getTime()
+    if (rightPinnedAt !== leftPinnedAt) {
+      return rightPinnedAt - leftPinnedAt
+    }
+
     const leftTime = new Date(left.last_message_at || left.updated_at || left.created_at || 0).getTime()
     const rightTime = new Date(right.last_message_at || right.updated_at || right.created_at || 0).getTime()
     return rightTime - leftTime
@@ -584,6 +595,22 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  async function setConversationPinned(conversationId, isPinned) {
+    try {
+      const method = isPinned ? 'put' : 'delete'
+      const response = await api[method](`/chat/conversations/${conversationId}/pin`)
+      replaceConversation(response.data)
+      return { success: true, data: response.data }
+    } catch (err) {
+      error.value = err.message
+      return { success: false, error: err.message }
+    }
+  }
+
+  async function toggleConversationPinned(conversation) {
+    return setConversationPinned(conversation.id, !conversation.is_pinned)
+  }
+
   async function inviteAdmin(conversationId) {
     try {
       const response = await api.post(`/chat/conversations/${conversationId}/invite-admin`)
@@ -882,6 +909,8 @@ export const useChatStore = defineStore('chat', () => {
     recallMessage,
     deleteMessage,
     inviteAdmin,
+    setConversationPinned,
+    toggleConversationPinned,
     fetchUnreadSummary,
     setActiveConversation,
     sendTyping,

@@ -2,6 +2,8 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
+import OrderDeliverModal from '@/components/OrderDeliverModal.vue'
+import OrderTimeline from '@/components/OrderTimeline.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import { useOrdersStore } from '@/stores/orders'
@@ -30,6 +32,7 @@ const reviews = ref([])
 const reviewForm = ref({ rating: 5, content: '' })
 const editingReview = ref(false)
 const confirmSuccess = ref(false)
+const showDeliverModal = ref(false)
 
 const order = computed(() => ordersStore.currentOrder)
 const loading = computed(() => ordersStore.loading)
@@ -75,42 +78,31 @@ const heroStyle = computed(() => {
   }
 })
 
-const detailCards = computed(() => {
-  if (!order.value) {
-    return []
-  }
-
-  return [
-    { icon: 'S', label: '服务', value: order.value.service_type || '未指定' },
-    { icon: 'R', label: '区服', value: order.value.server || '未指定' },
-    { icon: '$', label: '金额', value: formatPrice(order.value.price), valueClass: 'text-price' },
-    { icon: 'T', label: '发布时间', value: formatDateTime(order.value.created_at) },
-  ]
+const deadlineRemaining = computed(() => {
+  const d = order.value?.deadline
+  if (!d) return ''
+  const t = new Date(d)
+  if (Number.isNaN(t.getTime())) return formatDateTime(d)
+  const diff = t.getTime() - Date.now()
+  if (diff <= 0) return `已截止 ${formatDateTime(d)}`
+  const h = Math.floor(diff / 3600000)
+  const days = Math.floor(h / 24)
+  if (days >= 1) return `剩余 ${days}天${h % 24}小时`
+  if (h >= 1) return `剩余 ${h}小时`
+  const mins = Math.max(1, Math.floor(diff / 60000))
+  return `剩余 ${mins}分钟`
 })
 
-const timeline = computed(() => {
-  if (!order.value) {
-    return []
-  }
+const isDeadlineOverdue = computed(() => {
+  const d = order.value?.deadline
+  if (!d) return false
+  const t = new Date(d)
+  return !Number.isNaN(t.getTime()) && t.getTime() <= Date.now()
+})
 
-  return [
-    { title: '需求已发出', time: formatDateTime(order.value.created_at), active: true },
-    {
-      title: isBoostOrder.value ? '代练已接单' : '陪玩已接单',
-      time: order.value.locked_at ? formatDateTime(order.value.locked_at) : '等待中…',
-      active: ['LOCKED', 'DELIVERED', 'COMPLETED', 'DISPUTED'].includes(order.value.status),
-    },
-    {
-      title: isBoostOrder.value ? '代练已提交完成' : '陪玩已结束',
-      time: order.value.delivered_at ? formatDateTime(order.value.delivered_at) : '未提交',
-      active: ['DELIVERED', 'COMPLETED'].includes(order.value.status),
-    },
-    {
-      title: '客户已确认',
-      time: order.value.completed_at ? formatDateTime(order.value.completed_at) : '待确认',
-      active: order.value.status === 'COMPLETED',
-    },
-  ]
+const deliveryAttachments = computed(() => {
+  const v = order.value?.delivery_attachments
+  return Array.isArray(v) ? v : []
 })
 
 const canReview = computed(() => {
@@ -169,17 +161,14 @@ async function handleAccept() {
   actionLoading.value = false
 }
 
-async function handleDeliver() {
-  actionLoading.value = true
+function openDeliverModal() {
   errorMessage.value = ''
   successMessage.value = ''
-  const result = await ordersStore.deliverOrder(order.value.id)
-  if (result.success) {
-    successMessage.value = '已提交完成，等待老板确认'
-  } else {
-    errorMessage.value = result.error
-  }
-  actionLoading.value = false
+  showDeliverModal.value = true
+}
+
+function onDeliverSuccess() {
+  successMessage.value = '已提交完成，等待老板确认'
 }
 
 async function handleConfirm() {
@@ -321,7 +310,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="page-shell space-y-6">
+  <div class="page-shell od-page space-y-6">
     <button class="btn-ghost self-start !px-0 text-sm" @click="router.back()">返回</button>
 
     <div v-if="loading" class="space-y-6" aria-busy="true">
@@ -338,7 +327,7 @@ onMounted(async () => {
 
       <section class="hero-panel p-6 sm:p-8 lg:p-10" :style="heroStyle">
         <div class="relative z-10 flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
-          <div class="space-y-3">
+          <div class="min-w-0 space-y-3">
             <div class="flex flex-wrap items-center gap-3">
               <span class="tag">{{ order.game_name }}</span>
               <span :class="getOrderStatusBadgeClass(order.status)">{{ humanStatusLabel }}</span>
@@ -347,130 +336,134 @@ onMounted(async () => {
               </span>
             </div>
             <p v-if="humanStatusSubtitle" class="mt-1 text-sm text-ink-2">{{ humanStatusSubtitle }}</p>
-            <h1 class="section-title">{{ order.current_rank }} <span class="text-primary">→</span> {{ order.target_rank }}</h1>
-            <p class="text-sm text-ink-2">{{ compactSummary() }}</p>
+            <h1 class="section-title break-words">{{ order.current_rank }} <span class="text-primary">→</span> {{ order.target_rank }}</h1>
+            <p class="break-words text-sm text-ink-2">{{ compactSummary() }}</p>
           </div>
 
           <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <article
-              v-for="item in detailCards"
-              :key="item.label"
-              class="stat-card flex items-center gap-4"
-            >
-              <div class="flex h-11 w-11 items-center justify-center rounded-tile border border-line-1 bg-primary-soft text-lg font-semibold text-primary">
-                {{ item.icon }}
-              </div>
-              <div>
-                <p class="text-xs uppercase tracking-[0.12em] text-ink-3">{{ item.label }}</p>
-                <p class="mt-2 text-sm font-medium tabular-nums text-ink-1" :class="item.valueClass">{{ item.value }}</p>
-              </div>
+            <article v-for="item in [
+                { icon: 'S', label: '服务', value: order.service_type || '未指定' },
+                { icon: 'R', label: '区服', value: order.server || '未指定' },
+                { icon: '$', label: '金额', value: formatPrice(order.price), valueClass: 'text-price' },
+                { icon: 'T', label: '发布时间', value: formatDateTime(order.created_at) },
+              ]" :key="item.label" class="stat-card flex items-center gap-4">
+              <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-tile border border-line-1 bg-primary-soft text-lg font-semibold text-primary">{{ item.icon }}</div>
+              <div class="min-w-0"><p class="text-xs uppercase tracking-[0.12em] text-ink-3">{{ item.label }}</p><p class="mt-2 break-words text-sm font-medium tabular-nums text-ink-1" :class="item.valueClass">{{ item.value }}</p></div>
             </article>
           </div>
         </div>
       </section>
 
-      <div class="grid gap-6 xl:grid-cols-[1.02fr_0.98fr]">
-        <section class="space-y-6">
-          <article class="surface-card p-6 sm:p-8" :class="{ 'shimmer-pending': isPending }">
-            <h2 class="text-2xl font-semibold text-ink-1">时间线</h2>
-            <div class="mt-6 space-y-4">
-              <div v-for="(item, index) in timeline" :key="item.title" class="flex gap-4">
-                <div class="flex flex-col items-center">
-                  <div
-                    class="flex h-10 w-10 items-center justify-center rounded-tile border text-sm font-semibold transition-all duration-200"
-                    :class="item.active ? 'text-primary' : 'text-ink-3'"
-                    :style="item.active
-                      ? 'border-color: var(--primary); background: var(--primary-soft);'
-                      : 'border-color: var(--line-2); background: var(--surface-2);'"
-                  >
-                    {{ index + 1 }}
-                  </div>
-                  <div
-                    v-if="index !== timeline.length - 1"
-                    class="mt-2 h-12 w-px rounded-full"
-                    :style="item.active
-                      ? 'background: var(--primary);'
-                      : 'background: var(--line-1);'"
-                  ></div>
-                </div>
-                <div class="info-tile flex-1">
-                  <p class="text-sm font-semibold text-ink-1">{{ item.title }}</p>
-                  <p class="mt-2 text-sm text-ink-2">{{ item.time }}</p>
-                </div>
-              </div>
-            </div>
-          </article>
+            <OrderTimeline :order="order" />
 
+      <section class="surface-card od-key p-6 sm:p-8">
+        <h2 class="text-lg font-semibold text-ink-1">关键信息</h2>
+        <div class="od-key__grid mt-4">
+          <div class="od-key__item od-key__item--price">
+            <p class="info-tile__label">金额</p>
+            <p class="od-key__price">{{ formatPrice(order.price) }}</p>
+          </div>
+          <div class="od-key__item">
+            <p class="info-tile__label">区服</p>
+            <p class="info-tile__value break-words">{{ order.server || '未指定' }}</p>
+          </div>
+          <div class="od-key__item">
+            <p class="info-tile__label">截止</p>
+            <p v-if="order.deadline" class="od-key__deadline" :class="isDeadlineOverdue ? 'text-danger' : 'text-ink-1'">{{ deadlineRemaining }} &middot; {{ formatDateTime(order.deadline) }}</p>
+            <p v-else class="info-tile__value">未设置</p>
+            <p v-if="isDeadlineOverdue" class="mt-1 text-xs font-semibold text-danger">已截止，请尽快处理</p>
+          </div>
+        </div>
+
+        <div class="mt-6 grid gap-4 sm:grid-cols-2">
+          <div class="info-tile min-w-0">
+            <p class="info-tile__label">需求</p>
+            <p class="info-tile__value break-words">{{ order.description_raw || '未补充' }}</p>
+          </div>
+          <div class="info-tile min-w-0">
+            <p class="info-tile__label">备注</p>
+            <p class="info-tile__value break-words">{{ order.notes || '无' }}</p>
+          </div>
+          <div class="info-tile min-w-0">
+            <p class="info-tile__label">用户</p>
+            <p class="info-tile__value break-words">{{ order.user?.username || '未公开' }}</p>
+          </div>
+          <div class="info-tile min-w-0">
+            <p class="info-tile__label">代练</p>
+            <p v-if="order.booster" class="info-tile__value break-words">
+              <router-link
+                :to="{ name: 'booster-profile', params: { id: order.booster_id } }"
+                class="text-primary underline-offset-4 hover:underline"
+              >{{ order.booster.username }}</router-link>
+            </p>
+            <p v-else class="info-tile__value">待接单</p>
+          </div>
+        </div>
+      </section>
+
+      <section v-if="['DELIVERED','COMPLETED'].includes(order.status) && (order.notes || deliveryAttachments.length)" class="surface-card p-6 sm:p-8">
+        <h2 class="text-lg font-semibold text-ink-1">交付信息</h2>
+        <p v-if="order.notes" class="mt-3 break-words text-sm leading-6 text-ink-2">{{ order.notes }}</p>
+        <p v-else class="mt-3 text-sm text-ink-3">打手未填写文字说明</p>
+        <div v-if="deliveryAttachments.length" class="mt-4 grid grid-cols-3 gap-3 sm:grid-cols-5">
+          <a
+            v-for="(att, idx) in deliveryAttachments"
+            :key="att.url + idx"
+            :href="att.url"
+            target="_blank"
+            rel="noopener"
+            class="group relative overflow-hidden rounded-tile border border-line-1 bg-surface-2"
+          >
+            <img :src="att.url" :alt="att.name || '交付截图'" class="h-24 w-full object-cover transition group-hover:opacity-90" loading="lazy" />
+          </a>
+        </div>
+        <p v-if="isDelivered && isAssignedBooster" class="message-info mt-4 text-xs leading-6">
+          已提交完成，等待老板确认中。如超过 72 小时未确认，系统将自动完成。
+        </p>
+        <p v-if="isDelivered && isOwner" class="message-warning mt-4 text-xs leading-6">
+          代练已提交完成，请核实结果。如有问题可发起争议。72 小时后将自动确认。
+        </p>
+      </section>
+
+      <div class="grid gap-6 xl:grid-cols-[1.02fr_0.98fr] xl:items-start">
+        <section class="space-y-6">
           <article class="surface-card p-6 sm:p-8">
-            <h2 class="text-2xl font-semibold text-ink-1">关键信息</h2>
-            <div class="mt-6 grid gap-4 sm:grid-cols-2">
-              <div class="info-tile">
-                <p class="info-tile__label">需求</p>
-                <p class="info-tile__value">{{ order.description_raw || '未补充' }}</p>
-              </div>
-              <div class="info-tile">
-                <p class="info-tile__label">备注</p>
-                <p class="info-tile__value">{{ order.notes || '无' }}</p>
-              </div>
-              <div class="info-tile">
-                <p class="info-tile__label">用户</p>
-                <p class="info-tile__value">{{ order.user?.username || '未公开' }}</p>
-              </div>
-              <div class="info-tile">
-                <p class="info-tile__label">代练</p>
-                <p v-if="order.booster" class="info-tile__value">
-                  <router-link
-                    :to="{ name: 'booster-profile', params: { id: order.booster_id } }"
-                    class="text-primary underline-offset-4 hover:underline"
-                  >{{ order.booster.username }}</router-link>
-                </p>
-                <p v-else class="info-tile__value">待接单</p>
-              </div>
-            </div>
+            <h2 class="text-lg font-semibold text-ink-1">说明</h2>
+            <p v-if="isLocked && isBoostOrder && isOwner" class="message-warning mt-4 text-xs leading-6">
+              代练正在你的账号上操作，请勿登录账号，避免影响进度。
+            </p>
+            <p class="mt-4 text-sm leading-6 text-ink-2">如有疑问可在操作区联系对方，或对进行中/待确认订单发起争议。</p>
           </article>
         </section>
 
-        <aside class="surface-card h-fit p-6 sm:p-8 xl:sticky xl:top-28">
+        <aside class="od-ops surface-card p-6 sm:p-8 xl:sticky xl:top-28">
           <div class="flex items-center justify-between gap-4">
-            <h2 class="text-2xl font-semibold text-ink-1">操作</h2>
-            <span class="chat-status-pill">{{ statusMeta.label }}</span>
+            <h2 class="text-lg font-semibold text-ink-1">操作</h2>
+            <span class="chat-status-pill shrink-0">{{ statusMeta.label }}</span>
           </div>
 
-          <div class="mt-6 flex flex-col gap-3">
-            <!-- 代练接单：PENDING 状态，代练可见 -->
+          <div class="od-ops__body mt-6 flex flex-col gap-3">
             <button
               v-if="isBooster && order.status === 'PENDING' && !isOwner"
-              class="btn-primary py-3"
+              class="btn-primary w-full py-3"
               :disabled="actionLoading"
               @click="handleAccept"
             >
               接单
             </button>
 
-            <!-- 代练提交完成：LOCKED 状态，接单代练可见 -->
             <button
               v-if="isAssignedBooster && order.status === 'LOCKED'"
-              class="btn-success py-3"
+              class="btn-success w-full py-3"
               :disabled="actionLoading"
-              @click="handleDeliver"
+              @click="openDeliverModal"
             >
               提交完成
             </button>
 
-            <!-- LOCKED 状态提示：客户不要登号 -->
-            <p v-if="isLocked && isBoostOrder && isOwner" class="message-warning text-xs leading-6">
-              代练正在你的账号上操作，请勿登录账号，避免影响进度。
-            </p>
-
-            <!-- DELIVERED 状态提示：代练等待确认 -->
-            <p v-if="isDelivered && isAssignedBooster" class="message-info text-xs leading-6">
-              已提交完成，等待老板确认中。如超过 72 小时未确认，系统将自动完成。
-            </p>
-
-            <!-- 客户确认完成：DELIVERED 状态，下单用户可见 -->
             <button
               v-if="isOwner && order.status === 'DELIVERED'"
-              class="btn-success py-3"
+              class="btn-success w-full py-3"
               :class="{ 'btn-confirm-success': confirmSuccess }"
               :disabled="actionLoading"
               @click="handleConfirm"
@@ -478,67 +471,61 @@ onMounted(async () => {
               确认完成
             </button>
 
-            <!-- DELIVERED 状态提示：客户核查 -->
-            <p v-if="isDelivered && isOwner" class="message-warning text-xs leading-6">
-              代练已提交完成，请核实结果。如有问题可发起争议。72 小时后将自动确认。
-            </p>
-
-            <!-- 发起争议：LOCKED / DELIVERED 状态，双方可见 -->
             <button
               v-if="(isOwner || isAssignedBooster) && ['LOCKED', 'DELIVERED'].includes(order.status)"
-              class="btn-danger py-3"
+              class="btn-danger w-full py-3"
               :disabled="actionLoading"
               @click="handleDispute"
             >
               发起争议
             </button>
 
-            <!-- 取消订单：PENDING 状态，客户可见 -->
             <button
               v-if="isOwner && order.status === 'PENDING'"
-              class="btn-danger py-3"
+              class="btn-danger w-full py-3"
               :disabled="actionLoading"
               @click="handleCancel"
             >
               取消
             </button>
 
-            <!-- 支付按钮 -->
             <button
               v-if="order.payment_status === 'UNPAID' && order.user_id === currentUser?.id"
               type="button"
-              class="btn-primary py-3"
+              class="btn-primary w-full py-3"
               :disabled="actionLoading"
               @click="handlePay"
             >
               确认支付
             </button>
 
-            <!-- 退款按钮：管理员可见 -->
             <button
               v-if="order.payment_status === 'PAID' && isAdmin && ['CANCELLED', 'DISPUTED'].includes(order.status)"
               type="button"
-              class="btn-secondary py-3"
+              class="btn-secondary w-full py-3"
               :disabled="actionLoading"
               @click="handleRefund"
             >
               退款
             </button>
 
-            <!-- 联系对方 -->
             <button
               v-if="canStartChat"
-              class="btn-secondary py-3"
+              class="btn-secondary w-full py-3"
               :disabled="chatLoading"
               @click="handleStartConversation"
             >
               {{ chatLoading ? '打开中...' : (isOwner ? '联系代练' : '联系老板') }}
             </button>
+          </div>
 
-            <button class="btn-secondary py-3" @click="router.push({ name: 'orders' })">返回列表</button>
+          <div class="od-ops__foot mt-6 flex flex-col gap-3 border-t border-line-1 pt-4">
+            <button class="btn-secondary w-full py-3" @click="router.push({ name: 'orders' })">返回列表</button>
           </div>
         </aside>
       </div>
+
+      <OrderDeliverModal v-model="showDeliverModal" :order-id="order.id" @success="onDeliverSuccess" />
 
       <section v-if="order.status === 'COMPLETED'" class="surface-card space-y-4 p-6 sm:p-8">
         <h3 class="section-title !text-2xl">{{ isAssignedBooster ? '给老板留个评价' : '说说这次体验' }}</h3>

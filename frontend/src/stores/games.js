@@ -245,26 +245,54 @@ export const useGamesStore = defineStore('games', () => {
 
     try {
       await api.delete(`/admin/games/${id}`)
-      const index = adminGames.value.findIndex((game) => game.id === id)
-      if (index !== -1) {
-        adminGames.value.splice(index, 1)
-      }
-      adminPagination.value = {
-        ...adminPagination.value,
-        total: Math.max(0, adminPagination.value.total - 1),
-      }
-
-      const catalogIndex = catalogGames.value.findIndex((game) => game.id === id)
-      if (catalogIndex !== -1) {
-        catalogGames.value.splice(catalogIndex, 1)
-      }
-
+      removeAdminGame(id)
       return { success: true }
     } catch (err) {
       error.value = err.message
       return { success: false, error: err.message }
     } finally {
       adminLoading.value = false
+    }
+  }
+
+  function removeAdminGame(id) {
+    const index = adminGames.value.findIndex((game) => game.id === id)
+    if (index !== -1) adminGames.value.splice(index, 1)
+    adminPagination.value = { ...adminPagination.value, total: Math.max(0, adminPagination.value.total - 1) }
+    const catalogIndex = catalogGames.value.findIndex((game) => game.id === id)
+    if (catalogIndex !== -1) catalogGames.value.splice(catalogIndex, 1)
+  }
+
+  async function bulkAction(action, ids) {
+    const selectedIds = [...new Set(ids.map(Number).filter((id) => Number.isInteger(id) && id > 0))]
+    if (!selectedIds.length) return { success: false, error: '请先选择游戏' }
+    adminLoading.value = true
+    error.value = null
+    try {
+      const response = await api.post('/games/bulk-action', { action, ids: selectedIds })
+      if (action === 'delete') selectedIds.forEach(removeAdminGame)
+      else adminGames.value = adminGames.value.map((game) => selectedIds.includes(game.id) ? { ...game, is_active: action === 'activate' } : game)
+      return { success: true, data: response.data }
+    } catch (err) {
+      error.value = err.message
+      return { success: false, error: err.message }
+    } finally {
+      adminLoading.value = false
+    }
+  }
+
+  async function uploadLogo(id, file) {
+    if (!file) return { success: false, error: '请选择图片' }
+    const body = new FormData()
+    body.append('logo', file)
+    try {
+      const response = await api.put(`/games/${id}/logo`, body, { headers: { 'Content-Type': 'multipart/form-data' } })
+      const index = adminGames.value.findIndex((game) => game.id === id)
+      if (index !== -1) adminGames.value.splice(index, 1, response.data)
+      return { success: true, data: response.data }
+    } catch (err) {
+      error.value = err.message
+      return { success: false, error: err.message }
     }
   }
 
@@ -300,6 +328,8 @@ export const useGamesStore = defineStore('games', () => {
     createGame,
     updateGame,
     deleteGame,
+    bulkAction,
+    uploadLogo,
     getGameById,
     clearCurrentGame,
   }

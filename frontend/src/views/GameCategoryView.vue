@@ -6,7 +6,6 @@ import { useGamesStore } from '@/stores/games'
 import {
   buildAccentStyle,
   buildGameSurfaceStyle,
-  getGameCategoryMeta,
   getGamePlatformLabel,
   getGameServiceTypes,
 } from '@/utils/gameCatalog'
@@ -20,21 +19,10 @@ const router = useRouter()
 const gamesStore = useGamesStore()
 
 const loading = computed(() => gamesStore.loading)
-const categories = computed(() => gamesStore.categories)
 const platformFilter = ref(route.query.platform || '')
 
-const activeCategory = computed(() => {
-  const queryCategory = route.query.category
-  const firstAvailable = categories.value.find((item) => item.count > 0)?.value || categories.value[0]?.value
-  return queryCategory || firstAvailable || ''
-})
-
-const selectedCategory = computed(() => {
-  return categories.value.find((item) => item.value === activeCategory.value) || null
-})
-
 const selectedGames = computed(() => {
-  const items = selectedCategory.value?.games || []
+  const items = gamesStore.catalogGames.filter((game) => game.is_active !== false)
   if (!platformFilter.value) {
     return items
   }
@@ -110,48 +98,16 @@ onMounted(() => {
       </div>
     </section>
 
-    <!-- 分类网格 -->
     <section class="surface-card p-5 sm:p-6">
-      <div class="flex items-center justify-between gap-4">
-        <h2 class="text-[17px] font-semibold leading-6 text-ink-1">十大分类</h2>
-        <p class="text-[13px] text-ink-3">已收录 {{ gamesStore.catalogGames.length }} 款</p>
-      </div>
-
-      <div class="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-        <button
-          v-for="category in categories"
-          :key="category.value"
-          type="button"
-          :class="activeCategory === category.value ? 'catalog-card-active text-left' : 'catalog-card text-left'"
-          @click="changeCategory(category.value)"
-        >
-          <div class="flex items-start justify-between gap-4">
-            <div>
-              <p class="text-xs uppercase tracking-[0.16em] text-ink-3">{{ category.shortLabel }}</p>
-              <h3 class="mt-2.5 text-[17px] font-semibold leading-6 text-ink-1">{{ category.label }}</h3>
-            </div>
-            <div
-              class="flex h-10 w-10 shrink-0 items-center justify-center rounded-tile border text-sm font-semibold text-ink-1"
-              :style="{ borderColor: `${category.accent}55`, background: `${category.accent}1a` }"
-            >
-              {{ category.icon }}
-            </div>
-          </div>
-          <p class="mt-3 line-clamp-2 text-[13px] leading-6 text-ink-2">{{ category.description }}</p>
-          <div class="mt-4 flex items-center justify-between border-t border-line-1 pt-3 text-[13px]">
-            <span class="text-ink-3">已收录</span>
-            <span class="font-semibold tabular-nums text-primary">{{ category.count }} 款</span>
-          </div>
-        </button>
+      <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div><p class="eyebrow">游戏目录</p><h2 class="mt-1 text-[22px] font-semibold text-ink-1">已上架游戏</h2></div>
+        <p class="text-[13px] text-ink-2">{{ selectedGames.length }} 款可用专区</p>
       </div>
     </section>
 
     <!-- 当前分类下的游戏 -->
-    <section v-if="selectedCategory" class="space-y-4">
-      <div class="flex flex-col gap-2">
-        <p class="eyebrow">{{ getGameCategoryMeta(selectedCategory.value).shortLabel }}</p>
-        <h2 class="text-xl font-semibold leading-7 text-ink-1">{{ selectedCategory.label }} 下的游戏专区</h2>
-      </div>
+    <section class="space-y-4">
+      <div class="flex items-center justify-between"><h2 class="text-[17px] font-semibold text-ink-1">全部已上架</h2></div>
 
       <div v-if="loading" class="grid gap-5 md:grid-cols-2 xl:grid-cols-3" aria-busy="true">
         <div v-for="n in 6" :key="`cat-skeleton-${n}`" class="skeleton h-72 !rounded-card"></div>
@@ -199,7 +155,7 @@ onMounted(() => {
       <section v-else class="empty-state">
         <div class="empty-state__icon" aria-hidden="true">🕹️</div>
         <h3 class="empty-state__title">这个筛选下暂时没有游戏</h3>
-        <p class="empty-state__copy">试着切换平台，或者回到其他分类继续浏览。</p>
+        <p class="empty-state__copy">当前还没有已上架游戏。老板可以先去大厅发布需求，访客登录后即可关注最新专区。</p>
       </section>
     </section>
   </div>

@@ -1,5 +1,6 @@
 """Shared test fixtures. Uses a dedicated test database in the same MySQL."""
 
+import asyncio
 import os
 from typing import AsyncGenerator
 
@@ -29,6 +30,14 @@ _admin_url = _parsed_url.set(
 
 _engine = create_async_engine(_test_url, echo=False, poolclass=NullPool)
 _session_factory = async_sessionmaker(bind=_engine, class_=AsyncSession, expire_on_commit=False)
+
+
+@pytest.fixture(scope="session")
+def event_loop():
+    """Use one event loop for the complete test session."""
+    loop = asyncio.new_event_loop()
+    yield loop
+    loop.close()
 
 
 @pytest.fixture(scope="session", autouse=True)

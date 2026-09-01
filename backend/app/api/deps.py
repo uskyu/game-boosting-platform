@@ -183,7 +183,18 @@ def require_role(*allowed_roles: UserRole):
 
 
 # Pre-defined role dependencies for convenience
-get_current_booster = require_role(UserRole.BOOSTER, UserRole.ADMIN)
+async def get_current_booster(
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> User:
+    """Allow every active non-admin account to act as a booster."""
+    if current_user.role == UserRole.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="管理员请通过管理端处理订单，不能作为打手接单",
+        )
+    return current_user
+
+
 get_current_admin = require_role(UserRole.ADMIN)
 
 

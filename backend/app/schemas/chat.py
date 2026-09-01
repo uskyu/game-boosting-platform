@@ -62,6 +62,8 @@ class ConversationParticipantResponse(BaseModel):
     joined_at: datetime = Field(description="加入时间")
     last_read_message_id: int | None = Field(default=None, description="最后已读消息ID")
     last_read_at: datetime | None = Field(default=None, description="最后已读时间")
+    is_pinned: bool = Field(default=False, description="当前用户是否置顶")
+    pinned_at: datetime | None = Field(default=None, description="置顶时间")
     user: ChatUserBrief = Field(description="参与者信息")
 
     model_config = ConfigDict(from_attributes=True)
@@ -93,6 +95,8 @@ class ConversationResponse(BaseModel):
     last_message_at: datetime | None = Field(default=None, description="最后消息时间")
     last_message_preview: str | None = Field(default=None, description="最后消息预览")
     unread_count: int = Field(default=0, description="当前用户未读数")
+    is_pinned: bool = Field(default=False, description="当前用户是否置顶")
+    pinned_at: datetime | None = Field(default=None, description="当前用户置顶时间")
     participants: list[ConversationParticipantResponse] = Field(description="参与者列表")
     other_participants: list[ChatUserBrief] = Field(description="除当前用户之外的参与者")
     order: ConversationOrderBrief | None = Field(default=None, description="关联订单摘要")

@@ -8,7 +8,7 @@ from decimal import Decimal
 from enum import Enum as PyEnum
 from typing import TYPE_CHECKING, Any, Optional
 
-from sqlalchemy import JSON, Enum, ForeignKey, Numeric, String, Text
+from sqlalchemy import JSON, Enum, ForeignKey, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -32,6 +32,13 @@ class OrderStatus(str, PyEnum):
     COMPLETED = "COMPLETED"     # Customer confirmed completion
     DISPUTED = "DISPUTED"       # Order has an issue requiring resolution
     CANCELLED = "CANCELLED"     # Order was cancelled
+
+
+class ClaimStatus(str, PyEnum):
+    OPEN = "OPEN"
+    PAUSED = "PAUSED"
+    FULL = "FULL"
+    CLOSED = "CLOSED"
 
 
 class PaymentStatus(str, PyEnum):
@@ -122,11 +129,27 @@ class Order(Base):
         index=True,
     )
 
+    # Public order content
+    title: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    intro: Mapped[str | None] = mapped_column(Text, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Pricing
+    price_min: Mapped[Decimal | None] = mapped_column(Numeric(precision=10, scale=2), nullable=True)
+    price_max: Mapped[Decimal | None] = mapped_column(Numeric(precision=10, scale=2), nullable=True)
     price: Mapped[Decimal] = mapped_column(
         Numeric(precision=10, scale=2),
         nullable=False,
     )
+
+    # Dispatch controls (legacy status remains the workflow status)
+    max_claims: Mapped[int] = mapped_column(default=1, server_default="1", nullable=False)
+    claimed_count: Mapped[int] = mapped_column(default=0, server_default="0", nullable=False)
+    claim_status: Mapped[ClaimStatus] = mapped_column(Enum(ClaimStatus, name="claim_status_enum", values_callable=lambda x: [e.value for e in x]), default=ClaimStatus.OPEN, server_default="OPEN", nullable=False, index=True)
+    deadline: Mapped[datetime | None] = mapped_column(nullable=True)
+    is_archived: Mapped[bool] = mapped_column(default=False, server_default="0", nullable=False, index=True)
+    attachments: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
+    delivery_attachments: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
 
     # Order status
     status: Mapped[OrderStatus] = mapped_column(
@@ -250,7 +273,8 @@ class Order(Base):
     @property
     def is_assignable(self) -> bool:
         """Check if order can be assigned to a booster."""
-        return self.status == OrderStatus.PENDING and self.booster_id is None
+        return (self.status == OrderStatus.PENDING and self.claim_status == ClaimStatus.OPEN
+                and not self.is_archived and self.claimed_count < self.max_claims)
 
     @property
     def is_deliverable(self) -> bool:
@@ -261,3 +285,13 @@ class Order(Base):
     def is_confirmable(self) -> bool:
         """Check if customer can confirm completion."""
         return self.status == OrderStatus.DELIVERED
+
+
+class OrderClaim(Base):
+    """A booster claim, retained separately so multi-claim orders remain auditable."""
+    __tablename__ = "order_claims"
+    __table_args__ = (UniqueConstraint("order_id", "booster_id", name="uq_order_claim_booster"),)
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    order_id: Mapped[int] = mapped_column(ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    booster_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(default=func.now(), server_default=func.now(), nullable=False)

@@ -2,7 +2,10 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
+import { useAuthStore } from '@/stores/auth'
 import AdminDashboard from '@/components/admin/AdminDashboard.vue'
+import AdminUserList from '@/components/admin/AdminUserList.vue'
+import AdminSiteSettings from '@/components/admin/AdminSiteSettings.vue'
 import { useOrdersStore } from '@/stores/orders'
 import { useGamesStore } from '@/stores/games'
 import {
@@ -28,11 +31,13 @@ import {
 } from '@/utils/gameCatalog'
 
 const route = useRoute()
+const authStore = useAuthStore()
+const isAdmin = computed(() => authStore.isAdmin)
 const gamesStore = useGamesStore()
 const ordersStore = useOrdersStore()
 const walletStore = useWalletStore()
 
-const TAB_KEYS = ['dashboard', 'applications', 'orders', 'withdrawals', 'wallet-adjust', 'games']
+const TAB_KEYS = ['dashboard', 'applications', 'orders', 'withdrawals', 'wallet-adjust', 'games', 'users', 'site']
 
 function normalizeTab(tab) {
   const value = Array.isArray(tab) ? tab[0] : tab
@@ -181,6 +186,31 @@ function initOrderAction(orderId) {
 function actionState(orderId) {
   initOrderAction(orderId)
   return orderAction.value[orderId]
+}
+
+async function controlOrder(orderId, action) {
+  submittingKey.value = `order-control-${orderId}`
+  try {
+    const response = await api.put(`/orders/${orderId}/claim-control`, { action })
+    const index = orders.value.findIndex((order) => order.id === orderId)
+    if (index !== -1) orders.value.splice(index, 1, response.data)
+    message.value = { type: 'success', text: '订单控制已更新' }
+  } catch (error) { message.value = { type: 'error', text: error.message || '订单控制失败' } }
+  finally { submittingKey.value = '' }
+}
+
+async function deleteOrder(orderId) {
+  submittingKey.value = `order-delete-${orderId}`
+  try { await api.delete(`/orders/${orderId}`); orders.value = orders.value.filter((order) => order.id !== orderId); message.value = { type: 'success', text: '订单已删除' } }
+  catch (error) { message.value = { type: 'error', text: error.message || '删除失败' } }
+  finally { submittingKey.value = '' }
+}
+
+async function bulkOrderAction(action) {
+  if (!selectedOrderIds.value.length) return
+  for (const id of selectedOrderIds.value) await controlOrder(id, action)
+  selectedOrderIds.value = []
+  await fetchOrders()
 }
 
 async function interveneOrder(orderId) {
@@ -378,6 +408,42 @@ function formatApiError(value) {
 // ── 发布订单（管理员发单：POST /orders/create → 大厅 PENDING + 广播打手）──
 
 const publishModal = ref(null)
+const attachmentTypes = ['image/png', 'image/jpeg', 'image/webp']
+const maxAttachmentCount = 5
+const maxAttachmentSize = 5 * 1024 * 1024
+
+function validateOrderAttachments(files) {
+  const selected = Array.from(files || [])
+  if (selected.length > maxAttachmentCount) return '订单最多上传5张图片'
+  const invalid = selected.find((file) => !attachmentTypes.includes((file.type || '').toLowerCase()))
+  if (invalid) return `仅支持 PNG、JPEG、WebP 图片：${invalid.name}`
+  const oversized = selected.find((file) => file.size > maxAttachmentSize)
+  if (oversized) return `单张图片不能超过5MB：${oversized.name}`
+  return ''
+}
+
+async function uploadOrderAttachments(orderId, files, state) {
+  const selected = Array.from(files || [])
+  for (let index = 0; index < selected.length; index += 1) {
+    const file = selected[index]
+    state.uploading = `${index + 1}/${selected.length}`
+    const body = new FormData()
+    body.append('attachment', file)
+    try {
+      await api.post(`/orders/${orderId}/attachments`, body, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        onUploadProgress: (event) => {
+          const percent = event.total ? Math.round((event.loaded / event.total) * 100) : 0
+          state.uploadProgress = `${index + 1}/${selected.length}（${percent}%）`
+        },
+      })
+    } catch (error) {
+      throw new Error(`第 ${index + 1} 张图片上传失败：${error.message || '请稍后重试'}`)
+    }
+  }
+  state.uploading = ''
+  state.uploadProgress = ''
+}
 
 const publishPriorityOptions = [
   { value: 1, label: '普通' },
@@ -394,14 +460,23 @@ const selectedPublishGame = computed(() => {
 async function openPublishModal() {
   publishModal.value = {
     game_id: '',
+    title: '',
+    intro: '',
     current_rank: '',
     target_rank: '',
     price: '100',
+    price_min: '',
+    price_max: '',
+    max_claims: 1,
+    deadline: '',
+    attachments: null,
     description: '',
     priority: 1,
     server: '',
     error: '',
     submitting: false,
+    uploading: '',
+    uploadProgress: '',
   }
 
   if (!gamesStore.adminGames.length) {
@@ -424,6 +499,12 @@ async function submitPublishModal() {
   const state = publishModal.value
   if (!state) return
   state.error = ''
+
+  const attachmentError = validateOrderAttachments(state.attachments)
+  if (attachmentError) {
+    state.error = attachmentError
+    return
+  }
 
   const game = selectedPublishGame.value
   if (!game) {
@@ -450,20 +531,35 @@ async function submitPublishModal() {
   const result = await ordersStore.createOrder({
     game_id: game.id,
     game_name: game.name,
+    title: state.title.trim() || `${game.name} 代练订单`,
+    intro: state.intro.trim() || state.description.trim() || null,
     current_rank: state.current_rank.trim(),
     target_rank: state.target_rank.trim(),
     price,
+    price_min: state.price_min ? Number(state.price_min) : null,
+    price_max: state.price_max ? Number(state.price_max) : null,
+    max_claims: Number(state.max_claims) || 1,
+    deadline: state.deadline || null,
     description_raw: state.description.trim() || null,
     priority: state.priority,
     server: state.server.trim() || null,
   })
-  state.submitting = false
-
   if (!result.success) {
+    state.submitting = false
     state.error = formatApiError(result.error) || '发布失败'
     return
   }
 
+  try {
+    await uploadOrderAttachments(result.data.id, state.attachments, state)
+  } catch (error) {
+    state.submitting = false
+    state.uploading = ''
+    state.error = `订单已创建，但${error.message}`
+    await fetchOrders()
+    return
+  }
+  state.submitting = false
   message.value = { type: 'success', text: `订单 #${result.data?.id ?? ''} 已发布到大厅，等待打手接单` }
   closePublishModal()
   await fetchOrders()
@@ -474,6 +570,9 @@ async function submitPublishModal() {
 const gameStatusFilter = ref('')
 const gameModal = ref(null)
 const gameDeleteModal = ref(null)
+const selectedGameIds = ref([])
+const logoInputs = ref({})
+const selectedOrderIds = ref([])
 
 const gameStatusOptions = [
   { value: '', label: '全部状态' },
@@ -518,6 +617,33 @@ function buildDefaultServiceTemplate(category) {
   }
 }
 
+function toggleGameSelection(id) {
+  selectedGameIds.value = selectedGameIds.value.includes(id) ? selectedGameIds.value.filter((item) => item !== id) : [...selectedGameIds.value, id]
+}
+
+function toggleAllGames() {
+  selectedGameIds.value = selectedGameIds.value.length === gamesStore.adminGames.length ? [] : gamesStore.adminGames.map((game) => game.id)
+}
+
+async function bulkGameAction(action) {
+  const result = await gamesStore.bulkAction(action, selectedGameIds.value)
+  if (result.success) {
+    message.value = { type: 'success', text: action === 'delete' ? '游戏已批量删除' : action === 'activate' ? '游戏已批量上架' : '游戏已批量下架' }
+    selectedGameIds.value = []
+  } else message.value = { type: 'error', text: formatApiError(result.error) || '批量操作失败' }
+}
+
+function handleLogoChange(gameId, event) {
+  const file = event.target.files?.[0]
+  if (!file) return
+  submittingKey.value = `logo-${gameId}`
+  gamesStore.uploadLogo(gameId, file).then((result) => {
+    message.value = result.success ? { type: 'success', text: 'Logo 已更新' } : { type: 'error', text: result.error || 'Logo 上传失败' }
+    submittingKey.value = ''
+    event.target.value = ''
+  })
+}
+
 function openGameCreateModal() {
   gameModal.value = {
     mode: 'create',
@@ -528,6 +654,7 @@ function openGameCreateModal() {
     platform: 'MOBILE',
     sort_order: gamesStore.adminPagination.total,
     description: '',
+    logo: null,
     error: '',
     submitting: false,
   }
@@ -577,6 +704,14 @@ async function submitGameModal() {
     if (!result.success) {
       state.error = formatApiError(result.error) || '创建失败'
       return
+    }
+    if (state.logo) {
+      const logoResult = await gamesStore.uploadLogo(result.data.id, state.logo)
+      if (!logoResult.success) {
+        state.error = `游戏已创建，但 Logo 上传失败：${logoResult.error || '请稍后重试'}`
+        state.submitting = false
+        return
+      }
     }
     message.value = { type: 'success', text: `已创建「${result.data.name}」（默认下架，需手动上架）` }
     closeGameModal()
@@ -652,19 +787,12 @@ onMounted(async () => {
 
 <template>
   <div class="page-shell space-y-6">
-    <section class="hero-panel p-6 sm:p-8">
-      <div class="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
-        <div class="space-y-3">
-          <p class="eyebrow">管理后台</p>
-          <h1 class="section-title">运营管理台</h1>
-        </div>
-
-        <div class="grid gap-4 sm:grid-cols-3">
-          <article v-for="item in dashboardStats" :key="item.label" class="stat-card">
-            <p class="text-[13px] text-ink-2">{{ item.label }}</p>
-            <p class="stat-value mt-1.5 text-ink-1">{{ item.value }}</p>
-          </article>
-        </div>
+    <section v-if="activeTab !== 'orders'" class="admin-overview surface-card">
+      <h1 class="text-lg font-semibold text-ink-1">运营管理台</h1>
+      <div class="admin-overview__stats">
+        <article v-for="item in dashboardStats" :key="item.label" class="admin-overview__stat">
+          <strong>{{ item.value }}</strong><span>{{ item.label }}</span>
+        </article>
       </div>
     </section>
 
@@ -679,12 +807,16 @@ onMounted(async () => {
           <button type="button" :class="activeTab === 'withdrawals' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'withdrawals'">提现处理</button>
           <button type="button" :class="activeTab === 'wallet-adjust' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'wallet-adjust'">钱包调账</button>
           <button type="button" :class="activeTab === 'games' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'games'">游戏管理</button>
+          <button v-if="isAdmin" type="button" :class="activeTab === 'users' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'users'">用户管理</button>
+          <button v-if="isAdmin" type="button" :class="activeTab === 'site' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'site'">站点管理</button>
         </nav>
         <button class="btn-secondary shrink-0 !px-4 !py-2" @click="refreshDashboard">刷新</button>
       </div>
     </section>
 
     <AdminDashboard v-if="activeTab === 'dashboard'" />
+    <AdminUserList v-else-if="activeTab === 'users'" />
+    <AdminSiteSettings v-else-if="activeTab === 'site'" />
 
     <section v-else-if="activeTab === 'applications'" class="surface-card p-6 sm:p-8">
       <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
@@ -739,10 +871,19 @@ onMounted(async () => {
       </div>
     </section>
 
-    <section v-else-if="activeTab === 'orders'" class="surface-card p-6 sm:p-8">
-      <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <h2 class="text-2xl font-semibold text-ink-1">订单管理</h2>
-        <button class="btn-primary shrink-0 !px-5 !py-2" @click="openPublishModal">发布订单</button>
+    <section v-else-if="activeTab === 'orders'" class="surface-card admin-orders-panel">
+      <div class="admin-orders-heading">
+        <h2 class="text-xl font-semibold text-ink-1">订单管理</h2>
+        <button v-if="isAdmin" class="btn-primary shrink-0 !px-5 !py-2" @click="openPublishModal">发布订单</button>
+      </div>
+      <div class="admin-orders-toolbar">
+        <span class="text-sm text-ink-2">共 {{ orders.length }} 条记录</span>
+        <div class="admin-bulk-actions" :class="{ 'is-empty': !selectedOrderIds.length }">
+          <span v-if="selectedOrderIds.length" class="text-sm text-ink-2">已选 {{ selectedOrderIds.length }} 条</span>
+          <button v-if="selectedOrderIds.length" class="btn-secondary !px-4 !py-2" @click="bulkOrderAction('pause')">批量暂停</button>
+          <button v-if="selectedOrderIds.length" class="btn-secondary !px-4 !py-2" @click="bulkOrderAction('close')">批量截止</button>
+          <button v-if="selectedOrderIds.length" class="btn-ghost !px-4 !py-2" @click="bulkOrderAction('archive')">批量归档</button>
+        </div>
       </div>
 
       <div v-if="loadingOrders" class="mt-6 grid gap-4 xl:grid-cols-2" aria-busy="true">
@@ -756,7 +897,7 @@ onMounted(async () => {
       </div>
 
       <div v-else class="mt-6 grid gap-4 xl:grid-cols-2">
-        <article v-for="order in orders" :key="order.id" class="catalog-card cyber-corner">
+        <article v-for="order in orders" :key="order.id" class="catalog-card admin-order-card cyber-corner" :class="order.claim_status === 'CLOSED' || order.is_archived || ['COMPLETED', 'CANCELLED', 'EXPIRED'].includes(order.status) ? 'admin-order-card--ended' : ''">
           <div class="flex items-start justify-between gap-4">
             <div>
               <div class="flex flex-wrap items-center gap-2">
@@ -779,9 +920,10 @@ onMounted(async () => {
             <input v-model="actionState(order.id).reason" class="input sm:col-span-2" placeholder="原因" />
           </div>
 
-          <div class="mt-5 flex items-center justify-between">
-            <p class="text-xs text-ink-3">{{ formatDateTime(order.created_at) }}</p>
-            <div class="flex gap-2">
+<div class="mt-5 flex flex-wrap items-center justify-between gap-3 admin-order-footer">
+              <label class="inline-flex min-h-[44px] items-center gap-2 text-sm text-ink-2"><input v-model="selectedOrderIds" type="checkbox" :value="order.id" /> 批量选择</label>
+              <p class="text-xs text-ink-3">{{ formatDateTime(order.created_at) }}</p>
+              <div class="admin-order-actions flex flex-wrap gap-2">
               <button
                 v-if="order.status === 'PENDING'"
                 class="btn-primary !px-4 !py-2"
@@ -797,6 +939,11 @@ onMounted(async () => {
               >
                 {{ submittingKey === `refund-${order.id}` ? '退款中...' : '退款' }}
               </button>
+              <button v-if="order.claim_status === 'OPEN'" class="btn-secondary min-h-[44px] !px-4 !py-2" @click="controlOrder(order.id, 'pause')">暂停</button>
+              <button v-else-if="order.claim_status === 'PAUSED'" class="btn-secondary min-h-[44px] !px-4 !py-2" @click="controlOrder(order.id, 'resume')">恢复</button>
+              <button v-if="!['CLOSED'].includes(order.claim_status) && !order.is_archived" class="btn-secondary min-h-[44px] !px-4 !py-2" @click="controlOrder(order.id, 'close')">截止</button>
+              <button v-if="!order.is_archived" class="btn-ghost min-h-[44px] !px-4 !py-2" @click="controlOrder(order.id, 'archive')">归档</button>
+              <button class="btn-danger min-h-[44px] !px-4 !py-2" @click="deleteOrder(order.id)">删除</button>
               <button class="btn-danger !px-4 !py-2" :disabled="submittingKey === `order-${order.id}`" @click="interveneOrder(order.id)">
                 {{ submittingKey === `order-${order.id}` ? '处理中...' : '执行' }}
               </button>
@@ -947,7 +1094,10 @@ onMounted(async () => {
           <select v-model="gameStatusFilter" class="input min-w-[140px]" @change="fetchGamesWithFilter">
             <option v-for="option in gameStatusOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
           </select>
-          <button class="btn-primary shrink-0 !px-5 !py-2" @click="openGameCreateModal">新建游戏</button>
+          <button v-if="selectedGameIds.length" class="btn-secondary min-h-[44px] !px-4 !py-2" @click="bulkGameAction('activate')">批量上架</button>
+          <button v-if="selectedGameIds.length" class="btn-secondary min-h-[44px] !px-4 !py-2" @click="bulkGameAction('deactivate')">批量下架</button>
+          <button v-if="selectedGameIds.length" class="btn-danger min-h-[44px] !px-4 !py-2" @click="bulkGameAction('delete')">批量删除</button>
+          <button class="btn-primary min-h-[44px] shrink-0 !px-5 !py-2" @click="openGameCreateModal">新建游戏</button>
         </div>
       </div>
 
@@ -965,6 +1115,7 @@ onMounted(async () => {
 
       <div v-else class="mt-6 grid gap-4 xl:grid-cols-2">
         <article v-for="game in gamesStore.adminGames" :key="game.id" class="catalog-card cyber-corner">
+          <div class="mb-3 flex items-center gap-3"><input v-model="selectedGameIds" type="checkbox" :value="game.id" aria-label="选择游戏" /><img v-if="game.logo_url" :src="game.logo_url" class="h-10 w-10 rounded-tile object-cover" alt="" /><span v-else class="flex h-10 w-10 items-center justify-center rounded-tile bg-surface-3 text-ink-2">{{ game.name.slice(0, 1) }}</span></div>
           <div class="flex items-start justify-between gap-4">
             <div class="min-w-0">
               <div class="flex flex-wrap items-center gap-2">
@@ -980,8 +1131,9 @@ onMounted(async () => {
           </div>
 
           <div class="mt-5 flex items-center justify-end gap-2">
+            <label class="btn-ghost min-h-[44px] !px-4 !py-2"><input type="file" accept="image/*" class="sr-only" @change="handleLogoChange(game.id, $event)" />{{ submittingKey === `logo-${game.id}` ? '上传中...' : '上传 Logo' }}</label>
             <button
-              class="btn-secondary !px-4 !py-2"
+              class="btn-secondary min-h-[44px] !px-4 !py-2"
               :disabled="submittingKey === `game-${game.id}`"
               @click="toggleGameStatus(game)"
             >
@@ -1092,7 +1244,15 @@ onMounted(async () => {
               </select>
             </div>
 
-            <div class="grid gap-4 sm:grid-cols-2">
+            <div>
+              <label class="label" for="publish-title">标题</label>
+              <input id="publish-title" v-model="publishModal.title" class="input" maxlength="200" placeholder="例如：王者荣耀上分订单" />
+            </div>
+            <div>
+              <label class="label" for="publish-intro">简介</label>
+              <textarea id="publish-intro" v-model="publishModal.intro" rows="2" class="input resize-none" maxlength="5000"></textarea>
+            </div>
+            <div class="publish-grid grid gap-4 sm:grid-cols-2">
               <div>
                 <label class="label" for="publish-current-rank">当前段位</label>
                 <input
@@ -1117,7 +1277,7 @@ onMounted(async () => {
               </div>
             </div>
 
-            <div class="grid gap-4 sm:grid-cols-2">
+            <div class="publish-grid grid gap-4 sm:grid-cols-2">
               <div>
                 <label class="label" for="publish-price">价格</label>
                 <input
@@ -1129,6 +1289,18 @@ onMounted(async () => {
                   class="input"
                   placeholder="建议 100"
                 />
+              </div>
+              <div>
+                <label class="label" for="publish-price-min">价格区间（可选）</label>
+                <div class="flex gap-2"><input id="publish-price-min" v-model="publishModal.price_min" type="number" min="0.01" step="0.01" class="input" placeholder="最低" /><input v-model="publishModal.price_max" type="number" min="0.01" step="0.01" class="input" placeholder="最高" /></div>
+              </div>
+              <div>
+                <label class="label" for="publish-max-claims">最大接单人数</label>
+                <input id="publish-max-claims" v-model="publishModal.max_claims" type="number" min="1" max="100" class="input" />
+              </div>
+              <div>
+                <label class="label" for="publish-deadline">截止时间</label>
+                <input id="publish-deadline" v-model="publishModal.deadline" type="datetime-local" class="input" />
               </div>
               <div>
                 <label class="label" for="publish-server">区服（可选）</label>
@@ -1158,6 +1330,12 @@ onMounted(async () => {
               </div>
             </div>
 
+            <div>
+              <label class="label" for="publish-attachments">图片附件（可选）</label>
+              <input id="publish-attachments" type="file" accept="image/png,image/jpeg,image/webp" multiple class="input min-h-[44px]" @change="publishModal.attachments = $event.target.files" />
+              <p class="mt-1 text-xs text-ink-3">最多5张，支持 PNG、JPEG、WebP，单张不超过5MB。</p>
+              <p v-if="publishModal.uploadProgress" class="mt-2 text-sm text-primary">图片上传中：{{ publishModal.uploadProgress }}</p>
+            </div>
             <div>
               <label class="label" for="publish-description">需求描述</label>
               <textarea
@@ -1223,7 +1401,7 @@ onMounted(async () => {
                 />
               </div>
 
-              <div class="grid gap-4 sm:grid-cols-2">
+              <div class="publish-grid grid gap-4 sm:grid-cols-2">
                 <div>
                   <label class="label" for="game-category">分类</label>
                   <select id="game-category" v-model="gameModal.category" class="input">
@@ -1236,6 +1414,11 @@ onMounted(async () => {
                     <option v-for="option in gamePlatformOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
                   </select>
                 </div>
+              </div>
+
+              <div>
+                <label class="label" for="game-logo">Logo（可选）</label>
+                <input id="game-logo" type="file" accept="image/*" class="input min-h-[44px]" @change="gameModal.logo = $event.target.files?.[0] || null" />
               </div>
 
               <div>

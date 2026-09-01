@@ -143,6 +143,16 @@ class ConversationParticipant(Base):
         nullable=True,
     )
 
+    is_pinned: Mapped[bool] = mapped_column(
+        default=False,
+        server_default="0",
+        nullable=False,
+    )
+
+    pinned_at: Mapped[datetime | None] = mapped_column(
+        nullable=True,
+    )
+
     last_read_at: Mapped[datetime | None] = mapped_column(
         nullable=True,
     )

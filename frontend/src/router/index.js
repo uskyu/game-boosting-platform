@@ -4,6 +4,7 @@
 
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useSiteStore } from '@/stores/site'
 
 const routes = [
   {
@@ -112,7 +113,7 @@ const routes = [
     path: '/support',
     name: 'support',
     component: () => import('@/views/CustomerServiceView.vue'),
-    meta: { title: 'AI客服', requiresAuth: true },
+    meta: { title: '联系管理员', requiresAuth: true }
   },
   {
     path: '/notifications',
@@ -172,7 +173,10 @@ const router = createRouter({
 })
 
 router.beforeEach(async (to, from, next) => {
-  document.title = `${to.meta.title || '游戏服务平台'} - 游戏服务平台`
+  const siteStore = useSiteStore()
+  await siteStore.fetchSettings()
+  const brand = siteStore.settings.site_name || '游戏服务平台'
+  document.title = to.name === 'support' ? '联系管理员' : `${to.meta.title || brand} - ${brand}`
 
   const authStore = useAuthStore()
   if (authStore.accessToken && !authStore.user) {

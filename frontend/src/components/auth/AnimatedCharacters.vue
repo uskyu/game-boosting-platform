@@ -1,363 +1,48 @@
-<script setup>
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
-
-const props = defineProps({
-  isTyping: { type: Boolean, default: false },
-  showPassword: { type: Boolean, default: false },
-  passwordLength: { type: Number, default: 0 },
-})
-
-/* ── theme colors（语义变量，随主题切换） ── */
-const C = {
-  primary: 'var(--primary)',
-  neutral: 'var(--text-3)',
-  warm: 'var(--warning)',
-  info: 'var(--info)',
-  pupil: 'var(--text-1)',
-  sclera: 'var(--surface)',
-}
-
-/* ── mouse tracking (single listener, RAF-throttled) ── */
-const mx = ref(0)
-const my = ref(0)
-let pendingX = 0
-let pendingY = 0
-let rafId = null
-
-function onMouse(e) {
-  pendingX = e.clientX
-  pendingY = e.clientY
-  if (!rafId) {
-    rafId = requestAnimationFrame(() => {
-      mx.value = pendingX
-      my.value = pendingY
-      rafId = null
-    })
-  }
-}
-
-/* ── character body refs ── */
-const pinkEl = ref(null)
-const neutralEl = ref(null)
-const warmEl = ref(null)
-const infoEl = ref(null)
-
-/* ── blink state ── */
-const pinkBlink = ref(false)
-const darkBlink = ref(false)
-
-/* ── interaction state ── */
-const lookingAtEach = ref(false)
-const pinkPeeking = ref(false)
-
-/* ── derived state ── */
-const hiding = computed(() => props.passwordLength > 0 && !props.showPassword)
-const showing = computed(() => props.passwordLength > 0 && props.showPassword)
-
-/* ── position math ── */
-function pos(el) {
-  if (!el) return { fx: 0, fy: 0, skew: 0 }
-  const r = el.getBoundingClientRect()
-  const dx = mx.value - (r.left + r.width / 2)
-  const dy = my.value - (r.top + r.height / 3)
-  return {
-    fx: Math.max(-15, Math.min(15, dx / 20)),
-    fy: Math.max(-10, Math.min(10, dy / 30)),
-    skew: Math.max(-6, Math.min(6, -dx / 120)),
-  }
-}
-
-function pupilOff(el, max = 5) {
-  if (!el) return { x: 0, y: 0 }
-  const r = el.getBoundingClientRect()
-  const dx = mx.value - (r.left + r.width / 2)
-  const dy = my.value - (r.top + r.height / 3)
-  const d = Math.min(Math.sqrt(dx * dx + dy * dy), max)
-  const a = Math.atan2(dy, dx)
-  return { x: Math.cos(a) * d, y: Math.sin(a) * d }
-}
-
-/* ── computed positions per character ── */
-const pp = computed(() => pos(pinkEl.value))
-const dp = computed(() => pos(neutralEl.value))
-const gp = computed(() => pos(warmEl.value))
-const cp = computed(() => pos(infoEl.value))
-
-const pPupil = computed(() => pupilOff(pinkEl.value, 5))
-const dPupil = computed(() => pupilOff(neutralEl.value, 4))
-const gPupil = computed(() => pupilOff(warmEl.value, 5))
-const cPupil = computed(() => pupilOff(infoEl.value, 5))
-
-/* ── forced look directions ── */
-const pinkForce = computed(() => {
-  if (showing.value) return pinkPeeking.value ? { x: 4, y: 5 } : { x: -4, y: -4 }
-  if (lookingAtEach.value) return { x: 3, y: 4 }
-  return null
-})
-const darkForce = computed(() => {
-  if (showing.value) return { x: -4, y: -4 }
-  if (lookingAtEach.value) return { x: 0, y: -4 }
-  return null
-})
-const goldForce = computed(() => (showing.value ? { x: -5, y: -4 } : null))
-const cyanForce = computed(() => (showing.value ? { x: -5, y: -4 } : null))
-
-function pupilT(force, natural) {
-  const p = force || natural
-  return `translate(${p.x}px, ${p.y}px)`
-}
-
-/* ── blink scheduling ── */
-let pinkBT, darkBT
-
-function scheduleBlink(flag, key) {
-  const t = setTimeout(() => {
-    flag.value = true
-    setTimeout(() => {
-      flag.value = false
-      scheduleBlink(flag, key)
-    }, 150)
-  }, Math.random() * 4000 + 3000)
-  if (key === 'p') pinkBT = t
-  else darkBT = t
-}
-
-/* ── look at each other when typing starts ── */
-let lookT
-watch(
-  () => props.isTyping,
-  (v) => {
-    if (lookT) clearTimeout(lookT)
-    if (v) {
-      lookingAtEach.value = true
-      lookT = setTimeout(() => {
-        lookingAtEach.value = false
-      }, 800)
-    } else {
-      lookingAtEach.value = false
-    }
-  },
-)
-
-/* ── pink character sneaky peeking ── */
-let peekT
-watch([() => props.passwordLength, () => props.showPassword, pinkPeeking], () => {
-  if (peekT) clearTimeout(peekT)
-  if (props.passwordLength > 0 && props.showPassword && !pinkPeeking.value) {
-    peekT = setTimeout(() => {
-      pinkPeeking.value = true
-      setTimeout(() => {
-        pinkPeeking.value = false
-      }, 800)
-    }, Math.random() * 3000 + 2000)
-  } else if (!(props.passwordLength > 0 && props.showPassword)) {
-    pinkPeeking.value = false
-  }
-})
-
-/* ── lifecycle ── */
-onMounted(() => {
-  window.addEventListener('mousemove', onMouse)
-  scheduleBlink(pinkBlink, 'p')
-  scheduleBlink(darkBlink, 'd')
-})
-
-onUnmounted(() => {
-  window.removeEventListener('mousemove', onMouse)
-  if (rafId) cancelAnimationFrame(rafId)
-  ;[pinkBT, darkBT, lookT, peekT].forEach((t) => t && clearTimeout(t))
-})
-</script>
-
 <template>
-  <div class="relative mx-auto" style="width: 550px; height: 400px">
-    <!-- ═══ Pink character (back, tall) ═══ -->
-    <div
-      ref="pinkEl"
-      class="absolute bottom-0 transition-all duration-700 ease-in-out"
-      :style="{
-        left: '70px',
-        width: '180px',
-        height: isTyping || hiding ? '440px' : '400px',
-        backgroundColor: C.primary,
-        borderRadius: '10px 10px 0 0',
-        zIndex: 1,
-        transform: showing
-          ? 'skewX(0deg)'
-          : isTyping || hiding
-            ? `skewX(${(pp.skew || 0) - 12}deg) translateX(40px)`
-            : `skewX(${pp.skew || 0}deg)`,
-        transformOrigin: 'bottom center',
-      }"
-    >
-      <div
-        class="absolute flex gap-8 transition-all duration-700 ease-in-out"
-        :style="{
-          left: showing ? '20px' : lookingAtEach ? '55px' : `${45 + pp.fx}px`,
-          top: showing ? '35px' : lookingAtEach ? '65px' : `${40 + pp.fy}px`,
-        }"
-      >
-        <div
-          v-for="i in 2"
-          :key="'pe' + i"
-          class="flex items-center justify-center rounded-full transition-all duration-150 overflow-hidden"
-          :style="{
-            width: '18px',
-            height: pinkBlink ? '2px' : '18px',
-            backgroundColor: C.sclera,
-          }"
-        >
-          <div
-            v-if="!pinkBlink"
-            class="rounded-full"
-            :style="{
-              width: '7px',
-              height: '7px',
-              backgroundColor: C.pupil,
-              transform: pupilT(pinkForce, pPupil),
-              transition: 'transform 0.1s ease-out',
-            }"
-          />
-        </div>
-      </div>
-    </div>
+  <div class="auth-ecosystem" aria-hidden="true">
+    <svg class="auth-ecosystem__svg" viewBox="0 0 620 470" fill="none" xmlns="http://www.w3.org/2000/svg" role="img">
+      <title>游戏服务平台订单生态</title>
+      <defs>
+        <filter id="auth-soft-shadow" x="-30%" y="-30%" width="160%" height="160%">
+          <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="var(--primary)" flood-opacity=".12" />
+        </filter>
+      </defs>
+      <path class="ecosystem-line ecosystem-line--one" d="M54 175C126 72 212 76 286 142S428 242 566 122" />
+      <path class="ecosystem-line ecosystem-line--two" d="M32 332C134 382 194 284 274 301s145 97 314 30" />
+      <path class="ecosystem-line ecosystem-line--three" d="M113 61C176 123 180 203 140 267s-27 117 54 151" />
+      <circle cx="54" cy="175" r="5" class="ecosystem-dot ecosystem-dot--primary" />
+      <circle cx="566" cy="122" r="5" class="ecosystem-dot ecosystem-dot--success" />
+      <circle cx="346" cy="347" r="5" class="ecosystem-dot ecosystem-dot--price" />
 
-    <!-- ═══ Neutral character (middle) ═══ -->
-    <div
-      ref="neutralEl"
-      class="absolute bottom-0 transition-all duration-700 ease-in-out"
-      :style="{
-        left: '240px',
-        width: '120px',
-        height: '310px',
-        backgroundColor: C.neutral,
-        borderRadius: '8px 8px 0 0',
-        zIndex: 2,
-        transform: showing
-          ? 'skewX(0deg)'
-          : lookingAtEach
-            ? `skewX(${(dp.skew || 0) * 1.5 + 10}deg) translateX(20px)`
-            : isTyping || hiding
-              ? `skewX(${(dp.skew || 0) * 1.5}deg)`
-              : `skewX(${dp.skew || 0}deg)`,
-        transformOrigin: 'bottom center',
-      }"
-    >
-      <div
-        class="absolute flex gap-6 transition-all duration-700 ease-in-out"
-        :style="{
-          left: showing ? '10px' : lookingAtEach ? '32px' : `${26 + dp.fx}px`,
-          top: showing ? '28px' : lookingAtEach ? '12px' : `${32 + dp.fy}px`,
-        }"
-      >
-        <div
-          v-for="i in 2"
-          :key="'de' + i"
-          class="flex items-center justify-center rounded-full transition-all duration-150 overflow-hidden"
-          :style="{
-            width: '16px',
-            height: darkBlink ? '2px' : '16px',
-            backgroundColor: C.sclera,
-          }"
-        >
-          <div
-            v-if="!darkBlink"
-            class="rounded-full"
-            :style="{
-              width: '6px',
-              height: '6px',
-              backgroundColor: C.pupil,
-              transform: pupilT(darkForce, dPupil),
-              transition: 'transform 0.1s ease-out',
-            }"
-          />
-        </div>
-      </div>
-    </div>
+      <g class="ecosystem-card ecosystem-card--order" filter="url(#auth-soft-shadow)">
+        <rect x="57" y="108" width="152" height="112" rx="20" class="ecosystem-panel" />
+        <path d="M83 139h55M83 158h83M83 177h47" class="ecosystem-stroke ecosystem-stroke--muted" />
+        <rect x="83" y="190" width="55" height="10" rx="5" class="ecosystem-fill ecosystem-fill--primary-soft" />
+        <circle cx="181" cy="139" r="9" class="ecosystem-fill ecosystem-fill--success" />
+        <path d="m177 139 3 3 5-6" class="ecosystem-stroke ecosystem-stroke--surface" />
+      </g>
 
-    <!-- ═══ Warm character (front-left, semi-circle) ═══ -->
-    <div
-      ref="warmEl"
-      class="absolute bottom-0 transition-all duration-700 ease-in-out"
-      :style="{
-        left: '0px',
-        width: '240px',
-        height: '200px',
-        backgroundColor: C.warm,
-        borderRadius: '120px 120px 0 0',
-        zIndex: 3,
-        transform: showing ? 'skewX(0deg)' : `skewX(${gp.skew || 0}deg)`,
-        transformOrigin: 'bottom center',
-      }"
-    >
-      <div
-        class="absolute flex gap-8 transition-all duration-200 ease-out"
-        :style="{
-          left: showing ? '50px' : `${82 + (gp.fx || 0)}px`,
-          top: showing ? '85px' : `${90 + (gp.fy || 0)}px`,
-        }"
-      >
-        <div
-          v-for="i in 2"
-          :key="'gp' + i"
-          class="rounded-full"
-          :style="{
-            width: '12px',
-            height: '12px',
-            backgroundColor: C.pupil,
-            transform: pupilT(goldForce, gPupil),
-            transition: 'transform 0.1s ease-out',
-          }"
-        />
-      </div>
-    </div>
+      <g class="ecosystem-card ecosystem-card--controller" filter="url(#auth-soft-shadow)">
+        <rect x="218" y="177" width="184" height="126" rx="30" class="ecosystem-panel" />
+        <path d="M262 239h28M276 225v28" class="ecosystem-stroke ecosystem-stroke--primary" />
+        <circle cx="352" cy="227" r="7" class="ecosystem-fill ecosystem-fill--price" />
+        <circle cx="371" cy="246" r="7" class="ecosystem-fill ecosystem-fill--success" />
+        <path d="M249 278c18 10 34 10 48 0M327 278c17 10 35 10 49 0" class="ecosystem-stroke ecosystem-stroke--muted" />
+      </g>
 
-    <!-- ═══ Info character (front-right, rounded rect + mouth) ═══ -->
-    <div
-      ref="infoEl"
-      class="absolute bottom-0 transition-all duration-700 ease-in-out"
-      :style="{
-        left: '310px',
-        width: '140px',
-        height: '230px',
-        backgroundColor: C.info,
-        borderRadius: '70px 70px 0 0',
-        zIndex: 4,
-        transform: showing ? 'skewX(0deg)' : `skewX(${cp.skew || 0}deg)`,
-        transformOrigin: 'bottom center',
-      }"
-    >
-      <div
-        class="absolute flex gap-6 transition-all duration-200 ease-out"
-        :style="{
-          left: showing ? '20px' : `${52 + (cp.fx || 0)}px`,
-          top: showing ? '35px' : `${40 + (cp.fy || 0)}px`,
-        }"
-      >
-        <div
-          v-for="i in 2"
-          :key="'cp' + i"
-          class="rounded-full"
-          :style="{
-            width: '12px',
-            height: '12px',
-            backgroundColor: C.pupil,
-            transform: pupilT(cyanForce, cPupil),
-            transition: 'transform 0.1s ease-out',
-          }"
-        />
-      </div>
-      <!-- Mouth -->
-      <div
-        class="absolute rounded-full transition-all duration-200 ease-out"
-        :style="{
-          width: '80px',
-          height: '4px',
-          backgroundColor: C.pupil,
-          left: showing ? '10px' : `${40 + (cp.fx || 0)}px`,
-          top: showing ? '88px' : `${88 + (cp.fy || 0)}px`,
-        }"
-      />
-    </div>
+      <g class="ecosystem-card ecosystem-card--shield" filter="url(#auth-soft-shadow)">
+        <path d="M449 77 530 107v64c0 58-34 87-81 104-47-17-81-46-81-104v-64l81-30Z" class="ecosystem-panel" />
+        <path d="m415 168 23 23 47-53" class="ecosystem-stroke ecosystem-stroke--success ecosystem-stroke--wide" />
+      </g>
+
+      <g class="ecosystem-card ecosystem-card--wallet" filter="url(#auth-soft-shadow)">
+        <rect x="407" y="315" width="144" height="87" rx="20" class="ecosystem-panel" />
+        <path d="M407 340h144" class="ecosystem-stroke ecosystem-stroke--muted" />
+        <path d="M483 359h44a10 10 0 0 1 10 10v9h-54a10 10 0 0 1 0-19Z" class="ecosystem-fill ecosystem-fill--primary-soft" />
+        <circle cx="498" cy="368" r="4" class="ecosystem-fill ecosystem-fill--primary" />
+      </g>
+      <path d="m402 362 30 0m-13-11 13 11-13 11" class="ecosystem-stroke ecosystem-stroke--primary ecosystem-stroke--wide" />
+    </svg>
+    <div class="auth-ecosystem__caption"><span class="auth-ecosystem__status"></span>平台服务链路稳定运行</div>
   </div>
 </template>

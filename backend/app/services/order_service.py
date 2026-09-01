@@ -16,7 +16,7 @@ from sqlalchemy.orm import selectinload
 from app.core.security import encrypt_text, escape_like
 from app.models.booster_service import BoosterService
 from app.models.game import Game
-from app.models.order import Order, OrderStatus, PaymentStatus
+from app.models.order import Order, OrderClaim, OrderStatus, PaymentStatus, ClaimStatus
 from app.models.user import User, UserRole
 from app.schemas.booster_service import BoosterServiceOrderCreate
 from app.schemas.order import OrderCreate, OrderUpdate
@@ -109,15 +109,14 @@ class OrderService:
             HTTPException: If user is not allowed to create orders.
 
         Notes:
-            - USER（普通客户）下单：订单进入自己的订单列表。
             - ADMIN（老板）发布订单：user_id=管理员自己 id、status=PENDING、
-              booster_id=None，订单进入公共大厅供打手抢单。
-            - BOOSTER 不允许发单。
+              booster_id=None，订单进入公共大厅供非管理员注册用户抢单。
+            - USER/BOOSTER 均作为接单方使用，不能发单。
         """
-        if user.role not in (UserRole.USER, UserRole.ADMIN):
+        if user.role != UserRole.ADMIN:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="只有普通用户可以下单（管理员可直接发布订单，代练不能发单）",
+                detail="只有管理员可以发布订单，普通用户和打手不能发单",
             )
 
         game = await self._resolve_game(
@@ -164,6 +163,15 @@ class OrderService:
             current_rank=current_rank,
             target_rank=target_rank,
             price=order_data.price,
+            price_min=order_data.price_min or order_data.price,
+            price_max=order_data.price_max or order_data.price,
+            title=order_data.title,
+            intro=order_data.intro or order_data.description,
+            description=order_data.description or order_data.intro,
+            max_claims=order_data.max_claims,
+            claim_status=ClaimStatus.OPEN,
+            deadline=order_data.deadline,
+            attachments=order_data.attachments,
             description_raw=order_data.description_raw,
             description_ai=order_data.description_ai,
             ai_tags=ai_tags,
@@ -193,10 +201,10 @@ class OrderService:
         """
         Create a locked order directly from a service card.
         """
-        if current_user.role != UserRole.USER:
+        if current_user.role != UserRole.ADMIN:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="只有普通用户可以从服务卡片下单",
+                detail="只有管理员可以发布订单，普通用户和打手不能发单",
             )
 
         if current_user.id == service.booster_id:
@@ -333,17 +341,16 @@ class OrderService:
 
         # Access control
         if user is not None and user.role != UserRole.ADMIN:
-            if user.role == UserRole.USER and order.user_id != user.id:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="无权访问此订单",
+            can_view = (
+                order.user_id == user.id
+                or order.booster_id == user.id
+                or (
+                    order.status == OrderStatus.PENDING
+                    and order.claim_status == ClaimStatus.OPEN
+                    and not order.is_archived
                 )
-            if (
-                user.role == UserRole.BOOSTER
-                and order.booster_id is not None
-                and order.booster_id != user.id
-                and order.status != OrderStatus.PENDING
-            ):
+            )
+            if not can_view:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="无权访问此订单",
@@ -380,20 +387,20 @@ class OrderService:
 
         # Apply user-based filtering
         if user is not None:
-            if user.role == UserRole.USER:
-                # Users see only their own orders
-                query = query.where(Order.user_id == user.id)
-                count_query = count_query.where(Order.user_id == user.id)
-            elif user.role == UserRole.BOOSTER:
-                # Boosters see pending orders or their assigned orders
-                query = query.where(
-                    (Order.status == OrderStatus.PENDING) |
-                    (Order.booster_id == user.id)
+            if user.role != UserRole.ADMIN:
+                # Every non-admin account can act as a booster. Keep own orders
+                # visible while adding the public claimable hall.
+                now = datetime.now(timezone.utc)
+                claimable = (
+                    (Order.status == OrderStatus.PENDING)
+                    & (Order.claim_status == ClaimStatus.OPEN)
+                    & (Order.is_archived.is_(False))
+                    & (or_(Order.deadline.is_(None), Order.deadline > now))
+                    & (Order.claimed_count < Order.max_claims)
                 )
-                count_query = count_query.where(
-                    (Order.status == OrderStatus.PENDING) |
-                    (Order.booster_id == user.id)
-                )
+                booster_scope = claimable | (Order.user_id == user.id) | (Order.booster_id == user.id)
+                query = query.where(booster_scope)
+                count_query = count_query.where(booster_scope)
             # Admins see all orders (no filter)
 
         # Apply game name filter
@@ -429,13 +436,13 @@ class OrderService:
         """
         Accept an order as a booster.
 
-        Only users with the BOOSTER role may accept orders. Admins manage
-        orders via the dedicated /admin/orders/{id}/intervene endpoint.
+        Any active non-admin account may accept orders. Admins manage orders
+        via the dedicated /admin/orders/{id}/intervene endpoint.
         """
-        if booster.role != UserRole.BOOSTER:
+        if booster.role == UserRole.ADMIN:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="只有代练才能接单",
+                detail="管理员请通过管理端处理订单，不能作为打手接单",
             )
 
         # Lock booster row first to serialize quota checks.
@@ -458,7 +465,7 @@ class OrderService:
             )
         )
         active_orders_count = int(active_orders_count_result.scalar() or 0)
-        if locked_booster.booster_quota <= active_orders_count:
+        if locked_booster.role == UserRole.BOOSTER and locked_booster.booster_quota <= active_orders_count:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="当前接单额度已满，请先完成现有订单",
@@ -477,27 +484,45 @@ class OrderService:
                 detail="订单不存在",
             )
 
-        if order.status != OrderStatus.PENDING:
+        now = datetime.now(timezone.utc)
+        if order.is_archived:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="订单已归档，不能接单")
+        if order.claim_status != ClaimStatus.OPEN:
+            claim_status_messages = {
+                ClaimStatus.PAUSED: "订单已暂停抢单",
+                ClaimStatus.CLOSED: "订单已截止，不能接单",
+                ClaimStatus.FULL: "订单接单人数已满",
+            }
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="订单状态不允许接单",
+                detail=claim_status_messages.get(order.claim_status, "订单当前不允许接单"),
             )
-
-        if order.booster_id is not None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="订单已被其他代练接取",
-            )
-
+        if order.status not in (OrderStatus.PENDING, OrderStatus.LOCKED):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="订单当前状态不允许接单")
+        # LOCKED remains claimable only for orders configured for multiple boosters.
+        if order.status == OrderStatus.LOCKED and order.max_claims <= 1:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="订单已被其他代练接单")
+        if order.deadline is not None and order.deadline <= now:
+            order.claim_status = ClaimStatus.CLOSED
+            await self._db.flush()
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="订单已截止，不能接单")
+        if order.claimed_count >= order.max_claims:
+            order.claim_status = ClaimStatus.FULL
+            await self._db.flush()
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="订单接单人数已满")
         if order.user_id == booster.id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="不能接取自己的订单",
-            )
-
-        order.booster_id = booster.id
-        order.status = OrderStatus.LOCKED
-        order.locked_at = datetime.now(timezone.utc)
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能接取自己的订单")
+        existing = await self._db.execute(select(OrderClaim).where(OrderClaim.order_id == order.id, OrderClaim.booster_id == booster.id))
+        if existing.scalar_one_or_none() is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="不可重复接单")
+        self._db.add(OrderClaim(order_id=order.id, booster_id=booster.id))
+        order.claimed_count += 1
+        if order.booster_id is None:
+            order.booster_id = booster.id
+            order.status = OrderStatus.LOCKED
+            order.locked_at = now
+        if order.claimed_count >= order.max_claims:
+            order.claim_status = ClaimStatus.FULL
 
         await self._db.flush()
         await self._db.refresh(order)
@@ -630,10 +655,10 @@ class OrderService:
                 detail="只有进行中的订单才能提交完成",
             )
 
-        if user.role != UserRole.BOOSTER or order.booster_id != user.id:
+        if user.role == UserRole.ADMIN or order.booster_id != user.id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="只有接单代练才能提交完成",
+                detail="只有接单打手才能提交完成",
             )
 
         order.status = OrderStatus.DELIVERED
@@ -645,6 +670,19 @@ class OrderService:
         logger.info(f"Order {order_id} delivered by user {user.id}")
 
         return order
+
+    async def settle_order_income(self, order: Order) -> None:
+        """Settle an order's booster income when business rules allow it.
+
+        Settlement is deliberately kept on the order service so every order
+        completion path uses the same transaction and idempotent wallet logic.
+        Existing completion rules permit settlement without requiring a paid
+        status, while orders without an assigned booster are a safe no-op.
+        """
+        if order.booster_id is None:
+            return
+        wallet_service = get_wallet_service(self._db)
+        await wallet_service.settle_order_income(order)
 
     async def confirm_order(
         self,
@@ -698,9 +736,7 @@ class OrderService:
         # Settle booster income in the same transaction (DELIVERED -> COMPLETED).
         # Idempotent via the (order_id, ORDER_INCOME) unique constraint, so a
         # duplicate settle call is a no-op instead of double-crediting.
-        if order.booster_id is not None:
-            wallet_service = get_wallet_service(self._db)
-            await wallet_service.settle_order_income(order)
+        await self.settle_order_income(order)
 
         await self._db.refresh(order)
 
@@ -843,6 +879,8 @@ class OrderService:
         update_data = order_data.model_dump(exclude_unset=True)
         if "game_password" in update_data:
             update_data["game_password"] = encrypt_text(update_data["game_password"])
+        if "description" in update_data and "intro" not in update_data:
+            update_data["intro"] = update_data["description"]
 
         game: Game | None = None
         if "game_id" in update_data or "game_name" in update_data:
@@ -892,6 +930,34 @@ class OrderService:
         logger.info(f"Order {order_id} updated by user {user.id}")
 
         return order
+
+    async def claim_control(self, order_id: int, action: str, admin: User) -> Order:
+        if admin.role != UserRole.ADMIN:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="只有管理员才能操作抢单控制")
+        result = await self._db.execute(select(Order).where(Order.id == order_id).with_for_update())
+        order = result.scalar_one_or_none()
+        if order is None:
+            raise HTTPException(status_code=404, detail="订单不存在")
+        actions = {"pause": ClaimStatus.PAUSED, "resume": ClaimStatus.OPEN, "close": ClaimStatus.CLOSED}
+        if action not in actions and action != "archive":
+            raise HTTPException(status_code=400, detail="不支持的抢单操作")
+        if action == "archive": order.is_archived = True
+        else:
+            if action == "resume" and order.claimed_count >= order.max_claims:
+                order.claim_status = ClaimStatus.FULL
+            else: order.claim_status = actions[action]
+        await self._db.flush(); await self._db.refresh(order)
+        return order
+
+    async def delete_order(self, order_id: int, admin: User) -> None:
+        if admin.role != UserRole.ADMIN:
+            raise HTTPException(status_code=403, detail="只有管理员才能删除订单")
+        result = await self._db.execute(select(Order).where(Order.id == order_id).with_for_update())
+        order = result.scalar_one_or_none()
+        if order is None: raise HTTPException(status_code=404, detail="订单不存在")
+        if order.claimed_count or order.booster_id or order.payment_status != PaymentStatus.UNPAID or order.status != OrderStatus.PENDING:
+            raise HTTPException(status_code=409, detail="订单已有业务记录，不能物理删除")
+        await self._db.delete(order); await self._db.flush()
 
     async def pay_order(self, order_id: int, user: User) -> Order:
         """Simulate payment: UNPAID -> PAID. Locks the order row to prevent

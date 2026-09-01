@@ -2,14 +2,16 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from sqlalchemy import delete as sql_delete, func, select
 
 from app.api.deps import DatabaseSession, OptionalCurrentUser, get_current_admin
 from app.models.game import Game, GameCategory, GamePlatform
 from app.models.user import User, UserRole
-from app.schemas.game import GameCreate, GameListResponse, GameResponse, GameUpdate
+from app.models.order import Order
+from app.schemas.game import GameBulkAction, GameCreate, GameListResponse, GameResponse, GameUpdate
 from app.schemas.user import MessageResponse
+from app.services.file_service import save_image_upload
 
 router = APIRouter(prefix="/games", tags=["games"])
 
@@ -75,6 +77,63 @@ async def list_games(
         page_size=page_size,
         pages=pages,
     )
+
+
+@router.put("/{game_id}/logo", response_model=GameResponse)
+async def upload_game_logo(
+    game_id: int,
+    db: DatabaseSession,
+    current_admin: Annotated[User, Depends(get_current_admin)],
+    logo: UploadFile = File(...),
+) -> GameResponse:
+    game = await _get_game_or_404(db, game_id, current_admin)
+    logo_url = await save_image_upload(logo, "games", max_size_bytes=2 * 1024 * 1024)
+    game.logo_url = logo_url
+    await db.flush()
+    await db.refresh(game)
+    return GameResponse.model_validate(game)
+
+
+@router.delete("/{game_id}/logo", response_model=MessageResponse)
+async def delete_game_logo(
+    game_id: int,
+    db: DatabaseSession,
+    current_admin: Annotated[User, Depends(get_current_admin)],
+) -> MessageResponse:
+    game = await _get_game_or_404(db, game_id, current_admin)
+    game.logo_url = None
+    await db.flush()
+    return MessageResponse(message="游戏 Logo 已清除", success=True)
+
+
+@router.post("/bulk-action", response_model=MessageResponse)
+async def bulk_game_action(
+    payload: GameBulkAction,
+    db: DatabaseSession,
+    current_admin: Annotated[User, Depends(get_current_admin)],
+) -> MessageResponse:
+    result = await db.execute(select(Game).where(Game.id.in_(payload.ids)))
+    games = list(result.scalars().all())
+    if len(games) != len(payload.ids):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="部分游戏不存在")
+    if payload.action == "activate":
+        for game in games:
+            game.is_active = True
+        message = "游戏已批量上架"
+    elif payload.action == "deactivate":
+        for game in games:
+            game.is_active = False
+        message = "游戏已批量下架"
+    else:
+        order_result = await db.execute(
+            select(Order.game_id).where(Order.game_id.in_(payload.ids)).limit(1)
+        )
+        if order_result.first() is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="存在关联订单，无法删除游戏")
+        await db.execute(sql_delete(Game).where(Game.id.in_(payload.ids)))
+        message = "游戏已批量删除"
+    await db.flush()
+    return MessageResponse(message=message, success=True)
 
 
 @router.get("/{game_id}", response_model=GameResponse)

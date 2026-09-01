@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 
 import { useGamesStore } from '@/stores/games'
 import { useOrdersStore } from '@/stores/orders'
+import api from '@/utils/api'
 import { formatPrice } from '@/utils/display'
 import {
   buildAccentStyle,
@@ -24,6 +25,37 @@ const selectedGameId = ref(null)
 const description = ref('')
 const errorMessage = ref('')
 const successMessage = ref('')
+const attachmentTypes = ['image/png', 'image/jpeg', 'image/webp']
+const maxAttachmentCount = 5
+const maxAttachmentSize = 5 * 1024 * 1024
+const uploadProgress = ref('')
+
+function validateAttachments(files) {
+  const selected = Array.from(files || [])
+  if (selected.length > maxAttachmentCount) return '订单最多上传5张图片'
+  const invalid = selected.find((file) => !attachmentTypes.includes((file.type || '').toLowerCase()))
+  if (invalid) return `仅支持 PNG、JPEG、WebP 图片：${invalid.name}`
+  const oversized = selected.find((file) => file.size > maxAttachmentSize)
+  if (oversized) return `单张图片不能超过5MB：${oversized.name}`
+  return ''
+}
+
+async function uploadAttachments(orderId, files) {
+  const selected = Array.from(files || [])
+  for (let index = 0; index < selected.length; index += 1) {
+    const body = new FormData()
+    body.append('attachment', selected[index])
+    uploadProgress.value = `${index + 1}/${selected.length}（0%）`
+    await api.post(`/orders/${orderId}/attachments`, body, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      onUploadProgress: (event) => {
+        const percent = event.total ? Math.round((event.loaded / event.total) * 100) : 0
+        uploadProgress.value = `${index + 1}/${selected.length}（${percent}%）`
+      },
+    })
+  }
+  uploadProgress.value = ''
+}
 
 const formData = ref({
   game_id: null,
@@ -39,6 +71,7 @@ const formData = ref({
   game_account: '',
   game_password: '',
   ai_tags: null,
+  attachments: null,
 })
 
 const priorityOptions = [
@@ -220,9 +253,17 @@ async function publishOrder() {
 
   errorMessage.value = ''
   successMessage.value = ''
+  uploadProgress.value = ''
 
+  const attachmentError = validateAttachments(formData.value.attachments)
+  if (attachmentError) {
+    errorMessage.value = attachmentError
+    return
+  }
+
+  const { attachments: selectedAttachments, ...orderFields } = formData.value
   const payload = {
-    ...formData.value,
+    ...orderFields,
     game_id: selectedGame.value.id,
     game_name: selectedGame.value.name,
     price: Number(formData.value.price),
@@ -234,6 +275,14 @@ async function publishOrder() {
   const result = await ordersStore.createOrder(payload)
   if (!result.success) {
     errorMessage.value = result.error
+    return
+  }
+
+  try {
+    await uploadAttachments(result.data.id, formData.value.attachments)
+  } catch (error) {
+    uploadProgress.value = ''
+    errorMessage.value = `订单已创建，但图片上传失败：${error.message || '请稍后重试'}`
     return
   }
 
@@ -561,6 +610,13 @@ onMounted(async () => {
             >
               代练会用你填写的账号上号，请确认信息准确。
             </p>
+          </div>
+
+          <div class="mt-6">
+            <label class="label" for="confirm-attachments">图片附件（可选）</label>
+            <input id="confirm-attachments" type="file" accept="image/png,image/jpeg,image/webp" multiple class="input min-h-[44px]" @change="formData.attachments = $event.target.files" />
+            <p class="mt-1 text-xs text-ink-3">最多5张，支持 PNG、JPEG、WebP，单张不超过5MB。</p>
+            <p v-if="uploadProgress" class="mt-2 text-sm text-primary">图片上传中：{{ uploadProgress }}</p>
           </div>
 
           <div class="mt-6">

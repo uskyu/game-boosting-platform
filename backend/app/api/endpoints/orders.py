@@ -3,10 +3,10 @@ Orders API endpoints.
 Handles order creation, listing, and management operations.
 """
 
+from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from app.api.chat_utils import send_order_system_message
 from app.api.deps import (
     CurrentUser,
@@ -14,23 +14,44 @@ from app.api.deps import (
     get_current_booster,
 )
 from app.api.notification_utils import notify_boosters_new_order, notify_user
+from app.core.config import settings
 from app.models.notification import NotificationType
 from app.models.order import OrderStatus
 from app.models.user import User, UserRole
 from app.schemas.order import (
     AIAnalysisResponse,
+    OrderAttachment,
+    OrderDeliveryAttachment,
     OrderAnalyzeRequest,
     OrderCreate,
     OrderListResponse,
     OrderResponse,
     OrderUpdate,
+    ClaimControlRequest,
 )
 from app.schemas.user import MessageResponse
 from app.services.ai_service import LLMService, get_llm_service
 from app.services.credit_service import get_credit_service
+from app.services.file_service import save_image_bytes, validate_image_upload
 from app.services.order_service import get_order_service
 
 router = APIRouter(prefix="/orders", tags=["订单"])
+
+
+def _attachment_items(order) -> list[OrderAttachment]:
+    """Normalize legacy/null attachment JSON through the public schema."""
+    try:
+        return [OrderAttachment.model_validate(item) for item in (order.attachments or [])]
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="订单附件数据无效") from exc
+
+
+def _delivery_attachment_items(order) -> list[OrderDeliveryAttachment]:
+    """Normalize delivery proof JSON through the public schema."""
+    try:
+        return [OrderDeliveryAttachment.model_validate(item) for item in (order.delivery_attachments or [])]
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="交付附件数据无效") from exc
 
 
 def _serialize_order(order, viewer: User) -> OrderResponse:
@@ -103,7 +124,7 @@ async def analyze_requirement(
     response_model=OrderResponse,
     status_code=status.HTTP_201_CREATED,
     summary="创建订单",
-    description="根据结构化数据创建新的代练订单（普通客户下单；管理员/老板可直接发布订单进公共大厅；代练不能发单）",
+    description="管理员发布新的代练订单进公共大厅；普通用户和打手不能发单",
 )
 async def create_order(
     order_data: OrderCreate,
@@ -113,9 +134,8 @@ async def create_order(
     """
     Create a new boosting order.
 
-    Requires authentication. USER creates own orders; ADMIN (boss) publishes
-    orders directly into the public hall for boosters to grab; BOOSTER is
-    not allowed to create orders.
+    Requires authentication. ADMIN publishes orders directly into the public
+    hall; every non-admin account can grab orders but cannot create them.
 
     - **game_name**: Name of the game
     - **current_rank**: Current player rank
@@ -165,8 +185,7 @@ async def list_orders(
     """
     List orders with filtering and pagination.
 
-    - Users see only their own orders
-    - Boosters see pending orders and their assigned orders
+    - Non-admin users see claimable pending orders and their own/assigned orders
     - Admins see all orders
 
     Filters:
@@ -197,6 +216,159 @@ async def list_orders(
         page_size=page_size,
         pages=pages,
     )
+
+
+@router.post(
+    "/{order_id}/attachments",
+    response_model=OrderAttachment,
+    status_code=status.HTTP_201_CREATED,
+    summary="上传订单图片附件",
+)
+async def upload_order_attachment(
+    order_id: int,
+    current_user: CurrentUser,
+    db: DatabaseSession,
+    attachment: UploadFile = File(...),
+) -> OrderAttachment:
+    """Upload one validated image after the order has been created."""
+    order = await get_order_service(db).get_order_by_id(order_id, current_user)
+    if current_user.role not in (UserRole.ADMIN, UserRole.USER) or (
+        current_user.role != UserRole.ADMIN and order.user_id != current_user.id
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权修改此订单附件")
+    attachments = _attachment_items(order)
+    if len(attachments) >= 5:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="订单最多上传5张图片")
+    data, suffix = await validate_image_upload(attachment, max_size_bytes=5 * 1024 * 1024)
+    attachment_name = Path(attachment.filename or "attachment").name
+    if not attachment_name or len(attachment_name) > 255:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="附件文件名无效")
+    content_type = (attachment.content_type or "").lower()
+    url = save_image_bytes(data, suffix, "orders")
+    item = OrderAttachment(
+        url=url,
+        name=attachment_name,
+        size=len(data),
+        content_type=content_type,
+    )
+    attachments.append(item)
+    order.attachments = [entry.model_dump() for entry in attachments]
+    await db.flush()
+    return item
+
+
+@router.delete(
+    "/{order_id}/attachments/{attachment_index}",
+    response_model=OrderResponse,
+    summary="删除订单图片附件",
+)
+async def delete_order_attachment(
+    order_id: int,
+    attachment_index: int,
+    current_user: CurrentUser,
+    db: DatabaseSession,
+) -> OrderResponse:
+    order = await get_order_service(db).get_order_by_id(order_id, current_user)
+    if current_user.role not in (UserRole.ADMIN, UserRole.USER) or (
+        current_user.role != UserRole.ADMIN and order.user_id != current_user.id
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权修改此订单附件")
+    attachments = _attachment_items(order)
+    if attachment_index < 0 or attachment_index >= len(attachments):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="附件索引越界")
+    item = attachments.pop(attachment_index)
+    relative = item.url.removeprefix("/uploads/")
+    upload_root = Path(settings.UPLOAD_DIR).resolve()
+    file_path = (upload_root / relative).resolve()
+    if upload_root.resolve() not in file_path.parents:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="附件路径无效")
+    file_path.unlink(missing_ok=True)
+    order.attachments = [entry.model_dump() for entry in attachments]
+    await db.flush()
+    await db.refresh(order)
+    return OrderResponse.model_validate(order)
+
+
+@router.post(
+    "/{order_id}/deliver-attachments",
+    response_model=OrderDeliveryAttachment,
+    status_code=status.HTTP_201_CREATED,
+    summary="上传交付附件",
+)
+async def upload_deliver_attachment(
+    order_id: int,
+    current_user: CurrentUser,
+    db: DatabaseSession,
+    attachment: UploadFile = File(..., description="交付图片附件"),
+) -> OrderDeliveryAttachment:
+    """Upload a validated delivery proof image.
+
+    权限：仅订单发布方或已接单打手；ADMIN 不参与交付走原有后台。
+    校验：单张 <=5MB png/jpeg/webp，校验 Magic/MIME/扩展。
+    存储：uploads/deliveries 随机文件名，返回 {url,name,size,content_type} 并 append 到 order.delivery_attachments。
+    限制：每单最多5张。
+    """
+    order = await get_order_service(db).get_order_by_id(order_id, current_user)
+    if current_user.role == UserRole.ADMIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="管理员不参与交付附件")
+    if order.user_id != current_user.id and order.booster_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权上传此订单交付附件")
+    if order.booster_id is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="订单尚未接单，无法上传交付附件")
+    if order.status != OrderStatus.LOCKED:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="只有进行中的订单才能上传交付附件")
+    items = _delivery_attachment_items(order)
+    if len(items) >= 5:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="每单最多上传5张交付附件")
+    data_bytes, suffix = await validate_image_upload(attachment, max_size_bytes=5 * 1024 * 1024)
+    attachment_name = Path(attachment.filename or "attachment").name
+    if not attachment_name or len(attachment_name) > 255:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="附件文件名无效")
+    content_type = (attachment.content_type or "").lower()
+    url = save_image_bytes(data_bytes, suffix, "deliveries")
+    item = OrderDeliveryAttachment(
+        url=url,
+        name=attachment_name,
+        size=len(data_bytes),
+        content_type=content_type,
+    )
+    items.append(item)
+    order.delivery_attachments = [entry.model_dump() for entry in items]
+    await db.flush()
+    return item
+
+
+@router.delete(
+    "/{order_id}/deliver-attachments/{attachment_index}",
+    response_model=OrderResponse,
+    summary="删除交付附件",
+)
+async def delete_deliver_attachment(
+    order_id: int,
+    attachment_index: int,
+    current_user: CurrentUser,
+    db: DatabaseSession,
+) -> OrderResponse:
+    """Delete a delivery proof image by index. 仅发布方/接单方。"""
+    order = await get_order_service(db).get_order_by_id(order_id, current_user)
+    if current_user.role == UserRole.ADMIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="管理员不参与交付附件")
+    if order.user_id != current_user.id and order.booster_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权删除此订单交付附件")
+    items = _delivery_attachment_items(order)
+    if attachment_index < 0 or attachment_index >= len(items):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="附件索引越界")
+    item = items.pop(attachment_index)
+    relative = item.url.removeprefix("/uploads/")
+    upload_root = Path(settings.UPLOAD_DIR).resolve()
+    file_path = (upload_root / relative).resolve()
+    if upload_root.resolve() not in file_path.parents:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="附件路径无效")
+    file_path.unlink(missing_ok=True)
+    order.delivery_attachments = [entry.model_dump() for entry in items]
+    await db.flush()
+    await db.refresh(order)
+    return OrderResponse.model_validate(order)
 
 
 @router.get(
@@ -254,7 +426,7 @@ async def update_order(
     "/{order_id}/accept",
     response_model=OrderResponse,
     summary="接受订单",
-    description="代练接受订单（仅限代练角色，管理员请通过 /admin/orders/{id}/intervene 干预）",
+    description="非管理员用户接受订单（管理员请通过 /admin/orders/{id}/intervene 干预）",
 )
 async def accept_order(
     order_id: int,
@@ -264,17 +436,11 @@ async def accept_order(
     """
     Accept an order as a booster.
 
-    - Only users with the BOOSTER role can accept orders
+    - Any non-admin authenticated user can accept orders
     - Only PENDING orders can be accepted
     - Cannot accept your own order
     - Admin state changes go through /admin/orders/{id}/intervene, not here
     """
-    if current_user.role != UserRole.BOOSTER:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="权限不足，只有代练才能接单",
-        )
-
     order_service = get_order_service(db)
 
     order = await order_service.accept_order(order_id, current_user)
@@ -524,6 +690,12 @@ async def refund_order(
     return OrderResponse.model_validate(order)
 
 
+@router.put("/{order_id}/claim-control", response_model=OrderResponse, summary="订单抢单控制")
+async def claim_control(order_id: int, payload: ClaimControlRequest, current_user: CurrentUser, db: DatabaseSession) -> OrderResponse:
+    order = await get_order_service(db).claim_control(order_id, payload.action, current_user)
+    return OrderResponse.model_validate(order)
+
+
 @router.delete(
     "/{order_id}",
     response_model=MessageResponse,
@@ -548,11 +720,5 @@ async def delete_order(
 
     order_service = get_order_service(db)
 
-    # Verify order exists
-    order = await order_service.get_order_by_id(order_id)
-
-    # Delete order
-    await db.delete(order)
-    await db.flush()
-
+    await order_service.delete_order(order_id, current_user)
     return MessageResponse(message="订单已删除", success=True)

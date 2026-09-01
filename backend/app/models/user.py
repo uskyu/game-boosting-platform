@@ -242,5 +242,15 @@ class User(Base):
         lazy="selectin",
     )
 
+    @property
+    def display_role(self) -> UserRole:
+        """Effective role shown to users and the client UI.
+
+        Publicly registered USER records retain their customer role for
+        backwards-compatible order ownership and creation rules, but they
+        are also eligible to act as boosters. ADMIN remains distinct.
+        """
+        return UserRole.ADMIN if self.role == UserRole.ADMIN else UserRole.BOOSTER
+
     def __repr__(self) -> str:
         return f"<User(id={self.id}, email={self.email!r}, role={self.role.value})>"

@@ -33,7 +33,9 @@ router = APIRouter(prefix="/chat", tags=["聊天"])
 
 def _serialize_participant(
     participant: ConversationParticipant,
+    current_user_id: int,
 ) -> ConversationParticipantResponse:
+    is_current_user = participant.user_id == current_user_id
     return ConversationParticipantResponse(
         id=participant.id,
         user_id=participant.user_id,
@@ -41,8 +43,34 @@ def _serialize_participant(
         joined_at=participant.joined_at,
         last_read_message_id=participant.last_read_message_id,
         last_read_at=participant.last_read_at,
+        is_pinned=participant.is_pinned if is_current_user else False,
+        pinned_at=participant.pinned_at if is_current_user else None,
         user=ChatUserBrief.model_validate(participant.user),
     )
+
+
+def _fallback_order_preview(conversation: Conversation) -> str | None:
+    """当会话关联订单但 preview 为空时，基于订单上下文生成兜底预览。"""
+    order = getattr(conversation, "order", None)
+    if order is None:
+        return None
+    try:
+        title = getattr(order, "title", None) or getattr(order, "game_name", None) or f"订单 #{order.id}"
+        current_rank = getattr(order, "current_rank", "") or ""
+        target_rank = getattr(order, "target_rank", "") or ""
+        rank = f"{current_rank} → {target_rank}" if current_rank and target_rank else ""
+        price = getattr(order, "price", None)
+        price_text = f"价格 {price}" if price is not None else ""
+        parts = [f"[订单 #{order.id}] {title}"]
+        if rank:
+            parts.append(rank)
+        if price_text:
+            parts.append(price_text)
+        parts.append(f"查看 /orders/{order.id} #{order.id}")
+        content = " ｜ ".join(part for part in parts if part)
+        return content[:100] if content else None
+    except Exception:
+        return None
 
 
 def _serialize_conversation(
@@ -58,6 +86,16 @@ def _serialize_conversation(
         for participant in participants
         if participant.user_id != current_user_id
     ]
+    current_participant = next(
+        (participant for participant in participants if participant.user_id == current_user_id),
+        None,
+    )
+
+    # 确保带单会话在列表页能透出订单上下文：若 preview 为空但关联订单存在，
+    # 则基于订单卡片内容生成兜底 preview，直观展示标题/价格/段位/#id 链接。
+    preview = conversation.last_message_preview
+    if not preview and conversation.order_id is not None:
+        preview = _fallback_order_preview(conversation)
 
     return ConversationResponse(
         id=conversation.id,
@@ -66,9 +104,14 @@ def _serialize_conversation(
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
         last_message_at=conversation.last_message_at,
-        last_message_preview=conversation.last_message_preview,
+        last_message_preview=preview,
         unread_count=int(getattr(conversation, "unread_count", 0) or 0),
-        participants=[_serialize_participant(participant) for participant in participants],
+        is_pinned=bool(current_participant and current_participant.is_pinned),
+        pinned_at=current_participant.pinned_at if current_participant else None,
+        participants=[
+            _serialize_participant(participant, current_user_id)
+            for participant in participants
+        ],
         other_participants=other_participants,
         order=ConversationOrderBrief.model_validate(conversation.order)
         if conversation.order is not None
@@ -351,6 +394,44 @@ async def get_conversation(
     conversation = await chat_service.get_conversation_with_access_check(
         conversation_id=conversation_id,
         current_user=current_user,
+    )
+    return _serialize_conversation(conversation, current_user.id)
+
+
+@router.put(
+    "/conversations/{conversation_id}/pin",
+    response_model=ConversationResponse,
+    summary="置顶会话",
+    description="置顶当前用户参与的会话",
+)
+async def pin_conversation(
+    conversation_id: int,
+    current_user: CurrentUser,
+    db: DatabaseSession,
+) -> ConversationResponse:
+    conversation = await get_chat_service(db).set_conversation_pinned(
+        conversation_id=conversation_id,
+        current_user=current_user,
+        is_pinned=True,
+    )
+    return _serialize_conversation(conversation, current_user.id)
+
+
+@router.delete(
+    "/conversations/{conversation_id}/pin",
+    response_model=ConversationResponse,
+    summary="取消置顶会话",
+    description="取消置顶当前用户参与的会话",
+)
+async def unpin_conversation(
+    conversation_id: int,
+    current_user: CurrentUser,
+    db: DatabaseSession,
+) -> ConversationResponse:
+    conversation = await get_chat_service(db).set_conversation_pinned(
+        conversation_id=conversation_id,
+        current_user=current_user,
+        is_pinned=False,
     )
     return _serialize_conversation(conversation, current_user.id)
 

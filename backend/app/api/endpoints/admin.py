@@ -166,6 +166,11 @@ async def intervene_order(
             )
 
     await db.flush()
+
+    # Admin completion follows the same in-transaction, idempotent settlement
+    # path as customer confirmation. It is a no-op when no booster is assigned.
+    if payload.action == OrderStatus.COMPLETED:
+        await get_order_service(db).settle_order_income(order)
     await db.refresh(order)
     await send_order_system_message(
         db=db,

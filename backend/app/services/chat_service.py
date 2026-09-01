@@ -23,7 +23,7 @@ from app.models.chat import (
     MessageDeletion,
     MessageType,
 )
-from app.models.order import Order
+from app.models.order import ClaimStatus, Order, OrderClaim, OrderStatus
 from app.models.user import User, UserRole
 
 
@@ -51,13 +51,16 @@ class ChatService:
 
         if order_id is not None:
             order = await self._get_order_for_conversation(order_id)
+            self._assert_order_contactable(order)
+            order_participants = await self._get_order_participant_ids(order)
 
-            order_participants = {order.user_id, order.booster_id} - {None}
-
-            # PENDING 订单允许任意代练师联系客户（接单前沟通）
-            current_is_participant = (
-                current_user.id in order_participants
-                or (order.status.value == "PENDING" and current_user.role.value == "booster")
+            # 订单客户永远可联络；所有抢单打手（含首抢 order.booster_id + OrderClaim
+            # booster_id 集合）均视为订单参与者，第 2 及后续打手也能基于订单创建
+            # 对话。PENDING 且可联络状态下任意活跃打手可与客户建联，便于接单前沟通。
+            current_is_participant = await self._is_order_contact_participant(
+                user=current_user,
+                order=order,
+                participant_ids=order_participants,
             )
             if not current_is_participant:
                 raise HTTPException(
@@ -65,9 +68,10 @@ class ChatService:
                     detail="当前用户无权基于该订单创建对话",
                 )
 
-            target_is_participant = (
-                target_user.id in order_participants
-                or (order.status.value == "PENDING" and target_user.role.value == "booster")
+            target_is_participant = await self._is_order_contact_participant(
+                user=target_user,
+                order=order,
+                participant_ids=order_participants,
             )
             if not target_is_participant:
                 raise HTTPException(
@@ -140,21 +144,59 @@ class ChatService:
             )
             return existing
 
+        current_is_admin = current_user.role == UserRole.ADMIN
+        target_is_admin = target_user.role == UserRole.ADMIN
         self._db.add_all(
             [
                 ConversationParticipant(
                     conversation_id=conversation.id,
                     user_id=current_user.id,
                     role_snapshot=current_user.role.value,
+                    is_pinned=target_is_admin and not current_is_admin,
+                    pinned_at=datetime.now(timezone.utc)
+                    if target_is_admin and not current_is_admin
+                    else None,
                 ),
                 ConversationParticipant(
                     conversation_id=conversation.id,
                     user_id=target_user.id,
                     role_snapshot=target_user.role.value,
+                    is_pinned=current_is_admin and not target_is_admin,
+                    pinned_at=datetime.now(timezone.utc)
+                    if current_is_admin and not target_is_admin
+                    else None,
                 ),
             ]
         )
         await self._db.flush()
+
+        # 带单会话创建时自动写入首条系统消息，承载订单上下文卡片 JSON
+        # （标题/价格/段位/#id 链接），并刷新会话 preview 使列表页可见。
+        if order_id is not None and conversation_type == ConversationType.ORDER:
+            try:
+                # 重新解析订单以确保卡片数据可用，避免上方分支变量作用域
+                # 带来的 possibly-undefined 风险，同时拿到最新快照。
+                card_order = await self._get_order_for_conversation(order_id)
+                card_meta = self._build_order_card_meta(card_order)
+                card_content = self._build_order_card_content(card_order)
+                now = datetime.now(timezone.utc)
+                first_msg = Message(
+                    conversation_id=conversation.id,
+                    sender_id=None,
+                    message_type=MessageType.SYSTEM,
+                    content=card_content,
+                    meta_json=card_meta,
+                    created_at=now,
+                )
+                self._db.add(first_msg)
+                await self._db.flush()
+                conversation.last_message_at = first_msg.created_at
+                conversation.last_message_preview = self._build_message_preview(first_msg)
+                await self._db.flush()
+            except Exception:
+                # 卡片写入失败不阻断会话创建；由调用方事务决定是否回滚，
+                # 此处保留会话本身。
+                pass
 
         conversation = await self._get_conversation_or_404(conversation.id)
         conversation.unread_count = 0
@@ -185,7 +227,12 @@ class ChatService:
             )
             .join(Conversation, Conversation.id == ConversationParticipant.conversation_id)
             .where(ConversationParticipant.user_id == current_user.id)
-            .order_by(Conversation.last_message_at.desc(), Conversation.id.desc())
+            .order_by(
+                ConversationParticipant.is_pinned.desc(),
+                ConversationParticipant.pinned_at.desc().nullslast(),
+                Conversation.last_message_at.desc().nullslast(),
+                Conversation.id.desc(),
+            )
             .offset(offset)
             .limit(page_size)
         )
@@ -625,6 +672,27 @@ class ChatService:
 
         return admin
 
+    async def set_conversation_pinned(
+        self,
+        conversation_id: int,
+        current_user: User,
+        is_pinned: bool,
+    ) -> Conversation:
+        """Set the current user's pin state for a conversation."""
+        participant = await self._get_participant_or_403(
+            conversation_id=conversation_id,
+            user_id=current_user.id,
+        )
+        participant.is_pinned = is_pinned
+        participant.pinned_at = datetime.now(timezone.utc) if is_pinned else None
+        await self._db.flush()
+        conversation = await self._get_conversation_or_404(conversation_id)
+        conversation.unread_count = await self._get_unread_count(
+            current_user=current_user,
+            conversation_id=conversation_id,
+        )
+        return conversation
+
     async def list_order_conversations(self, order_id: int) -> list[Conversation]:
         """获取某个订单关联的全部会话。"""
         result = await self._db.execute(
@@ -663,6 +731,127 @@ class ChatService:
                 detail="订单不存在",
             )
         return order
+
+    def _assert_order_contactable(self, order: Order) -> None:
+        """若订单不可联络则抛出携带禁止原因的异常。
+
+        覆盖：订单不存在已在上游 404；此处处理 claim_status / 归档 / 截止
+        等不可联络状态，返回合适的禁止原因供前端透出。
+        """
+        if order.is_archived:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="订单已归档，不可发起会话",
+            )
+        now = datetime.now(timezone.utc)
+        if order.deadline is not None:
+            dl = order.deadline
+            if dl.tzinfo is None:
+                dl = dl.replace(tzinfo=timezone.utc)
+            if dl <= now:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="订单已截止，不可联系",
+                )
+        # claim_status 语义与 order_service.accept_order 保持一致
+        if order.claim_status == ClaimStatus.PAUSED:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="订单已暂停抢单，暂不可联系",
+            )
+        if order.claim_status == ClaimStatus.CLOSED:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="订单已截止，不可联系",
+            )
+        if order.claim_status == ClaimStatus.FULL:
+            # 已满员仍允许已参与打手与客户互聊，但不允许新的 PENDING 咨询
+            # 冲击；此处归入可联络，由参与者集合进一步约束。
+            pass
+        # 终态订单不可再基于订单建联
+        if order.status in (OrderStatus.CANCELLED, OrderStatus.COMPLETED):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"订单当前状态为 {order.status.value}，不可基于订单创建会话",
+            )
+
+    async def _get_order_participant_ids(self, order: Order) -> set[int]:
+        """返回订单参与者 id 集合：order.user_id + 首抢 order.booster_id
+        + SELECT OrderClaim.booster_id 全部去重，确保第 2 及后续打手也能建联。"""
+        ids: set[int] = set()
+        if order.user_id is not None:
+            ids.add(int(order.user_id))
+        if order.booster_id is not None:
+            ids.add(int(order.booster_id))
+        claim_result = await self._db.execute(
+            select(OrderClaim.booster_id).where(OrderClaim.order_id == order.id)
+        )
+        for bid in claim_result.scalars().all():
+            if bid is not None:
+                ids.add(int(bid))
+        return ids
+
+    async def _is_order_contact_participant(
+        self,
+        user: User,
+        order: Order,
+        participant_ids: set[int],
+    ) -> bool:
+        """判断用户是否具备基于该订单的联络资格。"""
+        if user.id in participant_ids:
+            return True
+        # 订单客户本身已在集合中；此处保留显式分支以便日志追踪
+        if user.id == order.user_id:
+            return True
+        # 可联络的 PENDING 订单允许任意活跃打手（非 ADMIN）与客户建联
+        # 需已通过 _assert_order_contactable 的归档/截止/claim_status 校验
+        if order.status == OrderStatus.PENDING:
+            # 任意非管理员活跃用户均可作为潜在打手身份建联，贴合
+            # order_service 中「Every non-admin account can act as a booster」
+            if not user.is_active:
+                return False
+            if user.role == UserRole.ADMIN:
+                return False
+            return True
+        return False
+
+    def _build_order_card_meta(self, order: Order) -> dict:
+        """构造订单上下文卡片 JSON，供前端渲染及列表透出。"""
+        price_val: str
+        try:
+            price_val = str(order.price) if order.price is not None else ""
+        except Exception:
+            price_val = ""
+        return {
+            "type": "order_card",
+            "event": "order_context",
+            "order_id": int(order.id),
+            "title": (order.title or order.game_name or f"订单 #{order.id}"),
+            "game_name": order.game_name,
+            "current_rank": order.current_rank,
+            "target_rank": order.target_rank,
+            "price": price_val,
+            "price_min": str(order.price_min) if order.price_min is not None else None,
+            "price_max": str(order.price_max) if order.price_max is not None else None,
+            "status": order.status.value if hasattr(order.status, "value") else str(order.status),
+            "link": f"/orders/{order.id}",
+            "anchor": f"#order-{order.id}",
+        }
+
+    def _build_order_card_content(self, order: Order) -> str:
+        """系统消息正文：人类可读的订单上下文，便于 preview 与搜索命中。"""
+        title = order.title or order.game_name or f"订单 #{order.id}"
+        rank = f"{order.current_rank} → {order.target_rank}" if order.current_rank and order.target_rank else ""
+        meta = self._build_order_card_meta(order)
+        link = meta["link"]
+        # 标题 / 价格 / 段位 / #id 链接均出现在正文，确保列表 preview 可见
+        parts = [f"[订单 #{order.id}] {title}"]
+        if rank:
+            parts.append(rank)
+        if meta.get("price"):
+            parts.append(f"价格 {meta['price']}")
+        parts.append(f"查看 {link} #{order.id}")
+        return " ｜ ".join(part for part in parts if part)
 
     async def _find_existing_conversation(
         self,

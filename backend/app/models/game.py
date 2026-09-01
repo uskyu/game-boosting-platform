@@ -82,6 +82,11 @@ class Game(TimestampMixin, Base):
         nullable=True,
     )
 
+    logo_url: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+    )
+
     cover_url: Mapped[str | None] = mapped_column(
         String(500),
         nullable=True,

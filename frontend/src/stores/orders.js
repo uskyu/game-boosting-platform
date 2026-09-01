@@ -163,12 +163,15 @@ export const useOrdersStore = defineStore('orders', () => {
     }
   }
 
-  async function deliverOrder(orderId) {
+  async function deliverOrder(orderId, deliveryNote) {
     loading.value = true
     error.value = null
 
     try {
-      const response = await api.put(`/orders/${orderId}/deliver`)
+      const payload = deliveryNote ? { delivery_note: deliveryNote, notes: deliveryNote } : undefined
+      const response = payload
+        ? await api.put(`/orders/${orderId}/deliver`, payload)
+        : await api.put(`/orders/${orderId}/deliver`)
 
       const index = orders.value.findIndex(o => o.id === orderId)
       if (index !== -1) {
@@ -185,6 +188,42 @@ export const useOrdersStore = defineStore('orders', () => {
       return { success: false, error: err.message }
     } finally {
       loading.value = false
+    }
+  }
+
+  async function uploadDeliverAttachment(orderId, file) {
+    error.value = null
+    try {
+      const form = new FormData()
+      form.append('attachment', file)
+      const response = await api.post(`/orders/${orderId}/deliver-attachments`, form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      if (currentOrder.value?.id === orderId) {
+        const existing = Array.isArray(currentOrder.value.delivery_attachments) ? [...currentOrder.value.delivery_attachments] : []
+        existing.push(response.data)
+        currentOrder.value = { ...currentOrder.value, delivery_attachments: existing }
+        const idx = orders.value.findIndex(o => o.id === orderId)
+        if (idx !== -1) orders.value[idx] = { ...orders.value[idx], delivery_attachments: [...existing] }
+      }
+      return { success: true, data: response.data }
+    } catch (err) {
+      error.value = err.message
+      return { success: false, error: err.message }
+    }
+  }
+
+  async function deleteDeliverAttachment(orderId, attachmentIndex) {
+    error.value = null
+    try {
+      const response = await api.delete(`/orders/${orderId}/deliver-attachments/${attachmentIndex}`)
+      const idx = orders.value.findIndex(o => o.id === orderId)
+      if (idx !== -1) orders.value[idx] = response.data
+      if (currentOrder.value?.id === orderId) currentOrder.value = response.data
+      return { success: true, data: response.data }
+    } catch (err) {
+      error.value = err.message
+      return { success: false, error: err.message }
     }
   }
 

@@ -75,6 +75,7 @@ class GameBase(BaseModel):
     category: GameCategory = Field(description="游戏分类")
     platform: GamePlatform = Field(description="游戏平台")
     icon_url: str | None = Field(default=None, max_length=500, description="图标地址")
+    logo_url: str | None = Field(default=None, max_length=500, description="Logo地址")
     cover_url: str | None = Field(default=None, max_length=500, description="封面地址")
     color_theme: str | None = Field(default=None, max_length=7, description="主题色")
     service_template: GameServiceTemplate = Field(description="服务模板")
@@ -89,7 +90,7 @@ class GameBase(BaseModel):
     def validate_name(cls, value: str) -> str:
         return _normalize_required_text(value)
 
-    @field_validator("english_name", "icon_url", "cover_url", "description")
+    @field_validator("english_name", "icon_url", "logo_url", "cover_url", "description")
     @classmethod
     def validate_optional_text_fields(cls, value: str | None) -> str | None:
         return _normalize_optional_text(value)
@@ -117,6 +118,7 @@ class GameUpdate(BaseModel):
     category: GameCategory | None = None
     platform: GamePlatform | None = None
     icon_url: str | None = Field(default=None, max_length=500)
+    logo_url: str | None = Field(default=None, max_length=500)
     cover_url: str | None = Field(default=None, max_length=500)
     color_theme: str | None = Field(default=None, max_length=7)
     service_template: GameServiceTemplate | None = None
@@ -133,7 +135,7 @@ class GameUpdate(BaseModel):
             return None
         return _normalize_required_text(value)
 
-    @field_validator("english_name", "icon_url", "cover_url", "description")
+    @field_validator("english_name", "icon_url", "logo_url", "cover_url", "description")
     @classmethod
     def validate_optional_text_fields(cls, value: str | None) -> str | None:
         return _normalize_optional_text(value)
@@ -147,6 +149,29 @@ class GameUpdate(BaseModel):
         if re.fullmatch(r"#[0-9A-Fa-f]{6}", cleaned) is None:
             raise ValueError("color_theme 必须是 #RRGGBB 格式")
         return cleaned
+
+
+class GameBulkAction(BaseModel):
+    """Request for applying one management action to multiple games."""
+
+    action: str = Field(description="activate、deactivate 或 delete")
+    ids: list[int] = Field(min_length=1, description="游戏 ID 列表")
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("action")
+    @classmethod
+    def validate_action(cls, value: str) -> str:
+        if value not in {"activate", "deactivate", "delete"}:
+            raise ValueError("action 必须是 activate、deactivate 或 delete")
+        return value
+
+    @field_validator("ids")
+    @classmethod
+    def validate_ids(cls, value: list[int]) -> list[int]:
+        if any(game_id <= 0 for game_id in value):
+            raise ValueError("ids 必须是正整数")
+        return list(dict.fromkeys(value))
 
 
 class GameResponse(GameBase):

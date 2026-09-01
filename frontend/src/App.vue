@@ -8,6 +8,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import { useNotificationsStore } from '@/stores/notifications'
 import { useSettingsStore } from '@/stores/settings'
+import { useSiteStore } from '@/stores/site'
 import { getUserRoleMeta } from '@/utils/order'
 
 const route = useRoute()
@@ -16,6 +17,7 @@ const authStore = useAuthStore()
 const chatStore = useChatStore()
 const notificationsStore = useNotificationsStore()
 const settingsStore = useSettingsStore()
+const siteStore = useSiteStore()
 
 // 主题初始化：同步 localStorage / 系统偏好到 html.dark（index.html 已先行防闪烁）
 settingsStore.initTheme()
@@ -43,16 +45,23 @@ const copy = {
 }
 
 const isAuthenticated = computed(() => authStore.isAuthenticated)
-const isBooster = computed(() => authStore.isBooster)
 const isAdmin = computed(() => authStore.isAdmin)
 const user = computed(() => authStore.user)
-const roleMeta = computed(() => getUserRoleMeta(user.value?.role))
+const roleMeta = computed(() => getUserRoleMeta(isAdmin.value ? 'ADMIN' : 'BOOSTER'))
 const unreadTotal = computed(() => Number(chatStore.unreadTotal || 0))
 const notifUnread = computed(() => Number(notificationsStore.unreadCount || 0))
 const messageBadge = computed(() => unreadTotal.value + notifUnread.value)
 const avatarText = computed(() => user.value?.username?.slice(0, 1)?.toUpperCase() || '我')
+const siteName = computed(() => siteStore.settings.site_name || '游戏服务平台')
+const siteLogo = computed(() => siteStore.settings.site_logo_url || '')
+watch([siteName, () => siteStore.settings.favicon_url], ([name, favicon]) => {
+  document.title = name
+  const link = document.querySelector('link[rel="icon"]')
+  if (link && favicon) link.href = favicon
+}, { immediate: true })
+siteStore.fetchSettings()
 
-// 沉浸式页面（登录/注册/聊天详情/AI 客服）不显示底部 Tab，其余页面固定 5 Tab
+// 沉浸式页面（登录/注册/聊天详情/联系管理员）不显示底部 Tab，其余页面固定 5 Tab
 const immersiveRoutes = ['login', 'register', 'chat-detail', 'support']
 const showTabBar = computed(() => !immersiveRoutes.includes(route.name))
 
@@ -217,8 +226,8 @@ onBeforeUnmount(() => {
       <!-- 桌面顶栏 -->
       <div class="shell-container hidden min-h-16 items-center justify-between gap-4 py-3 md:flex">
         <button type="button" class="brand-lockup text-left" @click="router.push({ name: 'home' })">
-          <span class="brand-mark !h-9 !w-9 !text-sm" aria-hidden="true">◆</span>
-          <p class="brand-lockup__title text-base text-ink-1">{{ copy.brandTitle }}</p>
+          <img v-if="siteLogo" :src="siteLogo" class="brand-mark !h-9 !w-9 object-cover" alt="" /><span v-else class="brand-mark !h-9 !w-9 !text-sm" aria-hidden="true">◆</span>
+          <p class="brand-lockup__title text-base text-ink-1">{{ siteName }}</p>
         </button>
 
         <div class="flex items-center justify-center gap-1">
@@ -282,7 +291,7 @@ onBeforeUnmount(() => {
       <!-- 移动端顶栏：品牌 logo + 搜索 + 主题切换 + 用户头像 -->
       <div class="shell-container flex min-h-14 items-center justify-between gap-2 py-2 md:hidden">
         <button type="button" class="brand-lockup" @click="router.push({ name: 'home' })">
-          <span class="brand-mark !h-9 !w-9 !text-sm" aria-hidden="true">◆</span>
+          <img v-if="siteLogo" :src="siteLogo" class="brand-mark !h-9 !w-9 object-cover" alt="" /><span v-else class="brand-mark !h-9 !w-9 !text-sm" aria-hidden="true">◆</span>
         </button>
 
         <div class="flex items-center gap-1">
@@ -329,22 +338,12 @@ onBeforeUnmount(() => {
       </router-view>
     </main>
 
-    <!-- Floating AI support button（移动端抬高避开底部 Tab） -->
-    <router-link
-      v-if="isAuthenticated && route.name !== 'support'"
-      to="/support"
-      :class="['support-fab', 'fixed right-4 z-40 flex h-12 w-12 items-center justify-center rounded-full bg-primary text-xl text-on-primary shadow-card-hover transition-transform duration-base hover:scale-105 md:bottom-6 md:right-6 md:h-14 md:w-14 md:text-2xl']"
-      title="AI 客服"
-    >
-      <span>🤖</span>
-    </router-link>
-
     <footer v-if="!hideFooter" class="mt-4 border-t border-line-1 bg-surface/60">
       <div class="shell-container flex flex-col gap-8 py-10 lg:flex-row lg:items-start lg:justify-between">
         <div class="max-w-sm space-y-3">
           <div class="brand-lockup">
-            <span class="brand-mark !h-8 !w-8 !text-xs" aria-hidden="true">◆</span>
-            <p class="brand-lockup__title text-sm text-ink-1">{{ copy.brandTitle }}</p>
+            <img v-if="siteLogo" :src="siteLogo" class="brand-mark !h-8 !w-8 object-cover" alt="" /><span v-else class="brand-mark !h-8 !w-8 !text-xs" aria-hidden="true">◆</span>
+            <p class="brand-lockup__title text-sm text-ink-1">{{ siteName }}</p>
           </div>
           <p class="text-sm leading-7 text-ink-3">{{ copy.footerLine }}</p>
         </div>
@@ -361,8 +360,8 @@ onBeforeUnmount(() => {
           <div class="space-y-3">
             <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-3">服务</p>
             <div class="flex flex-col items-start gap-2.5">
-              <router-link v-if="isAuthenticated && !isAdmin" to="/services" class="text-sm text-ink-2 transition-colors duration-base hover:text-primary">{{ isBooster ? copy.boosterDesk : copy.serviceMarket }}</router-link>
-              <router-link v-if="isAuthenticated" to="/support" class="text-sm text-ink-2 transition-colors duration-base hover:text-primary">AI客服</router-link>
+              <router-link v-if="isAuthenticated && !isAdmin" to="/services" class="text-sm text-ink-2 transition-colors duration-base hover:text-primary">{{ copy.boosterDesk }}</router-link>
+              <router-link v-if="isAuthenticated" to="/support" class="text-sm text-ink-2 transition-colors duration-base hover:text-primary">联系管理员</router-link>
             </div>
           </div>
         </div>

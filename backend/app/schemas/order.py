@@ -9,7 +9,65 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.models.order import PaymentStatus
+from app.models.order import PaymentStatus, ClaimStatus
+
+
+class OrderAttachment(BaseModel):
+    """Safe metadata for an order image attachment."""
+
+    url: str = Field(min_length=1, max_length=500)
+    name: str = Field(min_length=1, max_length=255)
+    size: int = Field(ge=1, le=5 * 1024 * 1024)
+    content_type: str = Field(pattern=r"^image/(png|jpeg|webp)$")
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, value: str) -> str:
+        # Attachments are served by our static /uploads mount; never accept
+        # absolute URLs, schemes, or path traversal in persisted JSON.
+        if not value.startswith("/uploads/orders/"):
+            raise ValueError("附件 URL 必须是 /uploads/orders/ 下的相对路径")
+        path = value[len("/uploads/orders/"):]
+        if not path or any(part in {"", ".", ".."} for part in path.split("/")):
+            raise ValueError("附件 URL 无效")
+        return value
+
+
+AttachmentList = list[OrderAttachment]
+
+
+def validate_attachments(value: AttachmentList | None) -> AttachmentList | None:
+    if value is not None and len(value) > 5:
+        raise ValueError("订单最多上传5张图片")
+    return value
+
+
+class OrderDeliveryAttachment(BaseModel):
+    """Safe metadata for a delivery proof image."""
+
+    url: str = Field(min_length=1, max_length=500)
+    name: str = Field(min_length=1, max_length=255)
+    size: int = Field(ge=1, le=5 * 1024 * 1024)
+    content_type: str = Field(pattern=r"^image/(png|jpeg|webp)$")
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, value: str) -> str:
+        if not value.startswith("/uploads/deliveries/"):
+            raise ValueError("交付附件 URL 必须是 /uploads/deliveries/ 下的相对路径")
+        path = value[len("/uploads/deliveries/"):]
+        if not path or any(part in {"", ".", ".."} for part in path.split("/")):
+            raise ValueError("交付附件 URL 无效")
+        return value
+
+
+DeliveryAttachmentList = list[OrderDeliveryAttachment]
+
+
+def validate_delivery_attachments(value: DeliveryAttachmentList | None) -> DeliveryAttachmentList | None:
+    if value is not None and len(value) > 5:
+        raise ValueError("每单最多上传5张交付附件")
+    return value
 
 # =============================================================================
 # INPUT SCHEMAS (Request Bodies)
@@ -61,6 +119,12 @@ class OrderCreate(BaseModel):
         examples=["王者", "星耀", "大师"],
     )
 
+    title: str | None = Field(default=None, max_length=200, description="订单标题")
+    intro: str | None = Field(default=None, max_length=5000, description="订单简介")
+    description: str | None = Field(default=None, max_length=5000, description="简介别名")
+
+    price_min: Decimal | None = Field(default=None, gt=0, le=100000)
+    price_max: Decimal | None = Field(default=None, gt=0, le=100000)
     price: Decimal = Field(
         ...,
         gt=0,
@@ -69,11 +133,10 @@ class OrderCreate(BaseModel):
         examples=[500.00, 1000.00],
     )
 
-    description_raw: str | None = Field(
-        default=None,
-        max_length=2000,
-        description="原始需求描述",
-    )
+    description_raw: str | None = Field(default=None, max_length=2000, description="原始需求描述")
+    max_claims: int = Field(default=1, ge=1, le=100)
+    deadline: datetime | None = None
+    attachments: AttachmentList | None = Field(default=None, max_length=5)
 
     description_ai: str | None = Field(
         default=None,
@@ -142,6 +205,12 @@ class OrderCreate(BaseModel):
         return Decimal(str(v))
 
     @model_validator(mode="after")
+    def validate_price_range(self) -> "OrderCreate":
+        if self.price_min is not None and self.price_max is not None and self.price_min > self.price_max:
+            raise ValueError("price_min 不能大于 price_max")
+        return self
+
+    @model_validator(mode="after")
     def validate_game_reference(self) -> "OrderCreate":
         if self.game_id is None and not self.game_name:
             raise ValueError("game_id 和 game_name 至少需要提供一个")
@@ -151,6 +220,14 @@ class OrderCreate(BaseModel):
 class OrderUpdate(BaseModel):
     """Schema for updating an existing order."""
 
+    title: str | None = Field(default=None, max_length=200)
+    intro: str | None = Field(default=None, max_length=5000)
+    description: str | None = Field(default=None, max_length=5000)
+    price_min: Decimal | None = Field(default=None, gt=0, le=100000)
+    price_max: Decimal | None = Field(default=None, gt=0, le=100000)
+    max_claims: int | None = Field(default=None, ge=1, le=100)
+    deadline: datetime | None = None
+    attachments: AttachmentList | None = Field(default=None, max_length=5)
     game_name: str | None = Field(default=None, max_length=100)
     game_id: int | None = Field(default=None, ge=1)
     current_rank: str | None = Field(default=None, max_length=50)
@@ -165,6 +242,11 @@ class OrderUpdate(BaseModel):
     server: str | None = Field(default=None, max_length=100)
     priority: int | None = Field(default=None, ge=0, le=10)
     notes: str | None = Field(default=None, max_length=1000)
+
+
+class ClaimControlRequest(BaseModel):
+    """Administrator dispatch control command."""
+    action: str = Field(pattern="^(pause|resume|close|archive)$")
 
 
 # =============================================================================
@@ -227,6 +309,18 @@ class OrderResponse(BaseModel):
     """Complete order response schema."""
 
     id: int = Field(description="订单ID")
+    title: str | None = None
+    intro: str | None = None
+    description: str | None = None
+    price_min: Decimal | None = None
+    price_max: Decimal | None = None
+    max_claims: int = 1
+    claimed_count: int = 0
+    claim_status: ClaimStatus = ClaimStatus.OPEN
+    deadline: datetime | None = None
+    is_archived: bool = False
+    attachments: AttachmentList | None = Field(default=None, max_length=5)
+    delivery_attachments: DeliveryAttachmentList | None = Field(default=None, max_length=5)
     user_id: int = Field(description="用户ID")
     booster_id: int | None = Field(default=None, description="代练ID")
     game_id: int | None = Field(default=None, description="游戏ID")

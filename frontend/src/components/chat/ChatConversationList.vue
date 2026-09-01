@@ -1,7 +1,10 @@
 <script setup>
 import { computed } from 'vue'
 import { formatShortDate } from '@/utils/display'
+import { useChatStore } from '@/stores/chat'
 import ChatUnreadBadge from './ChatUnreadBadge.vue'
+
+const chatStore = useChatStore()
 
 const props = defineProps({
   conversations: {
@@ -26,9 +29,14 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['select'])
+const emit = defineEmits(['select', 'toggle-pin'])
 
-const sortedItems = computed(() => props.conversations || [])
+const sortedItems = computed(() => [...(props.conversations || [])].sort((left, right) => {
+  const pinDifference = Number(Boolean(right.is_pinned)) - Number(Boolean(left.is_pinned))
+  if (pinDifference !== 0) return pinDifference
+  return new Date(right.last_message_at || right.updated_at || right.created_at || 0).getTime()
+    - new Date(left.last_message_at || left.updated_at || left.created_at || 0).getTime()
+}))
 
 function getDisplayUsers(conversation) {
   const names = (conversation.other_participants || [])
@@ -90,6 +98,11 @@ function hasAdmin(conversation) {
 function handleSelect(conversation) {
   emit('select', conversation)
 }
+
+async function handleTogglePin(event, conversation) {
+  event.stopPropagation()
+  await chatStore.toggleConversationPinned(conversation)
+}
 </script>
 
 <template>
@@ -146,7 +159,17 @@ function handleSelect(conversation) {
                     v-if="hasAdmin(conversation)"
                     class="rounded-full bg-warning-soft px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-warning"
                   >
-                    客服介入
+                    管理员
+                  </span>
+                  <span
+                    v-if="conversation.is_pinned"
+                    class="text-warning"
+                    title="已置顶"
+                    aria-label="已置顶"
+                  >
+                    <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="m14 4 6 6-3 1-4 5v4l-2-2-2 2v-4l-5-5-1-3 6 1 5-5z" />
+                    </svg>
                   </span>
                 </div>
                 <p class="mt-1 truncate text-xs text-ink-3">
@@ -156,6 +179,17 @@ function handleSelect(conversation) {
 
               <div class="flex flex-col items-end gap-2">
                 <span class="text-[11px] text-ink-3">{{ getTimestamp(conversation) }}</span>
+                <button
+                  type="button"
+                  class="min-h-11 min-w-11 rounded-full p-2 text-ink-3 transition hover:bg-surface-3 hover:text-warning"
+                  :title="conversation.is_pinned ? '取消置顶' : '置顶会话'"
+                  :aria-label="conversation.is_pinned ? '取消置顶' : '置顶会话'"
+                  @click="handleTogglePin($event, conversation)"
+                >
+                  <svg viewBox="0 0 24 24" class="mx-auto h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="m14 4 6 6-3 1-4 5v4l-2-2-2 2v-4l-5-5-1-3 6 1 5-5z" />
+                  </svg>
+                </button>
                 <ChatUnreadBadge :count="Number(conversation.unread_count || 0)" />
               </div>
             </div>
