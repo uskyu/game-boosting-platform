@@ -150,6 +150,8 @@ class Order(Base):
     is_archived: Mapped[bool] = mapped_column(default=False, server_default="0", nullable=False, index=True)
     attachments: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
     delivery_attachments: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
+    # 打手结束订单时提交的汇报说明（区别于老板备注 notes）
+    delivery_note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Order status
     status: Mapped[OrderStatus] = mapped_column(

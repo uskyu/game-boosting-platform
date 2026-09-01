@@ -2,17 +2,17 @@ export const ORDER_STATUS_META = {
   PENDING: {
     label: '待接单',
     badgeClass: 'badge-pending',
-    description: '订单已发布，等待代练师接单。',
+    description: '订单已发布，等待打手确认订单。',
   },
   LOCKED: {
     label: '进行中',
     badgeClass: 'badge-locked',
-    description: '已有代练师接单，服务正在推进。',
+    description: '打手已确认订单，正在进行了。',
   },
   DELIVERED: {
     label: '待确认',
     badgeClass: 'badge-review',
-    description: '代练已提交完成，等待客户确认。',
+    description: '打手已结束订单，等待老板确认。',
   },
   COMPLETED: {
     label: '已完成',
@@ -43,11 +43,11 @@ export const ORDER_STATUS_OPTIONS = [
 
 export const USER_ROLE_META = {
   USER: {
-    label: '普通用户',
+    label: '用户',
     badgeClass: 'badge-review',
   },
   BOOSTER: {
-    label: '代练师',
+    label: '打手',
     badgeClass: 'badge-locked',
   },
   ADMIN: {
@@ -111,19 +111,18 @@ export function getApplicationStatusMeta(status) {
 }
 
 /**
- * 返回人性化的状态标签，区分代练/陪玩场景和老板/打手视角。
- * serviceType: '代练' | '陪玩' | '教学' | 其他
+ * 返回人性化的状态标签，区分老板/打手视角。
+ * 打手动线：确认订单 → 进行中 → 结束订单（提交汇报）→ 老板确认。
  * viewRole: 'owner' | 'booster'
  */
 export function getHumanStatusLabel(status, serviceType, viewRole = 'owner') {
-  const isBoost = serviceType === '代练'
   const isBoosterView = viewRole === 'booster'
 
   if (isBoosterView) {
     const map = {
-      PENDING: '等待接单',
-      LOCKED: isBoost ? '上号中' : '陪玩中',
-      DELIVERED: '等待老板确认',
+      PENDING: '待确认订单',
+      LOCKED: '进行中',
+      DELIVERED: '已结束，待老板确认',
       COMPLETED: '已完成',
       DISPUTED: '订单争议中',
       CANCELLED: '订单已取消',
@@ -132,10 +131,10 @@ export function getHumanStatusLabel(status, serviceType, viewRole = 'owner') {
   }
 
   const map = {
-    PENDING: isBoost ? '等待代练接单' : '等待陪玩接单',
-    LOCKED: isBoost ? '代练上号中' : '陪玩进行中',
-    DELIVERED: isBoost ? '代练已完成，请确认' : '陪玩已结束，请确认',
-    COMPLETED: isBoost ? '代练完成了！' : '这局打完了！',
+    PENDING: '等待打手确认订单',
+    LOCKED: '打手进行中',
+    DELIVERED: '打手已结束，请确认',
+    COMPLETED: '订单完成了！',
     DISPUTED: '订单争议中',
     CANCELLED: '订单已取消',
   }
@@ -143,18 +142,17 @@ export function getHumanStatusLabel(status, serviceType, viewRole = 'owner') {
 }
 
 /**
- * 返回状态对应的副标题，区分代练/陪玩场景和老板/打手视角。
+ * 返回状态对应的副标题，区分老板/打手视角。
  * viewRole: 'owner' | 'booster'
  */
 export function getHumanStatusSubtitle(status, serviceType, viewRole = 'owner') {
-  const isBoost = serviceType === '代练'
   const isBoosterView = viewRole === 'booster'
 
   if (isBoosterView) {
     const map = {
-      PENDING: '可以先和老板聊聊再决定',
-      LOCKED: isBoost ? '正在帮老板上分' : '正在陪老板打',
-      DELIVERED: '已提交完成，等老板确认就能收款了',
+      PENDING: '点击「确认订单」开始进行',
+      LOCKED: '完成后点击「结束订单」并提交汇报',
+      DELIVERED: '已结束订单，老板确认后收入计入余额',
       COMPLETED: '辛苦了，等待老板评价',
       DISPUTED: '平台正在介入处理',
       CANCELLED: '订单已取消',
@@ -163,12 +161,12 @@ export function getHumanStatusSubtitle(status, serviceType, viewRole = 'owner') 
   }
 
   const map = {
-    PENDING: isBoost ? '需求已发出，代练们正在看' : '需求已发出，陪玩们正在看',
-    LOCKED: isBoost ? '代练正在使用你的账号上分' : '陪玩已就位，一起开黑吧',
-    DELIVERED: isBoost ? '代练已完成，确认没问题就点确认吧' : '陪玩已结束，确认没问题就点确认吧',
+    PENDING: '订单已发出，等待打手确认',
+    LOCKED: '打手正在进行订单',
+    DELIVERED: '核实打手的结束汇报，确认后完成结算',
     COMPLETED: '记得说说这次体验',
     DISPUTED: '平台正在介入处理',
-    CANCELLED: '需要重新找吗？',
+    CANCELLED: '需要重新发一单吗？',
   }
   return map[status] ?? ''
 }

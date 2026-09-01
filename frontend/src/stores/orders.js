@@ -25,6 +25,8 @@ export const useOrdersStore = defineStore('orders', () => {
     gameName: '',
     status: '',
   })
+  const claims = ref([])
+  const claimsLoading = ref(false)
 
   // Getters
   const hasOrders = computed(() => orders.value.length > 0)
@@ -137,6 +139,47 @@ export const useOrdersStore = defineStore('orders', () => {
     }
   }
 
+  async function editOrder(orderId, payload) {
+    loading.value = true
+    error.value = null
+
+    try {
+      const response = await api.put(`/orders/${orderId}`, payload)
+
+      // Update order in list
+      const index = orders.value.findIndex(o => o.id === orderId)
+      if (index !== -1) {
+        orders.value[index] = response.data
+      }
+
+      if (currentOrder.value?.id === orderId) {
+        currentOrder.value = response.data
+      }
+
+      return { success: true, data: response.data }
+    } catch (err) {
+      error.value = err.message
+      return { success: false, error: err.message }
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function fetchClaims(orderId) {
+    claimsLoading.value = true
+    error.value = null
+    try {
+      const response = await api.get(`/orders/${orderId}/claims`)
+      claims.value = response.data?.items ?? []
+      return { success: true, data: claims.value }
+    } catch (err) {
+      error.value = err.message
+      return { success: false, error: err.message }
+    } finally {
+      claimsLoading.value = false
+    }
+  }
+
   async function acceptOrder(orderId) {
     loading.value = true
     error.value = null
@@ -164,7 +207,7 @@ export const useOrdersStore = defineStore('orders', () => {
   }
 
   async function deliverOrder(orderId, deliveryNote) {
-    loading.value = true
+    // 不切换全局 loading：详情页骨架屏会卸载交付弹窗，丢失其关闭事件
     error.value = null
 
     try {
@@ -186,8 +229,6 @@ export const useOrdersStore = defineStore('orders', () => {
     } catch (err) {
       error.value = err.message
       return { success: false, error: err.message }
-    } finally {
-      loading.value = false
     }
   }
 
@@ -374,6 +415,8 @@ export const useOrdersStore = defineStore('orders', () => {
     error,
     pagination,
     filters,
+    claims,
+    claimsLoading,
     // Getters
     hasOrders,
     pendingOrders,
@@ -385,8 +428,12 @@ export const useOrdersStore = defineStore('orders', () => {
     createOrder,
     fetchOrders,
     fetchOrder,
+    editOrder,
+    fetchClaims,
     acceptOrder,
     deliverOrder,
+    uploadDeliverAttachment,
+    deleteDeliverAttachment,
     confirmOrder,
     disputeOrder,
     cancelOrder,

@@ -228,9 +228,10 @@ class ChatService:
             .join(Conversation, Conversation.id == ConversationParticipant.conversation_id)
             .where(ConversationParticipant.user_id == current_user.id)
             .order_by(
+                # MySQL 不支持 NULLS LAST 语法；DESC 排序下 NULL 天然靠后，语义一致
                 ConversationParticipant.is_pinned.desc(),
-                ConversationParticipant.pinned_at.desc().nullslast(),
-                Conversation.last_message_at.desc().nullslast(),
+                ConversationParticipant.pinned_at.desc(),
+                Conversation.last_message_at.desc(),
                 Conversation.id.desc(),
             )
             .offset(offset)

@@ -161,6 +161,7 @@ onMounted(() => {
       </div>
     </section>
 
+    <div class="wallet-grid">
     <section class="surface-card p-6 sm:p-8">
       <div class="flex items-center justify-between gap-4">
         <h2 class="text-2xl font-semibold text-ink-1">申请提现</h2>
@@ -354,5 +355,6 @@ onMounted(() => {
         </div>
       </div>
     </section>
+    </div>
   </div>
 </template>

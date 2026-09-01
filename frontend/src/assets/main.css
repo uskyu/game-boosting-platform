@@ -940,32 +940,51 @@
   .od-key__deadline.text-danger { color: var(--danger) !important; }
   .od-ops { display: flex; flex-direction: column; }
   .od-ops__body { flex: 1; }
-  .od-ops__foot { }
-  /* 移动端 <xl 时底部 fixed：覆盖 tabbar + safe area */
+  /* 移动端 <xl：操作区压缩为单行底栏（返回列表 | 联系 | 主操作），不再堆叠占屏 */
   @media (max-width: 1279px) {
-    .od-page { padding-bottom: calc(220px + env(safe-area-inset-bottom)); }
+    .od-page { padding-bottom: calc(88px + env(safe-area-inset-bottom)); }
     .od-ops {
       position: fixed !important;
-      left: 0; right: 0;
-      bottom: calc(56px + env(safe-area-inset-bottom));
+      left: 0; right: 0; bottom: 0;
       z-index: 30;
       margin: 0 !important;
-      border-radius: 18px 18px 0 0 !important;
-      border-left: 0 !important; border-right: 0 !important; border-bottom: 0 !important;
-      max-height: min(42vh, 360px);
-      overflow: auto;
+      border-radius: 0 !important;
+      border: 0 !important;
+      border-top: 1px solid var(--line-1) !important;
       box-shadow: var(--shadow-pop);
-      padding-bottom: calc(12px + env(safe-area-inset-bottom)) !important;
+      padding: 10px 12px !important;
     }
-    .od-ops__foot { position: sticky; bottom: 0; background: var(--surface); padding-top: 12px; margin-top: 12px; }
+    .od-ops__head { display: none !important; }
+    .od-ops__body { flex-direction: row !important; align-items: stretch; gap: 8px !important; margin-top: 0 !important; }
+    .od-ops__body > button { width: auto !important; min-height: 44px; }
+    .od-ops__back { order: -1; flex: 0 0 auto; }
+    .od-ops__chip { flex: 0 0 auto; }
+    .od-ops__primary { order: 50; flex: 1 1 auto; }
+    .od-ops__desktop-only { display: none !important; }
   }
-  /* 有底部 Tab 的页面已预留 72px，详情页额外再叠：避免被 Tab 遮挡可点 */
+  /* <md 有底部 Tab：操作栏叠在 Tab 之上 */
   @media (max-width: 767px) {
+    .od-ops { bottom: calc(56px + env(safe-area-inset-bottom)) !important; }
+    .od-page { padding-bottom: calc(56px + 88px + env(safe-area-inset-bottom)); }
     .od-step { flex-basis: 112px; min-width: 112px; max-width: 112px; }
     .od-key__price { font-size: 20px; }
   }
   @media (max-width: 374px) {
     .od-step { flex-basis: 96px; min-width: 96px; max-width: 96px; }
+  }
+
+  /* 钱包页：桌面端提现表单与提现记录左右并排，资金流水整行置底 */
+  .wallet-grid { display: grid; gap: 24px; }
+  @media (min-width: 1280px) {
+    .wallet-grid {
+      grid-template-columns: 0.92fr 1.08fr;
+      grid-template-areas:
+        "withdraw records"
+        "tx tx";
+    }
+    .wallet-grid > section:nth-child(1) { grid-area: withdraw; }
+    .wallet-grid > section:nth-child(2) { grid-area: tx; }
+    .wallet-grid > section:nth-child(3) { grid-area: records; }
   }
 
 

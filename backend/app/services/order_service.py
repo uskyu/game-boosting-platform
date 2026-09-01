@@ -10,6 +10,7 @@ from typing import Any
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -502,10 +503,13 @@ class OrderService:
         # LOCKED remains claimable only for orders configured for multiple boosters.
         if order.status == OrderStatus.LOCKED and order.max_claims <= 1:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="订单已被其他代练接单")
-        if order.deadline is not None and order.deadline <= now:
-            order.claim_status = ClaimStatus.CLOSED
-            await self._db.flush()
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="订单已截止，不能接单")
+        if order.deadline is not None:
+            # MySQL DATETIME 返回 naive 时间，须补 UTC 再与 aware now 比较
+            deadline = order.deadline if order.deadline.tzinfo else order.deadline.replace(tzinfo=timezone.utc)
+            if deadline <= now:
+                order.claim_status = ClaimStatus.CLOSED
+                await self._db.flush()
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="订单已截止，不能接单")
         if order.claimed_count >= order.max_claims:
             order.claim_status = ClaimStatus.FULL
             await self._db.flush()
@@ -514,7 +518,7 @@ class OrderService:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能接取自己的订单")
         existing = await self._db.execute(select(OrderClaim).where(OrderClaim.order_id == order.id, OrderClaim.booster_id == booster.id))
         if existing.scalar_one_or_none() is not None:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="不可重复接单")
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="您已报名过该订单，无需重复报名")
         self._db.add(OrderClaim(order_id=order.id, booster_id=booster.id))
         order.claimed_count += 1
         if order.booster_id is None:
@@ -524,12 +528,70 @@ class OrderService:
         if order.claimed_count >= order.max_claims:
             order.claim_status = ClaimStatus.FULL
 
-        await self._db.flush()
-        await self._db.refresh(order)
+        try:
+            await self._db.flush()
+            await self._db.refresh(order)
+        except IntegrityError:
+            # Concurrency fallback for UniqueConstraint uq_order_claim_booster:
+            # two requests can both pass the row lock + pre-check window, and
+            # only one INSERT survives. Translate the violation into the same
+            # 409 instead of an unhandled 500.
+            await self._db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="您已报名过该订单，无需重复报名",
+            )
 
         logger.info(f"Order {order_id} accepted by booster {booster.id}")
 
         return order
+
+    async def list_order_claims(self, order_id: int) -> list[dict[str, Any]]:
+        """
+        List the booster claim (报名) records of an order, oldest first.
+
+        Args:
+            order_id: Order ID whose claim list should be returned.
+
+        Returns:
+            List of claim dicts enriched with the booster's username/email
+            and an ``is_first`` flag marking the claim whose booster matches
+            the order's current booster (i.e. the first successful grab).
+
+        Raises:
+            HTTPException: 404 if the order does not exist.
+        """
+        order_result = await self._db.execute(
+            select(Order).where(Order.id == order_id)
+        )
+        order = order_result.scalar_one_or_none()
+        if order is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="订单不存在",
+            )
+        order_booster_id = order.booster_id
+
+        rows = await self._db.execute(
+            select(OrderClaim, User.username, User.email)
+            .join(User, OrderClaim.booster_id == User.id)
+            .where(OrderClaim.order_id == order_id)
+            .order_by(OrderClaim.created_at.asc(), OrderClaim.id.asc())
+        )
+        claims: list[dict[str, Any]] = []
+        for claim, username, email in rows.all():
+            claims.append(
+                {
+                    "id": claim.id,
+                    "order_id": claim.order_id,
+                    "booster_id": claim.booster_id,
+                    "booster_nickname": username,
+                    "booster_email": email,
+                    "created_at": claim.created_at,
+                    "is_first": order_booster_id == claim.booster_id,
+                }
+            )
+        return claims
 
     async def assign_order(
         self,
@@ -632,9 +694,11 @@ class OrderService:
         self,
         order_id: int,
         user: User,
+        delivery_note: str | None = None,
     ) -> Order:
         """
-        Booster submits order as delivered, awaiting customer confirmation.
+        Booster ends the order with an optional report note,
+        awaiting the boss's confirmation.
 
         Only the assigned booster may call this. Admin-driven state changes
         must go through /admin/orders/{id}/intervene.
@@ -652,17 +716,19 @@ class OrderService:
         if order.status != OrderStatus.LOCKED:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="只有进行中的订单才能提交完成",
+                detail="只有进行中的订单才能结束",
             )
 
         if user.role == UserRole.ADMIN or order.booster_id != user.id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="只有接单打手才能提交完成",
+                detail="只有接单打手才能结束订单",
             )
 
         order.status = OrderStatus.DELIVERED
         order.delivered_at = datetime.now(timezone.utc)
+        if delivery_note is not None:
+            order.delivery_note = delivery_note.strip() or None
 
         await self._db.flush()
         await self._db.refresh(order)

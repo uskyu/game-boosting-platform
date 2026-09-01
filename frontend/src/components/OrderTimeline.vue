@@ -40,10 +40,10 @@ const steps = computed(() => {
   const s = o.status
   return [
     { key: 'created', title: '需求已发出', time: fmt(o.created_at), active: true, done: true },
-    { key: 'accept', title: '是否接单', time: s === 'PENDING' ? '等待中…' : (o.locked_at ? fmt(o.locked_at) : '—'), active: ['LOCKED','DELIVERED','COMPLETED','DISPUTED'].includes(s), done: ['LOCKED','DELIVERED','COMPLETED','DISPUTED'].includes(s), pending: s === 'PENDING' },
-    { key: 'locked', title: '打手已接单', time: o.locked_at ? fmt(o.locked_at) : '未接单', active: ['LOCKED','DELIVERED','COMPLETED','DISPUTED'].includes(s), done: ['LOCKED','DELIVERED','COMPLETED','DISPUTED'].includes(s) },
-    { key: 'delivered', title: ['DELIVERED','COMPLETED'].includes(s) ? '已交付' : '待交付', time: o.delivered_at ? fmt(o.delivered_at) : '未交付', active: ['DELIVERED','COMPLETED'].includes(s), done: ['DELIVERED','COMPLETED'].includes(s) },
-    { key: 'completed', title: '已确认', time: o.completed_at ? fmt(o.completed_at) : '待确认', active: s === 'COMPLETED', done: s === 'COMPLETED' },
+    { key: 'accept', title: '确认订单', time: s === 'PENDING' ? '等待中…' : (o.locked_at ? fmt(o.locked_at) : '—'), active: ['LOCKED','DELIVERED','COMPLETED','DISPUTED'].includes(s), done: ['LOCKED','DELIVERED','COMPLETED','DISPUTED'].includes(s), pending: s === 'PENDING' },
+    { key: 'locked', title: '进行中', time: o.locked_at ? fmt(o.locked_at) : '未开始', active: ['LOCKED','DELIVERED','COMPLETED','DISPUTED'].includes(s), done: ['LOCKED','DELIVERED','COMPLETED','DISPUTED'].includes(s) },
+    { key: 'delivered', title: ['DELIVERED','COMPLETED'].includes(s) ? '已结束' : '待结束', time: o.delivered_at ? fmt(o.delivered_at) : '未结束', active: ['DELIVERED','COMPLETED'].includes(s), done: ['DELIVERED','COMPLETED'].includes(s) },
+    { key: 'completed', title: '老板已确认', time: o.completed_at ? fmt(o.completed_at) : '待确认', active: s === 'COMPLETED', done: s === 'COMPLETED' },
   ]
 })
 </script>
@@ -66,6 +66,6 @@ const steps = computed(() => {
         </li>
       </ol>
     </div>
-    <p v-if="isBoostOrder && order?.status === 'PENDING'" class="mt-3 text-xs text-ink-3">代练接单后开始计时</p>
+    <p v-if="isBoostOrder && order?.status === 'PENDING'" class="mt-3 text-xs text-ink-3">打手确认订单后开始进行</p>
   </section>
 </template>

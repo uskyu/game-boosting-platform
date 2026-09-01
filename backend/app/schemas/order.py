@@ -249,6 +249,14 @@ class ClaimControlRequest(BaseModel):
     action: str = Field(pattern="^(pause|resume|close|archive)$")
 
 
+class OrderDeliverRequest(BaseModel):
+    """打手结束订单时提交的汇报说明。"""
+
+    delivery_note: str | None = Field(default=None, max_length=2000)
+    # 兼容旧客户端同时上报的 notes 字段，取 delivery_note 优先
+    notes: str | None = Field(default=None, max_length=2000)
+
+
 # =============================================================================
 # OUTPUT SCHEMAS (Response Bodies)
 # =============================================================================
@@ -321,6 +329,7 @@ class OrderResponse(BaseModel):
     is_archived: bool = False
     attachments: AttachmentList | None = Field(default=None, max_length=5)
     delivery_attachments: DeliveryAttachmentList | None = Field(default=None, max_length=5)
+    delivery_note: str | None = Field(default=None, max_length=2000, description="打手结束订单时提交的汇报说明")
     user_id: int = Field(description="用户ID")
     booster_id: int | None = Field(default=None, description="代练ID")
     game_id: int | None = Field(default=None, description="游戏ID")
@@ -404,3 +413,24 @@ class OrderListResponse(BaseModel):
             }
         }
     )
+
+
+class OrderClaimItem(BaseModel):
+    """A booster claim (报名记录) on an order."""
+
+    id: int = Field(description="报名记录ID")
+    order_id: int = Field(description="订单ID")
+    booster_id: int = Field(description="报名用户ID")
+    booster_nickname: str | None = Field(default=None, description="报名用户昵称")
+    booster_email: str | None = Field(default=None, description="报名用户邮箱")
+    created_at: datetime = Field(description="报名时间")
+    is_first: bool = Field(default=False, description="是否首抢（该用户即订单当前接单人）")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class OrderClaimListResponse(BaseModel):
+    """Claim (报名) list of a single order."""
+
+    items: list[OrderClaimItem] = Field(description="报名记录列表")
+    total: int = Field(description="报名总数")

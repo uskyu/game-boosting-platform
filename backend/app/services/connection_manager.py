@@ -21,9 +21,11 @@ class ConnectionManager:
         self._lock = asyncio.Lock()
 
     async def connect(self, user_id: int, websocket: WebSocket) -> None:
-        """建立用户连接，同一用户只保留一个活动连接。"""
-        await websocket.accept()
+        """注册用户连接，同一用户只保留一个活动连接。
 
+        调用方须已完成 ``websocket.accept()``；对已接受的套接字二次
+        accept 会触发 ASGI 协议错误（Expected ... got 'websocket.accept'）。
+        """
         async with self._lock:
             previous = self.connections.get(user_id)
             self.connections[user_id] = websocket

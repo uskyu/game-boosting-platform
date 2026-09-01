@@ -23,7 +23,10 @@ from app.schemas.order import (
     OrderAttachment,
     OrderDeliveryAttachment,
     OrderAnalyzeRequest,
+    OrderClaimItem,
+    OrderClaimListResponse,
     OrderCreate,
+    OrderDeliverRequest,
     OrderListResponse,
     OrderResponse,
     OrderUpdate,
@@ -397,6 +400,39 @@ async def get_order(
     return _serialize_order(order, current_user)
 
 
+@router.get(
+    "/{order_id}/claims",
+    response_model=OrderClaimListResponse,
+    summary="获取订单报名名单",
+    description="管理员查看订单的全部打手报名记录；打手仅能查看自己的报名记录（按报名时间升序，标注首抢）",
+)
+async def list_order_claims(
+    order_id: int,
+    current_user: CurrentUser,
+    db: DatabaseSession,
+) -> OrderClaimListResponse:
+    """
+    List booster claims (报名名单) for an order.
+
+    - Admin: full roster of the order
+    - Non-admin: only the current user's own claim (used by detail page
+      to render the "已报名" state)
+    - Ordered by claim time ascending (earliest grab first)
+    - is_first marks the claim whose booster is the order's current booster
+    """
+    order_service = get_order_service(db)
+
+    claims = await order_service.list_order_claims(order_id)
+
+    if current_user.role != UserRole.ADMIN:
+        claims = [claim for claim in claims if claim["booster_id"] == current_user.id]
+
+    return OrderClaimListResponse(
+        items=[OrderClaimItem.model_validate(claim) for claim in claims],
+        total=len(claims),
+    )
+
+
 @router.put(
     "/{order_id}",
     response_model=OrderResponse,
@@ -447,7 +483,7 @@ async def accept_order(
     await send_order_system_message(
         db=db,
         order_id=order.id,
-        content=f"代练 {current_user.username} 已接单",
+        content=f"打手 {current_user.username} 已确认订单",
         meta_json={
             "event": "order_accepted",
             "order_id": order.id,
@@ -458,11 +494,15 @@ async def accept_order(
         db,
         user_id=order.user_id,
         type=NotificationType.ORDER_ACCEPTED,
-        title="订单已被接单",
-        content=f"代练 {current_user.username} 已接受您的订单「{order.game_name}」",
+        title="订单已被确认",
+        content=f"打手 {current_user.username} 已确认您的订单「{order.game_name}」",
         link=f"/orders/{order.id}",
         ref_id=order.id,
     )
+
+    # 消息/通知写入与订单不在同一加载上下文，序列化前刷新订单，
+    # 防止 expired 属性在同步属性访问时触发 MissingGreenlet 500。
+    await db.refresh(order)
 
     return OrderResponse.model_validate(order)
 
@@ -470,29 +510,34 @@ async def accept_order(
 @router.put(
     "/{order_id}/deliver",
     response_model=OrderResponse,
-    summary="提交完成",
-    description="代练提交订单完成，等待客户确认",
+    summary="结束订单",
+    description="打手结束订单并提交汇报说明，等待老板确认",
 )
 async def deliver_order(
     order_id: int,
     current_user: CurrentUser,
     db: DatabaseSession,
+    payload: OrderDeliverRequest | None = None,
 ) -> OrderResponse:
     """
-    Booster submits order as delivered.
+    Booster ends the order.
 
-    - Only the assigned booster can deliver
-    - Only LOCKED orders can be delivered
-    - Customer must confirm to finalize
+    - Only the assigned booster can end it
+    - Only LOCKED orders can be ended
+    - Boss must confirm to finalize
     - Admin-driven state changes go through /admin/orders/{id}/intervene
     """
     order_service = get_order_service(db)
 
-    order = await order_service.deliver_order(order_id, current_user)
+    delivery_note = None
+    if payload is not None:
+        delivery_note = payload.delivery_note if payload.delivery_note is not None else payload.notes
+
+    order = await order_service.deliver_order(order_id, current_user, delivery_note=delivery_note)
     await send_order_system_message(
         db=db,
         order_id=order.id,
-        content=f"代练 {current_user.username} 已提交完成，等待确认",
+        content=f"打手 {current_user.username} 已结束订单，等待确认",
         meta_json={
             "event": "order_delivered",
             "order_id": order.id,
@@ -503,8 +548,8 @@ async def deliver_order(
         db,
         user_id=order.user_id,
         type=NotificationType.ORDER_DELIVERED,
-        title="代练已提交完成",
-        content=f"订单「{order.game_name}」代练已提交完成，请确认",
+        title="打手已结束订单",
+        content=f"订单「{order.game_name}」打手已结束订单，请确认",
         link=f"/orders/{order.id}",
         ref_id=order.id,
     )

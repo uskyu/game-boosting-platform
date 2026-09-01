@@ -117,7 +117,7 @@ async function retryOne(idx) {
 async function handleSubmit() {
   generalError.value = ''
   if (noteLen.value > 2000) {
-    generalError.value = '交付说明不能超过 2000 字'
+    generalError.value = '汇报说明不能超过 2000 字'
     return
   }
   if (files.value.length > MAX_FILES) {
@@ -130,7 +130,7 @@ async function handleSubmit() {
     if (uploadStates.value[i] === 'done') continue
     const r = await uploadOne(i)
     if (!r.success) {
-      generalError.value = `第 ${i + 1} 张上传失败，可重试；失败后不会提交完成`
+      generalError.value = `第 ${i + 1} 张上传失败，可重试；失败后订单不会结束`
       submitting.value = false
       return
     }
@@ -152,9 +152,9 @@ async function handleSubmit() {
 <template>
   <teleport to="body">
     <div v-if="modelValue" class="modal-scrim modal-scrim--sheet" @click.self="onClose">
-      <div class="modal-card modal-sheet !max-w-[560px]" role="dialog" aria-modal="true" aria-label="提交完成">
+      <div class="modal-card modal-sheet !max-w-[560px]" role="dialog" aria-modal="true" aria-label="结束订单">
         <div class="flex items-center justify-between gap-3">
-          <h3 class="text-lg font-semibold text-ink-1">提交完成</h3>
+          <h3 class="text-lg font-semibold text-ink-1">结束订单</h3>
           <button type="button" class="btn-ghost !min-h-[44px] !px-3" :disabled="submitting" @click="onClose">关闭</button>
         </div>
 
@@ -162,7 +162,7 @@ async function handleSubmit() {
 
         <div class="mt-4 space-y-4">
           <div>
-            <label class="label" for="deliver-note">交付说明（可选，最多 2000 字）</label>
+            <label class="label" for="deliver-note">汇报说明（可选，最多 2000 字）</label>
             <textarea
               id="deliver-note"
               v-model="note"
@@ -172,13 +172,13 @@ async function handleSubmit() {
               placeholder="例如：已完成目标段位，附截图…"
             ></textarea>
             <p class="helper-text flex justify-between gap-2">
-              <span>将随交付记录展示给老板</span>
+              <span>将随结束汇报展示给老板</span>
               <span :class="noteLen > 2000 ? 'text-danger' : 'text-ink-3'">{{ noteLen }}/2000</span>
             </p>
           </div>
 
           <div>
-            <label class="label">交付截图（可选，最多 5 张，png/jpeg/webp，单张 ≤5MB）</label>
+            <label class="label">汇报图片（可选，最多 5 张，png/jpeg/webp，单张 ≤5MB）</label>
             <input
               type="file"
               accept="image/png,image/jpeg,image/webp"
@@ -187,7 +187,7 @@ async function handleSubmit() {
               :disabled="submitting || files.length >= MAX_FILES"
               @change="onPick"
             />
-            <p class="helper-text">先逐张上传到交付附件，再提交完成；失败可重试。</p>
+            <p class="helper-text">图片会先逐张上传，全部成功后才会结束订单；失败可重试。</p>
 
             <div v-if="files.length" class="mt-3 grid grid-cols-3 gap-3 sm:grid-cols-5">
               <div v-for="(url, idx) in previews" :key="idx" class="relative overflow-hidden rounded-tile border border-line-1 bg-surface-2">
@@ -217,7 +217,7 @@ async function handleSubmit() {
 
         <div class="mt-6 flex gap-3">
           <button type="button" class="btn-secondary flex-1" :disabled="submitting" @click="onClose">取消</button>
-          <button type="button" class="btn-success flex-1" :disabled="!canSubmit" @click="handleSubmit">{{ submitting ? '提交中…' : '确认提交' }}</button>
+          <button type="button" class="btn-success flex-1" :disabled="!canSubmit" @click="handleSubmit">{{ submitting ? '提交中…' : '提交并结束订单' }}</button>
         </div>
       </div>
     </div>

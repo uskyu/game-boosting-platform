@@ -12,8 +12,8 @@ async def _create(client: AsyncClient, user: dict, **extra) -> dict:
     return response.json()
 
 
-async def test_extended_order_fields_and_default_claim_limit(client: AsyncClient, registered_user: dict):
-    order = await _create(client, registered_user, title="上分订单", intro="简介", price_min="300.00", price_max="500.00")
+async def test_extended_order_fields_and_default_claim_limit(client: AsyncClient, admin_user: dict):
+    order = await _create(client, admin_user, title="上分订单", intro="简介", price_min="300.00", price_max="500.00")
     assert order["title"] == "上分订单"
     assert order["price_min"] == "300.00"
     assert order["price_max"] == "500.00"

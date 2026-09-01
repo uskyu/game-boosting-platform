@@ -7,14 +7,14 @@ import { useChatStore } from '@/stores/chat'
 import { useOrdersStore } from '@/stores/orders'
 import { formatCount, formatPrice, formatShortDate } from '@/utils/display'
 import { ORDER_STATUS_OPTIONS, getOrderStatusBadgeClass, getOrderStatusLabel } from '@/utils/order'
-import { getGameImage } from '@/data/gameImages'
 
 /**
  * 订单大厅（IA v2：/ = 产品心脏）。
  * 顶部统计条（待接单 / 进行中 / 今日完成，大数字）→ 游戏/状态筛选一行
  * → 订单卡网格（桌面 2 列、移动 1 列）→ 空态。
- * 卡片信息层级（文档 6 节）：价格最大最显眼 → 游戏名 + 状态标签
- * → 目标段位/时间 → 打手视角主 CTA「立即抢单」。
+ * 卡片信息层级（减法）：价格最大最显眼 → 当前情况 X/Y · 剩 Z 席
+ * → 目标段位 → 底部次要信息行（需求摘要 · 游戏名 · 时间）+「查看详情 →」。
+ * 抢单两步走：整卡点击进详情，详情页内确认报名。
  */
 const router = useRouter()
 const authStore = useAuthStore()
@@ -67,8 +67,6 @@ const error = computed(() => ordersStore.error)
 const isAuthenticated = computed(() => authStore.isAuthenticated)
 const isAdmin = computed(() => authStore.isAdmin)
 const gameOptions = computed(() => [...new Set(orders.value.map((order) => order.game_name).filter(Boolean))])
-const currentUserId = computed(() => authStore.user?.id ?? null)
-const canClaimOrders = computed(() => isAuthenticated.value && !isAdmin.value)
 
 const unreadMap = computed(() => {
   return chatStore.conversations.reduce((result, conversation) => {
@@ -90,16 +88,6 @@ const hallStats = computed(() => [
 
 function getOrderUnreadCount(orderId) {
   return Number(unreadMap.value[orderId] || 0)
-}
-
-function gameBadgeStyle(gameName) {
-  const { color } = getGameImage(gameName)
-
-  // 游戏主题色为内容资产：品牌色淡底，无发光
-  return {
-    borderColor: `${color}66`,
-    background: `linear-gradient(135deg, ${color}22, ${color}10)`,
-  }
 }
 
 function getPriceLabel(order) {
@@ -139,6 +127,9 @@ function isFullOrder(order) {
 }
 
 function buildSummary(order) {
+  if (order.intro) {
+    return order.intro.length > 28 ? `${order.intro.slice(0, 28)}...` : order.intro
+  }
   const detail = order.ai_tags?.detail || {}
   const requirements = Array.isArray(detail.requirements) ? detail.requirements.filter(Boolean) : []
   const pieces = [
@@ -178,14 +169,6 @@ function resetFilters() {
 
 function goToOrder(orderId) {
   router.push({ name: 'order-detail', params: { id: orderId } })
-}
-
-async function handleAcceptOrder(orderId, event) {
-  event.stopPropagation()
-  const result = await ordersStore.acceptOrder(orderId)
-  if (!result.success) {
-    window.alert(result.error)
-  }
 }
 
 function handlePageChange(page) {
@@ -281,77 +264,51 @@ onUnmounted(() => {
         :class="['catalog-card cursor-pointer hall-order-card', { 'hall-order-card--full': isFullOrder(order) }]"
         @click="goToOrder(order.id)"
       >
-        <!-- 首行：¥价格 红24 tabular + 已接X/Y 剩Z席·待接单胶囊，满员整卡已抢空置灰 -->
+        <!-- 主数据行：¥价格 红24 tabular + 当前情况 X/Y 胶囊 + 剩 Z 席；满员已抢空徽标 + 整卡置灰 -->
         <div class="flex items-start justify-between gap-2">
           <p class="shrink-0 text-2xl font-semibold tabular-nums leading-7 text-price">{{ getPriceLabel(order) }}</p>
           <div class="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
             <span
               v-if="getClaimMeta(order).max > 0"
               class="tag !px-2.5 !py-1 tabular-nums"
-            >已接{{ getClaimMeta(order).claimed }}/{{ getClaimMeta(order).max }}</span>
+            >当前情况 {{ getClaimMeta(order).claimed }}/{{ getClaimMeta(order).max }}</span>
+            <span v-if="isFullOrder(order)" class="badge-cancelled">已抢空</span>
             <span
-              :class="isFullOrder(order) ? 'badge-cancelled' : (isOrderClaimable(order) ? 'badge-pending' : getOrderDisplayBadgeClass(order))"
-            >{{ isFullOrder(order) ? '已抢空' : (isOrderClaimable(order) ? (getClaimMeta(order).remaining != null ? '剩' + getClaimMeta(order).remaining + '席·待接单' : '待接单') : getOrderDisplayStatus(order)) }}</span>
-            <span
-              v-if="order.payment_status"
-              :class="{
-                tag: true,
-                '!bg-warning-soft !text-warning': order.payment_status === 'UNPAID',
-                '!bg-success-soft !text-success': order.payment_status === 'PAID',
-                '!bg-surface-3 !text-ink-2': order.payment_status === 'REFUNDED',
-              }"
-            >
-              {{ order.payment_status === 'UNPAID' ? '待支付' : order.payment_status === 'PAID' ? '已支付' : '已退款' }}
-            </span>
+              v-else-if="isOrderClaimable(order) && getClaimMeta(order).remaining != null"
+              class="text-[13px] tabular-nums text-ink-3"
+            >剩 {{ getClaimMeta(order).remaining }} 席</span>
+            <span v-else :class="getOrderDisplayBadgeClass(order)">{{ getOrderDisplayStatus(order) }}</span>
           </div>
         </div>
 
         <div v-if="getAttachment(order)" class="order-attachment"><img :src="getAttachment(order)" alt="订单附件" loading="lazy" /></div>
 
-        <!-- 层级 2：游戏名 + 需求摘要 -->
-        <div class="mt-3 flex items-center gap-3">
-          <div
-            class="flex h-10 w-10 shrink-0 items-center justify-center rounded-tile border text-sm font-semibold text-ink-1"
-            :style="gameBadgeStyle(order.game_name)"
-          >
-            {{ order.game_name?.slice(0, 1) || '?' }}
-          </div>
-          <div class="min-w-0 flex-1">
-            <div class="flex flex-wrap items-center gap-2">
-              <h2 class="text-[17px] font-semibold leading-6 text-ink-1">{{ order.game_name }}</h2>
-              <span v-if="getOrderUnreadCount(order.id)" class="tag !bg-warning-soft !text-warning">
+        <!-- 层级 2：订单标题为主锚点，段位降为次级（抢单动作移入详情页） -->
+        <div class="mt-3 min-w-0">
+          <p v-if="order.title" class="truncate text-[15px] font-semibold text-ink-1">{{ order.title }}</p>
+          <p v-if="order.current_rank || order.target_rank" class="mt-1 truncate text-[13px] tabular-nums" :class="order.title ? 'text-ink-2' : 'font-medium text-ink-1'">
+            {{ order.current_rank || '?' }} <span class="text-primary">→</span> {{ order.target_rank || '?' }}
+          </p>
+        </div>
+
+        <!-- 层级 3：底部次要信息行（需求摘要 + 游戏名 + 时间）与「查看详情 →」入口 -->
+        <div class="mt-4 border-t border-line-1 pt-3.5 text-[13px]">
+          <p class="truncate text-ink-2">{{ buildSummary(order) }}</p>
+          <div class="mt-2 flex items-center justify-between gap-3">
+            <div class="flex min-w-0 items-center gap-2 text-ink-2">
+              <span class="truncate font-medium">{{ order.game_name }}</span>
+              <span v-if="getOrderUnreadCount(order.id)" class="tag shrink-0 !bg-warning-soft !text-warning">
                 消息 {{ getOrderUnreadCount(order.id) }}
               </span>
+              <span class="shrink-0 text-ink-3">发布于 {{ formatShortDate(order.created_at) }}</span>
+              <span class="shrink-0 tabular-nums text-ink-3">#{{ order.id }}</span>
             </div>
-            <p class="mt-1 truncate text-[13px] text-ink-2">{{ buildSummary(order) }}</p>
-          </div>
-        </div>
-
-        <!-- 层级 3：目标段位 / 时间（首行已含席位，此处不再重复剩余名额） -->
-        <div class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[13px] text-ink-2">
-          <span v-if="order.current_rank || order.target_rank" class="tabular-nums">{{ order.current_rank || '?' }} → {{ order.target_rank || '?' }}</span>
-          <span class="text-ink-3">发布于 {{ formatShortDate(order.created_at) }}</span>
-        </div>
-
-        <!-- 层级 4：非管理员均可抢单，管理员仅查看详情 -->
-        <div class="mt-4 flex items-center justify-between gap-3 border-t border-line-1 pt-3.5">
-          <p class="text-xs tabular-nums text-ink-3">#{{ order.id }}</p>
-          <div class="flex gap-2">
-            <span v-if="canClaimOrders && isOrderClaimable(order) && order.user_id !== currentUserId" class="sr-only">可立即抢单</span>
             <button
-              v-if="canClaimOrders && isOrderClaimable(order) && order.user_id !== currentUserId"
-              class="btn-primary !px-5"
-              @click="handleAcceptOrder(order.id, $event)"
-            >
-              立即抢单
-            </button>
-            <button
-              v-else
-
-              class="btn-secondary !px-4"
+              type="button"
+              class="btn-ghost shrink-0 !min-h-[36px] !px-4 !py-1.5"
               @click.stop="goToOrder(order.id)"
             >
-              查看详情
+              查看详情 →
             </button>
           </div>
         </div>
