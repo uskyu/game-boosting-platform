@@ -275,12 +275,12 @@ onMounted(async () => {
 
 <template>
   <div class="page-shell space-y-8">
-    <section class="hero-panel scanline-overlay p-6 sm:p-8 lg:p-10">
+    <section class="hero-panel p-6 sm:p-8 lg:p-10">
       <div class="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
-        <div class="space-y-4">
+        <div class="space-y-3">
           <p class="eyebrow">发布订单</p>
-          <h1 class="section-title neon-text !text-4xl sm:!text-5xl">
-            找代练，就这几步。
+          <h1 class="section-title">
+            找代练，就这几步
           </h1>
           <p class="section-copy max-w-3xl">
             选游戏 → 写需求 → 确认发布，搞定。
@@ -289,20 +289,20 @@ onMounted(async () => {
 
         <div class="grid gap-4 sm:grid-cols-4">
           <article class="stat-card cyber-corner">
-            <p class="text-sm text-slate-400">第 1 步</p>
-            <p class="mt-2 text-xl font-semibold text-white">选游戏</p>
+            <p class="text-sm text-ink-2">第 1 步</p>
+            <p class="mt-2 text-xl font-semibold text-ink-1">选游戏</p>
           </article>
           <article class="stat-card cyber-corner">
-            <p class="text-sm text-slate-400">第 2 步</p>
-            <p class="mt-2 text-xl font-semibold text-white">写需求</p>
+            <p class="text-sm text-ink-2">第 2 步</p>
+            <p class="mt-2 text-xl font-semibold text-ink-1">写需求</p>
           </article>
           <article class="stat-card cyber-corner">
-            <p class="text-sm text-slate-400">第 3 步</p>
-            <p class="mt-2 text-xl font-semibold text-white">AI 提取</p>
+            <p class="text-sm text-ink-2">第 3 步</p>
+            <p class="mt-2 text-xl font-semibold text-ink-1">AI 提取</p>
           </article>
           <article class="stat-card cyber-corner">
-            <p class="text-sm text-slate-400">第 4 步</p>
-            <p class="mt-2 text-xl font-semibold text-white">确认发布</p>
+            <p class="text-sm text-ink-2">第 4 步</p>
+            <p class="mt-2 text-xl font-semibold text-ink-1">确认发布</p>
           </article>
         </div>
       </div>
@@ -315,19 +315,19 @@ onMounted(async () => {
       <section class="space-y-6">
         <div class="tab-bar">
           <button type="button" :class="step === 'select' ? 'tab-pill-active' : 'tab-pill'" @click="step = 'select'">
-            <span class="mr-1.5 inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary-500/20 text-[11px] font-bold text-primary-100">1</span>
+            <span class="mr-1.5 inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary-soft text-[11px] font-bold text-primary">1</span>
             选游戏
           </button>
           <button type="button" :class="step === 'describe' ? 'tab-pill-active' : 'tab-pill'" :disabled="!canGoToDescribe" @click="step = 'describe'">
-            <span class="mr-1.5 inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary-500/20 text-[11px] font-bold text-primary-100">2</span>
+            <span class="mr-1.5 inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary-soft text-[11px] font-bold text-primary">2</span>
             写需求
           </button>
           <button type="button" :class="step === 'ai' ? 'tab-pill-active' : 'tab-pill'" :disabled="!analysisResult" @click="step = 'ai'">
-            <span class="mr-1.5 inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary-500/20 text-[11px] font-bold text-primary-100">3</span>
+            <span class="mr-1.5 inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary-soft text-[11px] font-bold text-primary">3</span>
             AI 提取
           </button>
           <button type="button" :class="step === 'confirm' ? 'tab-pill-active' : 'tab-pill'" :disabled="!selectedGame" @click="step = 'confirm'">
-            <span class="mr-1.5 inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary-500/20 text-[11px] font-bold text-primary-100">4</span>
+            <span class="mr-1.5 inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary-soft text-[11px] font-bold text-primary">4</span>
             确认价格
           </button>
         </div>
@@ -335,8 +335,8 @@ onMounted(async () => {
         <section v-if="step === 'select'" class="surface-card p-6 sm:p-8">
           <div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div>
-              <p class="text-sm font-medium text-primary-100">第 1 步 / 共 4 步</p>
-              <h2 class="mt-2 text-2xl font-semibold text-white">打哪个游戏？</h2>
+              <p class="text-sm font-medium text-primary">第 1 步 / 共 4 步</p>
+              <h2 class="mt-2 text-2xl font-semibold text-ink-1">打哪个游戏？</h2>
             </div>
 
             <div class="flex flex-wrap gap-2">
@@ -365,7 +365,7 @@ onMounted(async () => {
                   <div class="flex items-center justify-between gap-4">
                     <span class="tag">{{ getGamePlatformLabel(game.platform) }}</span>
                     <div
-                      class="flex h-11 w-11 items-center justify-center rounded-tile border text-sm font-semibold text-white"
+                      class="flex h-11 w-11 items-center justify-center rounded-tile border text-sm font-semibold text-ink-1"
                       :style="buildAccentStyle(game)"
                     >
                       {{ game.name.slice(0, 1) }}
@@ -373,9 +373,9 @@ onMounted(async () => {
                   </div>
 
                   <div class="space-y-3">
-                    <h3 class="text-2xl font-semibold text-white">{{ game.name }}</h3>
-                    <p class="text-sm text-slate-300">{{ game.english_name || '热门专区' }}</p>
-                    <p class="text-sm leading-6 text-slate-300">{{ game.description }}</p>
+                    <h3 class="text-2xl font-semibold text-ink-1">{{ game.name }}</h3>
+                    <p class="text-sm text-ink-2">{{ game.english_name || '热门专区' }}</p>
+                    <p class="text-sm leading-6 text-ink-2">{{ game.description }}</p>
                   </div>
                 </div>
               </div>
@@ -400,9 +400,9 @@ onMounted(async () => {
         </section>
 
         <section v-else-if="step === 'describe'" class="surface-card p-6 sm:p-8">
-          <p class="text-sm font-medium text-primary-100">第 2 步 / 共 4 步</p>
-          <h2 class="mt-2 text-2xl font-semibold text-white">告诉我们你想打什么</h2>
-          <p class="mt-3 text-sm leading-7 text-slate-400">
+          <p class="text-sm font-medium text-primary">第 2 步 / 共 4 步</p>
+          <h2 class="mt-2 text-2xl font-semibold text-ink-1">告诉我们你想打什么</h2>
+          <p class="mt-3 text-sm leading-7 text-ink-2">
             区服、目标段位、时间偏好都写上，代练更容易理解你的需求。
           </p>
 
@@ -410,14 +410,14 @@ onMounted(async () => {
             <div class="relative z-10 flex flex-wrap items-center justify-between gap-4">
               <div class="flex items-center gap-4">
                 <div
-                  class="flex h-12 w-12 items-center justify-center rounded-tile border text-sm font-semibold text-white"
+                  class="flex h-12 w-12 items-center justify-center rounded-tile border text-sm font-semibold text-ink-1"
                   :style="selectedGameBadgeStyle"
                 >
                   {{ selectedGame?.name?.slice(0, 1) || 'G' }}
                 </div>
                 <div>
-                  <p class="text-lg font-semibold text-white">{{ selectedGame?.name }}</p>
-                  <p class="mt-2 text-sm text-slate-300">{{ selectedGame?.description }}</p>
+                  <p class="text-lg font-semibold text-ink-1">{{ selectedGame?.name }}</p>
+                  <p class="mt-2 text-sm text-ink-2">{{ selectedGame?.description }}</p>
                 </div>
               </div>
 
@@ -456,9 +456,9 @@ onMounted(async () => {
         </section>
 
         <section v-else-if="step === 'ai'" class="surface-card p-6 sm:p-8">
-          <p class="text-sm font-medium text-primary-100">第 3 步 / 共 4 步</p>
-          <h2 class="mt-2 text-2xl font-semibold text-white">AI 帮你整理好了</h2>
-          <p class="mt-3 text-sm leading-7 text-slate-400">
+          <p class="text-sm font-medium text-primary">第 3 步 / 共 4 步</p>
+          <h2 class="mt-2 text-2xl font-semibold text-ink-1">AI 帮你整理好了</h2>
+          <p class="mt-3 text-sm leading-7 text-ink-2">
             看看这些信息对不对，有问题可以返回改，没问题就继续。
           </p>
 
@@ -474,8 +474,8 @@ onMounted(async () => {
           </div>
 
           <div class="info-tile mt-6">
-            <p class="text-sm font-medium text-primary-100">AI Tags 预览</p>
-            <pre class="mt-3 overflow-x-auto rounded-tile bg-surface-0/60 p-4 text-xs leading-6 text-slate-300">{{ JSON.stringify(formData.ai_tags, null, 2) }}</pre>
+            <p class="text-sm font-medium text-primary">AI Tags 预览</p>
+            <pre class="mt-3 overflow-x-auto rounded-tile bg-surface-2 p-4 text-xs leading-6 text-ink-2">{{ JSON.stringify(formData.ai_tags, null, 2) }}</pre>
           </div>
 
           <div class="mt-6 flex flex-col gap-3 sm:flex-row">
@@ -486,9 +486,9 @@ onMounted(async () => {
         </section>
 
         <section v-else class="surface-card p-6 sm:p-8">
-          <p class="text-sm font-medium text-primary-100">第 4 步 / 共 4 步</p>
-          <h2 class="mt-2 text-2xl font-semibold text-white">最后确认一下</h2>
-          <p class="mt-3 text-sm leading-7 text-slate-400">
+          <p class="text-sm font-medium text-primary">第 4 步 / 共 4 步</p>
+          <h2 class="mt-2 text-2xl font-semibold text-ink-1">最后确认一下</h2>
+          <p class="mt-3 text-sm leading-7 text-ink-2">
             确认价格和偏好，发布后代练会直接看到你的需求。
           </p>
 
@@ -536,12 +536,12 @@ onMounted(async () => {
                 type="button"
                 class="rounded-tile border p-4 text-left transition-all duration-200 ease-smooth"
                 :class="formData.priority === option.value
-                  ? 'border-primary-300/40 bg-primary-500/10 shadow-glow-neon'
-                  : 'border-line-soft bg-white/[0.035] hover:-translate-y-0.5 hover:border-line-strong hover:bg-white/[0.06]'"
+                  ? 'border border-primary bg-surface-2'
+                  : 'border border-line-1 bg-surface-2 hover:-translate-y-0.5 hover:border-line-2 hover:bg-surface-3'"
                 @click="formData.priority = option.value"
               >
-                <p class="text-sm font-semibold text-white">{{ option.label }}</p>
-                <p class="mt-2 text-xs leading-6 text-slate-400">{{ option.hint }}</p>
+                <p class="text-sm font-semibold text-ink-1">{{ option.label }}</p>
+                <p class="mt-2 text-xs leading-6 text-ink-2">{{ option.hint }}</p>
               </button>
             </div>
           </div>
@@ -557,7 +557,7 @@ onMounted(async () => {
             </div>
             <p
               v-if="formData.service_type === '代练'"
-              class="text-xs text-slate-400 mt-1 col-span-2"
+              class="text-xs text-ink-2 mt-1 col-span-2"
             >
               代练会用你填写的账号上号，请确认信息准确。
             </p>
@@ -581,15 +581,15 @@ onMounted(async () => {
 
       <aside class="space-y-6 xl:sticky xl:top-28 xl:self-start">
         <section class="surface-card cyber-corner p-6">
-          <p class="text-sm font-medium text-primary-100">实时预览</p>
-          <h2 class="mt-2 text-2xl font-semibold text-white">这条订单准备怎么展示</h2>
+          <p class="text-sm font-medium text-primary">实时预览</p>
+          <h2 class="mt-2 text-2xl font-semibold text-ink-1">这条订单准备怎么展示</h2>
 
               <div class="cover-card p-5" :style="selectedGameStyle">
             <div class="relative z-10 flex h-full flex-col justify-between">
               <div class="flex items-center justify-between gap-4">
                 <span class="tag">{{ selectedGame?.name || '待选择游戏' }}</span>
                 <div
-                  class="flex h-11 w-11 items-center justify-center rounded-tile border text-sm font-semibold text-white"
+                  class="flex h-11 w-11 items-center justify-center rounded-tile border text-sm font-semibold text-ink-1"
                   :style="selectedGameBadgeStyle"
                 >
                   {{ selectedGame?.name?.slice(0, 1) || 'G' }}
@@ -597,8 +597,8 @@ onMounted(async () => {
               </div>
 
               <div class="space-y-3">
-                <h3 class="text-2xl font-semibold text-white">{{ formData.current_rank || '当前段位' }} <span class="text-primary-200">→</span> {{ formData.target_rank || '目标段位' }}</h3>
-                <p class="text-sm leading-6 text-slate-300">{{ description || '你输入的自然语言需求会显示在这里。' }}</p>
+                <h3 class="text-2xl font-semibold text-ink-1">{{ formData.current_rank || '当前段位' }} <span class="text-primary">→</span> {{ formData.target_rank || '目标段位' }}</h3>
+                <p class="text-sm leading-6 text-ink-2">{{ description || '你输入的自然语言需求会显示在这里。' }}</p>
               </div>
             </div>
           </div>
@@ -616,18 +616,18 @@ onMounted(async () => {
         </section>
 
         <section class="surface-card p-6">
-          <p class="text-sm font-medium text-primary-100">当前步骤建议</p>
-          <ul class="mt-4 space-y-3 text-sm leading-7 text-slate-300">
+          <p class="text-sm font-medium text-primary">当前步骤建议</p>
+          <ul class="mt-4 space-y-3 text-sm leading-7 text-ink-2">
             <li class="flex items-start gap-3">
-              <span class="mt-2 h-2 w-2 rounded-full bg-primary-300"></span>
+              <span class="mt-2 h-2 w-2 rounded-full bg-primary"></span>
               <span>先把游戏选准，专区模板和 AI 识别会更稳定。</span>
             </li>
             <li class="flex items-start gap-3">
-              <span class="mt-2 h-2 w-2 rounded-full bg-primary-300"></span>
+              <span class="mt-2 h-2 w-2 rounded-full bg-primary"></span>
               <span>描述里尽量带上区服、目标、预算和时间要求，减少来回沟通。</span>
             </li>
             <li class="flex items-start gap-3">
-              <span class="mt-2 h-2 w-2 rounded-full bg-primary-300"></span>
+              <span class="mt-2 h-2 w-2 rounded-full bg-primary"></span>
               <span>确认发布前，可以手动微调 AI 给出的服务类型和价格。</span>
             </li>
           </ul>

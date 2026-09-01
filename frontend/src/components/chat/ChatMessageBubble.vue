@@ -94,12 +94,12 @@ function closePreview() {
     >
       <div
         v-if="!isSelf"
-        class="mb-2 flex items-center gap-2 text-xs text-slate-400"
+        class="mb-2 flex items-center gap-2 text-xs text-ink-2"
       >
         <span>{{ senderName }}</span>
         <span
           v-if="isAdmin"
-          class="rounded-full border border-accent-400/40 bg-accent-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-accent-200"
+          class="rounded-full bg-warning-soft px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-warning"
         >
           管理员
         </span>
@@ -125,7 +125,7 @@ function closePreview() {
         <button
           v-if="isImage"
           type="button"
-          class="block overflow-hidden rounded-tile border border-line-soft bg-surface-0/50"
+          class="block overflow-hidden rounded-tile"
           @click="openPreview"
         >
           <img
@@ -144,11 +144,11 @@ function closePreview() {
       </div>
 
       <div
-        class="mt-2 flex items-center gap-2 text-[11px] text-slate-500"
+        class="mt-2 flex items-center gap-2 text-[11px] text-ink-3"
         :class="isSelf ? 'justify-end' : 'justify-start'"
       >
         <span>{{ displayTime }}</span>
-        <span v-if="showReadReceipt && isSelf" class="text-primary-200">已读</span>
+        <span v-if="showReadReceipt && isSelf" class="text-primary">已读</span>
       </div>
     </div>
   </div>
@@ -156,12 +156,12 @@ function closePreview() {
   <teleport to="body">
     <div
       v-if="isPreviewOpen"
-      class="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/90 p-6"
+      class="modal-scrim !z-[120]"
       @click.self="closePreview"
     >
       <button
         type="button"
-        class="absolute right-6 top-6 rounded-full border border-line-base bg-white/[0.055] px-4 py-2 text-sm text-white transition hover:border-primary-300/40 hover:text-primary-100"
+        class="absolute right-6 top-6 rounded-full border border-line-2 bg-elevated px-4 py-2 text-sm text-ink-1 transition hover:border-line-2 hover:text-primary"
         @click="closePreview"
       >
         关闭
@@ -169,7 +169,7 @@ function closePreview() {
       <img
         :src="imageUrl"
         alt="聊天图片预览"
-        class="max-h-full max-w-full rounded-card border border-line-base object-contain shadow-glow"
+        class="max-h-full max-w-full rounded-card border border-line-1 object-contain"
       />
     </div>
   </teleport>

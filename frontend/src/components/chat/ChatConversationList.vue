@@ -139,28 +139,28 @@ function handleSelect(conversation) {
             <div class="flex items-start justify-between gap-3">
               <div class="min-w-0">
                 <div class="flex flex-wrap items-center gap-2">
-                  <p class="truncate text-sm font-semibold text-white">
+                  <p class="truncate text-sm font-semibold text-ink-1">
                     {{ getTitle(conversation) }}
                   </p>
                   <span
                     v-if="hasAdmin(conversation)"
-                    class="rounded-full border border-accent-400/35 bg-accent-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-accent-200"
+                    class="rounded-full bg-warning-soft px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-warning"
                   >
                     客服介入
                   </span>
                 </div>
-                <p class="mt-1 truncate text-xs text-slate-500">
+                <p class="mt-1 truncate text-xs text-ink-3">
                   {{ getSubtitle(conversation) }}
                 </p>
               </div>
 
               <div class="flex flex-col items-end gap-2">
-                <span class="text-[11px] text-slate-500">{{ getTimestamp(conversation) }}</span>
+                <span class="text-[11px] text-ink-3">{{ getTimestamp(conversation) }}</span>
                 <ChatUnreadBadge :count="Number(conversation.unread_count || 0)" />
               </div>
             </div>
 
-            <p class="mt-4 truncate text-sm text-slate-300">
+            <p class="mt-4 truncate text-sm text-ink-2">
               {{ getPreview(conversation) }}
             </p>
           </div>

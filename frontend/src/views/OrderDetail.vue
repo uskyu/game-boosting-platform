@@ -65,10 +65,11 @@ const isDelivered = computed(() => order.value?.status === 'DELIVERED')
 const isBoostOrder = computed(() => order.value?.service_type === '代练')
 const heroStyle = computed(() => {
   const visual = getGameImage(order.value?.game_name)
+  // 刮层走主题变量：亮色白纱 / 暗色黑纱，语义文字在两态都可读
   return {
     backgroundImage: visual.hero
-      ? `linear-gradient(115deg, rgba(10,10,15,0.94), rgba(18,18,26,0.82)), url('${visual.hero}')`
-      : 'linear-gradient(135deg, rgba(10,10,15,0.96), rgba(18,18,26,0.88))',
+      ? `linear-gradient(115deg, var(--scrim-strong) 0%, var(--scrim-mid) 60%, var(--scrim-soft) 100%), url('${visual.hero}')`
+      : 'var(--surface-3)',
     backgroundPosition: 'center',
     backgroundSize: 'cover',
   }
@@ -82,7 +83,7 @@ const detailCards = computed(() => {
   return [
     { icon: 'S', label: '服务', value: order.value.service_type || '未指定' },
     { icon: 'R', label: '区服', value: order.value.server || '未指定' },
-    { icon: '$', label: '金额', value: formatPrice(order.value.price) },
+    { icon: '$', label: '金额', value: formatPrice(order.value.price), valueClass: 'text-price' },
     { icon: 'T', label: '发布时间', value: formatDateTime(order.value.created_at) },
   ]
 })
@@ -149,9 +150,9 @@ function paymentLabel(paymentStatus) {
 function paymentBadgeClass(paymentStatus) {
   return {
     tag: true,
-    '!bg-amber-400/15 !text-amber-200 !border-amber-400/30': paymentStatus === 'UNPAID',
-    '!bg-emerald-400/15 !text-emerald-200 !border-emerald-400/30': paymentStatus === 'PAID',
-    '!bg-slate-400/10 !text-slate-300 !border-slate-400/20': paymentStatus === 'REFUNDED',
+    '!bg-warning-soft !text-warning': paymentStatus === 'UNPAID',
+    '!bg-success-soft !text-success': paymentStatus === 'PAID',
+    '!bg-surface-3 !text-ink-2': paymentStatus === 'REFUNDED',
   }
 }
 
@@ -335,11 +336,9 @@ onMounted(async () => {
       <div v-if="errorMessage" class="message-error">{{ errorMessage }}</div>
       <div v-if="successMessage" class="message-success">{{ successMessage }}</div>
 
-      <section class="hero-panel scanline-overlay p-6 sm:p-8 lg:p-10" :style="heroStyle">
-        <div class="absolute inset-0 bg-gradient-to-r from-slate-950/92 via-slate-950/82 to-slate-950/64"></div>
-
+      <section class="hero-panel p-6 sm:p-8 lg:p-10" :style="heroStyle">
         <div class="relative z-10 flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
-          <div class="space-y-4">
+          <div class="space-y-3">
             <div class="flex flex-wrap items-center gap-3">
               <span class="tag">{{ order.game_name }}</span>
               <span :class="getOrderStatusBadgeClass(order.status)">{{ humanStatusLabel }}</span>
@@ -347,9 +346,9 @@ onMounted(async () => {
                 {{ paymentLabel(order.payment_status) }}
               </span>
             </div>
-            <p v-if="humanStatusSubtitle" class="mt-2 text-sm text-slate-400">{{ humanStatusSubtitle }}</p>
-            <h1 class="section-title neon-text !text-4xl sm:!text-5xl">{{ order.current_rank }} <span class="text-primary-200">→</span> {{ order.target_rank }}</h1>
-            <p class="text-sm text-slate-300">{{ compactSummary() }}</p>
+            <p v-if="humanStatusSubtitle" class="mt-1 text-sm text-ink-2">{{ humanStatusSubtitle }}</p>
+            <h1 class="section-title">{{ order.current_rank }} <span class="text-primary">→</span> {{ order.target_rank }}</h1>
+            <p class="text-sm text-ink-2">{{ compactSummary() }}</p>
           </div>
 
           <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -358,12 +357,12 @@ onMounted(async () => {
               :key="item.label"
               class="stat-card flex items-center gap-4"
             >
-              <div class="flex h-11 w-11 items-center justify-center rounded-tile border border-primary-300/35 bg-primary-500/10 text-lg font-semibold text-primary-100">
+              <div class="flex h-11 w-11 items-center justify-center rounded-tile border border-line-1 bg-primary-soft text-lg font-semibold text-primary">
                 {{ item.icon }}
               </div>
               <div>
-                <p class="text-xs uppercase tracking-[0.18em] text-slate-500">{{ item.label }}</p>
-                <p class="mt-2 text-sm font-medium text-white">{{ item.value }}</p>
+                <p class="text-xs uppercase tracking-[0.12em] text-ink-3">{{ item.label }}</p>
+                <p class="mt-2 text-sm font-medium tabular-nums text-ink-1" :class="item.valueClass">{{ item.value }}</p>
               </div>
             </article>
           </div>
@@ -373,16 +372,16 @@ onMounted(async () => {
       <div class="grid gap-6 xl:grid-cols-[1.02fr_0.98fr]">
         <section class="space-y-6">
           <article class="surface-card p-6 sm:p-8" :class="{ 'shimmer-pending': isPending }">
-            <h2 class="text-2xl font-semibold text-white">时间线</h2>
+            <h2 class="text-2xl font-semibold text-ink-1">时间线</h2>
             <div class="mt-6 space-y-4">
               <div v-for="(item, index) in timeline" :key="item.title" class="flex gap-4">
                 <div class="flex flex-col items-center">
                   <div
                     class="flex h-10 w-10 items-center justify-center rounded-tile border text-sm font-semibold transition-all duration-200"
-                    :class="item.active ? 'text-primary-100' : 'text-slate-500'"
+                    :class="item.active ? 'text-primary' : 'text-ink-3'"
                     :style="item.active
-                      ? 'border-color: rgba(255, 70, 85, 0.4); background: rgba(255, 70, 85, 0.1); box-shadow: 0 0 14px rgba(255, 70, 85, 0.18);'
-                      : 'border-color: rgba(148, 163, 184, 0.16); background: rgba(255, 255, 255, 0.03);'"
+                      ? 'border-color: var(--primary); background: var(--primary-soft);'
+                      : 'border-color: var(--line-2); background: var(--surface-2);'"
                   >
                     {{ index + 1 }}
                   </div>
@@ -390,20 +389,20 @@ onMounted(async () => {
                     v-if="index !== timeline.length - 1"
                     class="mt-2 h-12 w-px rounded-full"
                     :style="item.active
-                      ? 'background: linear-gradient(180deg, rgba(255, 70, 85, 0.75), rgba(255, 70, 85, 0.12));'
-                      : 'background: rgba(255, 255, 255, 0.07);'"
+                      ? 'background: var(--primary);'
+                      : 'background: var(--line-1);'"
                   ></div>
                 </div>
                 <div class="info-tile flex-1">
-                  <p class="text-sm font-semibold text-white">{{ item.title }}</p>
-                  <p class="mt-2 text-sm text-slate-400">{{ item.time }}</p>
+                  <p class="text-sm font-semibold text-ink-1">{{ item.title }}</p>
+                  <p class="mt-2 text-sm text-ink-2">{{ item.time }}</p>
                 </div>
               </div>
             </div>
           </article>
 
           <article class="surface-card p-6 sm:p-8">
-            <h2 class="text-2xl font-semibold text-white">关键信息</h2>
+            <h2 class="text-2xl font-semibold text-ink-1">关键信息</h2>
             <div class="mt-6 grid gap-4 sm:grid-cols-2">
               <div class="info-tile">
                 <p class="info-tile__label">需求</p>
@@ -422,7 +421,7 @@ onMounted(async () => {
                 <p v-if="order.booster" class="info-tile__value">
                   <router-link
                     :to="{ name: 'booster-profile', params: { id: order.booster_id } }"
-                    class="text-primary-200 underline-offset-4 hover:underline"
+                    class="text-primary underline-offset-4 hover:underline"
                   >{{ order.booster.username }}</router-link>
                 </p>
                 <p v-else class="info-tile__value">待接单</p>
@@ -433,7 +432,7 @@ onMounted(async () => {
 
         <aside class="surface-card h-fit p-6 sm:p-8 xl:sticky xl:top-28">
           <div class="flex items-center justify-between gap-4">
-            <h2 class="text-2xl font-semibold text-white">操作</h2>
+            <h2 class="text-2xl font-semibold text-ink-1">操作</h2>
             <span class="chat-status-pill">{{ statusMeta.label }}</span>
           </div>
 
@@ -459,12 +458,12 @@ onMounted(async () => {
             </button>
 
             <!-- LOCKED 状态提示：客户不要登号 -->
-            <p v-if="isLocked && isBoostOrder && isOwner" class="rounded-tile border border-warning/30 bg-warning/10 px-4 py-3 text-xs leading-6 text-warning">
+            <p v-if="isLocked && isBoostOrder && isOwner" class="message-warning text-xs leading-6">
               代练正在你的账号上操作，请勿登录账号，避免影响进度。
             </p>
 
             <!-- DELIVERED 状态提示：代练等待确认 -->
-            <p v-if="isDelivered && isAssignedBooster" class="rounded-tile border border-info/30 bg-info/10 px-4 py-3 text-xs leading-6 text-info">
+            <p v-if="isDelivered && isAssignedBooster" class="message-info text-xs leading-6">
               已提交完成，等待老板确认中。如超过 72 小时未确认，系统将自动完成。
             </p>
 
@@ -480,7 +479,7 @@ onMounted(async () => {
             </button>
 
             <!-- DELIVERED 状态提示：客户核查 -->
-            <p v-if="isDelivered && isOwner" class="rounded-tile border border-warning/30 bg-warning/10 px-4 py-3 text-xs leading-6 text-warning">
+            <p v-if="isDelivered && isOwner" class="message-warning text-xs leading-6">
               代练已提交完成，请核实结果。如有问题可发起争议。72 小时后将自动确认。
             </p>
 
@@ -546,10 +545,10 @@ onMounted(async () => {
 
         <div v-for="review in reviews" :key="review.id" class="stat-card">
           <div class="flex items-center justify-between gap-3">
-            <span class="text-sm text-slate-400">{{ review.reviewer?.username }}</span>
-            <span class="text-amber-300">{{ '★'.repeat(review.rating) }}{{ '☆'.repeat(5 - review.rating) }}</span>
+            <span class="text-sm text-ink-2">{{ review.reviewer?.username }}</span>
+            <span class="text-warning">{{ '★'.repeat(review.rating) }}{{ '☆'.repeat(5 - review.rating) }}</span>
           </div>
-          <p v-if="review.content" class="mt-2 text-sm text-slate-300">{{ review.content }}</p>
+          <p v-if="review.content" class="mt-2 text-sm text-ink-2">{{ review.content }}</p>
           <button
             v-if="review.reviewer_id === currentUser?.id"
             type="button"
@@ -570,7 +569,7 @@ onMounted(async () => {
               :key="star"
               type="button"
               class="text-2xl transition-transform duration-150 hover:scale-110"
-              :class="star <= reviewForm.rating ? 'text-amber-300' : 'text-slate-600'"
+              :class="star <= reviewForm.rating ? 'text-warning' : 'text-ink-3'"
               @click="reviewForm.rating = star"
             >
               ★

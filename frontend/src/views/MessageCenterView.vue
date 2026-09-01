@@ -99,11 +99,12 @@ onMounted(async () => {
 <template>
   <div class="page-shell space-y-6">
     <!-- Header -->
-    <section class="hero-panel scanline-overlay p-6 sm:p-8">
+    <section class="hero-panel p-6 sm:p-8">
       <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 class="section-title neon-text !text-4xl">消息中心</h1>
-          <p class="mt-2 text-sm text-slate-400">
+        <div class="space-y-2">
+          <p class="eyebrow">消息</p>
+          <h1 class="section-title">消息中心</h1>
+          <p class="mt-1 text-sm text-ink-2">
             {{ chatUnread + notifUnread }} 条未读
           </p>
         </div>
@@ -118,7 +119,7 @@ onMounted(async () => {
             <span>聊天</span>
             <span
               v-if="chatUnread > 0"
-              class="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary-500 px-1.5 text-[10px] font-bold text-white"
+              class="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[10px] font-bold text-on-primary"
             >{{ chatUnread }}</span>
           </button>
           <button
@@ -129,7 +130,7 @@ onMounted(async () => {
             <span>通知</span>
             <span
               v-if="notifUnread > 0"
-              class="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary-500 px-1.5 text-[10px] font-bold text-white"
+              class="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[10px] font-bold text-on-primary"
             >{{ notifUnread }}</span>
           </button>
         </div>
@@ -141,8 +142,8 @@ onMounted(async () => {
       <section class="surface-card cyber-corner p-5 sm:p-6 lg:p-8">
         <div class="mb-6 flex flex-wrap items-center justify-between gap-3">
           <div>
-            <p class="text-sm uppercase tracking-[0.22em] text-primary-200">列表</p>
-            <h2 class="mt-2 text-2xl font-semibold text-white">对话</h2>
+            <p class="text-sm uppercase tracking-[0.12em] text-primary">列表</p>
+            <h2 class="mt-2 text-2xl font-semibold text-ink-1">对话</h2>
           </div>
           <router-link to="/orders" class="btn-ghost !px-4">返回订单</router-link>
         </div>
@@ -159,13 +160,13 @@ onMounted(async () => {
     <template v-if="activeTab === 'notifications'">
       <section class="surface-card p-5 sm:p-6">
         <div class="flex flex-wrap items-center justify-between gap-3">
-          <p class="text-sm text-slate-400">
+          <p class="text-sm text-ink-2">
             共 {{ notifTotal }} 条通知，{{ notifUnread }} 条未读
           </p>
           <div class="flex gap-3">
             <button
               class="btn-ghost !px-4"
-              :class="showUnreadOnly ? 'ring-1 ring-primary-400' : ''"
+              :class="showUnreadOnly ? 'ring-1 ring-primary' : ''"
               @click="toggleUnreadFilter"
             >
               {{ showUnreadOnly ? '查看全部' : '只看未读' }}
@@ -202,19 +203,19 @@ onMounted(async () => {
           v-for="n in notifications"
           :key="n.id"
           type="button"
-          class="surface-card flex w-full items-start gap-4 !rounded-tile p-4 text-left transition-all duration-200 hover:!border-line-strong hover:bg-white/[0.055] sm:p-5"
-          :class="n.is_read ? 'opacity-60' : 'border-l-2 !border-l-primary-400 bg-primary-500/[0.05]'"
+          class="surface-card flex w-full items-start gap-4 !rounded-tile p-4 text-left transition-colors duration-base hover:bg-surface-3 sm:p-5"
+          :class="n.is_read ? 'opacity-60' : 'border-l-2 !border-l-primary'"
           @click="handleNotifClick(n)"
         >
           <span class="mt-0.5 text-2xl">{{ typeMeta(n.type).icon }}</span>
           <div class="min-w-0 flex-1">
             <div class="flex items-center gap-2">
-              <span class="text-xs text-primary-300">{{ typeMeta(n.type).label }}</span>
-              <span v-if="!n.is_read" class="h-2 w-2 rounded-full bg-primary-400 shadow-glow-neon"></span>
+              <span class="text-xs text-primary">{{ typeMeta(n.type).label }}</span>
+              <span v-if="!n.is_read" class="h-2 w-2 rounded-full bg-primary"></span>
             </div>
-            <h3 class="mt-1 text-sm font-semibold text-white">{{ n.title }}</h3>
-            <p class="mt-1 text-sm text-slate-400">{{ n.content }}</p>
-            <p class="mt-2 text-xs text-slate-500">{{ formatTime(n.created_at) }}</p>
+            <h3 class="mt-1 text-sm font-semibold text-ink-1">{{ n.title }}</h3>
+            <p class="mt-1 text-sm text-ink-2">{{ n.content }}</p>
+            <p class="mt-2 text-xs text-ink-3">{{ formatTime(n.created_at) }}</p>
           </div>
         </button>
       </section>

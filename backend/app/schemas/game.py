@@ -79,7 +79,7 @@ class GameBase(BaseModel):
     color_theme: str | None = Field(default=None, max_length=7, description="主题色")
     service_template: GameServiceTemplate = Field(description="服务模板")
     description: str | None = Field(default=None, max_length=100, description="一句话简介")
-    is_active: bool = Field(default=True, description="是否上架")
+    is_active: bool = Field(default=False, description="是否上架（默认下架，由管理员上架）")
     sort_order: int = Field(default=0, ge=0, description="排序权重")
 
     model_config = ConfigDict(extra="forbid")

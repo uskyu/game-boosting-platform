@@ -156,12 +156,12 @@ onMounted(async () => {
 
 <template>
   <div class="page-shell space-y-8">
-    <section class="hero-panel scanline-overlay p-6 sm:p-8 lg:p-10">
+    <section class="hero-panel p-6 sm:p-8 lg:p-10">
       <div class="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
-        <div class="space-y-4">
+        <div class="space-y-3">
           <p class="eyebrow">陪玩服务</p>
-          <h1 class="section-title neon-text !text-4xl sm:!text-5xl">
-            找陪玩，也能上架自己的服务。
+          <h1 class="section-title">
+            找陪玩，也能上架自己的服务
           </h1>
           <p class="section-copy max-w-3xl">
             按游戏、类型、价格筛。点进卡片，直接下单。
@@ -169,17 +169,17 @@ onMounted(async () => {
         </div>
 
         <div class="grid gap-4 sm:grid-cols-3">
-          <article class="stat-card cyber-corner">
-            <p class="text-3xl font-semibold text-white">{{ pagination.total }}</p>
-            <p class="mt-2 text-sm text-slate-300">现在可看服务</p>
+          <article class="stat-card">
+            <p class="stat-value text-ink-1">{{ pagination.total }}</p>
+            <p class="mt-1.5 text-[13px] text-ink-2">现在可看服务</p>
           </article>
-          <article class="stat-card cyber-corner">
-            <p class="text-3xl font-semibold text-white">{{ gamesStore.catalogGames.length }}</p>
-            <p class="mt-2 text-sm text-slate-300">覆盖游戏</p>
+          <article class="stat-card">
+            <p class="stat-value text-ink-1">{{ gamesStore.catalogGames.length }}</p>
+            <p class="mt-1.5 text-[13px] text-ink-2">覆盖游戏</p>
           </article>
-          <article class="stat-card cyber-corner">
-            <p class="text-3xl font-semibold text-white">{{ isBooster ? myServices.length : '实时' }}</p>
-            <p class="mt-2 text-sm text-slate-300">{{ isBooster ? '我发布的' : '实时更新' }}</p>
+          <article class="stat-card">
+            <p class="stat-value text-ink-1">{{ isBooster ? myServices.length : '实时' }}</p>
+            <p class="mt-1.5 text-[13px] text-ink-2">{{ isBooster ? '我发布的' : '实时更新' }}</p>
           </article>
         </div>
       </div>
@@ -309,7 +309,7 @@ onMounted(async () => {
             <div class="flex items-center justify-between gap-4">
               <span class="tag">{{ service.service_type }}</span>
               <div
-                class="flex h-11 w-11 items-center justify-center rounded-tile border text-sm font-semibold text-white"
+                class="flex h-11 w-11 items-center justify-center rounded-tile border text-sm font-semibold text-ink-1"
                 :style="buildAccentStyle(getGame(service))"
               >
                 服
@@ -317,9 +317,9 @@ onMounted(async () => {
             </div>
 
             <div class="space-y-3">
-              <p class="text-sm text-slate-300">{{ getGame(service)?.name || `游戏 #${service.game_id}` }}</p>
-              <h2 class="text-2xl font-semibold text-white">{{ service.title }}</h2>
-              <p class="text-sm leading-6 text-slate-300">{{ service.description || '这张服务卡片已经准备好接单。' }}</p>
+              <p class="text-sm text-ink-2">{{ getGame(service)?.name || `游戏 #${service.game_id}` }}</p>
+              <h2 class="text-2xl font-semibold text-ink-1">{{ service.title }}</h2>
+              <p class="text-sm leading-6 text-ink-2">{{ service.description || '这张服务卡片已经准备好接单。' }}</p>
             </div>
           </div>
         </div>
@@ -336,12 +336,12 @@ onMounted(async () => {
 
         <div class="mt-4 flex items-center justify-between gap-4">
           <div>
-            <p class="text-xs uppercase tracking-[0.18em] text-slate-500">每小时</p>
-            <p class="mt-2 text-2xl font-semibold text-accent-300">{{ formatPrice(service.price_per_hour) }}</p>
+            <p class="text-xs uppercase tracking-[0.18em] text-ink-3">每小时</p>
+            <p class="mt-2 text-2xl font-semibold tabular-nums text-price">{{ formatPrice(service.price_per_hour) }}</p>
           </div>
-          <div class="text-right text-sm text-slate-400">
+          <div class="text-right text-sm text-ink-2">
             <p>成交 {{ service.order_count }} 单</p>
-            <p class="mt-2 font-medium text-primary-300">{{ getServiceTypeCTA(service.service_type) }}</p>
+            <p class="mt-2 font-medium text-primary">{{ getServiceTypeCTA(service.service_type) }}</p>
           </div>
         </div>
       </button>
@@ -365,13 +365,13 @@ onMounted(async () => {
         <article
           v-for="service in myServices"
           :key="`my-${service.id}`"
-          class="info-tile !p-5 transition-all duration-200 hover:!border-line-strong hover:bg-white/[0.055]"
+          class="info-tile !p-5 transition-colors duration-base hover:bg-surface-3"
         >
           <div class="flex items-start justify-between gap-4">
             <div>
-              <p class="text-sm text-primary-100">{{ getGame(service)?.name || `游戏 #${service.game_id}` }}</p>
-              <h3 class="mt-2 text-xl font-semibold text-white">{{ service.title }}</h3>
-              <p class="mt-3 text-sm leading-6 text-slate-400">{{ service.description || '暂无补充说明。' }}</p>
+              <p class="text-sm text-primary">{{ getGame(service)?.name || `游戏 #${service.game_id}` }}</p>
+              <h3 class="mt-2 text-xl font-semibold text-ink-1">{{ service.title }}</h3>
+              <p class="mt-3 text-sm leading-6 text-ink-2">{{ service.description || '暂无补充说明。' }}</p>
             </div>
             <span :class="service.is_available ? 'badge-approved' : 'badge-cancelled'">
               {{ service.is_available ? '上架中' : '已下架' }}
@@ -379,7 +379,7 @@ onMounted(async () => {
           </div>
 
           <div class="mt-5 flex items-center justify-between gap-4">
-            <p class="text-xl font-semibold text-accent-300">{{ formatPrice(service.price_per_hour) }}</p>
+            <p class="text-xl font-semibold tabular-nums text-price">{{ formatPrice(service.price_per_hour) }}</p>
             <div class="flex gap-2">
               <button class="btn-secondary !px-4 !py-2" @click="openService(service.id)">查看</button>
               <button

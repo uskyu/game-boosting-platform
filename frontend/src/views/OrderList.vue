@@ -37,9 +37,9 @@ const unreadMap = computed(() => {
 })
 
 const headerStats = computed(() => [
-  { icon: '◈', value: formatCount(orders.value.length), label: '当前页' },
-  { icon: '⌁', value: formatCount(orders.value.filter((item) => item.status === 'PENDING').length), label: '待接单' },
-  { icon: '▣', value: formatCount(orders.value.filter((item) => item.status === 'LOCKED').length), label: '进行中' },
+  { value: formatCount(orders.value.length), label: '当前页' },
+  { value: formatCount(orders.value.filter((item) => item.status === 'PENDING').length), label: '待接单' },
+  { value: formatCount(orders.value.filter((item) => item.status === 'LOCKED').length), label: '进行中' },
 ])
 
 function getOrderUnreadCount(orderId) {
@@ -49,10 +49,10 @@ function getOrderUnreadCount(orderId) {
 function gameBadgeStyle(gameName) {
   const { color } = getGameImage(gameName)
 
+  // 游戏主题色为内容资产：品牌色淡底，无发光
   return {
-    borderColor: `${color}88`,
-    background: `linear-gradient(135deg, ${color}30, rgba(15, 23, 42, 0.82))`,
-    boxShadow: `0 0 18px ${color}33`,
+    borderColor: `${color}66`,
+    background: `linear-gradient(135deg, ${color}22, ${color}10)`,
   }
 }
 
@@ -137,31 +137,32 @@ onUnmounted(() => {
 
 <template>
   <div class="page-shell space-y-6">
-    <section class="hero-panel scanline-overlay p-6 sm:p-8">
-      <div class="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
-        <div class="flex flex-wrap gap-4">
-          <article
-            v-for="item in headerStats"
-            :key="item.label"
-            class="stat-card flex min-w-[140px] items-center gap-4"
-          >
-            <div class="flex h-11 w-11 items-center justify-center rounded-tile border border-primary-300/35 bg-primary-500/10 text-lg font-semibold text-primary-100">
-              {{ item.icon }}
-            </div>
-            <div>
-              <p class="text-2xl font-semibold text-white">{{ item.value }}</p>
-              <p class="mt-1 text-xs uppercase tracking-[0.18em] text-slate-500">{{ item.label }}</p>
-            </div>
-          </article>
+    <section class="hero-panel p-6 sm:p-8">
+      <div class="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+        <div class="space-y-3">
+          <p class="eyebrow">我的订单</p>
+          <h1 class="section-title">订单列表</h1>
+          <p class="section-copy max-w-xl">全部需求的列表视图，可按游戏与状态筛选。</p>
         </div>
 
         <router-link
           v-if="!isBooster && !isAdmin"
           to="/orders/create"
-          class="btn-primary px-6 py-3"
+          class="btn-primary shrink-0 self-start px-6"
         >
           发布需求
         </router-link>
+      </div>
+
+      <div class="mt-6 grid grid-cols-3 gap-3 sm:gap-4">
+        <article
+          v-for="item in headerStats"
+          :key="item.label"
+          class="stat-card"
+        >
+          <p class="stat-value text-ink-1">{{ item.value }}</p>
+          <p class="mt-1.5 text-[13px] text-ink-2">{{ item.label }}</p>
+        </article>
       </div>
     </section>
 
@@ -212,20 +213,20 @@ onUnmounted(() => {
         <div class="flex items-start justify-between gap-4">
           <div class="flex items-start gap-4">
             <div
-              class="flex h-14 w-14 items-center justify-center rounded-tile border text-lg font-semibold text-white"
+              class="flex h-14 w-14 items-center justify-center rounded-tile border text-lg font-semibold text-ink-1"
               :style="gameBadgeStyle(order.game_name)"
             >
               {{ order.game_name?.slice(0, 1) || '?' }}
             </div>
 
-            <div class="space-y-3">
+              <div class="space-y-3">
               <div class="flex flex-wrap items-center gap-2">
-                <h2 class="text-xl font-semibold text-white">{{ order.game_name }}</h2>
-                <span v-if="getOrderUnreadCount(order.id)" class="tag border-accent-400/25 bg-accent-500/10 text-accent-100">
+                <h2 class="text-xl font-semibold text-ink-1">{{ order.game_name }}</h2>
+                <span v-if="getOrderUnreadCount(order.id)" class="tag !bg-warning-soft !text-warning">
                   消息 {{ getOrderUnreadCount(order.id) }}
                 </span>
               </div>
-              <p class="text-sm text-slate-400">{{ buildSummary(order) }}</p>
+              <p class="text-sm text-ink-2">{{ buildSummary(order) }}</p>
             </div>
           </div>
 
@@ -237,9 +238,9 @@ onUnmounted(() => {
               v-if="order.payment_status"
               :class="{
                 tag: true,
-                '!bg-amber-400/15 !text-amber-200 !border-amber-400/30': order.payment_status === 'UNPAID',
-                '!bg-emerald-400/15 !text-emerald-200 !border-emerald-400/30': order.payment_status === 'PAID',
-                '!bg-slate-400/10 !text-slate-300 !border-slate-400/20': order.payment_status === 'REFUNDED',
+                '!bg-warning-soft !text-warning': order.payment_status === 'UNPAID',
+                '!bg-success-soft !text-success': order.payment_status === 'PAID',
+                '!bg-surface-3 !text-ink-2': order.payment_status === 'REFUNDED',
               }"
             >
               {{ order.payment_status === 'UNPAID' ? '待支付' : order.payment_status === 'PAID' ? '已支付' : '已退款' }}
@@ -254,7 +255,7 @@ onUnmounted(() => {
           </div>
           <div class="info-tile">
             <p class="info-tile__label">价格</p>
-            <p class="info-tile__value text-base font-semibold text-accent-200">{{ formatPrice(order.price) }}</p>
+            <p class="info-tile__value text-base font-semibold tabular-nums text-price">{{ formatPrice(order.price) }}</p>
           </div>
           <div class="info-tile">
             <p class="info-tile__label">时间</p>
@@ -262,8 +263,8 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <div class="mt-5 flex items-center justify-between gap-4 border-t border-line-soft pt-4">
-          <p class="text-sm text-slate-500">#{{ order.id }}</p>
+        <div class="mt-5 flex items-center justify-between gap-4 border-t border-line-1 pt-4">
+          <p class="text-sm text-ink-3">#{{ order.id }}</p>
           <div class="flex gap-2">
             <button
               v-if="isBooster && order.status === 'PENDING' && order.user_id !== currentUserId"
@@ -286,7 +287,7 @@ onUnmounted(() => {
 
     <section v-if="pagination.pages > 1" class="surface-card p-5">
       <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <p class="text-sm text-slate-400">
+        <p class="text-sm text-ink-2">
           {{ pagination.page }} / {{ pagination.pages }} · {{ formatCount(pagination.total) }}
         </p>
 

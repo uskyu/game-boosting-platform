@@ -62,8 +62,8 @@ onMounted(async () => {
       </button>
 
       <div class="text-right">
-        <p class="text-xs uppercase tracking-[0.24em] text-primary-200">会话</p>
-        <p class="mt-2 text-sm text-slate-400">
+        <p class="text-xs uppercase tracking-[0.12em] text-primary">会话</p>
+        <p class="mt-2 text-sm text-ink-2">
           {{ activeConversation?.order ? `订单 #${activeConversation.order.id}` : `会话 #${normalizedConversationId}` }}
         </p>
       </div>
@@ -73,8 +73,8 @@ onMounted(async () => {
       <aside class="surface-card cyber-corner p-4 sm:p-5">
         <div class="mb-4 flex items-center justify-between gap-3 px-2">
           <div>
-            <p class="text-xs uppercase tracking-[0.22em] text-primary-200">列表</p>
-            <h2 class="mt-2 text-xl font-semibold text-white">消息列表</h2>
+            <p class="text-xs uppercase tracking-[0.12em] text-primary">列表</p>
+            <h2 class="mt-2 text-xl font-semibold text-ink-1">消息列表</h2>
           </div>
           <router-link to="/orders" class="btn-ghost !px-4">
             订单

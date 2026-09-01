@@ -103,7 +103,7 @@ class Game(TimestampMixin, Base):
     )
 
     is_active: Mapped[bool] = mapped_column(
-        default=True,
+        default=False,  # 默认下架：老板在后台自行上架要用的游戏
         nullable=False,
         index=True,
     )

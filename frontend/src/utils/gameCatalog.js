@@ -73,10 +73,11 @@ export function getGameServiceTypes(game) {
 export function buildGameSurfaceStyle(game) {
   const visual = resolveGameVisual(game)
 
+  // 刮层走主题变量（--scrim-*，亮/暗各自调校），游戏图与品牌色保留为内容资产
   return {
     backgroundImage: visual.hero
-      ? `linear-gradient(135deg, rgba(2, 6, 23, 0.86), rgba(15, 23, 42, 0.82)), url('${visual.hero}')`
-      : 'linear-gradient(135deg, rgba(10,10,15,0.96), rgba(18,18,26,0.88))',
+      ? `linear-gradient(115deg, var(--scrim-strong) 0%, var(--scrim-mid) 55%, var(--scrim-soft) 100%), url('${visual.hero}')`
+      : 'var(--surface-3)',
     backgroundPosition: 'center',
     backgroundSize: 'cover',
   }
@@ -86,9 +87,9 @@ export function buildAccentStyle(game) {
   const visual = resolveGameVisual(game)
   const color = visual.color
 
+  // 游戏主题色小徽标（内容资产）：品牌色 8–15% 透明底，无发光
   return {
-    borderColor: `${color}88`,
-    background: `linear-gradient(135deg, ${color}24, rgba(15, 23, 42, 0.86))`,
-    boxShadow: `0 0 22px ${color}33`,
+    borderColor: `${color}66`,
+    background: `linear-gradient(135deg, ${color}26, ${color}12)`,
   }
 }

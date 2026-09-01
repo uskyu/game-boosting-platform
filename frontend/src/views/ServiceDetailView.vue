@@ -126,17 +126,15 @@ onMounted(async () => {
     </div>
 
     <template v-else-if="service">
-      <section class="hero-panel scanline-overlay p-6 sm:p-8 lg:p-10" :style="buildGameSurfaceStyle(game)">
-        <div class="absolute inset-0 bg-gradient-to-r from-slate-950/92 via-slate-950/82 to-slate-950/66"></div>
-
+      <section class="hero-panel p-6 sm:p-8 lg:p-10" :style="buildGameSurfaceStyle(game)">
         <div class="relative z-10 grid gap-8 lg:grid-cols-[1.08fr_0.92fr] lg:items-end">
-          <div class="space-y-4">
+          <div class="space-y-3">
             <div class="flex flex-wrap items-center gap-3">
               <span class="eyebrow">{{ game?.name || `游戏 #${service.game_id}` }}</span>
               <span class="tag">{{ service.service_type }}</span>
               <span class="tag">{{ getGamePlatformLabel(game?.platform) }}</span>
             </div>
-            <h1 class="section-title neon-text !text-4xl sm:!text-5xl">{{ service.title }}</h1>
+            <h1 class="section-title">{{ service.title }}</h1>
             <p class="section-copy max-w-3xl">
               {{ service.description || '这张卡片可以直接下单。' }}
             </p>
@@ -153,17 +151,17 @@ onMounted(async () => {
           </div>
 
           <div class="grid gap-4 sm:grid-cols-3">
-            <article class="stat-card cyber-corner">
-              <p class="text-sm text-slate-400">每小时价格</p>
-              <p class="mt-2 text-3xl font-semibold text-accent-300">{{ formatPrice(service.price_per_hour) }}</p>
+            <article class="stat-card">
+              <p class="text-[13px] text-ink-2">每小时价格</p>
+              <p class="stat-value mt-1.5 text-price">{{ formatPrice(service.price_per_hour) }}</p>
             </article>
-            <article class="stat-card cyber-corner">
-              <p class="text-sm text-slate-400">已完成订单</p>
-              <p class="mt-2 text-3xl font-semibold text-white">{{ service.order_count }}</p>
+            <article class="stat-card">
+              <p class="text-[13px] text-ink-2">已完成订单</p>
+              <p class="stat-value mt-1.5 text-ink-1">{{ service.order_count }}</p>
             </article>
-            <article class="stat-card cyber-corner">
-              <p class="text-sm text-slate-400">当前状态</p>
-              <p class="mt-2 text-3xl font-semibold text-white">{{ service.is_available ? '可下单' : '已下架' }}</p>
+            <article class="stat-card">
+              <p class="text-[13px] text-ink-2">当前状态</p>
+              <p class="stat-value mt-1.5 text-ink-1">{{ service.is_available ? '可下单' : '已下架' }}</p>
             </article>
           </div>
         </div>
@@ -171,7 +169,7 @@ onMounted(async () => {
 
       <div class="grid gap-6 xl:grid-cols-[0.98fr_1.02fr]">
         <section class="surface-card p-6 sm:p-8">
-          <h2 class="text-2xl font-semibold text-white">服务信息</h2>
+          <h2 class="text-2xl font-semibold text-ink-1">服务信息</h2>
 
           <div class="mt-6 grid gap-4 sm:grid-cols-2">
             <div class="info-tile">
@@ -193,14 +191,14 @@ onMounted(async () => {
           </div>
 
           <div class="info-tile mt-6">
-            <p class="text-sm font-medium text-primary-100">服务描述</p>
-            <p class="mt-3 text-sm leading-7 text-slate-300">
+            <p class="text-sm font-medium text-primary">服务描述</p>
+            <p class="mt-3 text-sm leading-7 text-ink-2">
               {{ service.description || '服务发布者暂时没有补充更多说明。' }}
             </p>
           </div>
 
           <div class="info-tile mt-6">
-            <p class="text-sm font-medium text-primary-100">标签</p>
+            <p class="text-sm font-medium text-primary">标签</p>
             <div class="mt-3 flex flex-wrap gap-2">
               <span
                 v-for="tag in (service.tags || serviceTypes)"
@@ -215,8 +213,8 @@ onMounted(async () => {
 
         <aside class="surface-card p-6 sm:p-8">
           <template v-if="!authStore.isAuthenticated">
-            <h2 class="text-2xl font-semibold text-white">先登录再下单</h2>
-            <p class="mt-3 text-sm leading-7 text-slate-400">
+            <h2 class="text-2xl font-semibold text-ink-1">先登录再下单</h2>
+            <p class="mt-3 text-sm leading-7 text-ink-2">
               服务详情可以先看，但发起订单前需要先登录账号。
             </p>
             <router-link class="btn-primary mt-6" :to="{ name: 'login', query: { redirect: `/services/${service.id}` } }">
@@ -225,7 +223,7 @@ onMounted(async () => {
           </template>
 
           <template v-else-if="isOwner">
-            <h2 class="text-2xl font-semibold text-white">管理你的服务</h2>
+            <h2 class="text-2xl font-semibold text-ink-1">管理你的服务</h2>
 
             <div v-if="submitError" class="message-error mt-4">{{ submitError }}</div>
             <div v-if="submitMessage" class="message-success mt-4">{{ submitMessage }}</div>
@@ -260,7 +258,7 @@ onMounted(async () => {
             </template>
 
             <template v-else>
-              <p class="mt-3 text-sm leading-7 text-slate-400">这张服务卡片属于你，可以编辑信息。</p>
+              <p class="mt-3 text-sm leading-7 text-ink-2">这张服务卡片属于你，可以编辑信息。</p>
               <div class="mt-4 flex gap-3">
                 <button class="btn-primary !px-4 !py-2" @click="startEdit">编辑服务</button>
                 <router-link class="btn-secondary !px-4 !py-2" :to="{ name: 'services' }">返回列表</router-link>
@@ -269,8 +267,8 @@ onMounted(async () => {
           </template>
 
           <template v-else-if="!canOrder">
-            <h2 class="text-2xl font-semibold text-white">当前无需下单</h2>
-            <p class="mt-3 text-sm leading-7 text-slate-400">
+            <h2 class="text-2xl font-semibold text-ink-1">当前无需下单</h2>
+            <p class="mt-3 text-sm leading-7 text-ink-2">
               当前账号身份不适合直接从服务卡片下单。
             </p>
             <router-link class="btn-secondary mt-6" :to="{ name: 'services' }">
@@ -279,8 +277,8 @@ onMounted(async () => {
           </template>
 
           <template v-else>
-            <h2 class="text-2xl font-semibold text-white">从服务卡片直接下单</h2>
-            <p class="mt-3 text-sm leading-7 text-slate-400">
+            <h2 class="text-2xl font-semibold text-ink-1">从服务卡片直接下单</h2>
+            <p class="mt-3 text-sm leading-7 text-ink-2">
               下单后会直接开聊天。
             </p>
 

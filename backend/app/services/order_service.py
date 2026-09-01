@@ -107,11 +107,17 @@ class OrderService:
 
         Raises:
             HTTPException: If user is not allowed to create orders.
+
+        Notes:
+            - USER（普通客户）下单：订单进入自己的订单列表。
+            - ADMIN（老板）发布订单：user_id=管理员自己 id、status=PENDING、
+              booster_id=None，订单进入公共大厅供打手抢单。
+            - BOOSTER 不允许发单。
         """
-        if user.role != UserRole.USER:
+        if user.role not in (UserRole.USER, UserRole.ADMIN):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="只有普通用户可以下单",
+                detail="只有普通用户可以下单（管理员可直接发布订单，代练不能发单）",
             )
 
         game = await self._resolve_game(

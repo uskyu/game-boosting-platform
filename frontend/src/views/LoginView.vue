@@ -72,8 +72,8 @@ function togglePassword() {
 onMounted(async () => {
   await gamesStore.ensureCatalog()
 
-  // 录视频期间默认展示和平精英；缺图阶段保留 fallback 到 randomGame。
-  const featuredGame = gamesStore.catalogGames.find((game) => game.name === '和平精英') || gamesStore.randomGame
+  // 默认展示三角洲行动（有本地素材的旗舰游戏）；缺图阶段保留 fallback 到 randomGame。
+  const featuredGame = gamesStore.catalogGames.find((game) => game.name === '三角洲行动') || gamesStore.randomGame
   const visual = resolveGameVisual(featuredGame)
   const modes = getGameServiceTypes(featuredGame).slice(0, 2).join(' / ')
 
@@ -96,8 +96,8 @@ onMounted(async () => {
     <div class="space-y-6">
       <div class="space-y-1.5">
         <p class="eyebrow">{{ copy.accountAccess }}</p>
-        <h2 class="mt-4 text-3xl font-semibold text-white">{{ copy.signIn }}</h2>
-        <p class="text-sm text-slate-400">登录后继续你的需求、订单和对话。</p>
+        <h2 class="mt-2 text-2xl font-semibold text-ink-1">{{ copy.signIn }}</h2>
+        <p class="text-sm text-ink-2">登录后继续你的需求、订单和对话。</p>
       </div>
 
       <div v-if="errorMessage" class="message-error">
@@ -124,7 +124,7 @@ onMounted(async () => {
         <div>
           <div class="mb-1.5 flex items-center justify-between">
             <label for="password" class="label !mb-0">{{ copy.password }}</label>
-            <button type="button" class="text-xs uppercase tracking-[0.18em] text-slate-400 transition-colors hover:text-white" @click="togglePassword">
+            <button type="button" class="text-xs uppercase tracking-[0.12em] text-ink-2 transition-colors hover:text-ink-1" @click="togglePassword">
               {{ showPassword ? copy.hide : copy.show }}
             </button>
           </div>

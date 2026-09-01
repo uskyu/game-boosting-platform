@@ -90,6 +90,11 @@ async function updateProfile() {
   savingProfile.value = false
 }
 
+async function handleLogout() {
+  authStore.logout()
+  router.push({ name: 'login' })
+}
+
 async function changePassword() {
   passwordMessage.value = { type: '', text: '' }
   if (!canSubmitPassword.value) {
@@ -149,33 +154,46 @@ onMounted(async () => {
 
 <template>
   <div class="page-shell space-y-6">
-    <section class="hero-panel scanline-overlay p-6 sm:p-8">
+    <section class="hero-panel p-6 sm:p-8">
       <div class="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
-        <div class="flex items-center gap-5">
-          <div class="relative">
-            <div class="absolute -inset-1 rounded-[24px] bg-gradient-to-br from-primary-500/50 via-accent-400/30 to-transparent opacity-70 blur-[6px]" aria-hidden="true"></div>
-            <div class="relative flex h-20 w-20 items-center justify-center rounded-[24px] border border-primary-300/40 bg-primary-500/10 text-3xl font-semibold text-primary-100">
-              {{ avatarText }}
+        <div class="space-y-4">
+          <div class="flex items-center gap-5">
+            <div class="relative">
+              <div class="relative flex h-16 w-16 items-center justify-center rounded-[22px] border border-line-1 bg-primary-soft text-2xl font-semibold text-primary">
+                {{ avatarText }}
+              </div>
+            </div>
+            <div class="space-y-2">
+              <div class="flex flex-wrap items-center gap-3">
+                <p class="eyebrow">我的</p>
+                <span :class="roleMeta.badgeClass">{{ roleMeta.label }}</span>
+              </div>
+              <h1 class="section-title">{{ user?.username || '个人中心' }}</h1>
+              <p class="text-sm text-ink-2">{{ user?.email }}</p>
             </div>
           </div>
-          <div class="space-y-2">
-            <div class="flex flex-wrap items-center gap-3">
-              <h1 class="section-title neon-text !text-4xl">{{ user?.username || '个人中心' }}</h1>
-              <span :class="roleMeta.badgeClass">{{ roleMeta.label }}</span>
-            </div>
-            <p class="text-sm text-slate-400">{{ user?.email }}</p>
+
+          <!-- “我的”页快捷入口：我的订单 / 陪玩服务 / 钱包 / 设置 / 退出登录 -->
+          <div class="flex flex-wrap items-center gap-2">
+            <router-link to="/orders" class="btn-secondary !px-4">我的订单</router-link>
+            <router-link v-if="user?.role !== 'ADMIN'" to="/services" class="btn-secondary !px-4">
+              {{ user?.role === 'BOOSTER' ? '接单工作台' : '陪玩市场' }}
+            </router-link>
+            <router-link to="/wallet" class="btn-secondary !px-4">钱包</router-link>
+            <router-link to="/settings" class="btn-secondary !px-4">设置</router-link>
+            <button type="button" class="btn-ghost !px-4" @click="handleLogout">退出登录</button>
           </div>
         </div>
 
         <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <article class="stat-gradient stat-gradient-primary xl:col-span-1">
-            <p class="text-xs font-medium uppercase tracking-[0.16em] text-slate-400">可用余额</p>
-            <p class="mt-2.5 text-2xl font-semibold text-primary-100">{{ formatPrice(walletStore.wallet?.available_balance ?? 0) }}</p>
+          <article class="stat-card xl:col-span-1">
+            <p class="text-xs font-medium uppercase tracking-[0.12em] text-ink-2">可用余额</p>
+            <p class="mt-2.5 text-2xl font-semibold tabular-nums text-ink-1">{{ formatPrice(walletStore.wallet?.available_balance ?? 0) }}</p>
           </article>
-          <article class="stat-card"><p class="text-sm text-slate-400">注册</p><p class="mt-2 text-lg font-semibold text-white">{{ formatDate(user?.created_at) }}</p></article>
-          <article class="stat-card"><p class="text-sm text-slate-400">账号</p><p class="mt-2 text-lg font-semibold text-white">{{ user?.is_active ? '正常' : '停用' }}</p></article>
-          <article class="stat-card"><p class="text-sm text-slate-400">申请</p><p class="mt-2 text-lg font-semibold text-white">{{ applicationMeta.label }}</p></article>
-          <article v-if="user?.role === 'BOOSTER' && application" class="stat-card sm:col-span-2 xl:col-span-4"><p class="text-sm text-slate-400">接单额度</p><p class="mt-2 text-lg font-semibold text-white">{{ application.booster_quota ?? 0 }} 单</p></article>
+          <article class="stat-card"><p class="text-sm text-ink-2">注册</p><p class="mt-2 text-lg font-semibold text-ink-1">{{ formatDate(user?.created_at) }}</p></article>
+          <article class="stat-card"><p class="text-sm text-ink-2">账号</p><p class="mt-2 text-lg font-semibold text-ink-1">{{ user?.is_active ? '正常' : '停用' }}</p></article>
+          <article class="stat-card"><p class="text-sm text-ink-2">申请</p><p class="mt-2 text-lg font-semibold text-ink-1">{{ applicationMeta.label }}</p></article>
+          <article v-if="user?.role === 'BOOSTER' && application" class="stat-card sm:col-span-2 xl:col-span-4"><p class="text-sm text-ink-2">接单额度</p><p class="mt-2 text-lg font-semibold text-ink-1">{{ application.booster_quota ?? 0 }} 单</p></article>
         </div>
       </div>
     </section>
@@ -184,8 +202,8 @@ onMounted(async () => {
       <section class="space-y-6">
         <article class="surface-card p-6 sm:p-8">
           <div class="flex items-center justify-between gap-4">
-            <h2 class="text-2xl font-semibold text-white">资料</h2>
-            <span class="text-sm text-slate-500">编辑</span>
+            <h2 class="text-2xl font-semibold text-ink-1">资料</h2>
+            <span class="text-sm text-ink-3">编辑</span>
           </div>
 
           <div v-if="profileMessage.text" class="mt-4" :class="messageClass(profileMessage.type)">{{ profileMessage.text }}</div>
@@ -211,8 +229,8 @@ onMounted(async () => {
 
         <article class="surface-card p-6 sm:p-8">
           <div class="flex items-center justify-between gap-4">
-            <h2 class="text-2xl font-semibold text-white">密码</h2>
-            <span class="text-sm text-slate-500">安全</span>
+            <h2 class="text-2xl font-semibold text-ink-1">密码</h2>
+            <span class="text-sm text-ink-3">安全</span>
           </div>
 
           <div v-if="passwordMessage.text" class="mt-4" :class="messageClass(passwordMessage.type)">{{ passwordMessage.text }}</div>
@@ -239,7 +257,7 @@ onMounted(async () => {
 
       <aside class="surface-card p-6 sm:p-8">
         <div class="flex items-center justify-between gap-4">
-          <h2 class="text-2xl font-semibold text-white">代练申请</h2>
+          <h2 class="text-2xl font-semibold text-ink-1">代练申请</h2>
           <span :class="applicationMeta.badgeClass">{{ applicationMeta.label }}</span>
         </div>
 
@@ -250,9 +268,9 @@ onMounted(async () => {
             <p class="info-tile__label">状态</p>
             <p class="info-tile__value">{{ applicationMeta.description }}</p>
           </div>
-          <div v-if="application?.review_note" class="rounded-tile border border-warning/30 bg-warning/10 p-4">
-            <p class="info-tile__label !text-amber-200">备注</p>
-            <p class="mt-2 text-sm font-medium text-amber-50">{{ application.review_note }}</p>
+          <div v-if="application?.review_note" class="message-warning p-4">
+            <p class="info-tile__label">备注</p>
+            <p class="mt-2 text-sm font-medium">{{ application.review_note }}</p>
           </div>
         </div>
 
@@ -275,7 +293,7 @@ onMounted(async () => {
             <label class="label" for="apply-note">补充</label>
             <textarea id="apply-note" v-model="appForm.note" rows="4" class="input resize-none"></textarea>
           </div>
-          <div class="rounded-tile border border-dashed border-primary-300/40 bg-white/[0.035] p-4 transition-colors duration-200 hover:border-primary-300/60">
+          <div class="rounded-tile border border-dashed border-line-2 bg-surface-2 p-4 transition-colors duration-base hover:border-line-2">
             <label class="label" for="apply-proof">截图</label>
             <input id="apply-proof" type="file" accept="image/*" class="input" @change="onProofChange" />
             <p class="helper-text">{{ proofFileName }}</p>
@@ -283,7 +301,7 @@ onMounted(async () => {
           <button class="btn-success w-full py-3" :disabled="submittingApplication">{{ submittingApplication ? '提交中...' : '提交申请' }}</button>
         </form>
 
-        <div v-else class="info-tile mt-6 text-sm text-slate-300">
+        <div v-else class="info-tile mt-6 text-sm text-ink-2">
           {{ application?.status === 'APPROVED' ? '已通过' : '审核中' }}
         </div>
       </aside>

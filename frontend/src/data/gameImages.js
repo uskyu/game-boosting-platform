@@ -165,7 +165,7 @@ for (const [name, cfg] of Object.entries(REGISTRY)) {
   }
 }
 
-// 录制演示视频期间，所有非游戏页面强制使用和平精英本地图，避免外链失效或空白页。
+// 录制演示视频期间，所有非游戏页面强制使用本地演示图（pubg-mobile 素材），避免外链失效或空白页。
 export const PAGE_BACKGROUNDS = {
   hero: pubgMobile1,
   login: pubgMobile1,
@@ -197,6 +197,6 @@ export function onImgError(event) {
   const el = event.target
   el.style.display = 'none'
   if (el.parentElement) {
-    el.parentElement.style.background = 'linear-gradient(135deg, #12121a, #1a1a2e)'
+    el.parentElement.style.background = 'var(--surface-3)'
   }
 }

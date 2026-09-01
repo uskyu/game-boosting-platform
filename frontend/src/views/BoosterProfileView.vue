@@ -21,11 +21,11 @@ const loading = ref(true)
 const error = ref('')
 
 const LEVEL_META = {
-  master: { label: '\u5927\u5e08\u4ee3\u7ec3', color: 'text-amber-300', bg: 'bg-amber-500/15 border-amber-500/30', icon: '\u{1f3c6}' },
-  diamond: { label: '\u94bb\u77f3\u4ee3\u7ec3', color: 'text-info', bg: 'bg-info/15 border-info/30', icon: '\u{1f48e}' },
-  gold: { label: '\u9ec4\u91d1\u4ee3\u7ec3', color: 'text-amber-300', bg: 'bg-amber-500/15 border-amber-500/30', icon: '\u{1f31f}' },
-  silver: { label: '\u767d\u94f6\u4ee3\u7ec3', color: 'text-slate-300', bg: 'bg-slate-500/15 border-slate-500/30', icon: '\u{1f539}' },
-  bronze: { label: '\u9752\u94dc\u4ee3\u7ec3', color: 'text-orange-300', bg: 'bg-orange-500/15 border-orange-500/30', icon: '\u{1f7e0}' },
+  master: { label: '\u5927\u5e08\u4ee3\u7ec3', color: 'text-price', bg: 'bg-price-soft', icon: '\u{1f3c6}' },
+  diamond: { label: '\u94bb\u77f3\u4ee3\u7ec3', color: 'text-info', bg: 'bg-info-soft', icon: '\u{1f48e}' },
+  gold: { label: '\u9ec4\u91d1\u4ee3\u7ec3', color: 'text-warning', bg: 'bg-warning-soft', icon: '\u{1f31f}' },
+  silver: { label: '\u767d\u94f6\u4ee3\u7ec3', color: 'text-ink-2', bg: 'bg-surface-3', icon: '\u{1f539}' },
+  bronze: { label: '\u9752\u94dc\u4ee3\u7ec3', color: 'text-ink-2', bg: 'bg-surface-3', icon: '\u{1f7e0}' },
 }
 
 const levelMeta = computed(() => LEVEL_META[booster.value?.credit_level] || LEVEL_META.bronze)
@@ -83,24 +83,22 @@ onMounted(fetchProfile)
 
     <template v-else-if="booster">
       <!-- Hero section -->
-      <section class="hero-panel scanline-overlay p-6 sm:p-8 lg:p-10">
-        <div class="absolute inset-0 bg-gradient-to-r from-slate-950/92 via-slate-950/82 to-slate-950/64"></div>
+      <section class="hero-panel p-6 sm:p-8 lg:p-10">
         <div class="relative z-10 flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
           <div class="flex items-center gap-5">
             <div class="relative">
-              <div class="absolute -inset-1 rounded-[22px] bg-gradient-to-br from-primary-500/50 via-accent-400/30 to-transparent opacity-70 blur-[6px]" aria-hidden="true"></div>
-              <div class="relative flex h-20 w-20 items-center justify-center rounded-[22px] border border-primary-300/40 bg-primary-500/10 text-4xl">
+              <div class="relative flex h-20 w-20 items-center justify-center rounded-[22px] border border-line-1 bg-primary-soft text-2xl font-semibold text-primary">
                 {{ booster.username.charAt(0) }}
               </div>
             </div>
             <div class="space-y-2">
-              <h1 class="section-title neon-text !text-3xl sm:!text-4xl">{{ booster.username }}</h1>
+              <h1 class="section-title">{{ booster.username }}</h1>
               <div class="flex flex-wrap items-center gap-3">
-                <span :class="['tag border', levelMeta.bg, levelMeta.color]">
+                <span :class="['tag', levelMeta.bg, levelMeta.color]">
                   {{ levelMeta.label }}
                 </span>
-                <span class="text-sm text-slate-400">信誉分 {{ booster.credit_score }}</span>
-                <span v-if="booster.avg_rating > 0" class="text-sm text-amber-300">
+                <span class="text-sm text-ink-2">信誉分 {{ booster.credit_score }}</span>
+                <span v-if="booster.avg_rating > 0" class="text-sm text-warning">
                   {{ starsDisplay(Math.round(booster.avg_rating)) }} {{ booster.avg_rating.toFixed(1) }}
                 </span>
               </div>
@@ -108,7 +106,7 @@ onMounted(fetchProfile)
                 <span
                   v-for="tag in booster.badge_tags"
                   :key="tag"
-                  class="rounded-full border border-primary-300/20 bg-primary-500/10 px-3 py-1 text-xs text-primary-200"
+                  class="rounded-full bg-primary-soft px-3 py-1 text-xs text-primary"
                 >
                   {{ tag }}
                 </span>
@@ -116,7 +114,7 @@ onMounted(fetchProfile)
             </div>
           </div>
 
-          <div class="text-sm text-slate-400">
+          <div class="text-sm text-ink-2">
             <p v-if="booster.bio" class="max-w-md leading-relaxed">{{ booster.bio }}</p>
             <p class="mt-2">注册于 {{ formatDateTime(booster.created_at) }}</p>
           </div>
@@ -130,19 +128,19 @@ onMounted(fetchProfile)
           :key="card.label"
           class="stat-card flex items-center gap-4"
         >
-          <div class="flex h-11 w-11 items-center justify-center rounded-tile border border-primary-300/35 bg-primary-500/10 text-lg">
+          <div class="flex h-11 w-11 items-center justify-center rounded-tile border border-line-1 bg-primary-soft text-lg">
             {{ card.icon }}
           </div>
           <div>
-            <p class="text-xs uppercase tracking-[0.18em] text-slate-500">{{ card.label }}</p>
-            <p class="mt-1 text-lg font-semibold text-white">{{ card.value }}</p>
+            <p class="text-xs uppercase tracking-[0.18em] text-ink-3">{{ card.label }}</p>
+            <p class="mt-1 text-lg font-semibold text-ink-1">{{ card.value }}</p>
           </div>
         </article>
       </div>
 
       <!-- Services -->
       <section class="surface-card p-6 sm:p-8">
-        <h2 class="text-2xl font-semibold text-white">服务列表</h2>
+        <h2 class="text-2xl font-semibold text-ink-1">服务列表</h2>
         <div v-if="services.length === 0" class="empty-state mt-4 !py-10">
           <div class="empty-state__icon !h-11 !w-11 !text-lg" aria-hidden="true">🧩</div>
           <p class="empty-state__copy">这位代练还没有发布服务。</p>
@@ -151,17 +149,17 @@ onMounted(fetchProfile)
           <article
             v-for="svc in services"
             :key="svc.id"
-            class="stat-card cursor-pointer transition-all duration-200 hover:-translate-y-0.5 hover:border-primary-300/40"
+            class="stat-card cursor-pointer transition-all duration-base hover:-translate-y-0.5 hover:border-line-2"
             @click="router.push({ name: 'service-detail', params: { id: svc.id } })"
           >
             <div class="flex items-center justify-between gap-2">
               <span class="tag">{{ svc.game?.name || '未知游戏' }}</span>
-              <span class="text-xs text-slate-400">{{ svc.service_type }}</span>
+              <span class="text-xs text-ink-2">{{ svc.service_type }}</span>
             </div>
-            <h3 class="mt-3 text-sm font-medium text-white line-clamp-2">{{ svc.title }}</h3>
+            <h3 class="mt-3 text-sm font-medium text-ink-1 line-clamp-2">{{ svc.title }}</h3>
             <div class="mt-3 flex items-center justify-between text-sm">
-              <span class="text-primary-200 font-semibold">&yen;{{ svc.price_per_hour }}/h</span>
-              <span class="text-slate-400">{{ svc.order_count }} 单</span>
+              <span class="font-semibold text-price">&yen;{{ svc.price_per_hour }}/h</span>
+              <span class="text-ink-2">{{ svc.order_count }} 单</span>
             </div>
           </article>
         </div>
@@ -169,7 +167,7 @@ onMounted(fetchProfile)
 
       <!-- Reviews -->
       <section class="surface-card p-6 sm:p-8">
-        <h2 class="text-2xl font-semibold text-white">用户评价</h2>
+        <h2 class="text-2xl font-semibold text-ink-1">用户评价</h2>
         <div v-if="reviews.length === 0" class="empty-state mt-4 !py-10">
           <div class="empty-state__icon !h-11 !w-11 !text-lg" aria-hidden="true">💬</div>
           <p class="empty-state__copy">还没有评价，完成订单后会出现这里。</p>
@@ -181,11 +179,11 @@ onMounted(fetchProfile)
             class="info-tile !p-5"
           >
             <div class="flex items-center justify-between gap-3">
-              <span class="text-sm text-slate-400">{{ review.reviewer?.username || '匿名用户' }}</span>
-              <span class="text-amber-300 text-sm">{{ starsDisplay(review.rating) }}</span>
+              <span class="text-sm text-ink-2">{{ review.reviewer?.username || '匿名用户' }}</span>
+              <span class="text-warning text-sm">{{ starsDisplay(review.rating) }}</span>
             </div>
-            <p v-if="review.content" class="mt-2 text-sm text-slate-300 leading-relaxed">{{ review.content }}</p>
-            <p class="mt-2 text-xs text-slate-500">{{ formatDateTime(review.created_at) }}</p>
+            <p v-if="review.content" class="mt-2 text-sm text-ink-2 leading-relaxed">{{ review.content }}</p>
+            <p class="mt-2 text-xs text-ink-3">{{ formatDateTime(review.created_at) }}</p>
           </article>
         </div>
       </section>

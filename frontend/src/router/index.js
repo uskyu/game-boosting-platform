@@ -7,10 +7,16 @@ import { useAuthStore } from '@/stores/auth'
 
 const routes = [
   {
+    // IA v2：/ = 订单大厅（产品心脏，路由名保持 home）
     path: '/',
     name: 'home',
-    component: () => import('@/views/HomeView.vue'),
-    meta: { title: '首页' },
+    component: () => import('@/views/OrderHallView.vue'),
+    meta: { title: '订单大厅' },
+  },
+  {
+    // 旧访问路径兼容：/home 301 到 /
+    path: '/home',
+    redirect: { name: 'home' },
   },
   {
     path: '/login',
@@ -25,16 +31,18 @@ const routes = [
     meta: { title: '注册', guest: true },
   },
   {
+    // “我的订单”入口（不在主导航，从用户区 /profile 进入）
     path: '/orders',
     name: 'orders',
     component: () => import('@/views/OrderList.vue'),
-    meta: { title: '订单列表', requiresAuth: true },
+    meta: { title: '我的订单', requiresAuth: true },
   },
   {
+    // 游戏专区（次级页面，原首页内容权重收敛）
     path: '/games',
     name: 'games',
     component: () => import('@/views/GameCategoryView.vue'),
-    meta: { title: '游戏分类' },
+    meta: { title: '游戏专区' },
   },
   {
     path: '/games/:id',

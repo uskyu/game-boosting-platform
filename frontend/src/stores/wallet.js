@@ -27,19 +27,19 @@ export const TRANSACTION_TYPE_META = {
 export const WITHDRAWAL_STATUS_META = {
   PENDING: {
     label: '待处理',
-    tagClass: '!bg-amber-400/15 !text-amber-200 !border-amber-400/30',
+    tagClass: '!bg-warning-soft !text-warning',
   },
   APPROVED: {
     label: '待打款',
-    tagClass: '!bg-sky-400/15 !text-sky-200 !border-sky-400/30',
+    tagClass: '!bg-info-soft !text-info',
   },
   PAID: {
     label: '已打款',
-    tagClass: '!bg-emerald-400/15 !text-emerald-200 !border-emerald-400/30',
+    tagClass: '!bg-success-soft !text-success',
   },
   REJECTED: {
     label: '已驳回',
-    tagClass: '!bg-rose-400/15 !text-rose-200 !border-rose-400/30',
+    tagClass: '!bg-danger-soft !text-danger',
   },
 }
 
@@ -58,7 +58,7 @@ export function getTransactionTypeLabel(type) {
 export function getWithdrawalStatusMeta(status) {
   return WITHDRAWAL_STATUS_META[status] || {
     label: status || '未知状态',
-    tagClass: '!bg-slate-400/10 !text-slate-300 !border-slate-400/20',
+    tagClass: '!bg-surface-3 !text-ink-2',
   }
 }
 

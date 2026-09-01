@@ -11,6 +11,10 @@ import {
   getGameServiceTypes,
 } from '@/utils/gameCatalog'
 
+/**
+ * 游戏专区（IA v2：/games，次级页面，权重低于订单大厅）。
+ * 页面标题区收敛：eyebrow + 24–28px 标题 + 平台筛选，不做大 hero。
+ */
 const route = useRoute()
 const router = useRouter()
 const gamesStore = useGamesStore()
@@ -44,10 +48,6 @@ const platformOptions = [
   { value: 'PC', label: '端游' },
   { value: 'BOTH', label: '双端' },
 ]
-
-const categoryHighlights = computed(() => {
-  return (selectedCategory.value?.games || []).slice(0, 3)
-})
 
 function changeCategory(category) {
   router.replace({
@@ -85,107 +85,72 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="page-shell space-y-8">
-    <section class="hero-panel scanline-overlay p-6 sm:p-8 lg:p-10">
-      <div class="grid gap-8 lg:grid-cols-[1.02fr_0.98fr] lg:items-end">
-        <div class="space-y-4">
-          <p class="eyebrow">游戏目录</p>
-          <h1 class="section-title neon-text !text-4xl sm:!text-5xl">
-            先选类型，再进专区。
-          </h1>
-          <p class="section-copy max-w-3xl">
-            按类型看游戏。点进去，直接看订单和服务。
-          </p>
+  <div class="page-shell space-y-6">
+    <!-- 页面标题区（收敛：eyebrow → 24–28px 标题 → 平台筛选同行） -->
+    <section class="hero-panel p-6 sm:p-8">
+      <div class="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+        <div class="space-y-3">
+          <p class="eyebrow">游戏专区</p>
+          <h1 class="section-title">先选类型，再进专区</h1>
+          <p class="section-copy max-w-2xl">按分类浏览游戏，点进去直接看订单和服务。</p>
         </div>
 
-        <div class="grid gap-4 sm:grid-cols-3">
-          <article class="stat-card cyber-corner">
-            <p class="text-3xl font-semibold text-white">{{ categories.length }}</p>
-            <p class="mt-2 text-sm text-slate-300">分类总数</p>
-          </article>
-          <article class="stat-card cyber-corner">
-            <p class="text-3xl font-semibold text-white">{{ gamesStore.catalogGames.length }}</p>
-            <p class="mt-2 text-sm text-slate-300">已上架游戏</p>
-          </article>
-          <article class="stat-card cyber-corner">
-            <p class="text-3xl font-semibold text-white">{{ selectedGames.length }}</p>
-            <p class="mt-2 text-sm text-slate-300">当前分类结果</p>
-          </article>
-        </div>
-      </div>
-    </section>
-
-    <section class="surface-card p-5 sm:p-6">
-      <div class="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <p class="text-sm font-medium text-primary-100">10 大分类</p>
-          <h2 class="mt-2 text-2xl font-semibold text-white">先挑赛道，再选游戏</h2>
-        </div>
-
-        <div class="flex flex-wrap gap-2">
+        <div class="scroll-x -mx-1 flex gap-2 px-1 lg:mx-0 lg:flex-wrap lg:px-0">
           <button
             v-for="option in platformOptions"
             :key="option.value || 'all'"
             type="button"
             :class="platformFilter === option.value ? 'filter-pill-active' : 'filter-pill'"
+            class="shrink-0"
             @click="changePlatform(option.value)"
           >
             {{ option.label }}
           </button>
         </div>
       </div>
+    </section>
 
-      <div class="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+    <!-- 分类网格 -->
+    <section class="surface-card p-5 sm:p-6">
+      <div class="flex items-center justify-between gap-4">
+        <h2 class="text-[17px] font-semibold leading-6 text-ink-1">十大分类</h2>
+        <p class="text-[13px] text-ink-3">已收录 {{ gamesStore.catalogGames.length }} 款</p>
+      </div>
+
+      <div class="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <button
           v-for="category in categories"
           :key="category.value"
           type="button"
-          :class="activeCategory === category.value ? 'catalog-card-active cyber-corner text-left' : 'catalog-card cyber-corner text-left'"
+          :class="activeCategory === category.value ? 'catalog-card-active text-left' : 'catalog-card text-left'"
           @click="changeCategory(category.value)"
         >
           <div class="flex items-start justify-between gap-4">
             <div>
-              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">{{ category.shortLabel }}</p>
-              <h3 class="mt-3 text-xl font-semibold text-white">{{ category.label }}</h3>
-              <p class="mt-3 text-sm leading-6 text-slate-400">{{ category.description }}</p>
+              <p class="text-xs uppercase tracking-[0.16em] text-ink-3">{{ category.shortLabel }}</p>
+              <h3 class="mt-2.5 text-[17px] font-semibold leading-6 text-ink-1">{{ category.label }}</h3>
             </div>
             <div
-              class="flex h-12 w-12 items-center justify-center rounded-tile border text-sm font-semibold text-white"
-              :style="{ borderColor: `${category.accent}55`, background: `${category.accent}1f`, boxShadow: `0 0 18px ${category.accent}22` }"
+              class="flex h-10 w-10 shrink-0 items-center justify-center rounded-tile border text-sm font-semibold text-ink-1"
+              :style="{ borderColor: `${category.accent}55`, background: `${category.accent}1a` }"
             >
               {{ category.icon }}
             </div>
           </div>
-          <div class="mt-6 flex items-center justify-between text-sm">
-            <span class="text-slate-500">已收录</span>
-            <span class="font-semibold text-primary-100">{{ category.count }} 款</span>
+          <p class="mt-3 line-clamp-2 text-[13px] leading-6 text-ink-2">{{ category.description }}</p>
+          <div class="mt-4 flex items-center justify-between border-t border-line-1 pt-3 text-[13px]">
+            <span class="text-ink-3">已收录</span>
+            <span class="font-semibold tabular-nums text-primary">{{ category.count }} 款</span>
           </div>
         </button>
       </div>
     </section>
 
-    <section v-if="selectedCategory" class="space-y-6">
-      <div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-        <div>
-          <p class="eyebrow">{{ getGameCategoryMeta(selectedCategory.value).shortLabel }}</p>
-          <h2 class="section-title mt-4">
-            {{ selectedCategory.label }} 下的游戏专区
-          </h2>
-          <p class="section-copy mt-3 max-w-3xl">
-            继续往下选。进入游戏后，直接看订单和服务。
-          </p>
-        </div>
-
-        <div class="flex gap-3 overflow-x-auto">
-          <article
-            v-for="game in categoryHighlights"
-            :key="`highlight-${game.id}`"
-            class="info-tile !px-4 !py-3 text-sm text-slate-300"
-          >
-            <p class="font-semibold text-white">{{ game.name }}</p>
-            <p class="mt-2 text-xs text-slate-500">{{ getGamePlatformLabel(game.platform) }}</p>
-          </article>
-        </div>
+    <!-- 当前分类下的游戏 -->
+    <section v-if="selectedCategory" class="space-y-4">
+      <div class="flex flex-col gap-2">
+        <p class="eyebrow">{{ getGameCategoryMeta(selectedCategory.value).shortLabel }}</p>
+        <h2 class="text-xl font-semibold leading-7 text-ink-1">{{ selectedCategory.label }} 下的游戏专区</h2>
       </div>
 
       <div v-if="loading" class="grid gap-5 md:grid-cols-2 xl:grid-cols-3" aria-busy="true">
@@ -197,7 +162,7 @@ onMounted(() => {
           v-for="game in selectedGames"
           :key="game.id"
           type="button"
-          class="catalog-card cyber-corner text-left"
+          class="catalog-card text-left"
           @click="openGame(game.id)"
         >
           <div class="cover-card p-5" :style="buildGameSurfaceStyle(game)">
@@ -205,19 +170,16 @@ onMounted(() => {
               <div class="flex items-start justify-between gap-4">
                 <span class="tag">{{ getGamePlatformLabel(game.platform) }}</span>
                 <div
-                  class="flex h-11 w-11 items-center justify-center rounded-tile border text-sm font-semibold text-white"
+                  class="flex h-10 w-10 items-center justify-center rounded-tile border text-sm font-semibold text-ink-1"
                   :style="buildAccentStyle(game)"
                 >
                   {{ game.name.slice(0, 1) }}
                 </div>
               </div>
 
-              <div class="space-y-3">
-                <div>
-                  <h3 class="text-2xl font-semibold text-white">{{ game.name }}</h3>
-                  <p class="mt-2 text-sm text-slate-300">{{ game.english_name || '热门专区' }}</p>
-                </div>
-                <p class="text-sm leading-6 text-slate-300">{{ game.description }}</p>
+              <div class="space-y-2">
+                <h3 class="text-[17px] font-semibold leading-6 text-ink-1">{{ game.name }}</h3>
+                <p class="text-xs text-ink-2">{{ game.english_name || '热门专区' }}</p>
               </div>
             </div>
           </div>

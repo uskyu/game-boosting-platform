@@ -4,12 +4,13 @@ from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from app.api.chat_utils import send_order_system_message
 from app.api.deps import DatabaseSession, get_current_admin
 from app.api.notification_utils import notify_user
 from app.models.booster_service import BoosterService
+from app.models.game import Game, GameCategory, GamePlatform
 from app.models.notification import NotificationType
 from app.models.order import Order, OrderStatus
 from app.models.user import BoosterApplicationStatus, User
@@ -30,7 +31,9 @@ from app.schemas.dashboard import (
     OverviewStats,
     UserGrowthResponse,
 )
+from app.schemas.game import GameCreate, GameListResponse, GameResponse, GameUpdate
 from app.schemas.order import OrderListResponse, OrderResponse
+from app.schemas.user import MessageResponse
 from app.schemas.wallet import (
     AdminWithdrawalListResponse,
     AdminWithdrawalResponse,
@@ -231,6 +234,123 @@ async def assign_order(
     )
 
     return OrderResponse.model_validate(order)
+
+
+# =============================================================================
+# Game catalog management (boss-only catalog: add / activate / reorder games)
+# =============================================================================
+
+
+@router.get("/games", response_model=GameListResponse, summary="游戏全量列表（含未上架）")
+async def admin_list_games(
+    db: DatabaseSession,
+    current_admin: Annotated[User, Depends(get_current_admin)],
+    category: GameCategory | None = Query(default=None, description="按分类筛选"),
+    platform: GamePlatform | None = Query(default=None, description="按平台筛选"),
+    is_active: bool | None = Query(default=None, description="按上架状态筛选"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=200),
+) -> GameListResponse:
+    """
+    管理员游戏目录全量列表：返回全部游戏（含 is_active=0 的未上架游戏）。
+
+    对外列表（/games，用户/打手视角）只返回 is_active=1 的游戏；
+    本接口供老板后台管理使用。
+    """
+    filters = []
+    if category is not None:
+        filters.append(Game.category == category)
+    if platform is not None:
+        filters.append(Game.platform == platform)
+    if is_active is not None:
+        filters.append(Game.is_active.is_(bool(is_active)))
+
+    count_stmt = select(func.count()).select_from(Game).where(*filters)
+    total = (await db.execute(count_stmt)).scalar_one()
+
+    stmt = (
+        select(Game)
+        .where(*filters)
+        .order_by(Game.sort_order.asc(), Game.id.asc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    result = await db.execute(stmt)
+    games = result.scalars().all()
+    pages = (total + page_size - 1) // page_size if total > 0 else 0
+    return GameListResponse(
+        items=[GameResponse.model_validate(g) for g in games],
+        total=total,
+        page=page,
+        page_size=page_size,
+        pages=pages,
+    )
+
+
+@router.post(
+    "/games",
+    response_model=GameResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="创建游戏（默认下架）",
+)
+async def admin_create_game(
+    payload: GameCreate,
+    db: DatabaseSession,
+    current_admin: Annotated[User, Depends(get_current_admin)],
+) -> GameResponse:
+    """
+    后台新建游戏。is_active 默认为 0（下架）——老板创建后可再上架。
+    """
+    game = Game(**payload.model_dump())
+    db.add(game)
+    await db.flush()
+    await db.refresh(game)
+    return GameResponse.model_validate(game)
+
+
+@router.put("/games/{game_id}", response_model=GameResponse, summary="更新游戏（上架/下架/改名/排序）")
+async def admin_update_game(
+    game_id: int,
+    payload: GameUpdate,
+    db: DatabaseSession,
+    current_admin: Annotated[User, Depends(get_current_admin)],
+) -> GameResponse:
+    """更新游戏属性：is_active 上架/下架、name/english_name 改名、sort_order 排序等。"""
+    result = await db.execute(select(Game).where(Game.id == game_id))
+    game = result.scalar_one_or_none()
+    if game is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="游戏不存在",
+        )
+    update_data = payload.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(game, field, value)
+    await db.flush()
+    await db.refresh(game)
+    return GameResponse.model_validate(game)
+
+
+@router.delete("/games/{game_id}", response_model=MessageResponse, summary="删除游戏")
+async def admin_delete_game(
+    game_id: int,
+    db: DatabaseSession,
+    current_admin: Annotated[User, Depends(get_current_admin)],
+) -> MessageResponse:
+    """
+    删除游戏（硬删）。关联订单的 game_id 置空（ON DELETE SET NULL），
+    关联服务卡片随删除（ON DELETE CASCADE）。
+    """
+    result = await db.execute(select(Game).where(Game.id == game_id))
+    game = result.scalar_one_or_none()
+    if game is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="游戏不存在",
+        )
+    await db.delete(game)
+    await db.flush()
+    return MessageResponse(message="游戏已删除", success=True)
 
 
 # =============================================================================

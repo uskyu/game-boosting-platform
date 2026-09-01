@@ -13,7 +13,7 @@ from app.api.deps import (
     DatabaseSession,
     get_current_booster,
 )
-from app.api.notification_utils import notify_user
+from app.api.notification_utils import notify_boosters_new_order, notify_user
 from app.models.notification import NotificationType
 from app.models.order import OrderStatus
 from app.models.user import User, UserRole
@@ -103,7 +103,7 @@ async def analyze_requirement(
     response_model=OrderResponse,
     status_code=status.HTTP_201_CREATED,
     summary="创建订单",
-    description="根据结构化数据创建新的代练订单",
+    description="根据结构化数据创建新的代练订单（普通客户下单；管理员/老板可直接发布订单进公共大厅；代练不能发单）",
 )
 async def create_order(
     order_data: OrderCreate,
@@ -113,7 +113,9 @@ async def create_order(
     """
     Create a new boosting order.
 
-    Requires authentication. Users cannot create orders with BOOSTER role.
+    Requires authentication. USER creates own orders; ADMIN (boss) publishes
+    orders directly into the public hall for boosters to grab; BOOSTER is
+    not allowed to create orders.
 
     - **game_name**: Name of the game
     - **current_rank**: Current player rank
@@ -126,6 +128,10 @@ async def create_order(
     order_service = get_order_service(db)
 
     order = await order_service.create_order(order_data, current_user)
+
+    # 管理员（老板）发单：向所有活跃打手广播"新订单"通知（批量、单事务）
+    if current_user.role == UserRole.ADMIN:
+        await notify_boosters_new_order(db, order=order, exclude_user_id=current_user.id)
 
     return OrderResponse.model_validate(order)
 

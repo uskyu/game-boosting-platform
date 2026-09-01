@@ -7,14 +7,14 @@ const props = defineProps({
   passwordLength: { type: Number, default: 0 },
 })
 
-/* ── theme colors (gaming palette) ── */
+/* ── theme colors（语义变量，随主题切换） ── */
 const C = {
-  pink: '#ff4655',
-  dark: '#1e1e36',
-  gold: '#d5b07c',
-  cyan: '#7dd3fc',
-  pupil: '#0a0c10',
-  sclera: '#fff',
+  primary: 'var(--primary)',
+  neutral: 'var(--text-3)',
+  warm: 'var(--warning)',
+  info: 'var(--info)',
+  pupil: 'var(--text-1)',
+  sclera: 'var(--surface)',
 }
 
 /* ── mouse tracking (single listener, RAF-throttled) ── */
@@ -38,9 +38,9 @@ function onMouse(e) {
 
 /* ── character body refs ── */
 const pinkEl = ref(null)
-const darkEl = ref(null)
-const goldEl = ref(null)
-const cyanEl = ref(null)
+const neutralEl = ref(null)
+const warmEl = ref(null)
+const infoEl = ref(null)
 
 /* ── blink state ── */
 const pinkBlink = ref(false)
@@ -79,14 +79,14 @@ function pupilOff(el, max = 5) {
 
 /* ── computed positions per character ── */
 const pp = computed(() => pos(pinkEl.value))
-const dp = computed(() => pos(darkEl.value))
-const gp = computed(() => pos(goldEl.value))
-const cp = computed(() => pos(cyanEl.value))
+const dp = computed(() => pos(neutralEl.value))
+const gp = computed(() => pos(warmEl.value))
+const cp = computed(() => pos(infoEl.value))
 
 const pPupil = computed(() => pupilOff(pinkEl.value, 5))
-const dPupil = computed(() => pupilOff(darkEl.value, 4))
-const gPupil = computed(() => pupilOff(goldEl.value, 5))
-const cPupil = computed(() => pupilOff(cyanEl.value, 5))
+const dPupil = computed(() => pupilOff(neutralEl.value, 4))
+const gPupil = computed(() => pupilOff(warmEl.value, 5))
+const cPupil = computed(() => pupilOff(infoEl.value, 5))
 
 /* ── forced look directions ── */
 const pinkForce = computed(() => {
@@ -179,10 +179,9 @@ onUnmounted(() => {
         left: '70px',
         width: '180px',
         height: isTyping || hiding ? '440px' : '400px',
-        backgroundColor: C.pink,
+        backgroundColor: C.primary,
         borderRadius: '10px 10px 0 0',
         zIndex: 1,
-        boxShadow: '0 0 30px rgba(255,70,85,0.3), 0 0 80px rgba(255,70,85,0.1)',
         transform: showing
           ? 'skewX(0deg)'
           : isTyping || hiding
@@ -223,18 +222,17 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- ═══ Dark character (middle) ═══ -->
+    <!-- ═══ Neutral character (middle) ═══ -->
     <div
-      ref="darkEl"
+      ref="neutralEl"
       class="absolute bottom-0 transition-all duration-700 ease-in-out"
       :style="{
         left: '240px',
         width: '120px',
         height: '310px',
-        backgroundColor: C.dark,
+        backgroundColor: C.neutral,
         borderRadius: '8px 8px 0 0',
         zIndex: 2,
-        boxShadow: '0 0 20px rgba(30,30,54,0.6), 0 0 50px rgba(100,100,180,0.08)',
         transform: showing
           ? 'skewX(0deg)'
           : lookingAtEach
@@ -277,18 +275,17 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- ═══ Gold character (front-left, semi-circle) ═══ -->
+    <!-- ═══ Warm character (front-left, semi-circle) ═══ -->
     <div
-      ref="goldEl"
+      ref="warmEl"
       class="absolute bottom-0 transition-all duration-700 ease-in-out"
       :style="{
         left: '0px',
         width: '240px',
         height: '200px',
-        backgroundColor: C.gold,
+        backgroundColor: C.warm,
         borderRadius: '120px 120px 0 0',
         zIndex: 3,
-        boxShadow: '0 0 30px rgba(213,176,124,0.25), 0 0 80px rgba(213,176,124,0.08)',
         transform: showing ? 'skewX(0deg)' : `skewX(${gp.skew || 0}deg)`,
         transformOrigin: 'bottom center',
       }"
@@ -315,18 +312,17 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- ═══ Cyan character (front-right, rounded rect + mouth) ═══ -->
+    <!-- ═══ Info character (front-right, rounded rect + mouth) ═══ -->
     <div
-      ref="cyanEl"
+      ref="infoEl"
       class="absolute bottom-0 transition-all duration-700 ease-in-out"
       :style="{
         left: '310px',
         width: '140px',
         height: '230px',
-        backgroundColor: C.cyan,
+        backgroundColor: C.info,
         borderRadius: '70px 70px 0 0',
         zIndex: 4,
-        boxShadow: '0 0 30px rgba(0,240,255,0.25), 0 0 80px rgba(0,240,255,0.08)',
         transform: showing ? 'skewX(0deg)' : `skewX(${cp.skew || 0}deg)`,
         transformOrigin: 'bottom center',
       }"

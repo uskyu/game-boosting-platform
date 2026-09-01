@@ -25,11 +25,11 @@ onMounted(async () => {
 
 <template>
   <div class="page-shell space-y-6">
-    <section class="hero-panel scanline-overlay p-6 sm:p-8 lg:p-10">
-      <div class="max-w-4xl space-y-4">
-        <span class="eyebrow">消息</span>
-        <h1 class="section-title neon-text !text-4xl sm:!text-5xl">
-          消息
+    <section class="hero-panel p-6 sm:p-8 lg:p-10">
+      <div class="max-w-4xl space-y-3">
+        <p class="eyebrow">消息</p>
+        <h1 class="section-title">
+          对话列表
         </h1>
         <p class="section-copy max-w-3xl">
           订单里的聊天都在这。
@@ -40,8 +40,8 @@ onMounted(async () => {
     <section class="surface-card cyber-corner p-5 sm:p-6 lg:p-8">
       <div class="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p class="text-sm uppercase tracking-[0.22em] text-primary-200">列表</p>
-          <h2 class="mt-2 text-2xl font-semibold text-white">对话</h2>
+          <p class="text-sm uppercase tracking-[0.12em] text-primary">列表</p>
+          <h2 class="mt-2 text-2xl font-semibold text-ink-1">对话</h2>
         </div>
         <router-link to="/orders" class="btn-ghost !px-4">
           返回订单

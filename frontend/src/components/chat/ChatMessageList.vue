@@ -163,7 +163,7 @@ defineExpose({
   >
     <div
       v-if="hasMore"
-      class="pb-4 text-center text-xs tracking-[0.2em] text-slate-500"
+      class="pb-4 text-center text-xs tracking-[0.1em] text-ink-3"
     >
       {{ loadingMore ? '加载中...' : '上滑看更早消息' }}
     </div>
@@ -179,7 +179,7 @@ defineExpose({
         :data-message-id="message.id"
         class="transition duration-300"
         :class="{
-          'rounded-card ring-1 ring-primary-300/50 shadow-glow-neon': Number(highlightedMessageId) === Number(message.id),
+          'rounded-card ring-1 ring-primary': Number(highlightedMessageId) === Number(message.id),
         }"
       >
         <ChatMessageBubble

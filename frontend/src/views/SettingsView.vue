@@ -121,11 +121,12 @@ onMounted(async () => {
 
 <template>
   <div class="page-shell space-y-6">
-    <section class="hero-panel scanline-overlay p-6 sm:p-8">
+    <section class="hero-panel p-6 sm:p-8">
       <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 class="section-title neon-text !text-4xl">设置</h1>
-          <p class="mt-2 text-sm text-slate-400">管理通知偏好、隐私和缓存</p>
+        <div class="space-y-2">
+          <p class="eyebrow">设置</p>
+          <h1 class="section-title">偏好设置</h1>
+          <p class="mt-1 text-sm text-ink-2">管理通知偏好、隐私和缓存</p>
         </div>
         <button class="btn-ghost !px-4" @click="router.push({ name: 'profile' })">
           返回个人中心
@@ -150,8 +151,8 @@ onMounted(async () => {
 
       <!-- Notification Settings Tab -->
       <section v-if="activeTab === 'notifications'" class="surface-card space-y-5 p-6">
-        <h2 class="text-xl font-semibold text-white">通知偏好</h2>
-        <p class="text-sm text-slate-400">选择您希望接收的通知类型</p>
+        <h2 class="text-xl font-semibold text-ink-1">通知偏好</h2>
+        <p class="text-sm text-ink-2">选择您希望接收的通知类型</p>
 
         <div class="space-y-3">
           <div
@@ -160,8 +161,8 @@ onMounted(async () => {
             class="info-tile flex items-center justify-between gap-4"
           >
             <div>
-              <p class="text-sm font-medium text-white">{{ nt.label }}</p>
-              <p class="mt-0.5 text-xs text-slate-400">{{ nt.description }}</p>
+              <p class="text-sm font-medium text-ink-1">{{ nt.label }}</p>
+              <p class="mt-0.5 text-xs text-ink-2">{{ nt.description }}</p>
             </div>
             <label class="relative inline-flex cursor-pointer items-center">
               <input
@@ -171,7 +172,7 @@ onMounted(async () => {
                 :true-value="true"
                 :false-value="false"
               />
-              <div class="h-6 w-11 rounded-full border border-line-soft bg-slate-600/50 transition-colors duration-200 after:absolute after:left-[3px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:bg-slate-300 after:transition-all after:duration-200 after:content-[''] peer-checked:border-primary-300/40 peer-checked:bg-primary-500 peer-checked:after:translate-x-full peer-checked:after:bg-white peer-focus-visible:ring-2 peer-focus-visible:ring-primary-400/50"></div>
+              <div class="h-6 w-11 rounded-full border border-line-1 bg-surface-3 transition-colors duration-base after:absolute after:left-[3px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:bg-knob after:transition-all after:duration-base after:content-[''] peer-checked:border-transparent peer-checked:bg-primary peer-checked:after:translate-x-full peer-checked:after:bg-on-primary peer-focus-visible:ring-2 peer-focus-visible:ring-primary"></div>
             </label>
           </div>
         </div>
@@ -183,14 +184,14 @@ onMounted(async () => {
 
       <!-- Privacy Tab -->
       <section v-if="activeTab === 'privacy'" class="surface-card space-y-5 p-6">
-        <h2 class="text-xl font-semibold text-white">隐私设置</h2>
-        <p class="text-sm text-slate-400">控制您的个人信息可见性</p>
+        <h2 class="text-xl font-semibold text-ink-1">隐私设置</h2>
+        <p class="text-sm text-ink-2">控制您的个人信息可见性</p>
 
         <div class="space-y-3">
           <div class="info-tile flex items-center justify-between gap-4">
             <div>
-              <p class="text-sm font-medium text-white">资料公开</p>
-              <p class="mt-0.5 text-xs text-slate-400">其他用户可以查看您的个人资料</p>
+              <p class="text-sm font-medium text-ink-1">资料公开</p>
+              <p class="mt-0.5 text-xs text-ink-2">其他用户可以查看您的个人资料</p>
             </div>
             <label class="relative inline-flex cursor-pointer items-center">
               <input
@@ -200,14 +201,14 @@ onMounted(async () => {
                 :true-value="true"
                 :false-value="false"
               />
-              <div class="h-6 w-11 rounded-full border border-line-soft bg-slate-600/50 transition-colors duration-200 after:absolute after:left-[3px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:bg-slate-300 after:transition-all after:duration-200 after:content-[''] peer-checked:border-primary-300/40 peer-checked:bg-primary-500 peer-checked:after:translate-x-full peer-checked:after:bg-white peer-focus-visible:ring-2 peer-focus-visible:ring-primary-400/50"></div>
+              <div class="h-6 w-11 rounded-full border border-line-1 bg-surface-3 transition-colors duration-base after:absolute after:left-[3px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:bg-knob after:transition-all after:duration-base after:content-[''] peer-checked:border-transparent peer-checked:bg-primary peer-checked:after:translate-x-full peer-checked:after:bg-on-primary peer-focus-visible:ring-2 peer-focus-visible:ring-primary"></div>
             </label>
           </div>
 
           <div class="info-tile flex items-center justify-between gap-4">
             <div>
-              <p class="text-sm font-medium text-white">显示在线状态</p>
-              <p class="mt-0.5 text-xs text-slate-400">其他用户可以看到您是否在线</p>
+              <p class="text-sm font-medium text-ink-1">显示在线状态</p>
+              <p class="mt-0.5 text-xs text-ink-2">其他用户可以看到您是否在线</p>
             </div>
             <label class="relative inline-flex cursor-pointer items-center">
               <input
@@ -217,7 +218,7 @@ onMounted(async () => {
                 :true-value="true"
                 :false-value="false"
               />
-              <div class="h-6 w-11 rounded-full border border-line-soft bg-slate-600/50 transition-colors duration-200 after:absolute after:left-[3px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:bg-slate-300 after:transition-all after:duration-200 after:content-[''] peer-checked:border-primary-300/40 peer-checked:bg-primary-500 peer-checked:after:translate-x-full peer-checked:after:bg-white peer-focus-visible:ring-2 peer-focus-visible:ring-primary-400/50"></div>
+              <div class="h-6 w-11 rounded-full border border-line-1 bg-surface-3 transition-colors duration-base after:absolute after:left-[3px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:bg-knob after:transition-all after:duration-base after:content-[''] peer-checked:border-transparent peer-checked:bg-primary peer-checked:after:translate-x-full peer-checked:after:bg-on-primary peer-focus-visible:ring-2 peer-focus-visible:ring-primary"></div>
             </label>
           </div>
         </div>
@@ -229,32 +230,32 @@ onMounted(async () => {
 
       <!-- Cache Tab -->
       <section v-if="activeTab === 'cache'" class="surface-card space-y-5 p-6">
-        <h2 class="text-xl font-semibold text-white">缓存与数据</h2>
-        <p class="text-sm text-slate-400">管理本地缓存数据</p>
+        <h2 class="text-xl font-semibold text-ink-1">缓存与数据</h2>
+        <p class="text-sm text-ink-2">管理本地缓存数据</p>
 
         <div class="space-y-3">
           <div class="info-tile flex items-center justify-between gap-4">
             <div>
-              <p class="text-sm font-medium text-white">搜索历史</p>
-              <p class="mt-0.5 text-xs text-slate-400">清除本地存储的搜索记录</p>
+              <p class="text-sm font-medium text-ink-1">搜索历史</p>
+              <p class="mt-0.5 text-xs text-ink-2">清除本地存储的搜索记录</p>
             </div>
             <button class="btn-ghost !px-4 text-sm" @click="clearSearchHistory">清除</button>
           </div>
 
           <div class="info-tile flex items-center justify-between gap-4">
             <div>
-              <p class="text-sm font-medium text-white">聊天缓存</p>
-              <p class="mt-0.5 text-xs text-slate-400">清除本地缓存的聊天数据</p>
+              <p class="text-sm font-medium text-ink-1">聊天缓存</p>
+              <p class="mt-0.5 text-xs text-ink-2">清除本地缓存的聊天数据</p>
             </div>
             <button class="btn-ghost !px-4 text-sm" @click="clearChatCache">清除</button>
           </div>
 
-          <div class="info-tile flex items-center justify-between gap-4 !border-warning/30 !bg-warning/10">
+          <div class="info-tile flex items-center justify-between gap-4 !bg-warning-soft">
             <div>
               <p class="text-sm font-medium text-warning">清除所有本地数据</p>
-              <p class="mt-0.5 text-xs text-warning/70">重置所有本地缓存（保留登录状态）</p>
+              <p class="mt-0.5 text-xs text-warning">重置所有本地缓存（保留登录状态）</p>
             </div>
-            <button class="btn-ghost !px-4 !border-warning/40 text-sm !text-warning hover:!bg-warning/15" @click="clearAllLocalData">清除全部</button>
+            <button class="btn-ghost !px-4 text-sm !text-warning hover:!bg-warning-soft" @click="clearAllLocalData">清除全部</button>
           </div>
         </div>
       </section>

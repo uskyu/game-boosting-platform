@@ -118,3 +118,125 @@ async def test_pay_order(client: AsyncClient, registered_user: dict):
     data = resp.json()
     assert data["payment_status"] == "PAID"
     assert data["paid_at"] is not None
+
+
+# ---------------------------------------------------------------------------
+# 管理员（老板）发布订单：进入公共大厅供打手抢单
+# ---------------------------------------------------------------------------
+
+
+async def test_admin_create_order(client: AsyncClient, admin_user: dict):
+    """管理员可直接发布订单：201、PENDING、无打手（进入公共大厅）。"""
+    resp = await client.post(
+        "/orders/create",
+        json={
+            "game_name": "三角洲行动",
+            "current_rank": "黄金",
+            "target_rank": "钻石",
+            "price": "300.00",
+            "description_raw": "老板发布的三角洲派单",
+        },
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["status"] == "PENDING"
+    assert data["booster_id"] is None
+    assert data["game_name"] == "三角洲行动"
+
+
+async def test_admin_order_visible_to_booster_and_acceptable(
+    client: AsyncClient, admin_user: dict, booster_user: dict
+):
+    """管理员发布的 PENDING 订单出现在打手大厅列表并可被接单。"""
+    resp = await client.post(
+        "/orders/create",
+        json={
+            "game_name": "三角洲行动",
+            "current_rank": "黄金",
+            "target_rank": "钻石",
+            "price": "300.00",
+        },
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 201
+    order = resp.json()
+
+    # 打手订单列表（大厅）能看到该 PENDING 订单
+    resp = await client.get("/orders/", headers=auth_header(booster_user))
+    assert resp.status_code == 200
+    ids = [o["id"] for o in resp.json()["items"]]
+    assert order["id"] in ids
+
+    # 打手接单成功
+    resp = await client.put(
+        f"/orders/{order['id']}/accept",
+        headers=auth_header(booster_user),
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "LOCKED"
+    assert data["booster_id"] is not None
+
+
+async def test_booster_cannot_create_order(client: AsyncClient, booster_user: dict):
+    """代练不允许发单：403。"""
+    resp = await client.post(
+        "/orders/create",
+        json={
+            "game_name": "三角洲行动",
+            "current_rank": "黄金",
+            "target_rank": "钻石",
+            "price": "300.00",
+        },
+        headers=auth_header(booster_user),
+    )
+    assert resp.status_code == 403
+
+
+async def test_user_create_order_unaffected(client: AsyncClient, registered_user: dict):
+    """普通用户下单逻辑不受管理员放开影响。"""
+    order = await _create_order(client, registered_user)
+    assert order["status"] == "PENDING"
+    assert order["booster_id"] is None
+
+
+async def test_admin_create_order_notifies_boosters(
+    client: AsyncClient,
+    admin_user: dict,
+    booster_user: dict,
+    db_session,
+):
+    """管理员发单后，活跃打手收到"新订单"系统通知（一次事务批量写入）。"""
+    from sqlalchemy import select
+
+    from app.models.notification import Notification, NotificationType
+    from app.models.user import User
+
+    resp = await client.post(
+        "/orders/create",
+        json={
+            "game_name": "三角洲行动",
+            "current_rank": "黄金",
+            "target_rank": "钻石",
+            "price": "300.00",
+        },
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 201
+    order = resp.json()
+
+    booster_result = await db_session.execute(
+        select(User).where(User.email == "booster@example.com")
+    )
+    booster = booster_result.scalar_one()
+    notif_result = await db_session.execute(
+        select(Notification).where(
+            Notification.user_id == booster.id,
+            Notification.type == NotificationType.SYSTEM_ANNOUNCEMENT,
+        )
+    )
+    notifications = list(notif_result.scalars().all())
+    assert len(notifications) >= 1
+    assert any(n.ref_id == order["id"] for n in notifications)
+    assert any("新订单" in n.title for n in notifications)

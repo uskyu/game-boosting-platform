@@ -77,14 +77,14 @@ function handleSelect(message) {
     >
       <div
         v-if="loading"
-        class="px-4 py-4 text-sm text-slate-400"
+        class="px-4 py-4 text-sm text-ink-2"
       >
         搜索中...
       </div>
 
       <div
         v-else-if="hasSearched && hasQuery && !results.length"
-        class="px-4 py-4 text-sm text-slate-500"
+        class="px-4 py-4 text-sm text-ink-3"
       >
         没有结果
       </div>
@@ -97,14 +97,14 @@ function handleSelect(message) {
         @click="handleSelect(item)"
       >
         <div class="flex items-center justify-between gap-3">
-          <span class="text-sm font-medium text-white">
+          <span class="text-sm font-medium text-ink-1">
             {{ item.sender?.username || '系统' }}
           </span>
-          <span class="text-[11px] text-slate-500">
+          <span class="text-[11px] text-ink-3">
             {{ formatShortDate(item.created_at) }}
           </span>
         </div>
-        <p class="chat-clamp-2 mt-2 text-sm text-slate-300">
+        <p class="chat-clamp-2 mt-2 text-sm text-ink-2">
           {{ item.content || '[图片消息]' }}
         </p>
       </button>

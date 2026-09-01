@@ -154,13 +154,13 @@ onMounted(async () => {
   <div class="page-shell">
     <div class="mx-auto flex h-[calc(100vh-120px)] max-w-4xl flex-col">
       <!-- Header -->
-      <div class="flex items-center gap-3 border-b border-line-soft pb-4">
-        <div class="flex h-10 w-10 items-center justify-center rounded-tile border border-primary-300/30 bg-primary-500/10 text-lg shadow-glow-neon">
+      <div class="flex items-center gap-3 border-b border-line-1 pb-4">
+        <div class="flex h-10 w-10 items-center justify-center rounded-tile border border-line-1 bg-primary-soft text-lg">
           🤖
         </div>
         <div>
-          <h1 class="text-lg font-semibold text-white">AI 智能客服</h1>
-          <p class="text-xs text-slate-400">7x24小时在线 · 快速响应</p>
+          <h1 class="text-lg font-semibold text-ink-1">AI 智能客服</h1>
+          <p class="text-xs text-ink-2">7x24小时在线 · 快速响应</p>
         </div>
         <button class="btn-ghost ml-auto !px-4 text-sm" @click="transferToHuman" :disabled="transferring">
           {{ transferring ? '转接中...' : '转人工客服' }}
@@ -173,14 +173,14 @@ onMounted(async () => {
         <div class="flex gap-3">
           <div class="chat-avatar !h-9 !w-9 !rounded-tile text-sm">🤖</div>
           <div class="chat-bubble chat-bubble-other max-w-[80%] !px-4 !py-3.5">
-            <p class="whitespace-pre-line text-sm text-slate-200">{{ greeting }}</p>
+            <p class="whitespace-pre-line text-sm text-ink-1">{{ greeting }}</p>
           </div>
         </div>
 
         <!-- Template quick replies -->
         <div v-if="messages.length === 0" class="space-y-3 pl-12">
           <div v-for="cat in templates" :key="cat.key" class="space-y-2">
-            <p class="text-xs font-medium text-slate-400">{{ cat.icon }} {{ cat.label }}</p>
+            <p class="text-xs font-medium text-ink-2">{{ cat.icon }} {{ cat.label }}</p>
             <div class="flex flex-wrap gap-2">
               <button
                 v-for="t in cat.templates"
@@ -200,8 +200,8 @@ onMounted(async () => {
           <!-- User message -->
           <div v-if="msg.role === 'user'" class="flex justify-end gap-3">
             <div class="chat-bubble chat-bubble-self max-w-[80%] !px-4 !py-3.5">
-              <p class="text-sm text-white">{{ msg.text }}</p>
-              <p class="mt-1 text-right text-[10px] text-white/60">{{ msg.time }}</p>
+              <p class="text-sm text-on-primary">{{ msg.text }}</p>
+              <p class="mt-1 text-right text-[10px] text-on-primary opacity-60">{{ msg.time }}</p>
             </div>
           </div>
 
@@ -210,8 +210,8 @@ onMounted(async () => {
             <div class="chat-avatar !h-9 !w-9 !rounded-tile text-sm">🤖</div>
             <div class="max-w-[80%] space-y-3">
               <div class="chat-bubble chat-bubble-other !px-4 !py-3.5">
-                <p class="whitespace-pre-line text-sm text-slate-200">{{ msg.text }}</p>
-                <p class="mt-1 text-[10px] text-slate-500">{{ msg.time }}</p>
+                <p class="whitespace-pre-line text-sm text-ink-1">{{ msg.text }}</p>
+                <p class="mt-1 text-[10px] text-ink-3">{{ msg.time }}</p>
               </div>
 
               <!-- Action buttons -->
@@ -241,16 +241,16 @@ onMounted(async () => {
           <div class="chat-avatar !h-9 !w-9 !rounded-tile text-sm">🤖</div>
           <div class="chat-bubble chat-bubble-other !px-4 !py-3.5">
             <div class="flex gap-1">
-              <span class="chat-typing-dot !h-1.5 !w-1.5 !bg-slate-400"></span>
-              <span class="chat-typing-dot !h-1.5 !w-1.5 !bg-slate-400"></span>
-              <span class="chat-typing-dot !h-1.5 !w-1.5 !bg-slate-400"></span>
+              <span class="chat-typing-dot !h-1.5 !w-1.5"></span>
+              <span class="chat-typing-dot !h-1.5 !w-1.5"></span>
+              <span class="chat-typing-dot !h-1.5 !w-1.5"></span>
             </div>
           </div>
         </div>
       </div>
 
       <!-- Quick templates (compact, after first message) -->
-      <div v-if="messages.length > 0" class="border-t border-line-soft py-2">
+      <div v-if="messages.length > 0" class="border-t border-line-1 py-2">
         <div class="flex gap-2 overflow-x-auto">
           <button
             v-for="cat in templates"
@@ -275,7 +275,7 @@ onMounted(async () => {
       </div>
 
       <!-- Input area -->
-      <div class="border-t border-line-soft pt-3 pb-2">
+      <div class="border-t border-line-1 pt-3 pb-2">
         <div class="flex items-end gap-3">
           <textarea
             v-model="inputText"

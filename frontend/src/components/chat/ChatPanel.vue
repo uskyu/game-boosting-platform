@@ -328,10 +328,10 @@ onBeforeUnmount(() => {
       <header class="chat-panel-header">
         <div class="min-w-0">
           <div class="flex flex-wrap items-center gap-3">
-            <h1 class="truncate text-2xl font-semibold text-white">{{ conversationTitle }}</h1>
+            <h1 class="truncate text-2xl font-semibold text-ink-1">{{ conversationTitle }}</h1>
             <span class="chat-status-pill">{{ socketStatusText }}</span>
           </div>
-          <p class="mt-2 text-sm text-slate-400">{{ conversationSubtitle }}</p>
+          <p class="mt-2 text-sm text-ink-2">{{ conversationSubtitle }}</p>
         </div>
 
         <button
@@ -345,13 +345,13 @@ onBeforeUnmount(() => {
         </button>
         <span
           v-else-if="hasAdmin"
-          class="chat-status-pill border-accent-400/25 bg-accent-500/10 text-accent-200"
+          class="chat-status-pill !bg-warning-soft !text-warning"
         >
           客服已加入
         </span>
       </header>
 
-      <div class="border-b border-line-soft px-6 py-4 sm:px-8">
+      <div class="border-b border-line-1 px-6 py-4 sm:px-8">
         <ChatSearchBar
           v-model="searchQuery"
           :results="searchResults"
@@ -365,7 +365,7 @@ onBeforeUnmount(() => {
 
       <div
         v-if="actionError || actionMessage"
-        class="border-b border-line-soft px-6 py-3 sm:px-8"
+        class="border-b border-line-1 px-6 py-3 sm:px-8"
       >
         <div v-if="actionError" class="message-error">
           {{ actionError }}
@@ -391,7 +391,7 @@ onBeforeUnmount(() => {
         />
       </div>
 
-      <div class="border-t border-line-soft px-6 py-5 sm:px-8">
+      <div class="border-t border-line-1 px-6 py-5 sm:px-8">
         <ChatComposer
           v-model="draft"
           :disabled="!conversation"

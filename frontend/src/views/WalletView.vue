@@ -23,11 +23,12 @@ const walletInfo = computed(() =>
   walletStore.wallet || { available_balance: 0, frozen_balance: 0, total_income: 0, total_withdrawn: 0 }
 )
 
+// 统计卡＝白卡同款，仅数字颜色区分语义（文档 5 节：可用余额/提现=ink-1、冻结=warning、收入=success）
 const statCards = computed(() => [
-  { label: '可用余额', value: formatPrice(walletInfo.value.available_balance), valueClass: 'text-primary-100', cardClass: 'stat-gradient stat-gradient-primary' },
-  { label: '冻结金额', value: formatPrice(walletInfo.value.frozen_balance), valueClass: 'text-slate-200', cardClass: 'stat-gradient stat-gradient-neutral' },
-  { label: '累计收入', value: formatPrice(walletInfo.value.total_income), valueClass: 'text-emerald-300', cardClass: 'stat-gradient stat-gradient-success' },
-  { label: '累计提现', value: formatPrice(walletInfo.value.total_withdrawn), valueClass: 'text-amber-200', cardClass: 'stat-gradient stat-gradient-warn' },
+  { label: '可用余额', value: formatPrice(walletInfo.value.available_balance), valueClass: 'text-ink-1', cardClass: 'stat-card' },
+  { label: '冻结金额', value: formatPrice(walletInfo.value.frozen_balance), valueClass: 'text-warning', cardClass: 'stat-card' },
+  { label: '累计收入', value: formatPrice(walletInfo.value.total_income), valueClass: 'text-success', cardClass: 'stat-card' },
+  { label: '累计提现', value: formatPrice(walletInfo.value.total_withdrawn), valueClass: 'text-ink-1', cardClass: 'stat-card' },
 ])
 
 const transactions = computed(() => walletStore.transactions)
@@ -56,7 +57,7 @@ function transactionAmountText(item) {
 }
 
 function transactionAmountClass(item) {
-  return transactionDirection(item) === 'in' ? 'text-emerald-300' : 'text-danger-bright'
+  return transactionDirection(item) === 'in' ? 'text-success' : 'text-danger'
 }
 
 function validateWithdrawForm() {
@@ -144,17 +145,17 @@ onMounted(() => {
 
 <template>
   <div class="page-shell space-y-6">
-    <section class="hero-panel scanline-overlay p-6 sm:p-8">
+    <section class="hero-panel p-6 sm:p-8">
       <div class="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
-        <div class="space-y-4">
+        <div class="space-y-3">
           <p class="eyebrow">资金中心</p>
-          <h1 class="section-title neon-text !text-4xl sm:!text-5xl">我的钱包</h1>
+          <h1 class="section-title">我的钱包</h1>
         </div>
 
         <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <article v-for="card in statCards" :key="card.label" :class="[card.cardClass, 'min-w-[150px]']">
-            <p class="text-xs font-medium uppercase tracking-[0.16em] text-slate-400">{{ card.label }}</p>
-            <p class="mt-2.5 text-2xl font-semibold" :class="card.valueClass">{{ card.value }}</p>
+            <p class="text-xs font-medium uppercase tracking-[0.16em] text-ink-2">{{ card.label }}</p>
+            <p class="mt-2.5 text-2xl font-semibold tabular-nums" :class="card.valueClass">{{ card.value }}</p>
           </article>
         </div>
       </div>
@@ -162,7 +163,7 @@ onMounted(() => {
 
     <section class="surface-card p-6 sm:p-8">
       <div class="flex items-center justify-between gap-4">
-        <h2 class="text-2xl font-semibold text-white">申请提现</h2>
+        <h2 class="text-2xl font-semibold text-ink-1">申请提现</h2>
         <button class="btn-secondary !px-4 !py-2" :disabled="walletStore.walletLoading" @click="refreshAll">
           刷新
         </button>
@@ -185,7 +186,7 @@ onMounted(() => {
             :class="{ 'input-error': formErrors.amount }"
             placeholder="最低 1 元"
           />
-          <p v-if="formErrors.amount" class="mt-2 text-xs text-danger-bright">{{ formErrors.amount }}</p>
+          <p v-if="formErrors.amount" class="mt-2 text-xs text-danger">{{ formErrors.amount }}</p>
         </div>
 
         <div>
@@ -207,7 +208,7 @@ onMounted(() => {
             :class="{ 'input-error': formErrors.account_name }"
             placeholder="请填写实名收款人"
           />
-          <p v-if="formErrors.account_name" class="mt-2 text-xs text-danger-bright">{{ formErrors.account_name }}</p>
+          <p v-if="formErrors.account_name" class="mt-2 text-xs text-danger">{{ formErrors.account_name }}</p>
         </div>
 
         <div>
@@ -220,7 +221,7 @@ onMounted(() => {
             :class="{ 'input-error': formErrors.account_no }"
             :placeholder="withdrawForm.channel === 'BANK' ? '银行卡号' : '支付宝 / 微信账号'"
           />
-          <p v-if="formErrors.account_no" class="mt-2 text-xs text-danger-bright">{{ formErrors.account_no }}</p>
+          <p v-if="formErrors.account_no" class="mt-2 text-xs text-danger">{{ formErrors.account_no }}</p>
         </div>
 
         <div class="lg:col-span-2">
@@ -234,7 +235,7 @@ onMounted(() => {
 
     <section class="surface-card p-6 sm:p-8">
       <div class="flex items-center justify-between gap-4">
-        <h2 class="text-2xl font-semibold text-white">资金流水</h2>
+        <h2 class="text-2xl font-semibold text-ink-1">资金流水</h2>
         <button class="btn-ghost !px-4 !py-2 text-sm" :disabled="walletStore.transactionsLoading" @click="refreshAll">
           刷新
         </button>
@@ -257,28 +258,28 @@ onMounted(() => {
         <article
           v-for="item in transactions"
           :key="item.id"
-          class="info-tile flex flex-wrap items-center justify-between gap-x-6 gap-y-3 !p-4 transition-all duration-200 hover:!border-line-strong hover:bg-white/[0.055]"
+          class="info-tile flex flex-wrap items-center justify-between gap-x-6 gap-y-3 !p-4 transition-colors duration-base hover:bg-surface-3"
         >
           <div class="flex min-w-0 items-center gap-3">
             <span class="tag flex-none">{{ getTransactionTypeLabel(item.type) }}</span>
-            <p class="truncate text-sm text-slate-400">{{ item.remark || '—' }}</p>
+            <p class="truncate text-sm text-ink-2">{{ item.remark || '—' }}</p>
           </div>
 
           <div class="flex flex-wrap items-center gap-x-6 gap-y-2">
-            <p class="text-xs text-slate-500">{{ formatDateTime(item.created_at) }}</p>
+            <p class="text-xs text-ink-3">{{ formatDateTime(item.created_at) }}</p>
             <p class="w-32 text-right text-lg font-semibold" :class="transactionAmountClass(item)">
               {{ transactionAmountText(item) }}
             </p>
             <div class="min-w-[110px] text-right">
               <p class="info-tile__label">变动后余额</p>
-              <p class="mt-1 text-sm font-medium text-white">{{ formatPrice(item.balance_after) }}</p>
+              <p class="mt-1 text-sm font-medium tabular-nums text-ink-1">{{ formatPrice(item.balance_after) }}</p>
             </div>
           </div>
         </article>
       </div>
 
       <div v-if="transactionsPagination.pages > 1" class="mt-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <p class="text-sm text-slate-400">
+        <p class="text-sm text-ink-2">
           {{ transactionsPagination.page }} / {{ transactionsPagination.pages }} · {{ formatCount(transactionsPagination.total) }} 条
         </p>
         <div class="flex items-center gap-2">
@@ -289,7 +290,7 @@ onMounted(() => {
     </section>
 
     <section class="surface-card p-6 sm:p-8">
-      <h2 class="text-2xl font-semibold text-white">我的提现记录</h2>
+      <h2 class="text-2xl font-semibold text-ink-1">我的提现记录</h2>
 
       <div v-if="walletStore.myWithdrawalsLoading" class="mt-6 space-y-3" aria-busy="true">
         <div v-for="n in 3" :key="`wd-skeleton-${n}`" class="info-tile flex items-center justify-between gap-4">
@@ -308,35 +309,35 @@ onMounted(() => {
         <article
           v-for="item in myWithdrawals"
           :key="item.id"
-          class="info-tile !p-5 transition-all duration-200 hover:!border-line-strong hover:bg-white/[0.055]"
+          class="info-tile !p-5 transition-colors duration-base hover:bg-surface-3"
         >
           <div class="flex flex-wrap items-start justify-between gap-4">
             <div class="space-y-2">
-              <p class="text-xl font-semibold text-white">{{ formatPrice(item.amount) }}</p>
-              <p class="text-sm text-slate-400">
+              <p class="text-xl font-semibold tabular-nums text-price">{{ formatPrice(item.amount) }}</p>
+              <p class="text-sm text-ink-2">
                 {{ getChannelLabel(item.channel) }} · {{ item.account_name || '-' }} · {{ item.account_no || '-' }}
               </p>
-              <p class="text-xs text-slate-500">申请于 {{ formatDateTime(item.created_at) }}</p>
+              <p class="text-xs text-ink-3">申请于 {{ formatDateTime(item.created_at) }}</p>
             </div>
 
             <div class="flex flex-col items-end gap-2">
               <span :class="['tag', getWithdrawalStatusTagClass(item.status)]">
                 {{ getWithdrawalStatusLabel(item.status) }}
               </span>
-              <p v-if="item.paid_at" class="text-xs text-slate-500">打款于 {{ formatDateTime(item.paid_at) }}</p>
+              <p v-if="item.paid_at" class="text-xs text-ink-3">打款于 {{ formatDateTime(item.paid_at) }}</p>
             </div>
           </div>
 
           <div
             v-if="item.status === 'REJECTED' && item.reject_reason"
-            class="mt-4 rounded-tile border border-danger/25 bg-danger-soft px-4 py-3 text-sm text-danger-text"
+            class="message-error mt-4"
           >
             驳回原因：{{ item.reject_reason }}
           </div>
 
           <div
             v-if="item.payment_reference && ['APPROVED', 'PAID'].includes(item.status)"
-            class="mt-4 rounded-tile border border-line-soft bg-white/[0.04] px-4 py-3 text-sm text-slate-300"
+            class="message-info mt-4"
           >
             打款流水号：{{ item.payment_reference }}
           </div>
@@ -344,7 +345,7 @@ onMounted(() => {
       </div>
 
       <div v-if="myWithdrawalsPagination.pages > 1" class="mt-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <p class="text-sm text-slate-400">
+        <p class="text-sm text-ink-2">
           {{ myWithdrawalsPagination.page }} / {{ myWithdrawalsPagination.pages }} · {{ formatCount(myWithdrawalsPagination.total) }} 条
         </p>
         <div class="flex items-center gap-2">

@@ -157,18 +157,17 @@ onMounted(() => {
 <template>
   <div class="page-shell space-y-8">
     <section
-      class="hero-panel scanline-overlay overflow-hidden p-6 sm:p-8 lg:p-10"
+      class="hero-panel overflow-hidden p-6 sm:p-8 lg:p-10"
       :style="buildGameSurfaceStyle(game)"
     >
-      <div class="absolute inset-0 bg-gradient-to-r from-slate-950/90 via-slate-950/78 to-slate-950/65"></div>
 
       <div class="relative z-10 grid gap-8 lg:grid-cols-[1.08fr_0.92fr] lg:items-end">
-        <div class="space-y-4">
+        <div class="space-y-3">
           <div class="flex flex-wrap items-center gap-3">
             <span class="eyebrow">{{ game?.name || copy.zoneName }}</span>
             <span class="tag">{{ getGamePlatformLabel(game?.platform) }}</span>
           </div>
-          <h1 class="section-title neon-text !text-4xl sm:!text-5xl">
+          <h1 class="section-title">
             {{ game?.name || copy.loading }}
           </h1>
           <p class="section-copy max-w-3xl">
@@ -187,22 +186,22 @@ onMounted(() => {
         </div>
 
         <div class="grid gap-4 sm:grid-cols-3">
-          <article class="stat-card cyber-corner">
-            <p class="text-sm text-slate-400">{{ copy.serviceTypes }}</p>
-            <p class="mt-2 text-3xl font-semibold text-white">{{ serviceTypes.length }}</p>
+          <article class="stat-card">
+            <p class="text-[13px] text-ink-2">{{ copy.serviceTypes }}</p>
+            <p class="stat-value mt-1.5 text-ink-1">{{ serviceTypes.length }}</p>
           </article>
-          <article class="stat-card cyber-corner">
-            <p class="text-sm text-slate-400">{{ copy.currentView }}</p>
-            <p class="mt-2 text-3xl font-semibold text-white">{{ activeTab === 'orders' ? copy.orders : copy.services }}</p>
+          <article class="stat-card">
+            <p class="text-[13px] text-ink-2">{{ copy.currentView }}</p>
+            <p class="stat-value mt-1.5 text-ink-1">{{ activeTab === 'orders' ? copy.orders : copy.services }}</p>
           </article>
-          <article class="stat-card cyber-corner">
-            <p class="text-sm text-slate-400">{{ copy.visibleServices }}</p>
+          <article class="stat-card">
+            <p class="text-[13px] text-ink-2">{{ copy.visibleServices }}</p>
             <template v-if="visibleServiceCount === 0">
-              <p class="mt-2 text-3xl font-semibold text-white">{{ copy.noServiceShort }}</p>
-              <p class="mt-2 text-xs leading-6 text-slate-400">{{ copy.noServiceComing }}</p>
+              <p class="stat-value mt-1.5 text-ink-1">{{ copy.noServiceShort }}</p>
+              <p class="mt-1.5 text-xs leading-6 text-ink-2">{{ copy.noServiceComing }}</p>
             </template>
             <template v-else>
-              <p class="mt-2 text-3xl font-semibold text-white">{{ resultBlock.total || 0 }}</p>
+              <p class="stat-value mt-1.5 tabular-nums text-ink-1">{{ resultBlock.total || 0 }}</p>
             </template>
           </article>
         </div>
@@ -266,7 +265,7 @@ onMounted(() => {
             <div class="flex items-center justify-between gap-4">
               <span class="tag">{{ order.service_type || copy.requestPost }}</span>
               <div
-                class="flex h-11 w-11 items-center justify-center rounded-tile border text-sm font-semibold text-white"
+                class="flex h-11 w-11 items-center justify-center rounded-tile border text-sm font-semibold text-ink-1"
                 :style="buildAccentStyle(game)"
               >
                 {{ order.game_name?.slice(0, 1) || '单' }}
@@ -274,18 +273,18 @@ onMounted(() => {
             </div>
 
             <div class="space-y-3">
-              <h3 class="text-2xl font-semibold text-white">{{ order.current_rank }} → {{ order.target_rank }}</h3>
-              <p class="text-sm leading-6 text-slate-300">{{ order.description_raw || copy.waitingForBooster }}</p>
+              <h3 class="text-2xl font-semibold text-ink-1">{{ order.current_rank }} → {{ order.target_rank }}</h3>
+              <p class="text-sm leading-6 text-ink-2">{{ order.description_raw || copy.waitingForBooster }}</p>
             </div>
           </div>
         </div>
 
         <div class="mt-4 flex items-center justify-between gap-4">
           <div>
-            <p class="text-xs uppercase tracking-[0.18em] text-slate-500">{{ copy.quote }}</p>
-            <p class="mt-2 text-2xl font-semibold text-accent-300">{{ formatPrice(order.price) }}</p>
+            <p class="text-xs uppercase tracking-[0.18em] text-ink-3">{{ copy.quote }}</p>
+            <p class="mt-2 text-2xl font-semibold tabular-nums text-price">{{ formatPrice(order.price) }}</p>
           </div>
-          <div class="text-right text-sm text-slate-400">
+          <div class="text-right text-sm text-ink-2">
             <p>{{ order.server || copy.areaWaiting }}</p>
             <p class="mt-2">{{ order.user?.username || copy.anonymous }}</p>
           </div>
@@ -306,7 +305,7 @@ onMounted(() => {
             <div class="flex items-center justify-between gap-4">
               <span class="tag">{{ service.service_type }}</span>
               <div
-                class="flex h-11 w-11 items-center justify-center rounded-tile border text-sm font-semibold text-white"
+                class="flex h-11 w-11 items-center justify-center rounded-tile border text-sm font-semibold text-ink-1"
                 :style="buildAccentStyle(game)"
               >
                 服
@@ -314,8 +313,8 @@ onMounted(() => {
             </div>
 
             <div class="space-y-3">
-              <h3 class="text-2xl font-semibold text-white">{{ service.title }}</h3>
-              <p class="text-sm leading-6 text-slate-300">{{ service.description || copy.serviceReady }}</p>
+              <h3 class="text-2xl font-semibold text-ink-1">{{ service.title }}</h3>
+              <p class="text-sm leading-6 text-ink-2">{{ service.description || copy.serviceReady }}</p>
             </div>
           </div>
         </div>
@@ -332,10 +331,10 @@ onMounted(() => {
 
         <div class="mt-4 flex items-center justify-between gap-4">
           <div>
-            <p class="text-xs uppercase tracking-[0.18em] text-slate-500">每小时</p>
-            <p class="mt-2 text-2xl font-semibold text-accent-300">{{ formatPrice(service.price_per_hour) }}</p>
+            <p class="text-xs uppercase tracking-[0.18em] text-ink-3">每小时</p>
+            <p class="mt-2 text-2xl font-semibold tabular-nums text-price">{{ formatPrice(service.price_per_hour) }}</p>
           </div>
-          <div class="text-right text-sm text-slate-400">
+          <div class="text-right text-sm text-ink-2">
             <p>{{ copy.dealCountPrefix }}{{ service.order_count }} 单</p>
             <p class="mt-2">{{ service.is_available ? copy.availableNow : copy.serviceUnavailable }}</p>
           </div>
@@ -351,7 +350,7 @@ onMounted(() => {
 
     <section v-if="resultBlock.pages > 1" class="surface-card p-5">
       <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <p class="text-sm text-slate-400">
+        <p class="text-sm text-ink-2">
           {{ copy.pageInfoPrefix }}{{ resultBlock.page }}{{ copy.pageInfoMiddle }}{{ resultBlock.pages }}{{ copy.pageInfoSuffix }}{{ resultBlock.total }}{{ copy.pageInfoEnd }}
         </p>
 

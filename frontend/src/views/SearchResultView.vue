@@ -52,7 +52,7 @@ function getGameById(id, fallbackName = '') {
     name: fallbackName || `游戏 #${id}`,
     description: '热门专区',
     platform: 'BOTH',
-    color_theme: '#ff4655',
+    color_theme: '#0071e3',
   }
 }
 
@@ -133,12 +133,12 @@ onMounted(() => {
 
 <template>
   <div class="page-shell space-y-8">
-    <section class="hero-panel scanline-overlay p-6 sm:p-8 lg:p-10">
+    <section class="hero-panel p-6 sm:p-8 lg:p-10">
       <div class="grid gap-8 lg:grid-cols-[1.08fr_0.92fr] lg:items-end">
-        <div class="space-y-4">
+        <div class="space-y-3">
           <p class="eyebrow">统一搜索</p>
-          <h1 class="section-title neon-text !text-4xl sm:!text-5xl">
-            搜订单，也搜服务。
+          <h1 class="section-title">
+            搜订单，也搜服务
           </h1>
           <p class="section-copy max-w-3xl">
             关键词、游戏、分类、价格都能一起筛。
@@ -146,13 +146,13 @@ onMounted(() => {
         </div>
 
         <div class="grid gap-4 sm:grid-cols-2">
-          <article class="stat-card cyber-corner">
-            <p class="text-sm text-slate-400">订单结果</p>
-            <p class="mt-2 text-3xl font-semibold text-white">{{ ordersResult.total || 0 }}</p>
+          <article class="stat-card">
+            <p class="text-[13px] text-ink-2">订单结果</p>
+            <p class="stat-value mt-1.5 text-ink-1">{{ ordersResult.total || 0 }}</p>
           </article>
-          <article class="stat-card cyber-corner">
-            <p class="text-sm text-slate-400">服务结果</p>
-            <p class="mt-2 text-3xl font-semibold text-white">{{ servicesResult.total || 0 }}</p>
+          <article class="stat-card">
+            <p class="text-[13px] text-ink-2">服务结果</p>
+            <p class="stat-value mt-1.5 text-ink-1">{{ servicesResult.total || 0 }}</p>
           </article>
         </div>
       </div>
@@ -240,7 +240,7 @@ onMounted(() => {
           </button>
         </div>
 
-        <div class="text-sm text-slate-400">
+        <div class="text-sm text-ink-2">
           <span v-if="selectedCategory">{{ getGameCategoryMeta(selectedCategory).label }}</span>
           <span v-if="selectedPlatform"> · {{ getGamePlatformLabel(selectedPlatform) }}</span>
         </div>
@@ -267,26 +267,26 @@ onMounted(() => {
           <div class="relative z-10 flex h-full flex-col justify-between">
             <div class="flex items-center justify-between gap-4">
               <span class="tag">{{ order.service_type || '订单需求' }}</span>
-              <div class="text-right text-sm text-slate-300">
+              <div class="text-right text-sm text-ink-2">
                 <p>{{ order.game_name }}</p>
                 <p class="mt-2">{{ order.server || '区服待沟通' }}</p>
               </div>
             </div>
 
             <div class="space-y-3">
-              <h2 class="text-2xl font-semibold text-white">{{ order.current_rank }} → {{ order.target_rank }}</h2>
-              <p class="text-sm leading-6 text-slate-300">{{ order.description_raw || '已发布待接单。' }}</p>
+              <h2 class="text-2xl font-semibold text-ink-1">{{ order.current_rank }} → {{ order.target_rank }}</h2>
+              <p class="text-sm leading-6 text-ink-2">{{ order.description_raw || '已发布待接单。' }}</p>
             </div>
           </div>
         </div>
 
         <div class="mt-4 flex items-center justify-between gap-4">
           <div>
-            <p class="text-xs uppercase tracking-[0.18em] text-slate-500">报价</p>
-            <p class="mt-2 text-2xl font-semibold text-accent-300">{{ formatPrice(order.price) }}</p>
+            <p class="text-xs uppercase tracking-[0.18em] text-ink-3">报价</p>
+            <p class="mt-2 text-2xl font-semibold tabular-nums text-price">{{ formatPrice(order.price) }}</p>
           </div>
           <div
-            class="flex h-11 w-11 items-center justify-center rounded-tile border text-sm font-semibold text-white"
+            class="flex h-11 w-11 items-center justify-center rounded-tile border text-sm font-semibold text-ink-1"
             :style="buildAccentStyle(getGameById(order.game_id, order.game_name))"
           >
             单
@@ -308,7 +308,7 @@ onMounted(() => {
             <div class="flex items-center justify-between gap-4">
               <span class="tag">{{ service.service_type }}</span>
               <div
-                class="flex h-11 w-11 items-center justify-center rounded-tile border text-sm font-semibold text-white"
+                class="flex h-11 w-11 items-center justify-center rounded-tile border text-sm font-semibold text-ink-1"
                 :style="buildAccentStyle(getGameById(service.game_id))"
               >
                 服
@@ -316,9 +316,9 @@ onMounted(() => {
             </div>
 
             <div class="space-y-3">
-              <p class="text-sm text-slate-300">{{ getGameById(service.game_id).name }}</p>
-              <h2 class="text-2xl font-semibold text-white">{{ service.title }}</h2>
-              <p class="text-sm leading-6 text-slate-300">{{ service.description || '已上架，支持从服务卡片直接下单。' }}</p>
+              <p class="text-sm text-ink-2">{{ getGameById(service.game_id).name }}</p>
+              <h2 class="text-2xl font-semibold text-ink-1">{{ service.title }}</h2>
+              <p class="text-sm leading-6 text-ink-2">{{ service.description || '已上架，支持从服务卡片直接下单。' }}</p>
             </div>
           </div>
         </div>
@@ -335,10 +335,10 @@ onMounted(() => {
 
         <div class="mt-4 flex items-center justify-between gap-4">
           <div>
-            <p class="text-xs uppercase tracking-[0.18em] text-slate-500">每小时</p>
-            <p class="mt-2 text-2xl font-semibold text-accent-300">{{ formatPrice(service.price_per_hour) }}</p>
+            <p class="text-xs uppercase tracking-[0.18em] text-ink-3">每小时</p>
+            <p class="mt-2 text-2xl font-semibold tabular-nums text-price">{{ formatPrice(service.price_per_hour) }}</p>
           </div>
-          <div class="text-right text-sm text-slate-400">
+          <div class="text-right text-sm text-ink-2">
             <p>{{ getGamePlatformLabel(getGameById(service.game_id).platform) }}</p>
             <p class="mt-2">成交 {{ service.order_count }} 单</p>
           </div>
@@ -354,7 +354,7 @@ onMounted(() => {
 
     <section v-if="resultBlock.pages > 1" class="surface-card p-5">
       <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <p class="text-sm text-slate-400">
+        <p class="text-sm text-ink-2">
           当前第 {{ resultBlock.page }} / {{ resultBlock.pages }} 页，共 {{ resultBlock.total }} 条结果
         </p>
 

@@ -1,7 +1,9 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 
 import AdminDashboard from '@/components/admin/AdminDashboard.vue'
+import { useOrdersStore } from '@/stores/orders'
 import { useGamesStore } from '@/stores/games'
 import {
   useWalletStore,
@@ -18,18 +20,44 @@ import {
   getOrderStatusLabel,
   getUserRoleLabel,
 } from '@/utils/order'
-import { getGameCategoryMeta, getGamePlatformLabel } from '@/utils/gameCatalog'
+import {
+  GAME_CATEGORY_META,
+  GAME_PLATFORM_META,
+  getGameCategoryMeta,
+  getGamePlatformLabel,
+} from '@/utils/gameCatalog'
 
+const route = useRoute()
 const gamesStore = useGamesStore()
+const ordersStore = useOrdersStore()
 const walletStore = useWalletStore()
 
-const activeTab = ref('dashboard')
+const TAB_KEYS = ['dashboard', 'applications', 'orders', 'withdrawals', 'wallet-adjust', 'games']
+
+function normalizeTab(tab) {
+  const value = Array.isArray(tab) ? tab[0] : tab
+  return TAB_KEYS.includes(value) ? value : 'dashboard'
+}
+
+// 支持 /admin?tab=orders 直达指定 tab（大厅管理员「发布订单」入口跳转用）
+const activeTab = ref(normalizeTab(route.query.tab))
+
+watch(
+  () => route.query.tab,
+  (tab) => {
+    const next = normalizeTab(tab)
+    if (next !== activeTab.value) {
+      activeTab.value = next
+    }
+  }
+)
+
 const applicationStatus = ref('PENDING')
 const applications = ref([])
 const orders = ref([])
 const loadingApplications = ref(false)
 const loadingOrders = ref(false)
-const loadingGames = computed(() => gamesStore.loading)
+const loadingGames = computed(() => gamesStore.adminLoading)
 const loadingWithdrawals = computed(() => walletStore.adminWithdrawalsLoading)
 const message = ref({ type: '', text: '' })
 const submittingKey = ref('')
@@ -53,7 +81,7 @@ const applicationStatusOptions = [
 const dashboardStats = computed(() => [
   { label: '申请', value: applications.value.length },
   { label: '订单', value: orders.value.length },
-  { label: '游戏', value: gamesStore.catalogGames.length },
+  { label: '游戏', value: gamesStore.adminGames.length },
 ])
 
 function messageClass(type) {
@@ -92,10 +120,6 @@ async function fetchOrders() {
   }
 }
 
-async function fetchGames() {
-  await gamesStore.fetchGames('', '', { pageSize: 100 })
-}
-
 function initReview(userId) {
   if (!reviewForm.value[userId]) {
     reviewForm.value[userId] = { approve: true, booster_quota: 1, review_note: '' }
@@ -129,9 +153,9 @@ function paymentLabel(status) {
 function paymentBadgeClass(status) {
   return {
     tag: true,
-    '!bg-amber-400/15 !text-amber-200 !border-amber-400/30': status === 'UNPAID',
-    '!bg-emerald-400/15 !text-emerald-200 !border-emerald-400/30': status === 'PAID',
-    '!bg-slate-400/10 !text-slate-300 !border-slate-400/20': status === 'REFUNDED',
+    '!bg-warning-soft !text-warning': status === 'UNPAID',
+    '!bg-success-soft !text-success': status === 'PAID',
+    '!bg-surface-3 !text-ink-2': status === 'REFUNDED',
   }
 }
 
@@ -340,19 +364,285 @@ async function submitAdjust() {
   submittingKey.value = ''
 }
 
+// ── 错误信息格式化（后端 detail 可能是字符串，也可能是 422 校验数组）──
+
+function formatApiError(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((item, index) => `${index + 1}. ${item?.msg || JSON.stringify(item)}`)
+      .join('；')
+  }
+  return value
+}
+
+// ── 发布订单（管理员发单：POST /orders/create → 大厅 PENDING + 广播打手）──
+
+const publishModal = ref(null)
+
+const publishPriorityOptions = [
+  { value: 1, label: '普通' },
+  { value: 5, label: '加急' },
+]
+
+const publishGameOptions = computed(() => gamesStore.adminGames)
+const hasActivePublishGame = computed(() => publishGameOptions.value.some((game) => game.is_active))
+const selectedPublishGame = computed(() => {
+  const gameId = Number(publishModal.value?.game_id)
+  return publishGameOptions.value.find((game) => game.id === gameId) || null
+})
+
+async function openPublishModal() {
+  publishModal.value = {
+    game_id: '',
+    current_rank: '',
+    target_rank: '',
+    price: '100',
+    description: '',
+    priority: 1,
+    server: '',
+    error: '',
+    submitting: false,
+  }
+
+  if (!gamesStore.adminGames.length) {
+    await gamesStore.fetchAdminGames({ pageSize: 200 })
+  }
+
+  // 默认选中第一个已上架游戏；全部未上架时也可选择未上架游戏发单
+  if (publishModal.value && !publishModal.value.game_id) {
+    const games = gamesStore.adminGames
+    const firstActive = games.find((game) => game.is_active)
+    publishModal.value.game_id = (firstActive || games[0])?.id ?? ''
+  }
+}
+
+function closePublishModal() {
+  publishModal.value = null
+}
+
+async function submitPublishModal() {
+  const state = publishModal.value
+  if (!state) return
+  state.error = ''
+
+  const game = selectedPublishGame.value
+  if (!game) {
+    state.error = gamesStore.adminGames.length
+      ? '请选择游戏'
+      : '暂无游戏可选，请先在「游戏管理」中新建游戏'
+    return
+  }
+  if (!state.current_rank.trim()) {
+    state.error = '请填写当前段位'
+    return
+  }
+  if (!state.target_rank.trim()) {
+    state.error = '请填写目标段位'
+    return
+  }
+  const price = Number(state.price)
+  if (!Number.isFinite(price) || price <= 0) {
+    state.error = '请填写大于 0 的价格'
+    return
+  }
+
+  state.submitting = true
+  const result = await ordersStore.createOrder({
+    game_id: game.id,
+    game_name: game.name,
+    current_rank: state.current_rank.trim(),
+    target_rank: state.target_rank.trim(),
+    price,
+    description_raw: state.description.trim() || null,
+    priority: state.priority,
+    server: state.server.trim() || null,
+  })
+  state.submitting = false
+
+  if (!result.success) {
+    state.error = formatApiError(result.error) || '发布失败'
+    return
+  }
+
+  message.value = { type: 'success', text: `订单 #${result.data?.id ?? ''} 已发布到大厅，等待打手接单` }
+  closePublishModal()
+  await fetchOrders()
+}
+
+// ── 游戏管理（GET/POST/PUT/DELETE /admin/games，全量含未上架）──
+
+const gameStatusFilter = ref('')
+const gameModal = ref(null)
+const gameDeleteModal = ref(null)
+
+const gameStatusOptions = [
+  { value: '', label: '全部状态' },
+  { value: 'active', label: '已上架' },
+  { value: 'inactive', label: '未上架' },
+]
+
+const gameCategoryOptions = GAME_CATEGORY_META.map((meta) => ({ value: meta.value, label: meta.label }))
+const gamePlatformOptions = Object.entries(GAME_PLATFORM_META).map(([value, meta]) => ({ value, label: meta.label }))
+
+async function fetchGamesWithFilter(page = 1) {
+  await gamesStore.fetchAdminGames({
+    page,
+    pageSize: 200,
+    isActive:
+      gameStatusFilter.value === 'active'
+        ? true
+        : gameStatusFilter.value === 'inactive'
+          ? false
+          : undefined,
+  })
+}
+
+function handleGamePageChange(page) {
+  const pagination = gamesStore.adminPagination
+  if (page < 1 || page > pagination.pages || page === pagination.page) {
+    return
+  }
+  fetchGamesWithFilter(page)
+}
+
+// 新建游戏默认模板：按分类推导（后端 GameCreate 必填 service_template）
+function buildDefaultServiceTemplate(category) {
+  const hasRankSystem = ['MOBA', 'FPS', 'RACING', 'CARD'].includes(category)
+  return {
+    service_types: ['代练上分', '陪玩', '教学'],
+    has_rank_system: hasRankSystem,
+    rank_tiers: hasRankSystem ? ['青铜', '白银', '黄金', '铂金', '钻石', '大师', '王者'] : [],
+    servers: [],
+    roles: [],
+    custom_fields: [],
+  }
+}
+
+function openGameCreateModal() {
+  gameModal.value = {
+    mode: 'create',
+    id: null,
+    name: '',
+    english_name: '',
+    category: 'MOBA',
+    platform: 'MOBILE',
+    sort_order: gamesStore.adminPagination.total,
+    description: '',
+    error: '',
+    submitting: false,
+  }
+}
+
+function openGameEditModal(game) {
+  gameModal.value = {
+    mode: 'edit',
+    id: game.id,
+    name: game.name || '',
+    english_name: game.english_name || '',
+    category: game.category,
+    platform: game.platform,
+    sort_order: game.sort_order ?? 0,
+    error: '',
+    submitting: false,
+  }
+}
+
+function closeGameModal() {
+  gameModal.value = null
+}
+
+async function submitGameModal() {
+  const state = gameModal.value
+  if (!state) return
+  state.error = ''
+
+  if (!state.name.trim()) {
+    state.error = '请填写游戏名称'
+    return
+  }
+
+  state.submitting = true
+
+  if (state.mode === 'create') {
+    const result = await gamesStore.createGame({
+      name: state.name.trim(),
+      english_name: state.english_name.trim() || null,
+      category: state.category,
+      platform: state.platform,
+      sort_order: Number(state.sort_order) || 0,
+      description: state.description.trim() || null,
+      service_template: buildDefaultServiceTemplate(state.category),
+    })
+    state.submitting = false
+    if (!result.success) {
+      state.error = formatApiError(result.error) || '创建失败'
+      return
+    }
+    message.value = { type: 'success', text: `已创建「${result.data.name}」（默认下架，需手动上架）` }
+    closeGameModal()
+    return
+  }
+
+  const result = await gamesStore.updateGame(state.id, {
+    name: state.name.trim(),
+    sort_order: Number(state.sort_order) || 0,
+  })
+  state.submitting = false
+  if (!result.success) {
+    state.error = formatApiError(result.error) || '保存失败'
+    return
+  }
+  message.value = { type: 'success', text: `已更新「${result.data.name}」` }
+  closeGameModal()
+}
+
+function openGameDeleteModal(game) {
+  gameDeleteModal.value = {
+    id: game.id,
+    name: game.name,
+    error: '',
+    submitting: false,
+  }
+}
+
+function closeGameDeleteModal() {
+  gameDeleteModal.value = null
+}
+
+async function confirmDeleteGame() {
+  const state = gameDeleteModal.value
+  if (!state) return
+  state.submitting = true
+  const result = await gamesStore.deleteGame(state.id)
+  state.submitting = false
+  if (!result.success) {
+    state.error = formatApiError(result.error) || '删除失败'
+    return
+  }
+  message.value = { type: 'success', text: `已删除「${state.name}」` }
+  closeGameDeleteModal()
+}
+
 async function toggleGameStatus(game) {
   submittingKey.value = `game-${game.id}`
   const result = await gamesStore.updateGame(game.id, { is_active: !game.is_active })
   if (result.success) {
     message.value = { type: 'success', text: game.is_active ? '已下架' : '已上架' }
   } else {
-    message.value = { type: 'error', text: result.error }
+    message.value = { type: 'error', text: formatApiError(result.error) || '操作失败' }
   }
   submittingKey.value = ''
 }
 
+// 切到游戏管理 tab 时拉取最新全量列表（含未上架）
+watch(activeTab, (tab) => {
+  if (tab === 'games') {
+    fetchGamesWithFilter()
+  }
+})
+
 async function refreshDashboard() {
-  await Promise.all([fetchApplications(), fetchOrders(), fetchGames(), fetchWithdrawals(1)])
+  await Promise.all([fetchApplications(), fetchOrders(), fetchGamesWithFilter(), fetchWithdrawals(1)])
 }
 
 onMounted(async () => {
@@ -362,17 +652,17 @@ onMounted(async () => {
 
 <template>
   <div class="page-shell space-y-6">
-    <section class="hero-panel scanline-overlay p-6 sm:p-8">
+    <section class="hero-panel p-6 sm:p-8">
       <div class="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
-        <div class="space-y-4">
+        <div class="space-y-3">
           <p class="eyebrow">管理后台</p>
-          <h1 class="section-title neon-text !text-4xl sm:!text-5xl">运营管理台</h1>
+          <h1 class="section-title">运营管理台</h1>
         </div>
 
         <div class="grid gap-4 sm:grid-cols-3">
           <article v-for="item in dashboardStats" :key="item.label" class="stat-card">
-            <p class="text-sm text-slate-400">{{ item.label }}</p>
-            <p class="mt-2 text-3xl font-semibold text-white">{{ item.value }}</p>
+            <p class="text-[13px] text-ink-2">{{ item.label }}</p>
+            <p class="stat-value mt-1.5 text-ink-1">{{ item.value }}</p>
           </article>
         </div>
       </div>
@@ -398,7 +688,7 @@ onMounted(async () => {
 
     <section v-else-if="activeTab === 'applications'" class="surface-card p-6 sm:p-8">
       <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <h2 class="text-2xl font-semibold text-white">代练审核</h2>
+        <h2 class="text-2xl font-semibold text-ink-1">代练审核</h2>
         <div class="flex gap-3">
           <select v-model="applicationStatus" class="input min-w-[160px]" @change="fetchApplications">
             <option v-for="option in applicationStatusOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
@@ -421,11 +711,11 @@ onMounted(async () => {
           <div class="flex items-start justify-between gap-4">
             <div>
               <div class="flex flex-wrap items-center gap-2">
-                <h3 class="text-xl font-semibold text-white">{{ item.username }}</h3>
+                <h3 class="text-xl font-semibold text-ink-1">{{ item.username }}</h3>
                 <span :class="applicationMeta(item.status).badgeClass">{{ applicationMeta(item.status).label }}</span>
               </div>
-              <p class="mt-2 text-sm text-slate-400">{{ item.email }}</p>
-              <p class="mt-2 text-sm text-slate-300">{{ item.game_name || '未填游戏' }} · {{ item.current_rank || '-' }} → {{ item.target_rank || '-' }}</p>
+              <p class="mt-2 text-sm text-ink-2">{{ item.email }}</p>
+              <p class="mt-2 text-sm text-ink-2">{{ item.game_name || '未填游戏' }} · {{ item.current_rank || '-' }} → {{ item.target_rank || '-' }}</p>
             </div>
             <a v-if="item.proof_url" :href="item.proof_url" target="_blank" rel="noreferrer" class="btn-secondary !px-4 !py-2">截图</a>
           </div>
@@ -440,7 +730,7 @@ onMounted(async () => {
           </div>
 
           <div class="mt-5 flex items-center justify-between">
-            <p class="text-xs text-slate-500">{{ getUserRoleLabel(item.role) }}</p>
+            <p class="text-xs text-ink-3">{{ getUserRoleLabel(item.role) }}</p>
             <button class="btn-primary !px-4 !py-2" :disabled="submittingKey === `review-${item.user_id}`" @click="submitReview(item.user_id)">
               {{ submittingKey === `review-${item.user_id}` ? '提交中...' : '提交' }}
             </button>
@@ -450,7 +740,10 @@ onMounted(async () => {
     </section>
 
     <section v-else-if="activeTab === 'orders'" class="surface-card p-6 sm:p-8">
-      <h2 class="text-2xl font-semibold text-white">订单管理</h2>
+      <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <h2 class="text-2xl font-semibold text-ink-1">订单管理</h2>
+        <button class="btn-primary shrink-0 !px-5 !py-2" @click="openPublishModal">发布订单</button>
+      </div>
 
       <div v-if="loadingOrders" class="mt-6 grid gap-4 xl:grid-cols-2" aria-busy="true">
         <div v-for="n in 4" :key="`order-skeleton-${n}`" class="skeleton h-44 !rounded-card"></div>
@@ -467,13 +760,13 @@ onMounted(async () => {
           <div class="flex items-start justify-between gap-4">
             <div>
               <div class="flex flex-wrap items-center gap-2">
-                <h3 class="text-xl font-semibold text-white">#{{ order.id }} {{ order.game_name }}</h3>
+                <h3 class="text-xl font-semibold text-ink-1">#{{ order.id }} {{ order.game_name }}</h3>
                 <span :class="getOrderStatusBadgeClass(order.status)">{{ getOrderStatusLabel(order.status) }}</span>
                 <span v-if="order.payment_status" :class="paymentBadgeClass(order.payment_status)">{{ paymentLabel(order.payment_status) }}</span>
               </div>
-              <p class="mt-2 text-sm text-slate-300">{{ order.current_rank }} → {{ order.target_rank }}</p>
+              <p class="mt-2 text-sm text-ink-2">{{ order.current_rank }} → {{ order.target_rank }}</p>
             </div>
-            <p class="text-lg font-semibold text-accent-300">{{ formatPrice(order.price) }}</p>
+            <p class="text-lg font-semibold tabular-nums text-price">{{ formatPrice(order.price) }}</p>
           </div>
 
           <div class="mt-5 grid gap-3 sm:grid-cols-3">
@@ -487,7 +780,7 @@ onMounted(async () => {
           </div>
 
           <div class="mt-5 flex items-center justify-between">
-            <p class="text-xs text-slate-500">{{ formatDateTime(order.created_at) }}</p>
+            <p class="text-xs text-ink-3">{{ formatDateTime(order.created_at) }}</p>
             <div class="flex gap-2">
               <button
                 v-if="order.status === 'PENDING'"
@@ -515,7 +808,7 @@ onMounted(async () => {
 
     <section v-else-if="activeTab === 'withdrawals'" class="surface-card p-6 sm:p-8">
       <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <h2 class="text-2xl font-semibold text-white">提现处理</h2>
+        <h2 class="text-2xl font-semibold text-ink-1">提现处理</h2>
         <div class="flex gap-3">
           <select v-model="withdrawalStatus" class="input min-w-[160px]" @change="fetchWithdrawals(1)">
             <option v-for="option in WITHDRAWAL_STATUS_OPTIONS" :key="option.value" :value="option.value">{{ option.label }}</option>
@@ -538,29 +831,29 @@ onMounted(async () => {
           <div class="flex flex-wrap items-start justify-between gap-4">
             <div class="space-y-2">
               <div class="flex flex-wrap items-center gap-2">
-                <h3 class="text-xl font-semibold text-white">#{{ item.id }} {{ withdrawalApplicant(item) }}</h3>
+                <h3 class="text-xl font-semibold text-ink-1">#{{ item.id }} {{ withdrawalApplicant(item) }}</h3>
                 <span :class="['tag', getWithdrawalStatusTagClass(item.status)]">{{ getWithdrawalStatusLabel(item.status) }}</span>
               </div>
-              <p class="text-sm text-slate-300">
+              <p class="text-sm text-ink-2">
                 {{ getChannelLabel(item.channel) }} · {{ item.account_name || '-' }} · {{ item.account_no || '-' }}
               </p>
-              <p class="text-xs text-slate-500">申请于 {{ formatDateTime(item.created_at) }}</p>
-              <p v-if="item.paid_at" class="text-xs text-slate-500">打款于 {{ formatDateTime(item.paid_at) }}</p>
+              <p class="text-xs text-ink-3">申请于 {{ formatDateTime(item.created_at) }}</p>
+              <p v-if="item.paid_at" class="text-xs text-ink-3">打款于 {{ formatDateTime(item.paid_at) }}</p>
             </div>
 
-            <p class="text-2xl font-semibold text-accent-300">{{ formatPrice(item.amount) }}</p>
+            <p class="text-2xl font-semibold tabular-nums text-price">{{ formatPrice(item.amount) }}</p>
           </div>
 
           <div
             v-if="item.status === 'REJECTED' && item.reject_reason"
-            class="mt-4 rounded-tile border border-danger/25 bg-danger-soft px-4 py-3 text-sm text-danger-text"
+            class="message-error mt-4"
           >
             驳回原因：{{ item.reject_reason }}
           </div>
 
           <div
             v-if="item.payment_reference"
-            class="mt-4 rounded-tile border border-line-soft bg-white/[0.04] px-4 py-3 text-sm text-slate-300"
+            class="message-info mt-4"
           >
             打款流水号：{{ item.payment_reference }}
           </div>
@@ -593,7 +886,7 @@ onMounted(async () => {
       </div>
 
       <div v-if="walletStore.adminWithdrawalsPagination.pages > 1" class="mt-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <p class="text-sm text-slate-400">
+        <p class="text-sm text-ink-2">
           {{ walletStore.adminWithdrawalsPagination.page }} / {{ walletStore.adminWithdrawalsPagination.pages }}
         </p>
         <div class="flex items-center gap-2">
@@ -616,8 +909,8 @@ onMounted(async () => {
     </section>
 
     <section v-else-if="activeTab === 'wallet-adjust'" class="surface-card p-6 sm:p-8">
-      <h2 class="text-2xl font-semibold text-white">钱包调账</h2>
-      <p class="mt-2 text-sm text-slate-400">为指定用户直接调整钱包余额：金额为正表示充值，为负表示扣减。</p>
+      <h2 class="text-2xl font-semibold text-ink-1">钱包调账</h2>
+      <p class="mt-2 text-sm text-ink-2">为指定用户直接调整钱包余额：金额为正表示充值，为负表示扣减。</p>
 
       <div v-if="adjustMessage.text" class="mt-4" :class="messageClass(adjustMessage.type)">{{ adjustMessage.text }}</div>
 
@@ -642,38 +935,94 @@ onMounted(async () => {
       </form>
     </section>
 
-    <section v-else class="surface-card p-6 sm:p-8">
-      <h2 class="text-2xl font-semibold text-white">游戏管理</h2>
+    <section v-else-if="activeTab === 'games'" class="surface-card p-6 sm:p-8">
+      <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <h2 class="text-2xl font-semibold text-ink-1">游戏管理</h2>
+          <p class="mt-2 text-sm text-ink-2">
+            全量 {{ gamesStore.adminPagination.total }} 款游戏（含未上架）· 对外游戏专区只展示已上架游戏。
+          </p>
+        </div>
+        <div class="flex flex-wrap items-center gap-3">
+          <select v-model="gameStatusFilter" class="input min-w-[140px]" @change="fetchGamesWithFilter">
+            <option v-for="option in gameStatusOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+          </select>
+          <button class="btn-primary shrink-0 !px-5 !py-2" @click="openGameCreateModal">新建游戏</button>
+        </div>
+      </div>
 
       <div v-if="loadingGames" class="mt-6 grid gap-4 xl:grid-cols-2" aria-busy="true">
         <div v-for="n in 6" :key="`game-skeleton-${n}`" class="skeleton h-28 !rounded-card"></div>
       </div>
 
+      <div v-else-if="!gamesStore.adminGames.length" class="empty-state mt-6">
+        <div class="empty-state__icon" aria-hidden="true">🎮</div>
+        <h3 class="empty-state__title">{{ gameStatusFilter ? '该状态下暂无游戏' : '暂无游戏' }}</h3>
+        <p class="empty-state__copy">
+          {{ gameStatusFilter ? '换个状态筛选试试；也可以新建游戏（默认下架，需手动上架）。' : '点击右上角「新建游戏」创建第一款游戏；新游戏默认下架，需手动上架后才对外展示。' }}
+        </p>
+      </div>
+
       <div v-else class="mt-6 grid gap-4 xl:grid-cols-2">
-        <article v-for="game in gamesStore.catalogGames" :key="game.id" class="catalog-card cyber-corner">
+        <article v-for="game in gamesStore.adminGames" :key="game.id" class="catalog-card cyber-corner">
           <div class="flex items-start justify-between gap-4">
-            <div>
+            <div class="min-w-0">
               <div class="flex flex-wrap items-center gap-2">
-                <h3 class="text-xl font-semibold text-white">{{ game.name }}</h3>
-                <span :class="game.is_active ? 'badge-approved' : 'badge-cancelled'">{{ game.is_active ? '上架' : '下架' }}</span>
+                <h3 class="text-xl font-semibold text-ink-1">{{ game.name }}</h3>
+                <span :class="game.is_active ? 'badge-approved' : 'badge-cancelled'">{{ game.is_active ? '已上架' : '未上架' }}</span>
               </div>
-              <p class="mt-2 text-sm text-slate-300">{{ getGameCategoryMeta(game.category).label }} · {{ getGamePlatformLabel(game.platform) }}</p>
+              <p class="mt-2 truncate text-sm text-ink-2">
+                {{ getGameCategoryMeta(game.category).label }} · {{ getGamePlatformLabel(game.platform) }}<template v-if="game.english_name"> · {{ game.english_name }}</template>
+              </p>
+              <p v-if="game.description" class="mt-1.5 truncate text-[13px] text-ink-3">{{ game.description }}</p>
             </div>
-            <button class="btn-secondary !px-4 !py-2" :disabled="submittingKey === `game-${game.id}`" @click="toggleGameStatus(game)">
+            <p class="shrink-0 text-sm tabular-nums text-ink-3">排序 {{ game.sort_order }}</p>
+          </div>
+
+          <div class="mt-5 flex items-center justify-end gap-2">
+            <button
+              class="btn-secondary !px-4 !py-2"
+              :disabled="submittingKey === `game-${game.id}`"
+              @click="toggleGameStatus(game)"
+            >
               {{ submittingKey === `game-${game.id}` ? '处理中...' : (game.is_active ? '下架' : '上架') }}
             </button>
+            <button class="btn-ghost !px-4 !py-2" @click="openGameEditModal(game)">编辑</button>
+            <button class="btn-danger !px-4 !py-2" @click="openGameDeleteModal(game)">删除</button>
           </div>
         </article>
       </div>
+
+      <div v-if="gamesStore.adminPagination.pages > 1" class="mt-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <p class="text-sm tabular-nums text-ink-2">
+          {{ gamesStore.adminPagination.page }} / {{ gamesStore.adminPagination.pages }} · 共 {{ gamesStore.adminPagination.total }} 款
+        </p>
+        <div class="flex items-center gap-2">
+          <button
+            class="btn-secondary !px-4 !py-2"
+            :disabled="gamesStore.adminPagination.page <= 1"
+            @click="handleGamePageChange(gamesStore.adminPagination.page - 1)"
+          >
+            上一页
+          </button>
+          <button
+            class="btn-secondary !px-4 !py-2"
+            :disabled="gamesStore.adminPagination.page >= gamesStore.adminPagination.pages"
+            @click="handleGamePageChange(gamesStore.adminPagination.page + 1)"
+          >
+            下一页
+          </button>
+        </div>
+      </div>
     </section>
 
-    <div v-if="modal" class="modal-scrim">
+    <div v-if="modal" class="modal-scrim modal-scrim--sheet">
       <div class="absolute inset-0" aria-hidden="true" @click="closeModal"></div>
 
-      <div class="modal-card" role="dialog" aria-modal="true">
+      <div class="modal-card modal-sheet" role="dialog" aria-modal="true">
         <div class="relative z-10">
-          <h3 class="text-2xl font-semibold text-white">{{ modalTitle() }}</h3>
-          <p class="mt-2 text-sm text-slate-400">
+          <h3 class="text-2xl font-semibold text-ink-1">{{ modalTitle() }}</h3>
+          <p class="mt-2 text-sm text-ink-2">
             {{
               modal.type === 'assign'
                 ? `订单 #${modal.orderId} ${modal.gameName || ''}`
@@ -711,6 +1060,244 @@ onMounted(async () => {
               </button>
             </div>
           </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- 发布订单弹窗（管理员发单 → POST /orders/create，进大厅 PENDING） -->
+    <div v-if="publishModal" class="modal-scrim modal-scrim--sheet">
+      <div class="absolute inset-0" aria-hidden="true" @click="closePublishModal"></div>
+
+      <div class="modal-card modal-sheet" role="dialog" aria-modal="true">
+        <div class="relative z-10">
+          <h3 class="text-2xl font-semibold text-ink-1">发布订单</h3>
+          <p class="mt-2 text-sm text-ink-2">以管理员身份发单，订单进入大厅待接单，并自动通知打手。</p>
+
+          <div v-if="publishModal.error" class="message-error mt-4">{{ publishModal.error }}</div>
+          <div v-if="publishGameOptions.length && !hasActivePublishGame" class="message-info mt-4">
+            当前所有游戏都未上架，建议先到「游戏管理」上架游戏；也可以直接选择未上架游戏发单。
+          </div>
+          <div v-else-if="!publishGameOptions.length" class="message-info mt-4">
+            暂无游戏数据，请先在「游戏管理」中新建并上架游戏。
+          </div>
+
+          <form class="mt-5 space-y-4" @submit.prevent="submitPublishModal">
+            <div>
+              <label class="label" for="publish-game">游戏</label>
+              <select id="publish-game" v-model="publishModal.game_id" class="input">
+                <option :value="''" disabled>请选择游戏</option>
+                <option v-for="game in publishGameOptions" :key="game.id" :value="game.id">
+                  {{ game.name }}（{{ game.is_active ? '已上架' : '未上架' }}）
+                </option>
+              </select>
+            </div>
+
+            <div class="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label class="label" for="publish-current-rank">当前段位</label>
+                <input
+                  id="publish-current-rank"
+                  v-model="publishModal.current_rank"
+                  type="text"
+                  class="input"
+                  maxlength="50"
+                  placeholder="例如：钻石"
+                />
+              </div>
+              <div>
+                <label class="label" for="publish-target-rank">目标段位</label>
+                <input
+                  id="publish-target-rank"
+                  v-model="publishModal.target_rank"
+                  type="text"
+                  class="input"
+                  maxlength="50"
+                  placeholder="例如：王者"
+                />
+              </div>
+            </div>
+
+            <div class="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label class="label" for="publish-price">价格</label>
+                <input
+                  id="publish-price"
+                  v-model="publishModal.price"
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  class="input"
+                  placeholder="建议 100"
+                />
+              </div>
+              <div>
+                <label class="label" for="publish-server">区服（可选）</label>
+                <input
+                  id="publish-server"
+                  v-model="publishModal.server"
+                  type="text"
+                  class="input"
+                  maxlength="50"
+                  placeholder="例如：微信区"
+                />
+              </div>
+            </div>
+
+            <div>
+              <p class="label">优先级</p>
+              <div class="flex flex-wrap gap-2">
+                <button
+                  v-for="option in publishPriorityOptions"
+                  :key="option.value"
+                  type="button"
+                  :class="publishModal.priority === option.value ? 'filter-pill-active' : 'filter-pill'"
+                  @click="publishModal.priority = option.value"
+                >
+                  {{ option.label }}
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <label class="label" for="publish-description">需求描述</label>
+              <textarea
+                id="publish-description"
+                v-model="publishModal.description"
+                rows="3"
+                class="input resize-none"
+                maxlength="2000"
+                placeholder="补充给打手的要求，例如上线时间、沟通方式等（选填）"
+              ></textarea>
+            </div>
+
+            <div class="flex justify-end gap-3 pt-2">
+              <button type="button" class="btn-ghost !px-4 !py-2" @click="closePublishModal">取消</button>
+              <button type="submit" class="btn-primary !px-5 !py-2" :disabled="publishModal.submitting">
+                {{ publishModal.submitting ? '发布中...' : '发布到大厅' }}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- 新建 / 编辑游戏弹窗 -->
+    <div v-if="gameModal" class="modal-scrim modal-scrim--sheet">
+      <div class="absolute inset-0" aria-hidden="true" @click="closeGameModal"></div>
+
+      <div class="modal-card modal-sheet" role="dialog" aria-modal="true">
+        <div class="relative z-10">
+          <h3 class="text-2xl font-semibold text-ink-1">{{ gameModal.mode === 'create' ? '新建游戏' : '编辑游戏' }}</h3>
+          <p v-if="gameModal.mode === 'create'" class="mt-2 text-sm text-ink-2">
+            新建默认下架，需手动上架后才会在对外游戏专区展示。
+          </p>
+          <p v-else class="mt-2 text-sm text-ink-2">
+            #{{ gameModal.id }} · {{ getGameCategoryMeta(gameModal.category).label }} / {{ getGamePlatformLabel(gameModal.platform) }}<template v-if="gameModal.english_name"> · {{ gameModal.english_name }}</template>
+          </p>
+
+          <div v-if="gameModal.error" class="message-error mt-4">{{ gameModal.error }}</div>
+
+          <form class="mt-5 space-y-4" @submit.prevent="submitGameModal">
+            <div>
+              <label class="label" for="game-name">名称</label>
+              <input
+                id="game-name"
+                v-model="gameModal.name"
+                type="text"
+                class="input"
+                maxlength="100"
+                placeholder="游戏中文名，例如：三角洲行动"
+              />
+            </div>
+
+            <template v-if="gameModal.mode === 'create'">
+              <div>
+                <label class="label" for="game-english-name">英文名（可选）</label>
+                <input
+                  id="game-english-name"
+                  v-model="gameModal.english_name"
+                  type="text"
+                  class="input"
+                  maxlength="150"
+                  placeholder="例如：Delta Force"
+                />
+              </div>
+
+              <div class="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label class="label" for="game-category">分类</label>
+                  <select id="game-category" v-model="gameModal.category" class="input">
+                    <option v-for="option in gameCategoryOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="label" for="game-platform">平台</label>
+                  <select id="game-platform" v-model="gameModal.platform" class="input">
+                    <option v-for="option in gamePlatformOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label class="label" for="game-description">一句话简介（可选）</label>
+                <input
+                  id="game-description"
+                  v-model="gameModal.description"
+                  type="text"
+                  class="input"
+                  maxlength="100"
+                  placeholder="展示在游戏卡片上的简介"
+                />
+              </div>
+            </template>
+
+            <div>
+              <label class="label" for="game-sort-order">排序号（越小越靠前）</label>
+              <input
+                id="game-sort-order"
+                v-model.number="gameModal.sort_order"
+                type="number"
+                min="0"
+                step="1"
+                class="input"
+              />
+            </div>
+
+            <div class="flex justify-end gap-3 pt-2">
+              <button type="button" class="btn-ghost !px-4 !py-2" @click="closeGameModal">取消</button>
+              <button type="submit" class="btn-primary !px-5 !py-2" :disabled="gameModal.submitting">
+                {{ gameModal.submitting ? '保存中...' : (gameModal.mode === 'create' ? '创建' : '保存') }}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- 删除游戏确认弹窗 -->
+    <div v-if="gameDeleteModal" class="modal-scrim modal-scrim--sheet">
+      <div class="absolute inset-0" aria-hidden="true" @click="closeGameDeleteModal"></div>
+
+      <div class="modal-card modal-sheet" role="dialog" aria-modal="true">
+        <div class="relative z-10">
+          <h3 class="text-2xl font-semibold text-ink-1">删除游戏</h3>
+          <p class="mt-2 text-sm text-ink-2">
+            确认删除「{{ gameDeleteModal.name }}」？关联订单的游戏引用会被置空，该操作不可恢复。
+          </p>
+
+          <div v-if="gameDeleteModal.error" class="message-error mt-4">{{ gameDeleteModal.error }}</div>
+
+          <div class="mt-5 flex justify-end gap-3">
+            <button type="button" class="btn-ghost !px-4 !py-2" @click="closeGameDeleteModal">取消</button>
+            <button
+              type="button"
+              class="btn-danger !px-5 !py-2"
+              :disabled="gameDeleteModal.submitting"
+              @click="confirmDeleteGame"
+            >
+              {{ gameDeleteModal.submitting ? '删除中...' : '确认删除' }}
+            </button>
+          </div>
         </div>
       </div>
     </div>
