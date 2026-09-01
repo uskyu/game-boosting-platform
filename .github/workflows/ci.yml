@@ -50,6 +50,7 @@ jobs:
           DB_URL: mysql+aiomysql://boosting_user:boosting_password@127.0.0.1:3306/game_boosting
           SECRET_KEY: ci-test-secret-key
           DEEPSEEK_API_KEY: ci-placeholder
+          MYSQL_ROOT_PASSWORD: rootpassword
         run: python -m pytest tests/ -v
 
   frontend:
