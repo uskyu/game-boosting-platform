@@ -18,8 +18,7 @@ services:
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-boosting_password}
       MYSQL_CHARSET: utf8mb4
       MYSQL_COLLATION: utf8mb4_unicode_ci
-    ports:
-      - "${MYSQL_PORT:-3306}:3306"
+    # 内网服务：不发布宿主机端口，仅供 compose 网络内的 backend 访问
     volumes:
       - mysql_data:/var/lib/mysql
       - ./docker/mysql/init:/docker-entrypoint-initdb.d:ro
@@ -68,8 +67,7 @@ services:
       DEFAULT_ADMIN_EMAIL: ${DEFAULT_ADMIN_EMAIL:-admin@gameboost.com}
       DEFAULT_ADMIN_USERNAME: ${DEFAULT_ADMIN_USERNAME:-SystemAdmin}
       DEFAULT_ADMIN_PASSWORD: ${DEFAULT_ADMIN_PASSWORD:-}
-    ports:
-      - "${BACKEND_PORT:-8000}:8000"
+    # 内网服务：不发布宿主机端口，API 仅经前端 nginx /api 反代访问
     networks:
       - game-boosting-network
     depends_on:
