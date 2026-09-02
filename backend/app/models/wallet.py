@@ -33,6 +33,14 @@ class WalletTransactionType(str, PyEnum):
     WITHDRAWAL_FREEZE = "WITHDRAWAL_FREEZE"     # 提现冻结，可用扣减 (-)
     WITHDRAWAL_REFUND = "WITHDRAWAL_REFUND"     # 提现驳回解冻，可用回补 (+)
     WITHDRAWAL_PAID = "WITHDRAWAL_PAID"         # 提现打款完成，冻结扣减 (-)
+    # 用户发单托管（发布人侧）
+    ESCROW_HOLD = "ESCROW_HOLD"                 # 发单托管冻结，可用扣减 (-)，冻结增加
+    ESCROW_RELEASE = "ESCROW_RELEASE"           # 托管解冻退回，可用回补 (+)，冻结减少
+    ORDER_PAYMENT = "ORDER_PAYMENT"             # 订单打款支出，冻结扣减 (-)
+    # 炸单赔偿金（打手侧）
+    DEPOSIT_HOLD = "DEPOSIT_HOLD"               # 接单冻结炸单赔偿金，可用扣减 (-)，冻结增加
+    DEPOSIT_RELEASE = "DEPOSIT_RELEASE"         # 赔偿金解冻返还，可用回补 (+)，冻结减少
+    COMPENSATION_DEDUCT = "COMPENSATION_DEDUCT"  # 炸单赔偿扣除，冻结扣减 (-)，不返还
 
 
 class Wallet(Base):
@@ -123,14 +131,15 @@ class WalletTransaction(Base):
 
     Every balance mutation writes exactly one row. balance_before /
     balance_after always snapshot the wallet's available_balance around
-    the mutation. The (order_id, type) unique constraint makes order
-    settlement idempotent - MySQL unique indexes do not treat NULLs as
-    duplicates, so rows without an order_id are unaffected.
+    the mutation. The (order_id, booster_id, type) unique constraint makes
+    order settlement idempotent per booster - MySQL unique indexes do not
+    treat NULLs as duplicates, so rows without an order_id or booster_id
+    are unaffected.
     """
 
     __tablename__ = "wallet_transactions"
     __table_args__ = (
-        UniqueConstraint("order_id", "type", name="uq_wallet_tx_order_type"),
+        UniqueConstraint("order_id", "booster_id", "type", name="uq_wallet_tx_order_booster_type"),
         Index("ix_wallet_tx_wallet_created", "wallet_id", "created_at"),
     )
 
@@ -176,6 +185,13 @@ class WalletTransaction(Base):
         ForeignKey("orders.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
+    )
+
+    # Which booster the settlement belongs to (multi-claim orders settle
+    # each booster independently). NULL for non-order ledger entries.
+    booster_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
     )
 
     withdrawal_id: Mapped[int | None] = mapped_column(

@@ -170,6 +170,26 @@ export const useWalletStore = defineStore('wallet', () => {
     }
   }
 
+  // 上传提现收款二维码：POST /withdrawals/qrcode（multipart file）→ {url,name,size,content_type}
+  async function uploadWithdrawalQrcode(file) {
+    submitting.value = true
+    error.value = null
+
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      const response = await api.post('/withdrawals/qrcode', form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      return { success: true, data: response.data }
+    } catch (err) {
+      error.value = err.message
+      return { success: false, error: err.message }
+    } finally {
+      submitting.value = false
+    }
+  }
+
   async function fetchMyWithdrawals(options = {}) {
     myWithdrawalsLoading.value = true
     error.value = null
@@ -313,6 +333,7 @@ export const useWalletStore = defineStore('wallet', () => {
     fetchWallet,
     fetchTransactions,
     createWithdrawal,
+    uploadWithdrawalQrcode,
     fetchMyWithdrawals,
     fetchAdminWithdrawals,
     reviewWithdrawal,

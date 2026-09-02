@@ -27,6 +27,10 @@ export const useOrdersStore = defineStore('orders', () => {
   })
   const claims = ref([])
   const claimsLoading = ref(false)
+  // 打手自己的接单单（GET /orders/claims/mine）
+  const myClaims = ref([])
+  const myClaimsLoading = ref(false)
+  const myClaimsPagination = ref({ page: 1, pageSize: 20, total: 0, pages: 0 })
 
   // Getters
   const hasOrders = computed(() => orders.value.length > 0)
@@ -86,26 +90,34 @@ export const useOrdersStore = defineStore('orders', () => {
     }
   }
 
+  // options.silent：静默刷新（大厅 30s 轮询用）——不切换 loading 骨架屏、不清空现有数据、失败不弹错误
   async function fetchOrders(options = {}) {
-    loading.value = true
-    error.value = null
-    
+    const silent = Boolean(options.silent)
+    if (!silent) {
+      loading.value = true
+      error.value = null
+    }
+
     const params = {
       page: options.page || pagination.value.page,
-      page_size: options.pageSize || pagination.value.pageSize,
+      pageSize: options.pageSize || pagination.value.pageSize,
     }
-    
+
     if (filters.value.gameName) {
       params.game_name = filters.value.gameName
     }
-    
+
     if (filters.value.status) {
       params.status = filters.value.status
     }
-    
+
+    if (options.minePublished) {
+      params.mine_published = true
+    }
+
     try {
       const response = await api.get('/orders/', { params })
-      
+
       orders.value = response.data.items
       pagination.value = {
         page: response.data.page,
@@ -113,13 +125,17 @@ export const useOrdersStore = defineStore('orders', () => {
         total: response.data.total,
         pages: response.data.pages,
       }
-      
+
       return { success: true }
     } catch (err) {
-      error.value = err.message
+      if (!silent) {
+        error.value = err.message
+      }
       return { success: false, error: err.message }
     } finally {
-      loading.value = false
+      if (!silent) {
+        loading.value = false
+      }
     }
   }
 
@@ -177,6 +193,52 @@ export const useOrdersStore = defineStore('orders', () => {
       return { success: false, error: err.message }
     } finally {
       claimsLoading.value = false
+    }
+  }
+
+  // 打手自己的接单单：status 可选 'DELIVERED' | 'CLAIMED' | 'SETTLED'
+  async function fetchMyClaims(status, page = 1, pageSize = 20) {
+    myClaimsLoading.value = true
+    error.value = null
+    try {
+      const params = { page, page_size: pageSize }
+      if (status) params.status = status
+      const response = await api.get('/orders/claims/mine', { params })
+      const data = response.data || {}
+      myClaims.value = data.items ?? []
+      myClaimsPagination.value = {
+        page: data.page ?? page,
+        pageSize: data.page_size ?? pageSize,
+        total: data.total ?? myClaims.value.length,
+        pages: data.pages ?? 0,
+      }
+      return { success: true, data: myClaims.value }
+    } catch (err) {
+      error.value = err.message
+      return { success: false, error: err.message }
+    } finally {
+      myClaimsLoading.value = false
+    }
+  }
+
+  // 审核打款（发布人或管理员）：payload { action: 'approve', amount?, note?, deduction? }
+  // deduction：炸单扣除的赔偿金（0 ≤ deduction ≤ compensation_amount，缺省不扣）
+  async function reviewClaim(orderId, claimId, payload) {
+    loading.value = true
+    error.value = null
+    try {
+      const response = await api.put(`/orders/${orderId}/claims/${claimId}/review`, payload)
+      const updated = response.data
+      const index = claims.value.findIndex((claim) => claim.id === claimId)
+      if (index !== -1) {
+        claims.value.splice(index, 1, updated)
+      }
+      return { success: true, data: updated }
+    } catch (err) {
+      error.value = err.message
+      return { success: false, error: err.message }
+    } finally {
+      loading.value = false
     }
   }
 
@@ -418,6 +480,9 @@ export const useOrdersStore = defineStore('orders', () => {
     filters,
     claims,
     claimsLoading,
+    myClaims,
+    myClaimsLoading,
+    myClaimsPagination,
     // Getters
     hasOrders,
     pendingOrders,
@@ -431,6 +496,8 @@ export const useOrdersStore = defineStore('orders', () => {
     fetchOrder,
     editOrder,
     fetchClaims,
+    fetchMyClaims,
+    reviewClaim,
     acceptOrder,
     deliverOrder,
     uploadDeliverAttachment,

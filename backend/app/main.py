@@ -3,6 +3,7 @@ Main FastAPI application module.
 Entry point for the Game Boosting Platform API.
 """
 
+import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -29,6 +30,33 @@ logger = logging.getLogger(__name__)
 UPLOAD_PATH = Path(settings.UPLOAD_DIR)
 UPLOAD_PATH.mkdir(parents=True, exist_ok=True)
 
+# 到账时效自动结算后台任务（优雅关闭时 cancel）
+PAYOUT_SCAN_INTERVAL_SECONDS = 600  # 每 10 分钟扫描一次
+_payout_scan_task: asyncio.Task | None = None
+
+
+async def _payout_scan_loop() -> None:
+    """周期扫描到账时效到期的交付名额并自动结算。
+
+    逐条 try/except：单次扫描失败只 log，等待下一轮；取消时立即退出。
+    """
+    from app.services.payout_scheduler import scan_due_payouts
+
+    while True:
+        await asyncio.sleep(PAYOUT_SCAN_INTERVAL_SECONDS)
+        try:
+            async with async_session_factory() as session:
+                settled_ids = await scan_due_payouts(session)
+                await session.commit()
+            if settled_ids:
+                logger.info(
+                    "Payout delay scheduler settled %s claims", len(settled_ids)
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Payout delay scheduler scan failed")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -36,6 +64,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     Application lifespan manager.
     Handles startup and shutdown events.
     """
+    global _payout_scan_task
     # Startup
     logger.info("Starting Game Boosting Platform API...")
     try:
@@ -58,10 +87,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"Failed to connect to database: {e}")
         raise
 
+    # 到账时效自动结算后台任务
+    _payout_scan_task = asyncio.create_task(_payout_scan_loop())
+    logger.info("Payout delay scheduler started (interval=%ss)", PAYOUT_SCAN_INTERVAL_SECONDS)
+
     yield
 
     # Shutdown
     logger.info("Shutting down Game Boosting Platform API...")
+    if _payout_scan_task is not None:
+        _payout_scan_task.cancel()
+        try:
+            await _payout_scan_task
+        except asyncio.CancelledError:
+            pass
+        _payout_scan_task = None
+        logger.info("Payout delay scheduler stopped")
     await close_db()
     logger.info("Database connection closed")
 

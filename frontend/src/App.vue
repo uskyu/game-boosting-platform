@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import AppNavIcon from '@/components/AppNavIcon.vue'
 import ChatUnreadBadge from '@/components/chat/ChatUnreadBadge.vue'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -9,6 +10,7 @@ import { useChatStore } from '@/stores/chat'
 import { useNotificationsStore } from '@/stores/notifications'
 import { useSettingsStore } from '@/stores/settings'
 import { useSiteStore } from '@/stores/site'
+import { useToastsStore } from '@/stores/toasts'
 import { getUserRoleMeta } from '@/utils/order'
 
 const route = useRoute()
@@ -18,6 +20,15 @@ const chatStore = useChatStore()
 const notificationsStore = useNotificationsStore()
 const settingsStore = useSettingsStore()
 const siteStore = useSiteStore()
+const toastsStore = useToastsStore()
+
+// 点击网页内推送 toast：跳转目标页（如聊天会话）并消失
+function handleToastClick(toast) {
+  toastsStore.dismissToast(toast.id)
+  if (toast.to) {
+    router.push(toast.to)
+  }
+}
 
 // 主题初始化：同步 localStorage / 系统偏好到 html.dark（index.html 已先行防闪烁）
 settingsStore.initTheme()
@@ -66,26 +77,30 @@ const immersiveRoutes = ['login', 'register', 'chat-detail', 'support']
 const showTabBar = computed(() => !immersiveRoutes.includes(route.name))
 
 // 桌面顶栏主导航（IA v2）：大厅 · 游戏 · 钱包 · 消息 · 运营(仅管理员)
+// 桌面顶部导航：与移动端底部 Tab 同款五项（大厅 · 订单 · 钱包 · 消息 · 我的），管理员追加运营
 const primaryNavItems = computed(() => [
   {
     key: 'hall',
     label: copy.hall,
+    icon: 'hall',
     show: true,
-    active: ['home', 'order-detail', 'order-create', 'orders'].includes(route.name),
+    active: ['home', 'order-detail'].includes(route.name),
     action: () => router.push({ name: 'home' }),
     badge: 0,
   },
   {
-    key: 'games',
-    label: copy.games,
+    key: 'orders',
+    label: copy.myOrders,
+    icon: 'orders',
     show: true,
-    active: ['games', 'game-zone', 'game-category'].includes(route.name),
-    action: () => router.push({ name: 'games' }),
+    active: ['orders', 'order-create'].includes(route.name),
+    action: () => router.push({ name: 'orders' }),
     badge: 0,
   },
   {
     key: 'wallet',
     label: copy.wallet,
+    icon: 'wallet',
     show: isAuthenticated.value,
     active: route.name === 'wallet',
     action: () => router.push({ name: 'wallet' }),
@@ -94,14 +109,25 @@ const primaryNavItems = computed(() => [
   {
     key: 'messages',
     label: copy.messages,
+    icon: 'messages',
     show: isAuthenticated.value,
     active: ['message-center', 'chat-detail'].includes(route.name),
     action: () => router.push({ name: 'message-center' }),
     badge: messageBadge.value,
   },
   {
+    key: 'profile',
+    label: '我的',
+    icon: 'profile',
+    show: isAuthenticated.value,
+    active: ['profile', 'settings'].includes(route.name),
+    action: () => router.push({ name: 'profile' }),
+    badge: 0,
+  },
+  {
     key: 'admin',
     label: copy.ops,
+    icon: 'admin',
     show: isAuthenticated.value && isAdmin.value,
     active: route.name === 'admin',
     action: () => router.push({ name: 'admin' }),
@@ -109,23 +135,23 @@ const primaryNavItems = computed(() => [
   },
 ].filter((item) => item.show))
 
-// 移动端底部 Tab（< md 固定 5 个）：大厅 · 游戏 · 钱包 · 消息 · 我的
+// 移动端底部 Tab（< md 固定 5 个）：大厅 · 订单 · 钱包 · 消息 · 我的
 const mobileTabItems = computed(() => [
   {
     key: 'hall',
     label: copy.hall,
     to: { name: 'home' },
-    active: ['home', 'order-detail', 'order-create', 'orders'].includes(route.name),
+    active: ['home', 'order-detail'].includes(route.name),
     badge: 0,
     icon: 'hall',
   },
   {
-    key: 'games',
-    label: copy.games,
-    to: { name: 'games' },
-    active: ['games', 'game-zone', 'game-category'].includes(route.name),
+    key: 'orders',
+    label: copy.myOrders,
+    to: { name: 'orders' },
+    active: ['orders', 'order-create'].includes(route.name),
     badge: 0,
-    icon: 'games',
+    icon: 'orders',
   },
   {
     key: 'wallet',
@@ -149,7 +175,7 @@ const mobileTabItems = computed(() => [
     to: { name: 'profile' },
     active: ['profile', 'settings'].includes(route.name),
     badge: 0,
-    icon: 'mine',
+    icon: 'profile',
   },
 ])
 
@@ -221,7 +247,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="min-h-screen">
+  <!-- main-with-tabbar 挂在包住 main+footer 的外层：移动端固定 Tab 栏不再盖住页脚内容 -->
+  <div class="min-h-screen" :class="{ 'main-with-tabbar': showTabBar }">
     <nav class="app-header">
       <!-- 桌面顶栏 -->
       <div class="shell-container hidden min-h-16 items-center justify-between gap-4 py-3 md:flex">
@@ -238,6 +265,7 @@ onBeforeUnmount(() => {
             :class="item.active ? 'app-nav-link app-nav-link-active' : 'app-nav-link'"
             @click="item.action"
           >
+            <AppNavIcon :name="item.icon" />
             <span>{{ item.label }}</span>
             <ChatUnreadBadge v-if="item.badge" :count="item.badge" />
           </button>
@@ -330,12 +358,46 @@ onBeforeUnmount(() => {
       </div>
     </nav>
 
-    <main class="relative z-10" :class="{ 'main-with-tabbar': showTabBar }">
+    <!-- 不设 z-10：main 一旦形成堆叠上下文，页内弹窗 z-50 会被根级 z-40 的
+         底部 Tab 栏盖住（按钮点不到）。保持 z-index auto 让弹窗全局置顶。 -->
+    <main class="relative">
       <router-view v-slot="{ Component }">
         <transition name="page-fade" mode="out-in">
           <component :is="Component" />
         </transition>
       </router-view>
+
+      <!-- 网页内新消息推送 toast：有新消息才弹，自动消失，可点 X 关；点击内容直达会话 -->
+      <teleport to="body">
+        <div class="pointer-events-none fixed left-1/2 top-4 z-[60] flex w-[calc(100vw-2rem)] max-w-sm -translate-x-1/2 flex-col gap-2">
+          <transition-group name="page-fade">
+            <div
+              v-for="toast in toastsStore.toasts"
+              :key="toast.id"
+              class="pointer-events-auto flex w-full items-start gap-2 rounded-card border border-line-1 bg-surface px-4 py-3 shadow-lg"
+            >
+              <button
+                type="button"
+                class="flex min-w-0 flex-1 flex-col text-left"
+                @click="handleToastClick(toast)"
+              >
+                <span class="truncate text-sm font-semibold text-ink-1">{{ toast.title }}</span>
+                <span v-if="toast.body" class="mt-0.5 truncate text-xs text-ink-2">{{ toast.body }}</span>
+              </button>
+              <button
+                type="button"
+                class="shrink-0 rounded-full p-1 text-ink-3 transition-colors duration-base hover:bg-surface-3 hover:text-ink-1"
+                aria-label="关闭提示"
+                @click.stop="toastsStore.dismissToast(toast.id)"
+              >
+                <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+                  <path d="M6 6l12 12M18 6L6 18" />
+                </svg>
+              </button>
+            </div>
+          </transition-group>
+        </div>
+      </teleport>
     </main>
 
     <footer v-if="!hideFooter" class="mt-4 border-t border-line-1 bg-surface/60">
@@ -368,7 +430,7 @@ onBeforeUnmount(() => {
       </div>
     </footer>
 
-    <!-- 移动端固定底部 Tab：< md 显示，5 个（大厅/游戏/钱包/消息/我的） -->
+    <!-- 移动端固定底部 Tab：< md 显示，5 个（大厅/订单/钱包/消息/我的） -->
     <nav v-if="showTabBar" class="app-tabbar" aria-label="移动端主导航">
       <router-link
         v-for="item in mobileTabItems"
@@ -377,35 +439,7 @@ onBeforeUnmount(() => {
         :class="item.active ? 'app-tabbar__item app-tabbar__item-active' : 'app-tabbar__item'"
       >
         <span class="relative">
-          <!-- 大厅 -->
-          <svg v-if="item.icon === 'hall'" class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect x="4" y="3.5" width="16" height="17" rx="3" />
-            <path d="M8.5 8.5h7M8.5 12h7M8.5 15.5h4.5" />
-          </svg>
-          <!-- 游戏 -->
-          <svg v-else-if="item.icon === 'games'" class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M6.5 7.5h11a4.5 4.5 0 0 1 4.4 5.4l-.6 3a3 3 0 0 1-5.3 1.2L14.6 15H9.4l-1.4 2.1a3 3 0 0 1-5.3-1.2l-.6-3A4.5 4.5 0 0 1 6.5 7.5Z" />
-            <path d="M8 11.5v2M7 12.5h2" />
-            <circle cx="15.5" cy="11.75" r="0.6" fill="currentColor" stroke="none" />
-            <circle cx="17.5" cy="13.25" r="0.6" fill="currentColor" stroke="none" />
-          </svg>
-          <!-- 钱包 -->
-          <svg v-else-if="item.icon === 'wallet'" class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect x="3" y="6" width="18" height="13" rx="3" />
-            <path d="M3 10h13" />
-            <circle cx="17.2" cy="14.5" r="1" fill="currentColor" stroke="none" />
-          </svg>
-          <!-- 消息 -->
-          <svg v-else-if="item.icon === 'messages'" class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v8a2.5 2.5 0 0 1-2.5 2.5H9l-4 3.5V6.5Z" />
-            <path d="M8.5 9h7M8.5 12h4.5" />
-          </svg>
-          <!-- 我的 -->
-          <svg v-else class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <circle cx="12" cy="8" r="3.5" />
-            <path d="M5 20c.8-3.4 3.6-5 7-5s6.2 1.6 7 5" />
-          </svg>
-
+          <AppNavIcon :name="item.icon" />
           <span v-if="item.badge" class="tabbar-badge">{{ item.badge > 99 ? '99+' : item.badge }}</span>
         </span>
         <span class="app-tabbar__label">{{ item.label }}</span>

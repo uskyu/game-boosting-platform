@@ -10,8 +10,8 @@ import { useChatStore } from '@/stores/chat'
 import { useOrdersStore } from '@/stores/orders'
 import { getGameImage } from '@/data/gameImages'
 import api from '@/utils/api'
-import { formatDateTime, formatPrice, formatShortDate } from '@/utils/display'
-import { getOrderStatusBadgeClass, getOrderStatusLabel, getOrderStatusMeta, getHumanStatusLabel, getHumanStatusSubtitle } from '@/utils/order'
+import { formatDateTime, formatOrderPrice, formatPrice, formatShortDate } from '@/utils/display'
+import { getClaimStatusMeta, getOrderStatusBadgeClass, getOrderStatusLabel, getOrderStatusMeta, getHumanStatusLabel, getHumanStatusSubtitle } from '@/utils/order'
 
 const props = defineProps({
   id: {
@@ -68,8 +68,29 @@ const canStartChat = computed(() => chatTargetUserId.value != null)
 const statusMeta = computed(() => getOrderStatusMeta(order.value?.status))
 const viewRole = computed(() => isAssignedBooster.value || (isBooster.value && !isOwner.value) ? 'booster' : 'owner')
 const humanStatusLabel = computed(() => getHumanStatusLabel(order.value?.status, order.value?.service_type, viewRole.value))
-const humanStatusSubtitle = computed(() => getHumanStatusSubtitle(order.value?.status, order.value?.service_type, viewRole.value))
+const humanStatusSubtitle = computed(() => {
+  // 打手视角有报名单时，副标题按 my_claim.status 描述审核流
+  if (myClaim.value && viewRole.value === 'booster' && !isOwner.value) {
+    const map = {
+      CLAIMED: '完成后点击「结束订单」提交汇报',
+      DELIVERED: '已提交汇报，等待订单发布人审核打款',
+      SETTLED: '报酬已结算，已计入钱包余额',
+    }
+    return map[myClaim.value.status] ?? ''
+  }
+  return getHumanStatusSubtitle(order.value?.status, order.value?.service_type, viewRole.value)
+})
 const isPending = computed(() => order.value?.status === 'PENDING')
+// 统计卡只显示已填写的参数：未填服务/区服直接不渲染，节省 UI
+const detailStats = computed(() => {
+  const o = order.value || {}
+  const items = []
+  if (o.service_type) items.push({ icon: 'S', label: '服务', value: o.service_type })
+  if (o.server) items.push({ icon: 'R', label: '区服', value: o.server })
+  items.push({ icon: '$', label: '金额', value: formatOrderPrice(o), valueClass: 'text-price' })
+  items.push({ icon: 'T', label: '发布时间', value: formatShortDate(o.created_at) })
+  return items
+})
 const isLocked = computed(() => order.value?.status === 'LOCKED')
 const isDelivered = computed(() => order.value?.status === 'DELIVERED')
 const isBoostOrder = computed(() => order.value?.service_type === '代练')
@@ -108,13 +129,67 @@ const isDeadlineOverdue = computed(() => {
 })
 
 const deliveryAttachments = computed(() => {
-  const v = order.value?.delivery_attachments
+  // 优先读自己的报名单（my_claim），老数据回退订单级字段
+  const v = myClaim.value?.delivery_attachments ?? order.value?.delivery_attachments
   return Array.isArray(v) ? v : []
 })
+
+const deliveryNoteText = computed(() => myClaim.value?.delivery_note ?? order.value?.delivery_note ?? '')
 
 const orderAttachments = computed(() => {
   const v = order.value?.attachments
   return Array.isArray(v) ? v : []
+})
+
+// 我的报名单：订单序列化附带 my_claim；老数据回退到报名名单里自己的那条
+const myClaim = computed(() => {
+  if (order.value?.my_claim) return order.value.my_claim
+  if (!order.value || !currentUser.value) return null
+  const orderId = Number(order.value.id)
+  return ordersStore.claims.find((claim) =>
+    (claim?.order_id == null || Number(claim.order_id) === orderId) &&
+    Number(claim?.booster_id) === Number(currentUser.value.id)
+  ) || null
+})
+
+// 我的报名单是否已提交汇报（DELIVERED/SETTLED）；无报名单时回退订单级 DELIVERED
+const isClaimDelivered = computed(() => {
+  if (myClaim.value) return ['DELIVERED', 'SETTLED'].includes(myClaim.value.status)
+  return isDelivered.value
+})
+
+// 一键复制老板ID（接单打手加好友用）
+const bossContactCopied = ref(false)
+async function copyBossContact() {
+  const text = order.value?.boss_contact
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch {
+    const el = document.createElement('textarea')
+    el.value = text
+    document.body.appendChild(el)
+    el.select()
+    document.execCommand('copy')
+    document.body.removeChild(el)
+  }
+  bossContactCopied.value = true
+  window.setTimeout(() => { bossContactCopied.value = false }, 2000)
+}
+
+// 打手自己的状态标签按 my_claim.status 显示
+const heroStatusClass = computed(() => {
+  if (myClaim.value && viewRole.value === 'booster' && !isOwner.value) {
+    return getClaimStatusMeta(myClaim.value.status).tagClass
+  }
+  return getOrderStatusBadgeClass(order.value?.status)
+})
+
+const heroStatusLabel = computed(() => {
+  if (myClaim.value && viewRole.value === 'booster' && !isOwner.value) {
+    return getClaimStatusMeta(myClaim.value.status).label
+  }
+  return humanStatusLabel.value
 })
 
 // 已报名：当前用户是接单人（booster_id），或出现在报名名单（claims）里
@@ -132,14 +207,17 @@ const hasClaimed = computed(() => {
   })
 })
 
-// 确认报名弹窗正文用的订单标题（标题缺省时回退游戏名 + 段位）
+// 确认报名弹窗正文用的订单标题（标题缺省时回退游戏名）
 const claimSubject = computed(() => {
   if (!order.value) return ''
-  const base = order.value.title || order.value.game_name || '代练订单'
-  if (!order.value.current_rank && !order.value.target_rank) {
-    return base
-  }
-  return `${base}（${order.value.current_rank || '?'} → ${order.value.target_rank || '?'}）`
+  return order.value.title || order.value.game_name || '代练订单'
+})
+
+// 可提交结束汇报：报名单进行中；老数据回退接单人 + 订单进行中
+const canDeliver = computed(() => {
+  if (isOwner.value) return false
+  if (myClaim.value) return myClaim.value.status === 'CLAIMED'
+  return isAssignedBooster.value && isLocked.value
 })
 
 const canReview = computed(() => {
@@ -184,9 +262,60 @@ function openDeliveryLightbox(index) {
   deliveryLightboxVisible.value = true
 }
 
-// 报名名单用于「已报名」按钮态；老板本人与无抢单入口的角色不需要拉取
+// ── 发布人审核（人人可发单模式：交付由发单用户自己审核打款，管理员兜底）──
+// 命名避开既有「订单评价」的 reviewForm/submitReview
+const ownerClaims = computed(() => ordersStore.claims)
+const pendingReviewCount = computed(() => ownerClaims.value.filter((claim) => claim.status === 'DELIVERED').length)
+const showPayoutModal = ref(false)
+const payoutForm = ref({ claimId: null, amount: '', deduction: '', note: '' })
+const payoutSubmitting = ref(false)
+
+function claimBoosterName(claim) {
+  return claim?.booster_nickname || (claim?.booster_id != null ? `用户 #${claim.booster_id}` : '打手')
+}
+
+function openPayoutModal(claim) {
+  payoutForm.value = {
+    claimId: claim.id,
+    amount: String(order.value?.price ?? ''),
+    deduction: '',
+    note: '',
+  }
+  showPayoutModal.value = true
+}
+
+async function submitPayout() {
+  if (payoutSubmitting.value || payoutForm.value.claimId == null) {
+    return
+  }
+  payoutSubmitting.value = true
+  errorMessage.value = ''
+  const payload = { action: 'approve' }
+  const amount = Number(payoutForm.value.amount)
+  if (payoutForm.value.amount !== '' && !Number.isNaN(amount)) {
+    payload.amount = amount
+  }
+  const deduction = Number(payoutForm.value.deduction)
+  if (order.value?.compensation_amount && payoutForm.value.deduction !== '' && !Number.isNaN(deduction)) {
+    payload.deduction = deduction
+  }
+  if (payoutForm.value.note.trim()) {
+    payload.note = payoutForm.value.note.trim()
+  }
+  const result = await ordersStore.reviewClaim(order.value.id, payoutForm.value.claimId, payload)
+  payoutSubmitting.value = false
+  if (result.success) {
+    showPayoutModal.value = false
+    successMessage.value = '已通过审核，报酬已入账对方钱包'
+    await Promise.all([ordersStore.fetchOrder(order.value.id), ordersStore.fetchClaims(order.value.id)])
+  } else {
+    errorMessage.value = result.error || '审核失败，请稍后重试'
+  }
+}
+
+// 报名名单：打手侧用于「已接单」按钮态；发布人侧用于审核面板（人人可发单模式自审）
 async function loadClaims() {
-  if (!order.value || !currentUser.value || isOwner.value || !isBooster.value) {
+  if (!order.value || !currentUser.value || (!isOwner.value && !isBooster.value)) {
     return
   }
   await ordersStore.fetchClaims(order.value.id)
@@ -234,7 +363,9 @@ function openDeliverModal() {
 }
 
 function onDeliverSuccess() {
-  successMessage.value = '订单已结束，等待老板确认'
+  successMessage.value = '汇报已提交，等待订单发布人审核'
+  // 刷新报名名单（不切换全局 loading，避免骨架屏闪断）；my_claim 随订单数据更新
+  loadClaims()
 }
 
 async function handleConfirm() {
@@ -369,24 +500,16 @@ onMounted(async () => {
           <div class="min-w-0 space-y-3">
             <div class="flex flex-wrap items-center gap-3">
               <span class="tag">{{ order.game_name }}</span>
-              <span :class="getOrderStatusBadgeClass(order.status)">{{ humanStatusLabel }}</span>
+              <span :class="heroStatusClass">{{ heroStatusLabel }}</span>
             </div>
             <p v-if="humanStatusSubtitle" class="mt-1 text-sm text-ink-2">{{ humanStatusSubtitle }}</p>
-            <h1 class="section-title break-words">{{ order.title || `${order.current_rank} → ${order.target_rank}` }}</h1>
-            <p v-if="order.title && (order.current_rank || order.target_rank)" class="break-words text-sm text-ink-2">
-              {{ order.current_rank || '?' }} <span class="text-primary">→</span> {{ order.target_rank || '?' }}
-            </p>
+            <h1 class="section-title break-words">{{ order.title || order.game_name || '代练订单' }}</h1>
             <p class="break-words text-sm text-ink-2">{{ order.intro || compactSummary() }}</p>
           </div>
 
-          <!-- 统计卡 2×2：四卡等尺寸（单行值+截断），移动端不再纵向堆叠占屏 -->
+          <!-- 统计卡：只显示已填写参数（未填不占位），移动端不再纵向堆叠占屏 -->
           <div class="grid grid-cols-2 gap-3 sm:gap-4">
-            <article v-for="item in [
-                { icon: 'S', label: '服务', value: order.service_type || '未指定' },
-                { icon: 'R', label: '区服', value: order.server || '未指定' },
-                { icon: '$', label: '金额', value: formatPrice(order.price), valueClass: 'text-price' },
-                { icon: 'T', label: '发布时间', value: formatShortDate(order.created_at) },
-              ]" :key="item.label" class="stat-card flex h-16 items-center gap-3 overflow-hidden sm:h-[4.5rem] sm:gap-4">
+            <article v-for="item in detailStats" :key="item.label" class="stat-card flex h-16 items-center gap-3 overflow-hidden sm:h-[4.5rem] sm:gap-4">
               <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-tile border border-line-1 bg-primary-soft text-base font-semibold text-primary sm:h-11 sm:w-11 sm:text-lg">{{ item.icon }}</div>
               <div class="min-w-0 flex-1"><p class="text-xs uppercase tracking-[0.12em] text-ink-3">{{ item.label }}</p><p class="mt-1.5 truncate text-sm font-medium tabular-nums text-ink-1 sm:mt-2" :class="item.valueClass">{{ item.value }}</p></div>
             </article>
@@ -401,42 +524,95 @@ onMounted(async () => {
         <div class="od-key__grid mt-4">
           <div class="od-key__item od-key__item--price">
             <p class="info-tile__label">金额</p>
-            <p class="od-key__price">{{ formatPrice(order.price) }}</p>
+            <p class="od-key__price">{{ formatOrderPrice(order) }}</p>
           </div>
-          <div class="od-key__item">
+          <div v-if="order.server" class="od-key__item">
             <p class="info-tile__label">区服</p>
-            <p class="info-tile__value break-words">{{ order.server || '未指定' }}</p>
+            <p class="info-tile__value break-words">{{ order.server }}</p>
+          </div>
+          <div v-if="order.deadline" class="od-key__item">
+            <p class="info-tile__label">截止</p>
+            <p class="od-key__deadline" :class="isDeadlineOverdue ? 'text-danger' : 'text-ink-1'">{{ deadlineRemaining }} &middot; {{ formatDateTime(order.deadline) }}</p>
+            <p v-if="isDeadlineOverdue" class="mt-1 text-xs font-semibold text-danger">已截止，请尽快处理</p>
+          </div>
+          <div v-if="order.compensation_amount" class="od-key__item">
+            <p class="info-tile__label">炸单赔偿金</p>
+            <p class="info-tile__value tabular-nums text-warning">{{ formatPrice(order.compensation_amount) }}</p>
+          </div>
+          <div v-if="order.payout_delay_days" class="od-key__item">
+            <p class="info-tile__label">到账时效</p>
+            <p class="info-tile__value">{{ order.payout_delay_days }} 天</p>
           </div>
           <div class="od-key__item">
-            <p class="info-tile__label">截止</p>
-            <p v-if="order.deadline" class="od-key__deadline" :class="isDeadlineOverdue ? 'text-danger' : 'text-ink-1'">{{ deadlineRemaining }} &middot; {{ formatDateTime(order.deadline) }}</p>
-            <p v-else class="info-tile__value">未设置</p>
-            <p v-if="isDeadlineOverdue" class="mt-1 text-xs font-semibold text-danger">已截止，请尽快处理</p>
+            <p class="info-tile__label">订单号</p>
+            <p class="info-tile__value tabular-nums">#{{ order.id }}</p>
           </div>
         </div>
 
-        <div class="mt-6 grid gap-4 sm:grid-cols-2">
-          <div class="info-tile min-w-0">
+        <!-- 老板ID：接单后（my_claim 存在）才可见，打手据此加老板好友 -->
+        <div class="mt-4 info-tile min-w-0" :class="myClaim ? '!border-primary/40' : ''">
+          <p class="info-tile__label">老板ID</p>
+          <div v-if="order.boss_contact" class="flex flex-wrap items-center gap-3">
+            <p class="info-tile__value break-all font-semibold text-ink-1">{{ order.boss_contact }}</p>
+            <button
+              v-if="myClaim"
+              type="button"
+              class="btn-secondary shrink-0 !min-h-[32px] !px-3 !py-1 text-xs"
+              @click="copyBossContact"
+            >{{ bossContactCopied ? '已复制 ✓' : '复制' }}</button>
+          </div>
+          <p v-else-if="myClaim" class="info-tile__value text-ink-3">发布人未填写老板ID</p>
+          <p v-else-if="isOwner" class="info-tile__value text-ink-3">未填写老板ID（打手接单后看不到）</p>
+          <p v-else class="info-tile__value text-ink-3">接单后可见，用于添加老板好友</p>
+          <p v-if="myClaim && order.boss_contact" class="mt-1 text-xs text-ink-3">接单后请尽快添加老板好友沟通进度</p>
+        </div>
+
+        <div v-if="order.description_raw || order.notes || order.user?.username || order.booster" class="mt-6 grid gap-4 sm:grid-cols-2">
+          <div v-if="order.description_raw" class="info-tile min-w-0">
             <p class="info-tile__label">需求</p>
-            <p class="info-tile__value break-words">{{ order.description_raw || '未补充' }}</p>
+            <p class="info-tile__value break-words">{{ order.description_raw }}</p>
           </div>
-          <div class="info-tile min-w-0">
+          <div v-if="order.notes" class="info-tile min-w-0">
             <p class="info-tile__label">备注</p>
-            <p class="info-tile__value break-words">{{ order.notes || '无' }}</p>
+            <p class="info-tile__value break-words">{{ order.notes }}</p>
           </div>
-          <div class="info-tile min-w-0">
+          <div v-if="order.user?.username" class="info-tile min-w-0">
             <p class="info-tile__label">用户</p>
-            <p class="info-tile__value break-words">{{ order.user?.username || '未公开' }}</p>
+            <p class="info-tile__value break-words">{{ order.user.username }}</p>
           </div>
-          <div class="info-tile min-w-0">
+          <div v-if="order.booster" class="info-tile min-w-0">
             <p class="info-tile__label">打手</p>
-            <p v-if="order.booster" class="info-tile__value break-words">
+            <p class="info-tile__value break-words">
               <router-link
                 :to="{ name: 'booster-profile', params: { id: order.booster_id } }"
                 class="text-primary underline-offset-4 hover:underline"
               >{{ order.booster.username }}</router-link>
             </p>
-            <p v-else class="info-tile__value">待确认</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 发布人审核区：打手提交汇报后由发布人审核打款（管理员也可在派单台处理） -->
+      <section v-if="isOwner && ownerClaims.length" class="surface-card p-6 sm:p-8">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <h2 class="text-lg font-semibold text-ink-1">接单名单</h2>
+          <span v-if="pendingReviewCount" class="rounded-full bg-warning/15 px-3 py-1 text-xs font-semibold text-warning">{{ pendingReviewCount }} 条待审核</span>
+        </div>
+        <p class="mt-1 text-xs text-ink-3">对方完成并提交汇报后，点「审核打款」确认入账</p>
+        <div class="mt-4 space-y-3">
+          <div v-for="claim in ownerClaims" :key="claim.id" class="info-tile flex flex-wrap items-center justify-between gap-3">
+            <div class="min-w-0">
+              <p class="truncate text-sm font-medium text-ink-1">
+                {{ claimBoosterName(claim) }}
+                <span v-if="claim.is_first" class="ml-1 text-xs font-semibold text-primary">首抢</span>
+              </p>
+              <p class="mt-0.5 text-xs text-ink-3">{{ formatDateTime(claim.created_at) }}</p>
+              <p v-if="claim.status !== 'CLAIMED' && claim.delivery_note" class="mt-1 line-clamp-2 break-words text-xs leading-5 text-ink-2">汇报：{{ claim.delivery_note }}</p>
+            </div>
+            <div class="flex shrink-0 items-center gap-3">
+              <span :class="getClaimStatusMeta(claim.status).tagClass">{{ getClaimStatusMeta(claim.status).label }}</span>
+              <button v-if="claim.status === 'DELIVERED'" type="button" class="btn-primary !min-h-[36px] !px-4" @click="openPayoutModal(claim)">审核打款</button>
+            </div>
           </div>
         </div>
       </section>
@@ -457,10 +633,10 @@ onMounted(async () => {
         </div>
       </section>
 
-      <section v-if="['DELIVERED','COMPLETED'].includes(order.status) && (order.delivery_note || deliveryAttachments.length)" class="surface-card p-6 sm:p-8">
+      <section v-if="isClaimDelivered && (deliveryNoteText || deliveryAttachments.length)" class="surface-card p-6 sm:p-8">
         <h2 class="text-lg font-semibold text-ink-1">结束汇报</h2>
-        <p v-if="order.delivery_note" class="mt-3 break-words text-sm leading-6 text-ink-2">{{ order.delivery_note }}</p>
-        <p v-else class="mt-3 text-sm text-ink-3">打手未填写文字汇报</p>
+        <p v-if="deliveryNoteText" class="mt-3 break-words text-sm leading-6 text-ink-2">{{ deliveryNoteText }}</p>
+        <p v-else class="mt-3 text-sm text-ink-3">未填写文字汇报</p>
         <div v-if="deliveryAttachments.length" class="mt-4 grid grid-cols-3 gap-3 sm:grid-cols-5">
           <button
             v-for="(att, idx) in deliveryAttachments"
@@ -472,11 +648,11 @@ onMounted(async () => {
             <img :src="att.url" :alt="att.name || '结束汇报截图'" class="h-24 w-full object-cover transition group-hover:opacity-90" loading="lazy" />
           </button>
         </div>
-        <p v-if="isDelivered && isAssignedBooster" class="message-info mt-4 text-xs leading-6">
-          订单已结束，等待老板确认。如超过 72 小时未确认，系统将自动完成。
+        <p v-if="myClaim?.status === 'DELIVERED' && !isOwner" class="message-info mt-4 text-xs leading-6">
+          已提交结束汇报，等待订单发布人审核打款，通过后报酬会计入余额。
         </p>
         <p v-if="isDelivered && isOwner" class="message-warning mt-4 text-xs leading-6">
-          打手已结束订单，请核实汇报与结果。如有问题可发起争议。72 小时后将自动确认。
+          打手已结束订单，请核实汇报与结果。如有问题可发起争议。
         </p>
       </section>
 
@@ -517,7 +693,7 @@ onMounted(async () => {
             </button>
 
             <button
-              v-if="isBooster && order.status === 'LOCKED' && hasClaimed && !isAssignedBooster"
+              v-if="isBooster && order.status === 'LOCKED' && hasClaimed && !isAssignedBooster && !myClaim"
               type="button"
               class="od-ops__chip btn-secondary w-full py-3"
               disabled
@@ -526,7 +702,7 @@ onMounted(async () => {
             </button>
 
             <button
-              v-if="isAssignedBooster && order.status === 'LOCKED'"
+              v-if="canDeliver"
               class="od-ops__primary btn-success w-full py-3"
               :disabled="actionLoading"
               @click="openDeliverModal"
@@ -535,7 +711,16 @@ onMounted(async () => {
             </button>
 
             <button
-              v-if="isAssignedBooster && order.status === 'DELIVERED'"
+              v-if="myClaim?.status === 'DELIVERED'"
+              type="button"
+              class="od-ops__chip btn-secondary w-full py-3"
+              disabled
+            >
+              已提交汇报 · 待审核
+            </button>
+
+            <button
+              v-if="!myClaim && isAssignedBooster && order.status === 'DELIVERED'"
               type="button"
               class="od-ops__chip btn-secondary w-full py-3"
               disabled
@@ -645,13 +830,46 @@ onMounted(async () => {
             <h3 class="text-lg font-semibold text-ink-1">确认订单</h3>
             <p class="mt-3 text-sm leading-6 text-ink-2">
               即将接下订单「{{ claimSubject }}」，报酬
-              <span class="font-semibold tabular-nums text-price">{{ formatPrice(order.price) }}</span>
+              <span class="font-semibold tabular-nums text-price">{{ formatOrderPrice(order) }}</span>
               ，确认后开始进行，完成后点击「结束订单」提交汇报。
             </p>
             <div class="mt-6 flex gap-3">
               <button type="button" class="btn-secondary flex-1" :disabled="actionLoading" @click="closeClaimModal">取消</button>
               <button type="button" class="btn-primary flex-1" :disabled="actionLoading" @click="handleConfirmClaim">
                 {{ actionLoading ? '确认中…' : '确认订单' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </teleport>
+
+      <!-- 发布人审核打款弹窗（人人可发单模式：交付由发单用户自审） -->
+      <teleport to="body">
+        <div v-if="showPayoutModal" class="modal-scrim" @click.self="!payoutSubmitting && (showPayoutModal = false)">
+          <div class="modal-card" role="dialog" aria-modal="true" aria-label="审核打款">
+            <h3 class="text-lg font-semibold text-ink-1">审核打款</h3>
+            <p class="mt-2 text-sm leading-6 text-ink-2">
+              通过后按填写金额从托管余额打款给对方；订单报酬
+              <span class="font-semibold tabular-nums text-price">{{ formatOrderPrice(order) }}</span>
+            </p>
+            <div class="mt-4 space-y-4">
+              <div>
+                <label class="label" for="payout-amount">打款金额</label>
+                <input id="payout-amount" v-model="payoutForm.amount" type="number" min="0" step="0.01" class="input" placeholder="默认订单全额" />
+              </div>
+              <div v-if="order.compensation_amount">
+                <label class="label" for="payout-deduction">扣除炸单赔偿金（0 ~ {{ formatPrice(order.compensation_amount) }}）</label>
+                <input id="payout-deduction" v-model="payoutForm.deduction" type="number" min="0" :max="Number(order.compensation_amount)" step="0.01" class="input" placeholder="打炸了才扣，默认 0" />
+              </div>
+              <div>
+                <label class="label" for="payout-note">备注（可选）</label>
+                <textarea id="payout-note" v-model="payoutForm.note" rows="2" class="input" placeholder="随钱包流水留存"></textarea>
+              </div>
+            </div>
+            <div class="mt-6 flex gap-3">
+              <button type="button" class="btn-secondary flex-1" :disabled="payoutSubmitting" @click="showPayoutModal = false">取消</button>
+              <button type="button" class="btn-primary flex-1" :disabled="payoutSubmitting" @click="submitPayout">
+                {{ payoutSubmitting ? '提交中…' : '通过并打款' }}
               </button>
             </div>
           </div>

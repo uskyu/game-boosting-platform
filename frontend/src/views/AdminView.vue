@@ -17,7 +17,7 @@ import {
   getWithdrawalStatusTagClass,
 } from '@/stores/wallet'
 import api from '@/utils/api'
-import { formatDateTime, formatPrice } from '@/utils/display'
+import { formatDateTime, formatOrderPrice, formatPrice } from '@/utils/display'
 import {
   getOrderStatusBadgeClass,
   getOrderStatusLabel,
@@ -113,7 +113,7 @@ async function bulkOrderAction(action) {
   await fetchOrders()
 }
 
-// 卡片点击进入派单处理详情页（编辑 / 报名名单 / 审核 / 退款 / 干预均已迁移）
+// 卡片点击进入派单处理详情页（编辑 / 接单名单 / 审核 / 退款 / 干预均已迁移）
 function goDispatchDetail(order) {
   router.push({ name: 'admin-dispatch-detail', params: { id: order.id } })
 }
@@ -135,11 +135,30 @@ function withdrawalApplicant(item) {
   )
 }
 
+// ── 提现详情弹窗：卡片点击查看申请全量信息 + 收款二维码 ──
+
+const withdrawalDetail = ref(null)
+
+function openWithdrawalDetail(item) {
+  withdrawalDetail.value = item
+}
+
+function closeWithdrawalDetail() {
+  withdrawalDetail.value = null
+}
+
+// 复用订单灯箱展示收款二维码（点击放大）
+function openWithdrawalQrcode(item) {
+  if (!item?.qrcode_url) return
+  orderLightbox.value = { visible: true, images: [{ url: item.qrcode_url, name: '收款二维码' }], index: 0 }
+}
+
 async function approveWithdrawal(item) {
   submittingKey.value = `withdrawal-${item.id}`
   const result = await walletStore.reviewWithdrawal(item.id, 'approve')
   if (result.success) {
     message.value = { type: 'success', text: '提现申请已通过，等待打款' }
+    if (withdrawalDetail.value?.id === item.id) closeWithdrawalDetail()
     await fetchWithdrawals(walletStore.adminWithdrawalsPagination.page)
   } else {
     message.value = { type: 'error', text: result.error || '操作失败' }
@@ -162,6 +181,7 @@ function openAssignModal(order) {
 }
 
 function openRejectModal(item) {
+  closeWithdrawalDetail()
   modal.value = {
     type: 'reject',
     withdrawalId: item.id,
@@ -173,6 +193,7 @@ function openRejectModal(item) {
 }
 
 function openMarkPaidModal(item) {
+  closeWithdrawalDetail()
   modal.value = {
     type: 'mark-paid',
     withdrawalId: item.id,
@@ -302,7 +323,7 @@ function formatApiError(value) {
 const publishModal = ref(null)
 const attachmentTypes = ['image/png', 'image/jpeg', 'image/webp']
 const maxAttachmentCount = 5
-const maxAttachmentSize = 5 * 1024 * 1024
+const maxAttachmentSize = 10 * 1024 * 1024
 
 function validateOrderAttachments(files) {
   const selected = Array.from(files || [])
@@ -310,7 +331,7 @@ function validateOrderAttachments(files) {
   const invalid = selected.find((file) => !attachmentTypes.includes((file.type || '').toLowerCase()))
   if (invalid) return `仅支持 PNG、JPEG、WebP 图片：${invalid.name}`
   const oversized = selected.find((file) => file.size > maxAttachmentSize)
-  if (oversized) return `单张图片不能超过5MB：${oversized.name}`
+  if (oversized) return `单张图片不能超过10MB：${oversized.name}`
   return ''
 }
 
@@ -342,6 +363,16 @@ const publishPriorityOptions = [
   { value: 5, label: '加急' },
 ]
 
+// 到账时效：不设置（默认）/ 1-5 天 → payout_delay_days
+const publishPayoutDelayOptions = [
+  { value: '', label: '不设置' },
+  { value: 1, label: '1天' },
+  { value: 2, label: '2天' },
+  { value: 3, label: '3天' },
+  { value: 4, label: '4天' },
+  { value: 5, label: '5天' },
+]
+
 const publishGameOptions = computed(() => gamesStore.adminGames)
 const hasActivePublishGame = computed(() => publishGameOptions.value.some((game) => game.is_active))
 const selectedPublishGame = computed(() => {
@@ -354,17 +385,17 @@ async function openPublishModal() {
     game_id: '',
     title: '',
     intro: '',
-    current_rank: '',
-    target_rank: '',
     price: '100',
-    price_min: '',
-    price_max: '',
     max_claims: 1,
     deadline: '',
     attachments: null,
     description: '',
     priority: 1,
     server: '',
+    boss_contact: '',
+    compensation_enabled: false,
+    compensation_amount: '',
+    payout_delay_days: '',
     error: '',
     submitting: false,
     uploading: '',
@@ -405,37 +436,54 @@ async function submitPublishModal() {
       : '暂无游戏可选，请先在「游戏管理」中新建游戏'
     return
   }
-  if (!state.current_rank.trim()) {
-    state.error = '请填写当前段位'
-    return
-  }
-  if (!state.target_rank.trim()) {
-    state.error = '请填写目标段位'
-    return
-  }
+  // 价格：只发单一 {price}（区间价格已下线）
   const price = Number(state.price)
   if (!Number.isFinite(price) || price <= 0) {
     state.error = '请填写大于 0 的价格'
     return
   }
 
+  // 新增字段校验：老板ID ≤64 字；赔偿金开启后必须 >0；到账时效 1-5 天
+  const bossContact = state.boss_contact.trim()
+  if (bossContact.length > 64) {
+    state.error = '老板ID不能超过 64 个字符'
+    return
+  }
+
+  let compensationAmount = null
+  if (state.compensation_enabled) {
+    compensationAmount = Number(state.compensation_amount)
+    if (!Number.isFinite(compensationAmount) || compensationAmount <= 0) {
+      state.error = '炸单赔偿金需为大于 0 的金额'
+      return
+    }
+  }
+
+  const payoutDelay = state.payout_delay_days === '' ? null : Number(state.payout_delay_days)
+  if (payoutDelay != null && (!Number.isInteger(payoutDelay) || payoutDelay < 1 || payoutDelay > 5)) {
+    state.error = '到账时效需为 1-5 天'
+    return
+  }
+
   state.submitting = true
-  const result = await ordersStore.createOrder({
+  const payload = {
     game_id: game.id,
     game_name: game.name,
     title: state.title.trim() || `${game.name} 派单`,
     intro: state.intro.trim() || state.description.trim() || null,
-    current_rank: state.current_rank.trim(),
-    target_rank: state.target_rank.trim(),
     price,
-    price_min: state.price_min ? Number(state.price_min) : null,
-    price_max: state.price_max ? Number(state.price_max) : null,
     max_claims: Number(state.max_claims) || 1,
     deadline: state.deadline || null,
     description_raw: state.description.trim() || null,
     priority: state.priority,
     server: state.server.trim() || null,
-  })
+    boss_contact: bossContact || null,
+    payout_delay_days: payoutDelay,
+  }
+  if (state.compensation_enabled) {
+    payload.compensation_amount = compensationAmount
+  }
+  const result = await ordersStore.createOrder(payload)
   if (!result.success) {
     state.submitting = false
     state.error = formatApiError(result.error) || '发布失败'
@@ -474,14 +522,26 @@ function buildOrderSummary(order) {
 }
 
 function orderPriceLabel(order) {
-  const min = order.price_min
-  const max = order.price_max
-  if (min != null && max != null && Number(min) !== Number(max)) return `${formatPrice(min)} - ${formatPrice(max)}`
-  return formatPrice(order.price ?? min ?? max ?? 0)
+  return formatOrderPrice(order)
 }
 
 function orderClaimLabel(order) {
   return `当前情况 ${Number(order.claimed_count ?? 0)}/${Number(order.max_claims ?? 0)}`
+}
+
+// 发布人（用户发单时序列化带 user；管理员发单无托管）
+function orderPublisher(order) {
+  return order.user?.username || (order.user_id != null ? `用户 #${order.user_id}` : '')
+}
+
+// 区分来源：管理员自己派的 vs 普通用户派的
+function isUserPublished(order) {
+  return order.user?.role && order.user.role !== 'ADMIN'
+}
+
+function orderEscrowLabel(order) {
+  const amount = Number(order.escrow_amount ?? 0)
+  return amount > 0 ? `托管 ${formatPrice(amount)}` : ''
 }
 
 // 附件归一化：元素为 {url,name} 对象（后端 OrderAttachment）或历史遗留字符串
@@ -782,14 +842,21 @@ onMounted(async () => {
 
       <div v-else class="mt-6 grid gap-4 xl:grid-cols-2">
         <article v-for="order in orders" :key="order.id" class="catalog-card admin-order-card cyber-corner cursor-pointer" :class="order.claim_status === 'CLOSED' || order.is_archived || ['COMPLETED', 'CANCELLED', 'EXPIRED'].includes(order.status) ? 'admin-order-card--ended' : ''" @click="goDispatchDetail(order)">
-          <!-- 首行：订单标题 + 状态徽标；次行 #id · 游戏 · 段位；再一行简介摘要 -->
+          <!-- 首行：订单标题 + 状态徽标；次行 #id · 游戏；再一行简介摘要 -->
           <div class="min-w-0">
             <div class="flex flex-wrap items-center gap-2">
               <h3 class="min-w-0 truncate text-lg font-semibold text-ink-1">{{ orderCardTitle(order) }}</h3>
               <span :class="getOrderStatusBadgeClass(order.status)">{{ dispatchStatusLabel(order) }}</span>
             </div>
             <p class="mt-1 truncate text-xs text-ink-3">
-              #{{ order.id }} · {{ order.game_name }}<template v-if="order.current_rank || order.target_rank"> · {{ order.current_rank || '?' }} → {{ order.target_rank || '?' }}</template>
+              #{{ order.id }} · {{ order.game_name }}
+            </p>
+            <!-- 发布人 + 来源标签 + 托管金额：一眼看出是管理员派的单还是哪个用户派的单 -->
+            <p v-if="orderPublisher(order) || orderEscrowLabel(order)" class="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-ink-3">
+              <span v-if="isUserPublished(order)" class="tag !px-2 !py-0.5 !bg-primary-soft !text-primary">用户派单</span>
+              <span v-else class="tag !px-2 !py-0.5">管理员派单</span>
+              <span v-if="orderPublisher(order)">发布人：{{ orderPublisher(order) }}</span>
+              <span v-if="orderEscrowLabel(order)" class="tag tabular-nums !px-2 !py-0.5">{{ orderEscrowLabel(order) }}</span>
             </p>
             <p class="mt-1.5 truncate text-sm text-ink-2">{{ buildOrderSummary(order) }}</p>
           </div>
@@ -799,8 +866,8 @@ onMounted(async () => {
             <p class="text-lg font-semibold tabular-nums text-price">{{ orderPriceLabel(order) }}</p>
             <div class="flex flex-wrap items-center gap-2">
               <span class="tag tabular-nums">{{ orderClaimLabel(order) }}</span>
-              <span v-if="order.status === 'DELIVERED' && order.booster_id" class="tag tabular-nums !bg-warning-soft !text-warning">待审核 1</span>
-              <span v-else-if="order.status === 'COMPLETED' && order.booster_id" class="tag tabular-nums !bg-success-soft !text-success">已通过 1</span>
+              <span v-if="Number(order.pending_review_count) > 0" class="tag tabular-nums !bg-warning-soft !text-warning">待审核 {{ order.pending_review_count }}</span>
+              <span v-if="Number(order.settled_count) > 0" class="tag tabular-nums !bg-success-soft !text-success">已通过 {{ order.settled_count }}</span>
             </div>
           </div>
 
@@ -848,7 +915,12 @@ onMounted(async () => {
       </div>
 
       <div v-else class="mt-6 space-y-3">
-        <article v-for="item in walletStore.adminWithdrawals" :key="item.id" class="catalog-card cyber-corner">
+        <article
+          v-for="item in walletStore.adminWithdrawals"
+          :key="item.id"
+          class="catalog-card cyber-corner cursor-pointer transition-colors duration-base hover:border-primary"
+          @click="openWithdrawalDetail(item)"
+        >
           <div class="flex flex-wrap items-start justify-between gap-4">
             <div class="min-w-0 max-w-full space-y-2">
               <div class="flex flex-wrap items-center gap-2">
@@ -864,30 +936,15 @@ onMounted(async () => {
 
             <div class="flex shrink-0 flex-col items-end gap-3">
               <p class="text-2xl font-semibold tabular-nums text-price">{{ formatPrice(item.amount) }}</p>
-              <div class="flex items-center gap-2">
-                <button
-                  v-if="item.status === 'PENDING'"
-                  class="btn-primary !px-4 !py-2"
-                  :disabled="submittingKey === `withdrawal-${item.id}`"
-                  @click="approveWithdrawal(item)"
-                >
-                  {{ submittingKey === `withdrawal-${item.id}` ? '提交中...' : '通过' }}
-                </button>
-                <button
-                  v-if="item.status === 'PENDING'"
-                  class="btn-secondary !px-4 !py-2"
-                  @click="openRejectModal(item)"
-                >
-                  驳回
-                </button>
-                <button
-                  v-if="item.status === 'APPROVED'"
-                  class="btn-primary !px-4 !py-2"
-                  @click="openMarkPaidModal(item)"
-                >
-                  标记已打款
-                </button>
-              </div>
+              <!-- 收款二维码缩略图（点击在弹窗内放大） -->
+              <img
+                v-if="item.qrcode_url"
+                :src="item.qrcode_url"
+                alt="收款二维码"
+                class="h-14 w-14 rounded-tile border border-line-1 object-cover"
+                loading="lazy"
+              />
+              <span v-else class="text-xs text-ink-3">未上传二维码</span>
             </div>
           </div>
 
@@ -904,6 +961,8 @@ onMounted(async () => {
           >
             打款流水号：{{ item.payment_reference }}
           </div>
+
+          <p class="mt-4 text-xs text-ink-3">点击卡片查看详情并处理 →</p>
         </article>
       </div>
 
@@ -1091,6 +1150,103 @@ onMounted(async () => {
       </div>
     </div>
 
+    <!-- 提现详情弹窗：申请全量信息 + 收款二维码 + 处理按钮 -->
+    <div v-if="withdrawalDetail" class="modal-scrim modal-scrim--sheet">
+      <div class="absolute inset-0" aria-hidden="true" @click="closeWithdrawalDetail"></div>
+
+      <div class="modal-card modal-sheet" role="dialog" aria-modal="true" aria-label="提现详情">
+        <div class="relative z-10">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <h3 class="text-2xl font-semibold text-ink-1">提现详情</h3>
+              <p class="mt-2 text-sm text-ink-2">
+                #{{ withdrawalDetail.id }} · {{ withdrawalApplicant(withdrawalDetail) }} ·
+                <span class="font-semibold tabular-nums text-price">{{ formatPrice(withdrawalDetail.amount) }}</span>
+              </p>
+            </div>
+            <button type="button" class="btn-ghost shrink-0 !px-4 !py-2" @click="closeWithdrawalDetail">关闭</button>
+          </div>
+
+          <div class="mt-5 grid gap-3 sm:grid-cols-2">
+            <div class="info-tile">
+              <p class="info-tile__label">状态</p>
+              <p class="info-tile__value"><span :class="['tag', getWithdrawalStatusTagClass(withdrawalDetail.status)]">{{ getWithdrawalStatusLabel(withdrawalDetail.status) }}</span></p>
+            </div>
+            <div class="info-tile">
+              <p class="info-tile__label">收款渠道</p>
+              <p class="info-tile__value">{{ getChannelLabel(withdrawalDetail.channel) }}</p>
+            </div>
+            <div class="info-tile">
+              <p class="info-tile__label">收款人姓名</p>
+              <p class="info-tile__value break-words">{{ withdrawalDetail.account_name || '-' }}</p>
+            </div>
+            <div class="info-tile">
+              <p class="info-tile__label">收款账号</p>
+              <p class="info-tile__value break-words">{{ withdrawalDetail.account_no || '-' }}</p>
+            </div>
+            <div class="info-tile">
+              <p class="info-tile__label">申请时间</p>
+              <p class="info-tile__value">{{ formatDateTime(withdrawalDetail.created_at) }}</p>
+            </div>
+            <div v-if="withdrawalDetail.paid_at" class="info-tile">
+              <p class="info-tile__label">打款时间</p>
+              <p class="info-tile__value">{{ formatDateTime(withdrawalDetail.paid_at) }}</p>
+            </div>
+          </div>
+
+          <div v-if="withdrawalDetail.status === 'REJECTED' && withdrawalDetail.reject_reason" class="message-error mt-4">
+            驳回原因：{{ withdrawalDetail.reject_reason }}
+          </div>
+          <div v-if="withdrawalDetail.payment_reference" class="message-info mt-4">
+            打款流水号：{{ withdrawalDetail.payment_reference }}
+          </div>
+
+          <!-- 收款二维码：点击用灯箱放大 -->
+          <div class="mt-5">
+            <p class="info-tile__label">收款二维码</p>
+            <button
+              v-if="withdrawalDetail.qrcode_url"
+              type="button"
+              class="mt-2 block overflow-hidden rounded-tile border border-line-1 bg-surface-2 transition-opacity duration-base hover:opacity-90"
+              aria-label="放大查看收款二维码"
+              @click="openWithdrawalQrcode(withdrawalDetail)"
+            >
+              <img :src="withdrawalDetail.qrcode_url" alt="收款二维码" class="h-40 w-40 object-cover" loading="lazy" />
+            </button>
+            <p v-else class="mt-2 text-sm text-ink-3">未上传二维码</p>
+          </div>
+
+          <div class="mt-6 flex flex-wrap justify-end gap-3">
+            <button
+              v-if="withdrawalDetail.status === 'PENDING'"
+              type="button"
+              class="btn-primary !px-5 !py-2"
+              :disabled="submittingKey === `withdrawal-${withdrawalDetail.id}`"
+              @click="approveWithdrawal(withdrawalDetail)"
+            >
+              {{ submittingKey === `withdrawal-${withdrawalDetail.id}` ? '提交中...' : '通过' }}
+            </button>
+            <button
+              v-if="withdrawalDetail.status === 'PENDING'"
+              type="button"
+              class="btn-secondary !px-5 !py-2"
+              @click="openRejectModal(withdrawalDetail)"
+            >
+              驳回
+            </button>
+            <button
+              v-if="withdrawalDetail.status === 'APPROVED'"
+              type="button"
+              class="btn-primary !px-5 !py-2"
+              @click="openMarkPaidModal(withdrawalDetail)"
+            >
+              标记已打款
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- 发布订单弹窗（管理员发单 → POST /orders/create，进大厅 PENDING） -->
     <div v-if="publishModal" class="modal-scrim modal-scrim--sheet">
       <div class="absolute inset-0" aria-hidden="true" @click="closePublishModal"></div>
@@ -1127,48 +1283,21 @@ onMounted(async () => {
               <label class="label" for="publish-intro">简介</label>
               <textarea id="publish-intro" v-model="publishModal.intro" rows="2" class="input resize-none" maxlength="5000"></textarea>
             </div>
-            <div class="publish-grid grid gap-4 sm:grid-cols-2">
-              <div>
-                <label class="label" for="publish-current-rank">当前段位</label>
-                <input
-                  id="publish-current-rank"
-                  v-model="publishModal.current_rank"
-                  type="text"
-                  class="input"
-                  maxlength="50"
-                  placeholder="例如：钻石"
-                />
-              </div>
-              <div>
-                <label class="label" for="publish-target-rank">目标段位</label>
-                <input
-                  id="publish-target-rank"
-                  v-model="publishModal.target_rank"
-                  type="text"
-                  class="input"
-                  maxlength="50"
-                  placeholder="例如：王者"
-                />
-              </div>
+            <!-- 价格：只保留一个发单价格输入（区间价格已下线） -->
+            <div>
+              <label class="label" for="publish-price">发单价格</label>
+              <input
+                id="publish-price"
+                v-model="publishModal.price"
+                type="number"
+                min="0.01"
+                step="0.01"
+                class="input"
+                placeholder="例如 60"
+              />
             </div>
 
             <div class="publish-grid grid gap-4 sm:grid-cols-2">
-              <div>
-                <label class="label" for="publish-price">价格</label>
-                <input
-                  id="publish-price"
-                  v-model="publishModal.price"
-                  type="number"
-                  min="0.01"
-                  step="0.01"
-                  class="input"
-                  placeholder="建议 100"
-                />
-              </div>
-              <div>
-                <label class="label" for="publish-price-min">价格区间（可选）</label>
-                <div class="flex gap-2"><input id="publish-price-min" v-model="publishModal.price_min" type="number" min="0.01" step="0.01" class="input" placeholder="最低" /><input v-model="publishModal.price_max" type="number" min="0.01" step="0.01" class="input" placeholder="最高" /></div>
-              </div>
               <div>
                 <label class="label" for="publish-max-claims">最大接单人数</label>
                 <input id="publish-max-claims" v-model="publishModal.max_claims" type="number" min="1" max="100" class="input" />
@@ -1187,6 +1316,45 @@ onMounted(async () => {
                   maxlength="50"
                   placeholder="例如：微信区"
                 />
+              </div>
+              <div>
+                <label class="label" for="publish-payout-delay">到账时效</label>
+                <select id="publish-payout-delay" v-model="publishModal.payout_delay_days" class="input">
+                  <option v-for="option in publishPayoutDelayOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+                </select>
+              </div>
+              <div class="sm:col-span-2">
+                <label class="label" for="publish-boss-contact">老板ID（可选）</label>
+                <input
+                  id="publish-boss-contact"
+                  v-model="publishModal.boss_contact"
+                  type="text"
+                  class="input"
+                  maxlength="64"
+                  placeholder="接单后打手可见，用于添加你为好友"
+                />
+              </div>
+            </div>
+
+            <!-- 炸单赔偿金：开关默认关，开启后填写金额（>0）；未开启提交不带 compensation_amount -->
+            <div class="rounded-tile border border-line-1 p-4">
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p class="text-sm font-semibold text-ink-1">炸单赔偿金</p>
+                  <p class="mt-1 text-xs leading-5 text-ink-3">打手接单时冻结，订单完结自动返还；炸单可由管理员扣除。</p>
+                </div>
+                <button
+                  type="button"
+                  :class="publishModal.compensation_enabled ? 'filter-pill-active' : 'filter-pill'"
+                  :aria-pressed="publishModal.compensation_enabled"
+                  @click="publishModal.compensation_enabled = !publishModal.compensation_enabled"
+                >
+                  {{ publishModal.compensation_enabled ? '已开启' : '未开启' }}
+                </button>
+              </div>
+              <div v-if="publishModal.compensation_enabled" class="mt-3">
+                <label class="label" for="publish-compensation">赔偿金额</label>
+                <input id="publish-compensation" v-model="publishModal.compensation_amount" type="number" min="0.01" step="0.01" class="input" placeholder="例如 50" />
               </div>
             </div>
 
@@ -1208,7 +1376,7 @@ onMounted(async () => {
             <div>
               <label class="label" for="publish-attachments">图片附件（可选）</label>
               <input id="publish-attachments" type="file" accept="image/png,image/jpeg,image/webp" multiple class="input min-h-[44px]" @change="publishModal.attachments = $event.target.files" />
-              <p class="mt-1 text-xs text-ink-3">最多5张，支持 PNG、JPEG、WebP，单张不超过5MB。</p>
+              <p class="mt-1 text-xs text-ink-3">最多5张，支持 PNG、JPEG、WebP，单张不超过10MB。</p>
               <p v-if="publishModal.uploadProgress" class="mt-2 text-sm text-primary">图片上传中：{{ publishModal.uploadProgress }}</p>
             </div>
             <div>
@@ -1452,7 +1620,7 @@ onMounted(async () => {
   cursor: not-allowed;
 }
 
-/* ── 报名名单条目：主题表面色卡片，双主题可读 ── */
+/* ── 接单名单条目：主题表面色卡片，双主题可读 ── */
 .claims-item {
   border-radius: 14px;
   border: 1px solid var(--line-1);

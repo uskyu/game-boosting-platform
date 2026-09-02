@@ -56,6 +56,17 @@ export const USER_ROLE_META = {
   },
 }
 
+// claim（报名单）状态：CLAIMED=进行中 / DELIVERED=待审核 / SETTLED=已结算
+export const ORDER_CLAIM_STATUS_META = {
+  CLAIMED: { label: '进行中', tagClass: 'tag !bg-info-soft !text-info' },
+  DELIVERED: { label: '待审核', tagClass: 'tag !bg-warning-soft !text-warning' },
+  SETTLED: { label: '已结算', tagClass: 'tag !bg-success-soft !text-success' },
+}
+
+export function getClaimStatusMeta(status) {
+  return ORDER_CLAIM_STATUS_META[status] || { label: status || '-', tagClass: 'tag' }
+}
+
 export const APPLICATION_STATUS_META = {
   NONE: {
     label: '未提交',

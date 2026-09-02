@@ -1,10 +1,14 @@
-"""Withdrawal lifecycle tests: create -> freeze -> review -> payout."""
+"""Withdrawal lifecycle tests: create -> freeze -> review -> payout + QR codes."""
 
 from decimal import Decimal
+from io import BytesIO
 
 from httpx import AsyncClient
 
 from tests.conftest import auth_header
+
+# PNG magic + >1MB payload (magic check only inspects the header bytes)
+BIG_PNG = b"\x89PNG\r\n\x1a\n" + b"x" * (1024 * 1024 + 128)
 
 
 async def _fund_wallet(

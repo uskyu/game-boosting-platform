@@ -58,7 +58,7 @@ async def test_logo_rejects_mismatched_or_oversized_upload(
     assert response.status_code == 400
     response = await client.put(
         f"/games/{game_id}/logo",
-        files={"logo": ("logo.png", BytesIO(b"x" * (2 * 1024 * 1024 + 1)), "image/png")},
+        files={"logo": ("logo.png", BytesIO(b"x" * (10 * 1024 * 1024 + 1)), "image/png")},
         headers=auth_header(admin_user),
     )
     assert response.status_code == 400

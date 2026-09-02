@@ -327,17 +327,17 @@ onBeforeUnmount(() => {
     <div v-if="conversation" class="flex h-full flex-col">
       <header class="chat-panel-header">
         <div class="min-w-0">
-          <div class="flex flex-wrap items-center gap-3">
-            <h1 class="truncate text-2xl font-semibold text-ink-1">{{ conversationTitle }}</h1>
+          <div class="flex flex-wrap items-center gap-2 sm:gap-3">
+            <h1 class="truncate text-lg font-semibold text-ink-1 sm:text-2xl">{{ conversationTitle }}</h1>
             <span class="chat-status-pill">{{ socketStatusText }}</span>
           </div>
-          <p class="mt-2 text-sm text-ink-2">{{ conversationSubtitle }}</p>
+          <p class="mt-1 text-xs text-ink-2 sm:mt-2 sm:text-sm">{{ conversationSubtitle }}</p>
         </div>
 
         <button
           v-if="!hasAdmin && !authStore.isAdmin"
           type="button"
-          class="btn-secondary shrink-0 !px-5"
+          class="btn-secondary shrink-0 !min-h-[36px] !px-4 text-xs sm:!min-h-0 sm:!px-5 sm:text-sm"
           :disabled="invitingAdmin"
           @click="handleInviteAdmin"
         >
@@ -351,7 +351,8 @@ onBeforeUnmount(() => {
         </span>
       </header>
 
-      <div class="border-b border-line-1 px-6 py-4 sm:px-8">
+      <!-- 消息搜索：手机端隐藏（省竖向空间，桌面端保留） -->
+      <div class="hidden border-b border-line-1 px-6 py-4 sm:block sm:px-8">
         <ChatSearchBar
           v-model="searchQuery"
           :results="searchResults"
@@ -365,7 +366,7 @@ onBeforeUnmount(() => {
 
       <div
         v-if="actionError || actionMessage"
-        class="border-b border-line-1 px-6 py-3 sm:px-8"
+        class="border-b border-line-1 px-4 py-3 sm:px-8"
       >
         <div v-if="actionError" class="message-error">
           {{ actionError }}
@@ -375,8 +376,7 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div class="min-h-0 flex-1 px-6 py-6 sm:px-8">
-        <ChatMessageList
+      <div class="min-h-0 flex-1 px-3 py-4 sm:px-8 sm:py-6">        <ChatMessageList
           ref="messageListRef"
           :messages="messages"
           :conversation="conversation"
@@ -391,7 +391,7 @@ onBeforeUnmount(() => {
         />
       </div>
 
-      <div class="border-t border-line-1 px-6 py-5 sm:px-8">
+      <div class="border-t border-line-1 px-3 py-3 sm:px-8 sm:py-5">
         <ChatComposer
           v-model="draft"
           :disabled="!conversation"

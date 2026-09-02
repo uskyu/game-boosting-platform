@@ -112,6 +112,7 @@ class WalletService:
         amount: Decimal,
         available_delta: Decimal,
         order_id: int | None = None,
+        booster_id: int | None = None,
         withdrawal_id: int | None = None,
         operator_id: int | None = None,
         remark: str | None = None,
@@ -132,7 +133,9 @@ class WalletService:
             available_delta: Actual change to available_balance (differs from
                 ``amount`` for WITHDRAWAL_PAID, which deducts frozen balance
                 and leaves available unchanged).
-            order_id / withdrawal_id / operator_id / remark: ledger context.
+            order_id / booster_id / withdrawal_id / operator_id / remark:
+                ledger context. booster_id records which booster an order
+                settlement belongs to (multi-claim orders settle per booster).
             income_delta: added to total_income (default 0).
             frozen_delta: added to frozen_balance (default 0).
             withdrawn_delta: added to total_withdrawn (default 0).
@@ -149,6 +152,7 @@ class WalletService:
             balance_before=balance_before,
             balance_after=balance_after,
             order_id=order_id,
+            booster_id=booster_id,
             withdrawal_id=withdrawal_id,
             operator_id=operator_id,
             remark=remark,
@@ -181,6 +185,7 @@ class WalletService:
         amount: Decimal,
         tx_type: WalletTransactionType,
         order_id: int | None = None,
+        booster_id: int | None = None,
         operator_id: int | None = None,
         remark: str | None = None,
     ) -> WalletTransaction:
@@ -200,6 +205,7 @@ class WalletService:
             amount=amount,
             available_delta=amount,
             order_id=order_id,
+            booster_id=booster_id,
             operator_id=operator_id,
             remark=remark,
             income_delta=amount if tx_type == WalletTransactionType.ORDER_INCOME else _ZERO,
@@ -343,25 +349,32 @@ class WalletService:
         order: Order,
         payout_amount: Decimal | None = None,
         note: str | None = None,
+        booster_id: int | None = None,
     ) -> Optional[WalletTransaction]:
         """
-        Credit the booster's income for a completed order.
+        Credit a booster's income for an order.
 
         Default income: order.price * (1 - COMMISSION_RATE), rounded to cents.
         payout_amount（部分到账）直接覆盖该金额，不再计佣金。
         note 为老板打款备注，写入流水 remark 留存。
+        booster_id 指定结算给哪个打手（名额制下每个打手独立结算）；
+        缺省沿用订单的首抢打手 order.booster_id。
 
-        Idempotent via the (order_id, type='ORDER_INCOME') unique constraint:
-        if the ledger row already exists the duplicate-key error is caught
-        inside a savepoint and None is returned (already settled).
+        Idempotent per booster via the (order_id, booster_id,
+        type='ORDER_INCOME') unique constraint: if the ledger row already
+        exists the duplicate-key error is caught inside a savepoint and None
+        is returned (already settled).
         """
-        if order.booster_id is None:
+        if booster_id is None:
+            booster_id = order.booster_id
+        if booster_id is None:
             return None
 
-        # Fast path: already settled?
+        # Fast path: already settled for this booster?
         existing = await self._db.execute(
             select(WalletTransaction.id).where(
                 WalletTransaction.order_id == order.id,
+                WalletTransaction.booster_id == booster_id,
                 WalletTransaction.type == WalletTransactionType.ORDER_INCOME,
             )
         )
@@ -384,23 +397,305 @@ class WalletService:
 
         try:
             async with self._db.begin_nested():
-                wallet = await self.get_or_create_wallet(order.booster_id)
+                wallet = await self.get_or_create_wallet(booster_id)
                 transaction = await self.credit(
                     wallet,
                     amount=income,
                     tx_type=WalletTransactionType.ORDER_INCOME,
                     order_id=order.id,
+                    booster_id=booster_id,
                     remark=remark,
                 )
                 return transaction
         except IntegrityError:
-            # Concurrent settlement won the race - the order is already paid.
+            # Concurrent settlement won the race - this booster's payout for
+            # the order is already recorded.
             logger.info(
                 "Order %s income already settled for booster %s",
                 order.id,
-                order.booster_id,
+                booster_id,
             )
             return None
+
+    # ------------------------------------------------------------------
+    # User-publishing escrow & compensation deposit
+    # ------------------------------------------------------------------
+
+    async def hold_escrow(
+        self,
+        wallet: Wallet,
+        *,
+        amount: Decimal,
+        order_id: int,
+        remark: str | None = None,
+    ) -> WalletTransaction:
+        """发单托管冻结（发布人）：可用余额扣减、冻结余额增加。
+
+        非管理员发布订单时冻结 price × max_claims，一次性操作。
+        """
+        amount = _to_decimal(amount).quantize(_CENT, rounding=ROUND_HALF_UP)
+        if amount <= _ZERO:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="托管金额必须大于0",
+            )
+        locked = await self._lock_wallet(wallet.id)
+        if _to_decimal(locked.available_balance) < amount:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="可用余额不足以托管该订单",
+            )
+        return await self._apply(
+            wallet,
+            tx_type=WalletTransactionType.ESCROW_HOLD,
+            amount=-amount,
+            available_delta=-amount,
+            order_id=order_id,
+            remark=remark or f"订单 #{order_id} 发单托管冻结",
+            frozen_delta=amount,
+        )
+
+    async def release_escrow(
+        self,
+        wallet: Wallet,
+        *,
+        amount: Decimal,
+        order_id: int,
+        remark: str | None = None,
+    ) -> WalletTransaction | None:
+        """托管解冻退回（发布人）：冻结余额扣减、可用余额回补。
+
+        实际解冻金额受当前冻结余额约束（防超释），不足时按可解冻
+        部分处理并记录 warning。
+        """
+        amount = _to_decimal(amount).quantize(_CENT, rounding=ROUND_HALF_UP)
+        if amount <= _ZERO:
+            return None
+        locked = await self._lock_wallet(wallet.id)
+        frozen = _to_decimal(locked.frozen_balance)
+        actual = min(amount, frozen)
+        if actual <= _ZERO:
+            logger.warning(
+                "Order %s escrow release skipped: publisher frozen balance is 0",
+                order_id,
+            )
+            return None
+        if actual < amount:
+            logger.warning(
+                "Order %s escrow release capped: requested %s but frozen %s",
+                order_id,
+                amount,
+                frozen,
+            )
+        return await self._apply(
+            wallet,
+            tx_type=WalletTransactionType.ESCROW_RELEASE,
+            amount=actual,
+            available_delta=actual,
+            order_id=order_id,
+            remark=remark or f"订单 #{order_id} 托管解冻退回",
+            frozen_delta=-actual,
+        )
+
+    async def pay_order_from_escrow(
+        self,
+        order: Order,
+        *,
+        booster_id: int,
+        amount: Decimal,
+        note: str | None = None,
+    ) -> WalletTransaction | None:
+        """订单打款（发布人侧）：从其托管冻结余额中支出该打手的结算金额。
+
+        - 按 (order_id, booster_id, type=ORDER_PAYMENT) 幂等防重；
+        - 冻结不足时按现有冻结余额尽力扣减并 log warning，不阻断打手
+          入账（老板兜底）。
+        """
+        amount = _to_decimal(amount).quantize(_CENT, rounding=ROUND_HALF_UP)
+        if amount <= _ZERO:
+            return None
+
+        existing = await self._db.execute(
+            select(WalletTransaction.id).where(
+                WalletTransaction.order_id == order.id,
+                WalletTransaction.booster_id == booster_id,
+                WalletTransaction.type == WalletTransactionType.ORDER_PAYMENT,
+            )
+        )
+        if existing.scalar_one_or_none() is not None:
+            return None
+
+        wallet = await self.get_or_create_wallet(order.user_id)
+        locked = await self._lock_wallet(wallet.id)
+        frozen = _to_decimal(locked.frozen_balance)
+        actual = min(amount, frozen)
+        if actual <= _ZERO:
+            logger.warning(
+                "Order %s payout %s for booster %s not deducted from escrow: "
+                "publisher frozen balance is 0 (boss bottom line)",
+                order.id,
+                amount,
+                booster_id,
+            )
+            return None
+        if actual < amount:
+            logger.warning(
+                "Order %s payout for booster %s capped: expected %s, frozen %s "
+                "(boss bottom line)",
+                order.id,
+                booster_id,
+                amount,
+                frozen,
+            )
+
+        remark = f"订单 #{order.id} 打款给打手"
+        if note:
+            remark = f"{remark}：{note}"
+        try:
+            async with self._db.begin_nested():
+                return await self._apply(
+                    wallet,
+                    tx_type=WalletTransactionType.ORDER_PAYMENT,
+                    amount=-actual,
+                    available_delta=_ZERO,
+                    order_id=order.id,
+                    booster_id=booster_id,
+                    remark=remark,
+                    frozen_delta=-actual,
+                )
+        except IntegrityError:
+            logger.info(
+                "Order %s payout already recorded for booster %s",
+                order.id,
+                booster_id,
+            )
+            return None
+
+    async def hold_deposit(
+        self,
+        wallet: Wallet,
+        *,
+        amount: Decimal,
+        order_id: int,
+        booster_id: int,
+        remark: str | None = None,
+    ) -> WalletTransaction:
+        """接单冻结炸单赔偿金（打手）：可用余额扣减、冻结余额增加。
+
+        幂等由 (order_id, booster_id, type=DEPOSIT_HOLD) 唯一键保证。
+        """
+        amount = _to_decimal(amount).quantize(_CENT, rounding=ROUND_HALF_UP)
+        if amount <= _ZERO:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="赔偿金额必须大于0",
+            )
+        locked = await self._lock_wallet(wallet.id)
+        if _to_decimal(locked.available_balance) < amount:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="余额不足以冻结炸单赔偿金",
+            )
+        return await self._apply(
+            wallet,
+            tx_type=WalletTransactionType.DEPOSIT_HOLD,
+            amount=-amount,
+            available_delta=-amount,
+            order_id=order_id,
+            booster_id=booster_id,
+            remark=remark or f"订单 #{order_id} 接单冻结炸单赔偿金",
+            frozen_delta=amount,
+        )
+
+    async def release_deposit(
+        self,
+        wallet: Wallet,
+        *,
+        amount: Decimal,
+        order_id: int,
+        booster_id: int,
+        note: str | None = None,
+    ) -> WalletTransaction | None:
+        """炸单赔偿金解冻返还（打手）：冻结余额扣减、可用余额回补。"""
+        amount = _to_decimal(amount).quantize(_CENT, rounding=ROUND_HALF_UP)
+        if amount <= _ZERO:
+            return None
+        locked = await self._lock_wallet(wallet.id)
+        frozen = _to_decimal(locked.frozen_balance)
+        actual = min(amount, frozen)
+        if actual <= _ZERO:
+            logger.warning(
+                "Order %s deposit release for booster %s skipped: frozen is 0",
+                order_id,
+                booster_id,
+            )
+            return None
+        if actual < amount:
+            logger.warning(
+                "Order %s deposit release for booster %s capped: requested %s, frozen %s",
+                order_id,
+                booster_id,
+                amount,
+                frozen,
+            )
+        remark = f"订单 #{order_id} 炸单赔偿金解冻返还"
+        if note:
+            remark = f"{remark}：{note}"
+        return await self._apply(
+            wallet,
+            tx_type=WalletTransactionType.DEPOSIT_RELEASE,
+            amount=actual,
+            available_delta=actual,
+            order_id=order_id,
+            booster_id=booster_id,
+            remark=remark,
+            frozen_delta=-actual,
+        )
+
+    async def deduct_compensation(
+        self,
+        wallet: Wallet,
+        *,
+        amount: Decimal,
+        order_id: int,
+        booster_id: int,
+        note: str | None = None,
+    ) -> WalletTransaction | None:
+        """炸单赔偿扣除（打手）：从冻结余额中扣除，不返还。"""
+        amount = _to_decimal(amount).quantize(_CENT, rounding=ROUND_HALF_UP)
+        if amount <= _ZERO:
+            return None
+        locked = await self._lock_wallet(wallet.id)
+        frozen = _to_decimal(locked.frozen_balance)
+        actual = min(amount, frozen)
+        if actual <= _ZERO:
+            logger.warning(
+                "Order %s compensation deduction for booster %s skipped: frozen is 0",
+                order_id,
+                booster_id,
+            )
+            return None
+        if actual < amount:
+            logger.warning(
+                "Order %s compensation deduction for booster %s capped: requested %s, frozen %s",
+                order_id,
+                booster_id,
+                amount,
+                frozen,
+            )
+        remark = f"订单 #{order_id} 炸单赔偿扣除"
+        if note:
+            remark = f"{remark}：{note}"
+        return await self._apply(
+            wallet,
+            tx_type=WalletTransactionType.COMPENSATION_DEDUCT,
+            amount=-actual,
+            available_delta=_ZERO,
+            order_id=order_id,
+            booster_id=booster_id,
+            remark=remark,
+            frozen_delta=-actual,
+        )
 
     # ------------------------------------------------------------------
     # Withdrawal requests
@@ -414,12 +709,15 @@ class WalletService:
         channel,
         account_name: str,
         account_no: str,
+        qrcode_url: str | None = None,
     ) -> WithdrawalRequest:
         """
         Create a PENDING withdrawal and freeze the amount.
 
         If the freeze fails (insufficient balance) the HTTPException rolls
         back the whole transaction, including the new request row.
+        qrcode_url is expected to be pre-validated by the endpoint (must
+        live under the caller's own /uploads/withdrawals/{user_id}/ folder).
         """
         amount = _to_decimal(amount).quantize(_CENT, rounding=ROUND_HALF_UP)
         if amount < Decimal("1.00"):
@@ -436,6 +734,7 @@ class WalletService:
             channel=channel,
             account_name=account_name,
             account_no=account_no,
+            qrcode_url=qrcode_url,
             status=WithdrawalStatus.PENDING,
         )
         self._db.add(withdrawal)

@@ -93,6 +93,13 @@ class WithdrawalRequest(Base):
         nullable=False,
     )
 
+    # Payment QR code uploaded by the user (stored under
+    # /uploads/withdrawals/{user_id}/); admins read it when paying out.
+    qrcode_url: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
     status: Mapped[WithdrawalStatus] = mapped_column(
         Enum(
             WithdrawalStatus,

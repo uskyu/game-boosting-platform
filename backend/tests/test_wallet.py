@@ -109,6 +109,101 @@ async def test_duplicate_settle_does_not_double_credit(
     assert resp.json()["total"] == 1
 
 
+async def test_multi_claim_order_settles_each_booster_independently(
+    client: AsyncClient,
+    admin_user: dict,
+    booster_user: dict,
+):
+    """Two boosters on one order: each review settles only that booster."""
+    # Boss publishes a 2-slot order
+    resp = await client.post(
+        "/orders/create",
+        json={
+            "game_name": "王者荣耀",
+            "current_rank": "钻石",
+            "target_rank": "王者",
+            "price": "500.00",
+            "max_claims": 2,
+        },
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 201
+    order = resp.json()
+
+    # Second booster account
+    resp = await client.post("/auth/register", json={
+        "email": "booster2@example.com",
+        "username": "TestBooster2",
+        "password": "BoostPass123",
+    })
+    booster2 = resp.json()
+
+    # Both claim the order
+    for user in (booster_user, booster2):
+        resp = await client.put(
+            f"/orders/{order['id']}/accept", headers=auth_header(user)
+        )
+        assert resp.status_code == 200
+
+    # Both deliver their own claim
+    for user in (booster_user, booster2):
+        resp = await client.put(
+            f"/orders/{order['id']}/deliver", headers=auth_header(user)
+        )
+        assert resp.status_code == 200
+        assert resp.json()["my_claim"]["status"] == "DELIVERED"
+
+    # Admin reviews the roster and approves each claim individually
+    resp = await client.get(
+        f"/orders/{order['id']}/claims", headers=auth_header(admin_user)
+    )
+    assert resp.status_code == 200
+    claims = resp.json()["items"]
+    assert len(claims) == 2
+    claim_by_booster = {c["booster_id"]: c for c in claims}
+
+    # Approve the first booster only
+    first_claim = claim_by_booster[booster_user["user"]["id"]]
+    resp = await client.put(
+        f"/orders/{order['id']}/claims/{first_claim['id']}/review",
+        json={"action": "approve"},
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "SETTLED"
+
+    # First booster credited, second booster untouched
+    resp = await client.get("/wallet", headers=auth_header(booster_user))
+    assert Decimal(str(resp.json()["available_balance"])) == Decimal("500.00")
+    resp = await client.get("/wallet", headers=auth_header(booster2))
+    assert Decimal(str(resp.json()["available_balance"])) == Decimal("0.00")
+
+    # Approve the second booster
+    second_claim = claim_by_booster[booster2["user"]["id"]]
+    resp = await client.put(
+        f"/orders/{order['id']}/claims/{second_claim['id']}/review",
+        json={"action": "approve", "amount": "300.00", "note": "部分到账"},
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "SETTLED"
+
+    # Both boosters hold exactly their own settlement
+    resp = await client.get("/wallet", headers=auth_header(booster_user))
+    assert Decimal(str(resp.json()["available_balance"])) == Decimal("500.00")
+    resp = await client.get("/wallet", headers=auth_header(booster2))
+    assert Decimal(str(resp.json()["available_balance"])) == Decimal("300.00")
+
+    # All claims settled and quota exhausted -> order auto-completed
+    resp = await client.get(
+        f"/orders/{order['id']}", headers=auth_header(admin_user)
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "COMPLETED"
+    assert resp.json()["settled_count"] == 2
+    assert resp.json()["pending_review_count"] == 0
+
+
 async def test_admin_adjust_positive_and_negative(
     client: AsyncClient, registered_user: dict, admin_user: dict
 ):

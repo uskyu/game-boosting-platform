@@ -87,6 +87,21 @@ class WithdrawalCreateRequest(BaseModel):
         description="收款账号（支付宝/微信/银行卡号）",
     )
 
+    qrcode_url: str | None = Field(
+        default=None,
+        max_length=255,
+        description="收款二维码图片 URL（须为当前用户 /uploads/withdrawals/{user_id}/ 下的路径）",
+    )
+
+
+class WithdrawalQrcodeUploadResponse(BaseModel):
+    """Uploaded withdrawal QR code metadata."""
+
+    url: str = Field(description="二维码图片 URL")
+    name: str = Field(description="原始文件名")
+    size: int = Field(description="文件大小（字节）")
+    content_type: str = Field(description="图片 MIME 类型")
+
 
 class WithdrawalResponse(BaseModel):
     """Single withdrawal request record."""
@@ -97,6 +112,7 @@ class WithdrawalResponse(BaseModel):
     channel: WithdrawalChannel = Field(description="收款渠道")
     account_name: str = Field(description="收款人姓名")
     account_no: str = Field(description="收款账号")
+    qrcode_url: str | None = Field(default=None, description="收款二维码图片 URL")
     status: WithdrawalStatus = Field(description="状态")
     reject_reason: str | None = Field(default=None, description="驳回原因")
     payment_reference: str | None = Field(default=None, description="打款凭证号")

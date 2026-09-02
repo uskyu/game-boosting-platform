@@ -667,7 +667,7 @@
   }
 
   .app-tabbar__item {
-    @apply relative flex min-h-14 flex-1 select-none flex-col items-center justify-center gap-1 pb-1 pt-1.5 transition-colors duration-base;
+    @apply relative flex min-h-12 flex-1 select-none flex-col items-center justify-center gap-0.5 py-1 transition-colors duration-base;
     color: var(--text-2);
     -webkit-tap-highlight-color: transparent;
   }
@@ -685,9 +685,9 @@
     background: var(--primary);
   }
 
-  /* 底部 Tab 存在时主内容区预留空间，避免遮挡（约 72px + 安全区） */
+  /* 底部 Tab 存在时主内容区预留空间，避免遮挡（Tab 48px + 12px 呼吸 + 安全区） */
   .main-with-tabbar {
-    padding-bottom: calc(72px + env(safe-area-inset-bottom));
+    padding-bottom: calc(60px + env(safe-area-inset-bottom));
   }
 
   @media (min-width: 768px) {
@@ -1168,7 +1168,7 @@
   }
 
   .chat-panel-header {
-    @apply relative flex flex-wrap items-center justify-between gap-4 border-b px-6 py-5 sm:px-8;
+    @apply relative flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3 sm:gap-4 sm:px-8 sm:py-5;
     border-color: var(--line-1);
   }
 
@@ -1274,11 +1274,11 @@
   }
 
   .chat-composer {
-    @apply space-y-4;
+    @apply space-y-2 sm:space-y-4;
   }
 
   .chat-security-notice {
-    @apply rounded-tile px-4 py-3 text-sm;
+    @apply rounded-tile px-3 py-1.5 text-xs sm:px-4 sm:py-3 sm:text-sm;
     color: var(--warning);
     background: var(--warning-soft);
   }
@@ -1298,12 +1298,16 @@
   }
 
   .chat-textarea {
-    @apply w-full rounded-field px-4 py-3.5 text-sm text-ink-1 outline-none transition;
-    min-height: 96px;
+    @apply w-full rounded-field px-3 py-2.5 text-sm text-ink-1 outline-none transition sm:px-4 sm:py-3.5;
+    min-height: 56px;
     max-height: 220px;
     resize: none;
     background: var(--surface-3);
     border: none;
+  }
+
+  @media (min-width: 640px) {
+    .chat-textarea { min-height: 96px; }
   }
 
   .chat-textarea:focus {

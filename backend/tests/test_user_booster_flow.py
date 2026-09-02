@@ -42,22 +42,43 @@ async def test_new_registered_user_can_browse_and_accept_order(
     assert response.json()["status"] == "LOCKED"
 
 
-async def test_new_registered_user_cannot_publish_order(
+async def test_new_registered_user_publish_order_requires_balance(
     client: AsyncClient,
     registered_user: dict,
+    admin_user: dict,
 ):
+    """新权限模型：任何注册用户都能发单，但余额必须覆盖托管（price × max_claims）。"""
+    # 无余额的普通用户发单被拒（托管不足）
     response = await client.post(
         "/orders/create",
         json={
             "game_name": "王者荣耀",
-            "current_rank": "钻石",
-            "target_rank": "王者",
             "price": "500.00",
         },
         headers=auth_header(registered_user),
     )
-    assert response.status_code == 403
-    assert "不能发单" in response.json()["detail"]
+    assert response.status_code == 400
+    assert "余额不足" in response.json()["detail"]
+
+    # 充值后可以发单，且托管被冻结
+    await client.post(
+        f"/admin/wallets/{registered_user['user']['id']}/adjust",
+        json={"amount": "1000.00", "reason": "发单测试充值"},
+        headers=auth_header(admin_user),
+    )
+    response = await client.post(
+        "/orders/create",
+        json={
+            "game_name": "王者荣耀",
+            "price": "300.00",
+            "max_claims": 2,
+        },
+        headers=auth_header(registered_user),
+    )
+    assert response.status_code == 201
+    wallet = (await client.get("/wallet", headers=auth_header(registered_user))).json()
+    assert wallet["available_balance"] == "400.00"
+    assert wallet["frozen_balance"] == "600.00"
 
 
 async def test_admin_can_still_publish_orders(

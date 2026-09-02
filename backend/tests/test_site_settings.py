@@ -65,7 +65,7 @@ async def test_site_logo_rejects_unsupported_and_oversized_files(
     assert response.status_code == 400
     response = await client.put(
         "/admin/site/logo",
-        files={"logo": ("logo.png", BytesIO(b"x" * (2 * 1024 * 1024 + 1)), "image/png")},
+        files={"logo": ("logo.png", BytesIO(b"x" * (10 * 1024 * 1024 + 1)), "image/png")},
         headers=headers,
     )
     assert response.status_code == 400

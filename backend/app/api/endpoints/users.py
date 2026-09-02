@@ -61,7 +61,7 @@ async def submit_booster_application(
 
     allowed_extensions = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
     allowed_content_types = {"image/png", "image/jpeg", "image/webp", "image/gif"}
-    max_size_bytes = 5 * 1024 * 1024
+    max_size_bytes = 10 * 1024 * 1024
 
     if proof_image.content_type not in allowed_content_types:
         raise HTTPException(
@@ -88,7 +88,7 @@ async def submit_booster_application(
     if len(image_bytes) > max_size_bytes:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="图片过大，限制 5MB",
+            detail="图片过大，限制 10MB",
         )
     if not image_bytes:
         raise HTTPException(

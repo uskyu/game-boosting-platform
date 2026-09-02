@@ -13,8 +13,9 @@ import { ORDER_STATUS_OPTIONS, getOrderStatusBadgeClass, getOrderStatusLabel } f
  * 顶部统计条（待接单 / 进行中 / 今日完成，大数字）→ 游戏/状态筛选一行
  * → 订单卡网格（桌面 2 列、移动 1 列）→ 空态。
  * 卡片信息层级（减法）：价格最大最显眼 → 当前情况 X/Y · 剩 Z 席
- * → 目标段位 → 底部次要信息行（需求摘要 · 游戏名 · 时间）+「查看详情 →」。
- * 抢单两步走：整卡点击进详情，详情页内确认报名。
+ * → 炸单赔偿 / 到账时效 chips → 底部次要信息行（需求摘要 · 游戏名 · 时间 · #id）+「查看详情 →」。
+ * 接单两步走：整卡点击进详情，详情页内确认接单。
+ * 挂载后每 30 秒静默刷新当前页（页面可见时），检测到新订单弹轻提示。
  */
 const router = useRouter()
 const authStore = useAuthStore()
@@ -49,7 +50,7 @@ const visibleOrders = computed(() => orders.value.filter((order) => {
 
 function getOrderDisplayStatus(order) {
   if (order.is_archived) return '已归档'
-  if (order.claim_status === 'PAUSED') return '暂停抢单'
+  if (order.claim_status === 'PAUSED') return '暂停接单'
   if (order.claim_status === 'FULL' || Number(order.claimed_count ?? 0) >= Number(order.max_claims ?? 0)) return '已满员'
   if (order.claim_status === 'CLOSED') return '已截止'
   if (order.deadline && new Date(order.deadline).getTime() <= Date.now()) return '已截止'
@@ -91,10 +92,8 @@ function getOrderUnreadCount(orderId) {
 }
 
 function getPriceLabel(order) {
-  const min = order.price_min ?? order.min_price
-  const max = order.price_max ?? order.max_price
-  if (min != null && max != null && min !== max) return `${formatPrice(min)} - ${formatPrice(max)}`
-  return formatPrice(order.price ?? min ?? max ?? 0)
+  // 固定价展示：只显示 ¥price（区间价格已下线）
+  return formatPrice(order?.price)
 }
 
 function getRemainingSlots(order) {
@@ -195,28 +194,65 @@ watch(isAuthenticated, (loggedIn) => {
   }
 })
 
+// 大厅自动刷新：每 30 秒页面可见时静默拉取；首屏出现新单时轻提示（不弹骨架、不清列表）
+const HALL_REFRESH_INTERVAL = 30_000
+const newOrderTip = ref(false)
+let hallRefreshTimer = null
+let knownFirstPageIds = null
+let newOrderTipTimer = null
+
+async function silentRefresh() {
+  if (document.visibilityState !== 'visible' || !isAuthenticated.value) return
+  const previousIds = knownFirstPageIds
+  try {
+    await ordersStore.fetchOrders({ silent: true })
+  } catch {
+    return // 静默失败等下一轮
+  }
+  const currentIds = ordersStore.orders.slice(0, 20).map((o) => o.id)
+  knownFirstPageIds = currentIds
+  if (previousIds && currentIds.length && currentIds.some((id) => !previousIds.includes(id))) {
+    newOrderTip.value = true
+    window.clearTimeout(newOrderTipTimer)
+    newOrderTipTimer = window.setTimeout(() => { newOrderTip.value = false }, 3000)
+  }
+}
+
 onMounted(async () => {
   if (isAuthenticated.value) {
     fetchOrders()
     await chatStore.fetchConversations({ pageSize: 100 })
     await chatStore.fetchUnreadSummary()
+    knownFirstPageIds = ordersStore.orders.slice(0, 20).map((o) => o.id)
+    hallRefreshTimer = window.setInterval(silentRefresh, HALL_REFRESH_INTERVAL)
   }
 })
 
 onUnmounted(() => {
   window.clearTimeout(searchTimeout)
+  window.clearInterval(hallRefreshTimer)
+  window.clearTimeout(newOrderTipTimer)
 })
 </script>
 
 <template>
   <div class="page-shell order-hall-shell space-y-4 sm:space-y-5">
-    <section v-if="isAuthenticated && isAdmin" class="hall-heading flex justify-end">
-      <router-link :to="{ path: '/admin', query: { tab: 'orders' } }" class="btn-primary !px-5 !py-2">发布订单</router-link>
+    <!-- 发布按钮与统计卡同排：节省纵向空间（统计卡可横向滚动，按钮固定右侧） -->
+    <section class="flex items-stretch gap-2 sm:gap-3">
+      <div class="hall-summary min-w-0 flex-1" aria-label="大厅统计">
+        <article v-for="item in hallStats" :key="item.key" class="hall-summary__item"><strong :class="item.tone">{{ item.value }}</strong><span>{{ item.label }}</span></article>
+      </div>
+      <router-link v-if="isAuthenticated" :to="{ name: 'order-create' }" class="btn-primary flex shrink-0 items-center !px-5">发布订单</router-link>
     </section>
 
-    <section class="hall-summary" aria-label="大厅统计">
-      <article v-for="item in hallStats" :key="item.key" class="hall-summary__item"><strong :class="item.tone">{{ item.value }}</strong><span>{{ item.label }}</span></article>
-    </section>
+    <!-- 自动刷新捕获到新单时的轻提示（3 秒自动消失） -->
+    <transition name="page-fade">
+      <p
+        v-if="newOrderTip"
+        class="fixed left-1/2 top-20 z-50 -translate-x-1/2 rounded-full bg-ink-1 px-4 py-2 text-sm font-medium text-surface shadow-lg"
+        role="status"
+      >🔔 有新订单发布</p>
+    </transition>
 
     <!-- 筛选一行：游戏 + 状态（窄屏横向滚动不折行，文档 7 节） -->
     <section class="surface-card p-4 sm:p-5">
@@ -269,6 +305,14 @@ onUnmounted(() => {
           <p class="shrink-0 text-2xl font-semibold tabular-nums leading-7 text-price">{{ getPriceLabel(order) }}</p>
           <div class="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
             <span
+              v-if="order.compensation_amount"
+              class="tag shrink-0 !bg-warning-soft !text-warning tabular-nums"
+            >炸单赔偿 {{ formatPrice(order.compensation_amount) }}</span>
+            <span
+              v-if="order.payout_delay_days"
+              class="tag shrink-0 tabular-nums"
+            >{{ order.payout_delay_days }}天到账</span>
+            <span
               v-if="getClaimMeta(order).max > 0"
               class="tag !px-2.5 !py-1 tabular-nums"
             >当前情况 {{ getClaimMeta(order).claimed }}/{{ getClaimMeta(order).max }}</span>
@@ -283,12 +327,9 @@ onUnmounted(() => {
 
         <div v-if="getAttachment(order)" class="order-attachment"><img :src="getAttachment(order)" alt="订单附件" loading="lazy" /></div>
 
-        <!-- 层级 2：订单标题为主锚点，段位降为次级（抢单动作移入详情页） -->
+        <!-- 层级 2：订单标题为主锚点（抢单动作移入详情页） -->
         <div class="mt-3 min-w-0">
           <p v-if="order.title" class="truncate text-[15px] font-semibold text-ink-1">{{ order.title }}</p>
-          <p v-if="order.current_rank || order.target_rank" class="mt-1 truncate text-[13px] tabular-nums" :class="order.title ? 'text-ink-2' : 'font-medium text-ink-1'">
-            {{ order.current_rank || '?' }} <span class="text-primary">→</span> {{ order.target_rank || '?' }}
-          </p>
         </div>
 
         <!-- 层级 3：底部次要信息行（需求摘要 + 游戏名 + 时间）与「查看详情 →」入口 -->

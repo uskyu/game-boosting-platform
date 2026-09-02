@@ -97,7 +97,7 @@ function handleFileChange(event) {
 
       <button
         type="button"
-        class="btn-primary min-w-28 justify-center py-3"
+        class="btn-primary min-w-16 justify-center py-3 sm:min-w-28"
         :disabled="disabled || sending || !modelValue.trim()"
         @click="handleSubmit"
       >

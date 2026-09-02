@@ -22,7 +22,7 @@ const noteLen = computed(() => note.value.length)
 const canSubmit = computed(() => !submitting.value && noteLen.value <= 2000)
 
 const MAX_FILES = 5
-const MAX_SIZE = 5 * 1024 * 1024
+const MAX_SIZE = 10 * 1024 * 1024
 const ALLOWED_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
 
 function reset() {
@@ -54,7 +54,7 @@ function onClose() {
 
 function validateFile(file) {
   if (!ALLOWED_TYPES.has(file.type)) return '仅支持 png / jpeg / webp'
-  if (file.size > MAX_SIZE) return '单张不能超过 5MB'
+  if (file.size > MAX_SIZE) return '单张不能超过 10MB'
   if (file.size <= 0) return '文件为空'
   return ''
 }
@@ -178,7 +178,7 @@ async function handleSubmit() {
           </div>
 
           <div>
-            <label class="label">汇报图片（可选，最多 5 张，png/jpeg/webp，单张 ≤5MB）</label>
+            <label class="label">汇报图片（可选，最多 5 张，png/jpeg/webp，单张 ≤10MB）</label>
             <input
               type="file"
               accept="image/png,image/jpeg,image/webp"

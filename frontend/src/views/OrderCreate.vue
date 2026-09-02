@@ -5,29 +5,18 @@ import { useRouter } from 'vue-router'
 import { useGamesStore } from '@/stores/games'
 import { useOrdersStore } from '@/stores/orders'
 import api from '@/utils/api'
-import { formatPrice } from '@/utils/display'
-import {
-  buildAccentStyle,
-  buildGameSurfaceStyle,
-  getGameCategoryMeta,
-  getGamePlatformLabel,
-  getGameServiceTypes,
-} from '@/utils/gameCatalog'
+import { getGameServiceTypes } from '@/utils/gameCatalog'
 import { getPublishButtonLabel } from '@/utils/humanCopy'
 
 const router = useRouter()
 const gamesStore = useGamesStore()
 const ordersStore = useOrdersStore()
 
-const step = ref('select')
-const selectedCategory = ref('')
-const selectedGameId = ref(null)
-const description = ref('')
 const errorMessage = ref('')
 const successMessage = ref('')
 const attachmentTypes = ['image/png', 'image/jpeg', 'image/webp']
 const maxAttachmentCount = 5
-const maxAttachmentSize = 5 * 1024 * 1024
+const maxAttachmentSize = 10 * 1024 * 1024
 const uploadProgress = ref('')
 
 function validateAttachments(files) {
@@ -36,7 +25,7 @@ function validateAttachments(files) {
   const invalid = selected.find((file) => !attachmentTypes.includes((file.type || '').toLowerCase()))
   if (invalid) return `仅支持 PNG、JPEG、WebP 图片：${invalid.name}`
   const oversized = selected.find((file) => file.size > maxAttachmentSize)
-  if (oversized) return `单张图片不能超过5MB：${oversized.name}`
+  if (oversized) return `单张图片不能超过10MB：${oversized.name}`
   return ''
 }
 
@@ -60,8 +49,7 @@ async function uploadAttachments(orderId, files) {
 const formData = ref({
   game_id: null,
   game_name: '',
-  current_rank: '',
-  target_rank: '',
+  title: '',
   price: '',
   server: '',
   role: '',
@@ -72,7 +60,23 @@ const formData = ref({
   game_password: '',
   ai_tags: null,
   attachments: null,
+  description_raw: '',
+  // 老板ID / 炸单赔偿金 / 到账时效 / 最大接单人数
+  boss_contact: '',
+  max_claims: 1,
+  compensation_enabled: false,
+  compensation_amount: '',
+  payout_delay_days: '',
 })
+
+const payoutDelayOptions = [
+  { value: '', label: '不设置' },
+  { value: 1, label: '1天' },
+  { value: 2, label: '2天' },
+  { value: 3, label: '3天' },
+  { value: 4, label: '4天' },
+  { value: 5, label: '5天' },
+]
 
 const priorityOptions = [
   { value: 1, label: '普通', hint: '按标准节奏排队处理' },
@@ -80,174 +84,47 @@ const priorityOptions = [
   { value: 8, label: '高优先级', hint: '更强调时效和连续处理' },
 ]
 
-const categories = computed(() => gamesStore.categories.filter((item) => item.count > 0))
-const currentCategory = computed(() => {
-  return selectedCategory.value || categories.value[0]?.value || ''
-})
-const visibleGames = computed(() => {
-  return (gamesStore.gamesByCategory[currentCategory.value] || []).slice().sort((a, b) => a.sort_order - b.sort_order)
-})
-const selectedGame = computed(() => {
-  return selectedGameId.value ? gamesStore.getGameById(Number(selectedGameId.value)) : null
-})
+// 游戏下拉：只列管理员上架的游戏；仅有一个时默认选中
+const catalogGames = computed(() => gamesStore.games)
+const selectedGame = computed(() => (
+  formData.value.game_id ? gamesStore.getGameById(Number(formData.value.game_id)) : null
+))
 const selectedGameServiceTypes = computed(() => getGameServiceTypes(selectedGame.value))
-const analysisResult = computed(() => ordersStore.analysisResult)
-const isAnalyzing = computed(() => ordersStore.analyzing)
 const isSubmitting = computed(() => ordersStore.loading)
 
-const aiSummaryCards = computed(() => {
-  if (!analysisResult.value) {
-    return []
+// 余额托管提示：发布后冻结 ¥price × max_claims，完结后结算给打手
+const escrowHint = computed(() => {
+  const price = Number(formData.value.price)
+  const maxClaims = Number(formData.value.max_claims) || 1
+  if (Number.isFinite(price) && price > 0) {
+    return `发布后将冻结 ¥${(price * maxClaims).toFixed(2)} 托管，完结后结算给打手`
   }
-
-  return [
-    { label: '游戏', value: analysisResult.value.game_name || selectedGame.value?.name || '未识别' },
-    { label: '服务类型', value: analysisResult.value.service_type || formData.value.service_type || '待确认' },
-    { label: '区服', value: analysisResult.value.server || formData.value.server || '待确认' },
-    { label: '当前段位', value: analysisResult.value.current_rank || formData.value.current_rank || '待确认' },
-    { label: '目标段位', value: analysisResult.value.target_rank || formData.value.target_rank || '待确认' },
-    { label: '预算', value: analysisResult.value.price ? formatPrice(analysisResult.value.price) : (formData.value.price ? formatPrice(formData.value.price) : '待确认') },
-  ]
+  return '发布后将冻结 ¥发单价格 × 接单人数 的托管金额，完结后结算给打手'
 })
 
-const previewItems = computed(() => [
-  { label: '游戏', value: selectedGame.value?.name || '未选择' },
-  { label: '服务类型', value: formData.value.service_type || '待确认' },
-  { label: '目标', value: formData.value.current_rank || formData.value.target_rank ? `${formData.value.current_rank || '未填'} → ${formData.value.target_rank || '未填'}` : '等待 AI 或手动补充' },
-  { label: '预算', value: formData.value.price ? formatPrice(formData.value.price) : '待填写' },
-  { label: '区服 / 角色', value: [formData.value.server, formData.value.role].filter(Boolean).join(' / ') || '可选项' },
-])
-
-const selectedGameStyle = computed(() => buildGameSurfaceStyle(selectedGame.value))
-const selectedGameBadgeStyle = computed(() => buildAccentStyle(selectedGame.value))
-
-const canGoToDescribe = computed(() => !!selectedGame.value)
 const canPublish = computed(() => {
-  const hasRequirements = Boolean(description.value.trim() || formData.value.ai_tags)
-  return Boolean(selectedGame.value && hasRequirements && Number(formData.value.price) > 0)
+  return Boolean(
+    selectedGame.value
+    && formData.value.description_raw.trim()
+    && Number(formData.value.price) > 0
+  )
 })
 
-const publishButtonLabel = computed(() => {
-  if (isSubmitting.value) return '正在发布...'
-  return getPublishButtonLabel(formData.value.service_type)
-})
-
-function syncSelectedGame(game) {
+function handleGameChange() {
+  const game = selectedGame.value
   if (!game) {
+    formData.value.service_type = ''
     return
   }
-
-  selectedGameId.value = game.id
-  formData.value.game_id = game.id
   formData.value.game_name = game.name
-
-  if (!selectedGameServiceTypes.value.includes(formData.value.service_type)) {
+  if (!getGameServiceTypes(game).includes(formData.value.service_type)) {
     formData.value.service_type = getGameServiceTypes(game)[0] || ''
   }
 }
 
-function pickGame(game) {
-  syncSelectedGame(game)
-}
-
-function nextFromSelect() {
-  if (!selectedGame.value) {
-    errorMessage.value = '还没选游戏，先选一个吧。'
-    return
-  }
-
-  errorMessage.value = ''
-  step.value = 'describe'
-}
-
-function backToSelect() {
-  step.value = 'select'
-}
-
-function backToDescribe() {
-  step.value = 'describe'
-}
-
-function applyPrompt(prompt) {
-  description.value = prompt
-}
-
-function appendServiceType(serviceType) {
-  description.value += `${description.value ? '，' : ''}${serviceType}`
-}
-
-async function analyzeRequirement() {
-  if (!description.value.trim()) {
-    errorMessage.value = '需求还没写，简单描述一下你想要什么。'
-    return
-  }
-
-  errorMessage.value = ''
-  successMessage.value = ''
-
-  const result = await ordersStore.analyzeRequirement(description.value)
-  if (!result.success) {
-    errorMessage.value = result.error
-    return
-  }
-
-  const recognizedGame = result.data?.game_id ? gamesStore.getGameById(result.data.game_id) : selectedGame.value
-  if (recognizedGame) {
-    syncSelectedGame(recognizedGame)
-  }
-
-  formData.value = {
-    ...formData.value,
-    game_id: result.data?.game_id || formData.value.game_id,
-    game_name: result.data?.game_name || formData.value.game_name,
-    current_rank: result.data?.current_rank || formData.value.current_rank,
-    target_rank: result.data?.target_rank || formData.value.target_rank,
-    price: result.data?.price ? String(result.data.price) : formData.value.price,
-    server: result.data?.server || formData.value.server,
-    role: result.data?.role || formData.value.role,
-    service_type: result.data?.service_type || formData.value.service_type || selectedGameServiceTypes.value[0] || '',
-    ai_tags: result.data?.ai_tags || formData.value.ai_tags,
-  }
-
-  step.value = 'ai'
-}
-
-function continueToConfirm() {
-  if (!selectedGame.value) {
-    errorMessage.value = '请先选择游戏。'
-    step.value = 'select'
-    return
-  }
-
-  errorMessage.value = ''
-  step.value = 'confirm'
-}
-
-function skipAIAndConfirm() {
-  if (!selectedGame.value) {
-    errorMessage.value = '请先选择游戏。'
-    step.value = 'select'
-    return
-  }
-
-  formData.value.ai_tags = formData.value.ai_tags || {
-    game_id: selectedGame.value.id,
-    service_type: formData.value.service_type || selectedGameServiceTypes.value[0] || '',
-    server: formData.value.server || null,
-    detail: {
-      current_rank: formData.value.current_rank || '',
-      target_rank: formData.value.target_rank || '',
-      role: formData.value.role || '',
-      requirements: [],
-    },
-  }
-
-  step.value = 'confirm'
-}
-
 async function publishOrder() {
   if (!canPublish.value) {
-    errorMessage.value = '还差一步 — 游戏和预算都要填，需求走一下 AI 或手动填写段位。'
+    errorMessage.value = '游戏、需求和价格都是必填项。'
     return
   }
 
@@ -261,15 +138,53 @@ async function publishOrder() {
     return
   }
 
-  const { attachments: selectedAttachments, ...orderFields } = formData.value
+  const bossContact = formData.value.boss_contact.trim()
+  if (bossContact.length > 64) {
+    errorMessage.value = '老板ID不能超过 64 个字符'
+    return
+  }
+
+  let compensationAmount = null
+  if (formData.value.compensation_enabled) {
+    compensationAmount = Number(formData.value.compensation_amount)
+    if (!Number.isFinite(compensationAmount) || compensationAmount <= 0) {
+      errorMessage.value = '炸单赔偿金需为大于 0 的金额'
+      return
+    }
+  }
+
+  const payoutDelay = formData.value.payout_delay_days === '' ? null : Number(formData.value.payout_delay_days)
+  if (payoutDelay != null && (!Number.isInteger(payoutDelay) || payoutDelay < 1 || payoutDelay > 5)) {
+    errorMessage.value = '到账时效需为 1-5 天'
+    return
+  }
+
+  const maxClaims = Number(formData.value.max_claims)
+  if (!Number.isInteger(maxClaims) || maxClaims < 1 || maxClaims > 100) {
+    errorMessage.value = '最大接单人数需为 1-100 的整数'
+    return
+  }
+
+  const title = formData.value.title.trim()
   const payload = {
-    ...orderFields,
     game_id: selectedGame.value.id,
     game_name: selectedGame.value.name,
+    title: title || null,
     price: Number(formData.value.price),
-    description_raw: description.value.trim(),
-    ai_tags: formData.value.ai_tags,
-    service_type: formData.value.service_type || selectedGameServiceTypes.value[0] || '',
+    description_raw: formData.value.description_raw.trim(),
+    service_type: formData.value.service_type || getGameServiceTypes(selectedGame.value)[0] || '',
+    server: formData.value.server.trim() || null,
+    role: formData.value.role.trim() || null,
+    notes: formData.value.notes.trim() || null,
+    priority: formData.value.priority,
+    game_account: formData.value.game_account.trim() || null,
+    game_password: formData.value.game_password.trim() || null,
+    boss_contact: bossContact || null,
+    max_claims: maxClaims,
+    payout_delay_days: payoutDelay,
+  }
+  if (compensationAmount != null) {
+    payload.compensation_amount = compensationAmount
   }
 
   const result = await ordersStore.createOrder(payload)
@@ -293,402 +208,169 @@ async function publishOrder() {
 }
 
 watch(
-  selectedGame,
-  (game) => {
-    if (!game) {
-      return
-    }
-    formData.value.game_id = game.id
-    formData.value.game_name = game.name
-    if (!selectedGameServiceTypes.value.includes(formData.value.service_type)) {
-      formData.value.service_type = selectedGameServiceTypes.value[0] || ''
-    }
-  }
-)
-
-watch(
-  categories,
-  (value) => {
-    if (!selectedCategory.value && value.length) {
-      selectedCategory.value = value[0].value
+  catalogGames,
+  (games) => {
+    if (formData.value.game_id == null && games.length === 1) {
+      formData.value.game_id = games[0].id
+      handleGameChange()
     }
   },
   { immediate: true }
 )
 
 onMounted(async () => {
-  ordersStore.clearAnalysisResult()
   await gamesStore.ensureCatalog()
 })
 </script>
 
 <template>
-  <div class="page-shell space-y-8">
-    <section class="hero-panel p-6 sm:p-8 lg:p-10">
-      <div class="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
-        <div class="space-y-3">
-          <p class="eyebrow">发布订单</p>
-          <h1 class="section-title">
-            找代练，就这几步
-          </h1>
-          <p class="section-copy max-w-3xl">
-            选游戏 → 写需求 → 确认发布，搞定。
-          </p>
-        </div>
-
-        <div class="grid gap-4 sm:grid-cols-4">
-          <article class="stat-card cyber-corner">
-            <p class="text-sm text-ink-2">第 1 步</p>
-            <p class="mt-2 text-xl font-semibold text-ink-1">选游戏</p>
-          </article>
-          <article class="stat-card cyber-corner">
-            <p class="text-sm text-ink-2">第 2 步</p>
-            <p class="mt-2 text-xl font-semibold text-ink-1">写需求</p>
-          </article>
-          <article class="stat-card cyber-corner">
-            <p class="text-sm text-ink-2">第 3 步</p>
-            <p class="mt-2 text-xl font-semibold text-ink-1">AI 提取</p>
-          </article>
-          <article class="stat-card cyber-corner">
-            <p class="text-sm text-ink-2">第 4 步</p>
-            <p class="mt-2 text-xl font-semibold text-ink-1">确认发布</p>
-          </article>
-        </div>
-      </div>
+  <div class="page-shell space-y-6">
+    <section class="hero-panel p-6 sm:p-8">
+      <p class="eyebrow">发布订单</p>
+      <h1 class="section-title">填好需求，直接发布</h1>
+      <p class="section-copy max-w-3xl">
+        选游戏、写需求和价格，一键发布到大厅；打手接单后你去审核打款就行。
+      </p>
+      <div class="message-info mt-5 !mb-0">{{ escrowHint }}</div>
     </section>
 
     <div v-if="errorMessage" class="message-error">{{ errorMessage }}</div>
     <div v-if="successMessage" class="message-success">{{ successMessage }}</div>
 
-    <div class="grid gap-8 xl:grid-cols-[1.04fr_0.96fr]">
-      <section class="space-y-6">
-        <div class="tab-bar">
-          <button type="button" :class="step === 'select' ? 'tab-pill-active' : 'tab-pill'" @click="step = 'select'">
-            <span class="mr-1.5 inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary-soft text-[11px] font-bold text-primary">1</span>
-            选游戏
-          </button>
-          <button type="button" :class="step === 'describe' ? 'tab-pill-active' : 'tab-pill'" :disabled="!canGoToDescribe" @click="step = 'describe'">
-            <span class="mr-1.5 inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary-soft text-[11px] font-bold text-primary">2</span>
-            写需求
-          </button>
-          <button type="button" :class="step === 'ai' ? 'tab-pill-active' : 'tab-pill'" :disabled="!analysisResult" @click="step = 'ai'">
-            <span class="mr-1.5 inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary-soft text-[11px] font-bold text-primary">3</span>
-            AI 提取
-          </button>
-          <button type="button" :class="step === 'confirm' ? 'tab-pill-active' : 'tab-pill'" :disabled="!selectedGame" @click="step = 'confirm'">
-            <span class="mr-1.5 inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary-soft text-[11px] font-bold text-primary">4</span>
-            确认价格
-          </button>
+    <section class="surface-card p-6 sm:p-8">
+      <div class="grid gap-5 sm:grid-cols-2">
+        <div>
+          <label class="label" for="create-game">游戏 *</label>
+          <select id="create-game" v-model="formData.game_id" class="input" @change="handleGameChange">
+            <option :value="null" disabled>请选择游戏</option>
+            <option v-for="game in catalogGames" :key="game.id" :value="game.id">{{ game.name }}</option>
+          </select>
+          <p class="mt-1 text-xs text-ink-3">只能选择管理员上架的游戏</p>
+        </div>
+        <div>
+          <label class="label" for="create-service-type">服务类型</label>
+          <select id="create-service-type" v-model="formData.service_type" class="input" :disabled="!selectedGame">
+            <option v-for="serviceType in selectedGameServiceTypes" :key="serviceType" :value="serviceType">{{ serviceType }}</option>
+          </select>
         </div>
 
-        <section v-if="step === 'select'" class="surface-card p-6 sm:p-8">
-          <div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div class="sm:col-span-2">
+          <label class="label" for="create-title">订单标题（可选）</label>
+          <input id="create-title" v-model="formData.title" type="text" maxlength="200" class="input" placeholder="例如：三角洲烽火地带上分单" />
+        </div>
+
+        <div class="sm:col-span-2">
+          <label class="label" for="create-description">需求描述 *</label>
+          <textarea
+            id="create-description"
+            v-model="formData.description_raw"
+            rows="5"
+            class="input resize-none"
+            placeholder="例如：王者荣耀，星耀三上王者，希望晚上开打，要求打野位。"
+          ></textarea>
+        </div>
+
+        <div>
+          <label class="label" for="create-price">发单价格 *</label>
+          <input id="create-price" v-model="formData.price" type="number" min="1" step="0.01" class="input" placeholder="例如：88" />
+        </div>
+        <div>
+          <label class="label" for="create-max-claims">最大接单人数</label>
+          <input id="create-max-claims" v-model="formData.max_claims" type="number" min="1" max="100" step="1" class="input" placeholder="例如：1" />
+        </div>
+
+        <div>
+          <label class="label" for="create-server">区服（可选）</label>
+          <input id="create-server" v-model="formData.server" type="text" class="input" placeholder="例如：微信区 / 艾欧尼亚" />
+        </div>
+        <div>
+          <label class="label" for="create-role">位置 / 角色偏好（可选）</label>
+          <input id="create-role" v-model="formData.role" type="text" class="input" placeholder="例如：打野 / 中单" />
+        </div>
+
+        <div>
+          <label class="label" for="create-boss-contact">老板ID（可选）</label>
+          <input id="create-boss-contact" v-model="formData.boss_contact" type="text" class="input" maxlength="64" placeholder="接单后打手可见，用于添加你为好友" />
+        </div>
+        <div>
+          <label class="label" for="create-payout-delay">到账时效</label>
+          <select id="create-payout-delay" v-model="formData.payout_delay_days" class="input">
+            <option v-for="option in payoutDelayOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+          </select>
+        </div>
+
+        <!-- 炸单赔偿金：开关默认关，开启后填写金额（>0） -->
+        <div class="sm:col-span-2 rounded-tile border border-line-1 p-4">
+          <div class="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <p class="text-sm font-medium text-primary">第 1 步 / 共 4 步</p>
-              <h2 class="mt-2 text-2xl font-semibold text-ink-1">打哪个游戏？</h2>
+              <p class="text-sm font-semibold text-ink-1">炸单赔偿金</p>
+              <p class="mt-1 text-xs leading-5 text-ink-3">打手接单时冻结，订单完结自动返还；炸单可在审核时扣除。</p>
             </div>
-
-            <div class="flex flex-wrap gap-2">
-              <button
-                v-for="category in categories"
-                :key="category.value"
-                type="button"
-                :class="currentCategory === category.value ? 'filter-pill-active' : 'filter-pill'"
-                @click="selectedCategory = category.value"
-              >
-                {{ getGameCategoryMeta(category.value).label }}
-              </button>
-            </div>
-          </div>
-
-          <div class="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             <button
-              v-for="game in visibleGames"
-              :key="game.id"
               type="button"
-              :class="selectedGameId === game.id ? 'catalog-card-active cyber-corner text-left' : 'catalog-card cyber-corner text-left'"
-              @click="pickGame(game)"
+              :class="formData.compensation_enabled ? 'filter-pill-active' : 'filter-pill'"
+              :aria-pressed="formData.compensation_enabled"
+              @click="formData.compensation_enabled = !formData.compensation_enabled"
             >
-              <div class="cover-card p-5" :style="buildGameSurfaceStyle(game)">
-                <div class="relative z-10 flex h-full flex-col justify-between">
-                  <div class="flex items-center justify-between gap-4">
-                    <span class="tag">{{ getGamePlatformLabel(game.platform) }}</span>
-                    <div
-                      class="flex h-11 w-11 items-center justify-center rounded-tile border text-sm font-semibold text-ink-1"
-                      :style="buildAccentStyle(game)"
-                    >
-                      {{ game.name.slice(0, 1) }}
-                    </div>
-                  </div>
-
-                  <div class="space-y-3">
-                    <h3 class="text-2xl font-semibold text-ink-1">{{ game.name }}</h3>
-                    <p class="text-sm text-ink-2">{{ game.english_name || '热门专区' }}</p>
-                    <p class="text-sm leading-6 text-ink-2">{{ game.description }}</p>
-                  </div>
-                </div>
-              </div>
-
-              <div class="mt-4 flex flex-wrap gap-2">
-                <span
-                  v-for="serviceType in getGameServiceTypes(game).slice(0, 3)"
-                  :key="`${game.id}-${serviceType}`"
-                  class="tag"
-                >
-                  {{ serviceType }}
-                </span>
-              </div>
+              {{ formData.compensation_enabled ? '已开启' : '未开启' }}
             </button>
           </div>
-
-          <div class="mt-6 flex justify-end">
-            <button class="btn-primary" :disabled="!canGoToDescribe" @click="nextFromSelect">
-              选好了，写需求 →
-            </button>
+          <div v-if="formData.compensation_enabled" class="mt-3">
+            <label class="label" for="create-compensation">赔偿金额</label>
+            <input id="create-compensation" v-model="formData.compensation_amount" type="number" min="0.01" step="0.01" class="input" placeholder="例如：50" />
           </div>
-        </section>
+        </div>
 
-        <section v-else-if="step === 'describe'" class="surface-card p-6 sm:p-8">
-          <p class="text-sm font-medium text-primary">第 2 步 / 共 4 步</p>
-          <h2 class="mt-2 text-2xl font-semibold text-ink-1">告诉我们你想打什么</h2>
-          <p class="mt-3 text-sm leading-7 text-ink-2">
-            区服、目标段位、时间偏好都写上，代练更容易理解你的需求。
-          </p>
-
-          <div class="mt-6 rounded-card border p-5" :style="selectedGameStyle">
-            <div class="relative z-10 flex flex-wrap items-center justify-between gap-4">
-              <div class="flex items-center gap-4">
-                <div
-                  class="flex h-12 w-12 items-center justify-center rounded-tile border text-sm font-semibold text-ink-1"
-                  :style="selectedGameBadgeStyle"
-                >
-                  {{ selectedGame?.name?.slice(0, 1) || 'G' }}
-                </div>
-                <div>
-                  <p class="text-lg font-semibold text-ink-1">{{ selectedGame?.name }}</p>
-                  <p class="mt-2 text-sm text-ink-2">{{ selectedGame?.description }}</p>
-                </div>
-              </div>
-
-              <div class="flex flex-wrap gap-2">
-                <button
-                  v-for="serviceType in selectedGameServiceTypes"
-                  :key="serviceType"
-                  type="button"
-                  class="filter-pill"
-                  @click="appendServiceType(serviceType)"
-                >
-                  {{ serviceType }}
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div class="mt-6">
-            <label class="label" for="order-description">你的需求</label>
-            <textarea
-              id="order-description"
-              v-model="description"
-              rows="7"
-              class="input resize-none"
-              placeholder="例如：王者荣耀，微信区，星耀三上王者，希望晚上开打，要求打野位，预算 88 元。"
-            ></textarea>
-          </div>
-
-          <div class="mt-6 flex flex-col gap-3 sm:flex-row">
-            <button class="btn-secondary" @click="backToSelect">返回改游戏</button>
-            <button class="btn-secondary" @click="skipAIAndConfirm">跳过，我自己填</button>
-            <button class="btn-primary flex-1" :disabled="isAnalyzing" @click="analyzeRequirement">
-              {{ isAnalyzing ? 'AI 识别中...' : 'AI 帮我整理一下 →' }}
-            </button>
-          </div>
-        </section>
-
-        <section v-else-if="step === 'ai'" class="surface-card p-6 sm:p-8">
-          <p class="text-sm font-medium text-primary">第 3 步 / 共 4 步</p>
-          <h2 class="mt-2 text-2xl font-semibold text-ink-1">AI 帮你整理好了</h2>
-          <p class="mt-3 text-sm leading-7 text-ink-2">
-            看看这些信息对不对，有问题可以返回改，没问题就继续。
-          </p>
-
-          <div class="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            <article
-              v-for="item in aiSummaryCards"
-              :key="item.label"
-              class="info-tile"
+        <div class="sm:col-span-2">
+          <p class="label">优先级</p>
+          <div class="grid gap-3 sm:grid-cols-3">
+            <button
+              v-for="option in priorityOptions"
+              :key="option.value"
+              type="button"
+              class="rounded-tile border p-4 text-left transition-all duration-200 ease-smooth"
+              :class="formData.priority === option.value
+                ? 'border border-primary bg-surface-2'
+                : 'border border-line-1 bg-surface-2 hover:-translate-y-0.5 hover:border-line-2 hover:bg-surface-3'"
+              @click="formData.priority = option.value"
             >
-              <p class="info-tile__label">{{ item.label }}</p>
-              <p class="info-tile__value">{{ item.value }}</p>
-            </article>
-          </div>
-
-          <div class="info-tile mt-6">
-            <p class="text-sm font-medium text-primary">AI Tags 预览</p>
-            <pre class="mt-3 overflow-x-auto rounded-tile bg-surface-2 p-4 text-xs leading-6 text-ink-2">{{ JSON.stringify(formData.ai_tags, null, 2) }}</pre>
-          </div>
-
-          <div class="mt-6 flex flex-col gap-3 sm:flex-row">
-            <button class="btn-secondary" @click="backToDescribe">返回改描述</button>
-            <button class="btn-secondary" :disabled="isAnalyzing" @click="analyzeRequirement">重新识别</button>
-            <button class="btn-primary flex-1" @click="continueToConfirm">信息没问题，去确认价格 →</button>
-          </div>
-        </section>
-
-        <section v-else class="surface-card p-6 sm:p-8">
-          <p class="text-sm font-medium text-primary">第 4 步 / 共 4 步</p>
-          <h2 class="mt-2 text-2xl font-semibold text-ink-1">最后确认一下</h2>
-          <p class="mt-3 text-sm leading-7 text-ink-2">
-            确认价格和偏好，发布后代练会直接看到你的需求。
-          </p>
-
-          <div class="mt-6 grid gap-5 sm:grid-cols-2">
-            <div>
-              <label class="label" for="confirm-service-type">服务类型</label>
-              <select id="confirm-service-type" v-model="formData.service_type" class="input">
-                <option
-                  v-for="serviceType in selectedGameServiceTypes"
-                  :key="serviceType"
-                  :value="serviceType"
-                >
-                  {{ serviceType }}
-                </option>
-              </select>
-            </div>
-            <div>
-              <label class="label" for="confirm-server">区服</label>
-              <input id="confirm-server" v-model="formData.server" type="text" class="input" placeholder="例如：微信区 / 艾欧尼亚" />
-            </div>
-            <div>
-              <label class="label" for="confirm-current-rank">现在几段</label>
-              <input id="confirm-current-rank" v-model="formData.current_rank" type="text" class="input" placeholder="例如：星耀三" />
-            </div>
-            <div>
-              <label class="label" for="confirm-target-rank">想冲到哪</label>
-              <input id="confirm-target-rank" v-model="formData.target_rank" type="text" class="input" placeholder="例如：王者" />
-            </div>
-            <div>
-              <label class="label" for="confirm-role">位置 / 角色偏好</label>
-              <input id="confirm-role" v-model="formData.role" type="text" class="input" placeholder="例如：打野 / 中单 / 指挥" />
-            </div>
-            <div>
-              <label class="label" for="confirm-price">预算金额</label>
-              <input id="confirm-price" v-model="formData.price" type="number" min="1" step="0.01" class="input" placeholder="例如：88" />
-            </div>
-          </div>
-
-          <div class="mt-6">
-            <p class="label">优先级</p>
-            <div class="grid gap-3 sm:grid-cols-3">
-              <button
-                v-for="option in priorityOptions"
-                :key="option.value"
-                type="button"
-                class="rounded-tile border p-4 text-left transition-all duration-200 ease-smooth"
-                :class="formData.priority === option.value
-                  ? 'border border-primary bg-surface-2'
-                  : 'border border-line-1 bg-surface-2 hover:-translate-y-0.5 hover:border-line-2 hover:bg-surface-3'"
-                @click="formData.priority = option.value"
-              >
-                <p class="text-sm font-semibold text-ink-1">{{ option.label }}</p>
-                <p class="mt-2 text-xs leading-6 text-ink-2">{{ option.hint }}</p>
-              </button>
-            </div>
-          </div>
-
-          <div class="mt-6 grid gap-5 sm:grid-cols-2">
-            <div>
-              <label class="label" for="confirm-account">游戏账号</label>
-              <input id="confirm-account" v-model="formData.game_account" type="text" class="input" placeholder="可选填写" />
-            </div>
-            <div>
-              <label class="label" for="confirm-password">游戏密码</label>
-              <input id="confirm-password" v-model="formData.game_password" type="password" class="input" placeholder="可选填写" />
-            </div>
-            <p
-              v-if="formData.service_type === '代练'"
-              class="text-xs text-ink-2 mt-1 col-span-2"
-            >
-              代练会用你填写的账号上号，请确认信息准确。
-            </p>
-          </div>
-
-          <div class="mt-6">
-            <label class="label" for="confirm-attachments">图片附件（可选）</label>
-            <input id="confirm-attachments" type="file" accept="image/png,image/jpeg,image/webp" multiple class="input min-h-[44px]" @change="formData.attachments = $event.target.files" />
-            <p class="mt-1 text-xs text-ink-3">最多5张，支持 PNG、JPEG、WebP，单张不超过5MB。</p>
-            <p v-if="uploadProgress" class="mt-2 text-sm text-primary">图片上传中：{{ uploadProgress }}</p>
-          </div>
-
-          <div class="mt-6">
-            <label class="label" for="confirm-notes">还有什么想说的</label>
-            <textarea id="confirm-notes" v-model="formData.notes" rows="4" class="input resize-none" placeholder="例如：希望晚上 8 点后开打，全程语音沟通。"></textarea>
-          </div>
-
-          <div class="mt-6 flex flex-col gap-3 sm:flex-row">
-            <button class="btn-secondary" @click="analysisResult ? (step = 'ai') : (step = 'describe')">
-              返回上一步
-            </button>
-            <button class="btn-primary flex-1" :disabled="isSubmitting || !canPublish" @click="publishOrder">
-              {{ publishButtonLabel }}
+              <p class="text-sm font-semibold text-ink-1">{{ option.label }}</p>
+              <p class="mt-2 text-xs leading-6 text-ink-2">{{ option.hint }}</p>
             </button>
           </div>
-        </section>
-      </section>
+        </div>
 
-      <aside class="space-y-6 xl:sticky xl:top-28 xl:self-start">
-        <section class="surface-card cyber-corner p-6">
-          <p class="text-sm font-medium text-primary">实时预览</p>
-          <h2 class="mt-2 text-2xl font-semibold text-ink-1">这条订单准备怎么展示</h2>
+        <div>
+          <label class="label" for="create-account">游戏账号（可选）</label>
+          <input id="create-account" v-model="formData.game_account" type="text" class="input" placeholder="代练上号用" />
+        </div>
+        <div>
+          <label class="label" for="create-password">游戏密码（可选）</label>
+          <input id="create-password" v-model="formData.game_password" type="password" class="input" placeholder="代练上号用" />
+        </div>
+        <p v-if="formData.service_type === '代练'" class="text-xs text-ink-2 sm:col-span-2 -mt-2">
+          代练会用你填写的账号上号，请确认信息准确。
+        </p>
 
-              <div class="cover-card p-5" :style="selectedGameStyle">
-            <div class="relative z-10 flex h-full flex-col justify-between">
-              <div class="flex items-center justify-between gap-4">
-                <span class="tag">{{ selectedGame?.name || '待选择游戏' }}</span>
-                <div
-                  class="flex h-11 w-11 items-center justify-center rounded-tile border text-sm font-semibold text-ink-1"
-                  :style="selectedGameBadgeStyle"
-                >
-                  {{ selectedGame?.name?.slice(0, 1) || 'G' }}
-                </div>
-              </div>
+        <div class="sm:col-span-2">
+          <label class="label" for="create-attachments">图片附件（可选）</label>
+          <input id="create-attachments" type="file" accept="image/png,image/jpeg,image/webp" multiple class="input min-h-[44px]" @change="formData.attachments = $event.target.files" />
+          <p class="mt-1 text-xs text-ink-3">最多5张，支持 PNG、JPEG、WebP，单张不超过10MB。</p>
+          <p v-if="uploadProgress" class="mt-2 text-sm text-primary">图片上传中：{{ uploadProgress }}</p>
+        </div>
 
-              <div class="space-y-3">
-                <h3 class="text-2xl font-semibold text-ink-1">{{ formData.current_rank || '当前段位' }} <span class="text-primary">→</span> {{ formData.target_rank || '目标段位' }}</h3>
-                <p class="text-sm leading-6 text-ink-2">{{ description || '你输入的自然语言需求会显示在这里。' }}</p>
-              </div>
-            </div>
-          </div>
+        <div class="sm:col-span-2">
+          <label class="label" for="create-notes">备注（可选）</label>
+          <textarea id="create-notes" v-model="formData.notes" rows="3" class="input resize-none" placeholder="例如：希望晚上 8 点后开打，全程语音沟通。"></textarea>
+        </div>
+      </div>
 
-          <div class="mt-6 space-y-3">
-            <div
-              v-for="item in previewItems"
-              :key="item.label"
-              class="info-tile"
-            >
-              <p class="info-tile__label">{{ item.label }}</p>
-              <p class="info-tile__value">{{ item.value }}</p>
-            </div>
-          </div>
-        </section>
-
-        <section class="surface-card p-6">
-          <p class="text-sm font-medium text-primary">当前步骤建议</p>
-          <ul class="mt-4 space-y-3 text-sm leading-7 text-ink-2">
-            <li class="flex items-start gap-3">
-              <span class="mt-2 h-2 w-2 rounded-full bg-primary"></span>
-              <span>先把游戏选准，专区模板和 AI 识别会更稳定。</span>
-            </li>
-            <li class="flex items-start gap-3">
-              <span class="mt-2 h-2 w-2 rounded-full bg-primary"></span>
-              <span>描述里尽量带上区服、目标、预算和时间要求，减少来回沟通。</span>
-            </li>
-            <li class="flex items-start gap-3">
-              <span class="mt-2 h-2 w-2 rounded-full bg-primary"></span>
-              <span>确认发布前，可以手动微调 AI 给出的服务类型和价格。</span>
-            </li>
-          </ul>
-        </section>
-      </aside>
-    </div>
+      <div class="mt-8 flex items-center justify-between gap-4">
+        <p class="text-xs text-ink-3">发布后金额进入托管，打手完结并经你审核后打款</p>
+        <button type="button" class="btn-primary shrink-0" :disabled="isSubmitting || !canPublish" @click="publishOrder">
+          {{ isSubmitting ? '正在发布...' : getPublishButtonLabel(formData.service_type) }}
+        </button>
+      </div>
+    </section>
   </div>
 </template>

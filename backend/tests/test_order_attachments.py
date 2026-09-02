@@ -59,7 +59,7 @@ async def test_attachment_requires_owner_or_admin(client: AsyncClient, admin_use
 
 async def test_attachment_rejects_oversized_and_invalid_format(client: AsyncClient, admin_user: dict):
     order = await create_order(client, admin_user)
-    response = await upload(client, admin_user, order["id"], b"x" * (5 * 1024 * 1024 + 1))
+    response = await upload(client, admin_user, order["id"], b"x" * (10 * 1024 * 1024 + 1))
     assert response.status_code == 400
     response = await upload(client, admin_user, order["id"], JPEG, "proof.png", "image/png")
     assert response.status_code == 400

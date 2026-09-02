@@ -3,6 +3,7 @@
 from httpx import AsyncClient
 from sqlalchemy import select
 
+from app.models.order import OrderClaim
 from app.models.user import User, UserRole
 from tests.conftest import auth_header
 
@@ -22,10 +23,17 @@ async def _create_order(client: AsyncClient, user_data: dict, price: str = "500.
     return resp.json()
 
 
+async def _get_claims(db_session, order_id: int) -> list[OrderClaim]:
+    result = await db_session.execute(
+        select(OrderClaim).where(OrderClaim.order_id == order_id)
+    )
+    return list(result.scalars().all())
+
+
 async def test_assign_order_locks_order(
-    client: AsyncClient, registered_user: dict, booster_user: dict, admin_user: dict
+    client: AsyncClient, registered_user: dict, booster_user: dict, admin_user: dict, db_session
 ):
-    """Admin assign sets booster_id, status LOCKED and locked_at."""
+    """Admin assign sets booster_id, status LOCKED, locked_at and creates the claim."""
     order = await _create_order(client, admin_user)
     booster_id = booster_user["user"]["id"]
 
@@ -39,6 +47,13 @@ async def test_assign_order_locks_order(
     assert data["status"] == "LOCKED"
     assert data["booster_id"] == booster_id
     assert data["locked_at"] is not None
+    # Dispatch materializes the claim so claim-level delivery keeps working
+    assert data["claimed_count"] == 1
+
+    claims = await _get_claims(db_session, order["id"])
+    assert len(claims) == 1
+    assert claims[0].booster_id == booster_id
+    assert claims[0].status.value == "CLAIMED"
 
 
 async def test_assign_regular_user_as_booster(

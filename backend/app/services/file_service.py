@@ -23,7 +23,7 @@ _MAGIC = {
 async def validate_image_upload(
     file: UploadFile,
     *,
-    max_size_bytes: int = 5 * 1024 * 1024,
+    max_size_bytes: int = 10 * 1024 * 1024,
 ) -> tuple[bytes, str]:
     """Validate an image's declared type, extension, signature and size."""
     content_type = (file.content_type or "").lower()
@@ -62,7 +62,7 @@ async def save_image_upload(
     file: UploadFile,
     subdirectory: str = "",
     *,
-    max_size_bytes: int = 5 * 1024 * 1024,
+    max_size_bytes: int = 10 * 1024 * 1024,
 ) -> str:
     """Validate and save an image, returning a relative /uploads URL."""
     data, suffix = await validate_image_upload(file, max_size_bytes=max_size_bytes)

@@ -69,8 +69,9 @@ onMounted(async () => {
       </div>
     </div>
 
+    <!-- 移动端只显示聊天面板（会话列表隐藏，避免占满首屏）；xl 起恢复双栏 -->
     <section class="grid min-h-[78vh] gap-6 xl:grid-cols-[360px_minmax(0,1fr)]">
-      <aside class="surface-card cyber-corner p-4 sm:p-5">
+      <aside class="surface-card cyber-corner hidden p-4 sm:p-5 xl:block">
         <div class="mb-4 flex items-center justify-between gap-3 px-2">
           <div>
             <p class="text-xs uppercase tracking-[0.12em] text-primary">列表</p>

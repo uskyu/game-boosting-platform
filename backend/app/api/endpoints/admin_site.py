@@ -49,7 +49,7 @@ async def upload_site_logo(
 ) -> SiteSetting:
     setting = await get_or_create_site_setting(db)
     old_url = setting.site_logo_url
-    new_url = await save_image_upload(logo, "site", max_size_bytes=2 * 1024 * 1024)
+    new_url = await save_image_upload(logo, "site", max_size_bytes=10 * 1024 * 1024)
     setting.site_logo_url = new_url
     setting.updated_by = current_admin.id
     await db.flush()

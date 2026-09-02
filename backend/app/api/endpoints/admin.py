@@ -12,7 +12,7 @@ from app.api.notification_utils import notify_user
 from app.models.booster_service import BoosterService
 from app.models.game import Game, GameCategory, GamePlatform
 from app.models.notification import NotificationType
-from app.models.order import Order, OrderStatus
+from app.models.order import ClaimLifecycleStatus, Order, OrderClaim, OrderStatus
 from app.models.user import BoosterApplicationStatus, User
 from app.models.withdrawal import WithdrawalStatus
 from app.schemas.admin import (
@@ -113,8 +113,17 @@ async def list_all_orders_for_admin(
         page_size=page_size,
     )
     pages = (total + page_size - 1) // page_size if total > 0 else 0
+
+    responses = [OrderResponse.model_validate(order) for order in orders]
+    # Per-order claim counters for the admin review workflow.
+    status_counts = await order_service.claim_status_counts([order.id for order in orders])
+    for response in responses:
+        counts = status_counts.get(response.id, {})
+        response.pending_review_count = counts.get("DELIVERED", 0)
+        response.settled_count = counts.get("SETTLED", 0)
+
     return OrderListResponse(
-        items=[OrderResponse.model_validate(order) for order in orders],
+        items=responses,
         total=total,
         page=page,
         page_size=page_size,
@@ -171,6 +180,22 @@ async def intervene_order(
     # path as customer confirmation. It is a no-op when no booster is assigned.
     if payload.action == OrderStatus.COMPLETED:
         await get_order_service(db).settle_order_income(order)
+        # Keep the settled booster's claim in sync (CLAIMED/DELIVERED ->
+        # SETTLED) so claim-level views match the wallet ledger. Other
+        # boosters' delivered claims stay reviewable via the claim endpoint.
+        if order.booster_id is not None:
+            await db.execute(
+                update(OrderClaim)
+                .where(
+                    OrderClaim.order_id == order.id,
+                    OrderClaim.booster_id == order.booster_id,
+                    OrderClaim.status != ClaimLifecycleStatus.SETTLED,
+                )
+                .values(
+                    status=ClaimLifecycleStatus.SETTLED,
+                    settled_at=datetime.now(timezone.utc),
+                )
+            )
     await db.refresh(order)
     await send_order_system_message(
         db=db,

@@ -5,8 +5,8 @@ import { useRouter } from 'vue-router'
 import Lightbox from '@/components/Lightbox.vue'
 import { useOrdersStore } from '@/stores/orders'
 import api from '@/utils/api'
-import { formatDateTime, formatPrice } from '@/utils/display'
-import { getOrderStatusBadgeClass, getOrderStatusLabel } from '@/utils/order'
+import { formatDateTime, formatOrderPrice, formatPrice } from '@/utils/display'
+import { getClaimStatusMeta, getOrderStatusBadgeClass, getOrderStatusLabel } from '@/utils/order'
 
 const props = defineProps({
   id: {
@@ -24,7 +24,7 @@ const error = ref('')
 const message = ref({ type: '', text: '' })
 const actionKey = ref('')
 
-// 子导航：订单详情 / 报名名单 / 审核列表
+// 子导航：订单详情 / 接单名单 / 审核列表
 const detailTab = ref('info')
 
 const claims = computed(() => ordersStore.claims)
@@ -51,19 +51,24 @@ function statusLabel(o) {
 }
 
 function priceLabel(o) {
-  const min = o.price_min
-  const max = o.price_max
-  if (min != null && max != null && Number(min) !== Number(max)) return `${formatPrice(min)} - ${formatPrice(max)}`
-  return formatPrice(o.price ?? min ?? max ?? 0)
+  return formatOrderPrice(o)
 }
 
 function claimStatusLabel(o) {
-  const map = { OPEN: '报名中', PAUSED: '已暂停', FULL: '已满员', CLOSED: '已截止' }
+  const map = { OPEN: '接单中', PAUSED: '已暂停', FULL: '已满员', CLOSED: '已截止' }
   return map[o.claim_status] || o.claim_status || '-'
 }
 
+// claim 状态：CLAIMED=进行中 / DELIVERED=待审核 / SETTLED=已结算（共享语义色）
+function claimStatusMeta(claim) {
+  return getClaimStatusMeta(claim?.status)
+}
+
+function claimBoosterName(claim) {
+  return claim?.booster_nickname || (claim?.booster_id != null ? `打手 #${claim.booster_id}` : '打手')
+}
+
 const orderAttachments = computed(() => normalizeAttachments(order.value?.attachments))
-const deliveryAttachments = computed(() => normalizeAttachments(order.value?.delivery_attachments))
 
 // ── 灯箱：订单图片 / 汇报图片共用 ──
 
@@ -77,7 +82,7 @@ function openLightbox(images, index) {
 
 const attachmentTypes = ['image/png', 'image/jpeg', 'image/webp']
 const maxAttachmentCount = 5
-const maxAttachmentSize = 5 * 1024 * 1024
+const maxAttachmentSize = 10 * 1024 * 1024
 
 const editPanel = ref(null)
 
@@ -94,19 +99,33 @@ function applyEditData(state, o) {
   state.intro = o.intro || ''
   state.description = o.description_raw || o.description || ''
   state.price = o.price != null ? String(o.price) : ''
-  state.price_min = o.price_min != null ? String(o.price_min) : ''
-  state.price_max = o.price_max != null ? String(o.price_max) : ''
   state.max_claims = o.max_claims ?? 1
   state.deadline = toDatetimeLocalValue(o.deadline)
   state.attachments = normalizeAttachments(o.attachments)
+  // 增量契约字段：老板ID / 炸单赔偿金（开关+金额）/ 到账时效
+  state.boss_contact = o.boss_contact || ''
+  state.compensation_enabled = Number(o.compensation_amount ?? 0) > 0
+  state.compensation_amount = o.compensation_amount != null ? String(o.compensation_amount) : ''
+  state.payout_delay_days = o.payout_delay_days != null ? String(o.payout_delay_days) : ''
 }
+
+// 到账时效选项：不设置（默认）/ 1-5 天
+const payoutDelayOptions = [
+  { value: '', label: '不设置' },
+  { value: '1', label: '1天' },
+  { value: '2', label: '2天' },
+  { value: '3', label: '3天' },
+  { value: '4', label: '4天' },
+  { value: '5', label: '5天' },
+]
 
 function openEditPanel() {
   const o = order.value
   if (!o) return
   editPanel.value = {
-    title: '', intro: '', description: '', price: '', price_min: '', price_max: '',
+    title: '', intro: '', description: '', price: '',
     max_claims: 1, deadline: '', attachments: [], newFiles: null,
+    boss_contact: '', compensation_enabled: false, compensation_amount: '', payout_delay_days: '',
     error: '', submitting: false, uploading: '', uploadProgress: '', removingIndex: -1,
   }
   applyEditData(editPanel.value, o)
@@ -125,7 +144,7 @@ function validateEditAttachments(state) {
   const invalid = selected.find((file) => !attachmentTypes.includes((file.type || '').toLowerCase()))
   if (invalid) return `仅支持 PNG、JPEG、WebP 图片：${invalid.name}`
   const oversized = selected.find((file) => file.size > maxAttachmentSize)
-  if (oversized) return `单张图片不能超过5MB：${oversized.name}`
+  if (oversized) return `单张图片不能超过10MB：${oversized.name}`
   return ''
 }
 
@@ -179,18 +198,37 @@ async function submitEdit() {
     state.error = attachmentError
     return
   }
+  // 价格校验：只保留单一发单价（区间价格已下线）
   const price = Number(state.price)
   if (!Number.isFinite(price) || price <= 0) {
     state.error = '请填写大于 0 的价格'
     return
   }
-  if (state.price_min && state.price_max && Number(state.price_min) > Number(state.price_max)) {
-    state.error = '价格区间的最低价不能高于最高价'
-    return
-  }
   const maxClaims = Number(state.max_claims)
   if (!Number.isInteger(maxClaims) || maxClaims < 1 || maxClaims > 100) {
-    state.error = '最大抢单人数需为 1-100 的整数'
+    state.error = '最大接单人数需为 1-100 的整数'
+    return
+  }
+
+  // 老板ID ≤64 字；赔偿金开启后必须 >0；到账时效 1-5 天或不设置
+  const bossContact = state.boss_contact.trim()
+  if (bossContact.length > 64) {
+    state.error = '老板ID不能超过 64 个字符'
+    return
+  }
+
+  let compensationAmount = null
+  if (state.compensation_enabled) {
+    compensationAmount = Number(state.compensation_amount)
+    if (!Number.isFinite(compensationAmount) || compensationAmount <= 0) {
+      state.error = '炸单赔偿金需为大于 0 的金额'
+      return
+    }
+  }
+
+  const payoutDelay = state.payout_delay_days === '' ? null : Number(state.payout_delay_days)
+  if (payoutDelay != null && (!Number.isInteger(payoutDelay) || payoutDelay < 1 || payoutDelay > 5)) {
+    state.error = '到账时效需为 1-5 天'
     return
   }
 
@@ -200,10 +238,14 @@ async function submitEdit() {
     intro: state.intro.trim() || null,
     description: state.description.trim() || null,
     price,
-    price_min: state.price_min ? Number(state.price_min) : null,
-    price_max: state.price_max ? Number(state.price_max) : null,
+    // 显式清空历史区间残留，避免后端保留旧的 price_min/price_max
+    price_min: null,
+    price_max: null,
     max_claims: maxClaims,
     deadline: state.deadline || null,
+    boss_contact: bossContact || null,
+    compensation_amount: compensationAmount,
+    payout_delay_days: payoutDelay,
   })
   if (!result.success) {
     state.submitting = false
@@ -229,68 +271,100 @@ async function submitEdit() {
   await fetchOrder()
 }
 
-// ── 审核列表 + 审核弹窗（DELIVERED=待审核 / COMPLETED=已通过）──
+// ── 审核列表 + 审核弹窗（claims 维度：DELIVERED=待审核 / SETTLED=已结算）──
 
-// 提交记录：交付打手的结束汇报（当前模型每单一条）
-const reviewSubmissions = computed(() => {
-  if (!order.value || !['DELIVERED', 'COMPLETED'].includes(order.value.status)) return []
-  return [{
-    booster: order.value.booster,
-    delivered_at: order.value.delivered_at,
-    status: order.value.status, // DELIVERED=待审核, COMPLETED=已通过
-    note: order.value.delivery_note || '',
-    attachments: deliveryAttachments.value,
-  }]
-})
+// 待审核：已交付汇报的 claim；已通过：已结算的 claim
+const pendingReviewClaims = computed(() => claims.value.filter((claim) => claim.status === 'DELIVERED'))
+const settledClaims = computed(() => claims.value.filter((claim) => claim.status === 'SETTLED'))
+const pendingReviewCount = computed(() => pendingReviewClaims.value.length)
+const approvedCount = computed(() => settledClaims.value.length)
 
-const pendingReviewCount = computed(() => (order.value?.status === 'DELIVERED' && order.value.booster_id ? 1 : 0))
-const approvedCount = computed(() => (order.value?.status === 'COMPLETED' && order.value.booster_id ? 1 : 0))
+function claimAttachments(claim) {
+  return normalizeAttachments(claim?.delivery_attachments)
+}
 
-// 审核弹窗：查看汇报 + 打款（全额 / 部分金额 + 备注）
-const reviewModal = ref(null) // { item, payout: { mode, amount, note }, submitting }
+// 审核弹窗：查看汇报 + 打款（全额 / 部分金额 + 备注 + 扣除炸单赔偿金）
+const reviewModal = ref(null) // { claim, payout: { mode, amount, note, deduction }, submitting }
 
-function openReviewModal(item) {
-  reviewModal.value = { item, payout: { mode: 'full', amount: '', note: '' }, submitting: false }
+function openReviewModal(claim) {
+  reviewModal.value = { claim, payout: { mode: 'full', amount: '', note: '', deduction: '0' }, submitting: false }
 }
 
 function closeReviewModal() {
   if (!reviewModal.value?.submitting) reviewModal.value = null
 }
 
+// 审核打款上限 = max(order.price, order.price_max)（兼容历史区间单）
+function payoutCeiling() {
+  return Math.max(Number(order.value?.price ?? 0), Number(order.value?.price_max ?? 0))
+}
+
+// 该单炸单赔偿金（>0 才展示扣除输入）
+const orderCompensationAmount = computed(() => Number(order.value?.compensation_amount ?? 0))
+
 function payoutAmountError() {
   const payout = reviewModal.value?.payout
   if (!payout || payout.mode !== 'partial') return ''
   const amount = Number(payout.amount)
   if (!Number.isFinite(amount) || amount <= 0) return '请填写大于 0 的到账金额'
-  const price = Math.max(Number(order.value?.price ?? 0), Number(order.value?.price_max ?? 0))
-  if (price && amount > price) return `到账金额不能超过订单报酬 ${formatPrice(price)}`
+  const ceiling = payoutCeiling()
+  if (ceiling && amount > ceiling) return `到账金额不能超过订单报酬 ${formatPrice(ceiling)}`
+  return ''
+}
+
+function payoutDeductionError() {
+  if (!orderCompensationAmount.value || reviewModal.value?.claim?.status !== 'DELIVERED') return ''
+  const deduction = Number(reviewModal.value?.payout?.deduction)
+  if (!Number.isFinite(deduction) || deduction < 0) return '扣除的赔偿金不能小于 0'
+  if (deduction > orderCompensationAmount.value) {
+    return `扣除的赔偿金不能超过该单赔偿金 ${formatPrice(orderCompensationAmount.value)}`
+  }
   return ''
 }
 
 async function submitPayout() {
   if (!reviewModal.value || reviewModal.value.submitting) return
   const payout = reviewModal.value.payout
+  const claim = reviewModal.value.claim
   const amountError = payoutAmountError()
   if (amountError) {
     message.value = { type: 'error', text: amountError }
     return
   }
-  const note = payout.note.trim() || null
-  const payload = payout.mode === 'partial'
-    ? { amount: Number(payout.amount), note }
-    : (note ? { note } : null)
+  const deductionError = payoutDeductionError()
+  if (deductionError) {
+    message.value = { type: 'error', text: deductionError }
+    return
+  }
+  const payload = { action: 'approve' }
+  if (payout.mode === 'partial') payload.amount = Number(payout.amount)
+  const note = payout.note.trim()
+  if (note) payload.note = note
+  // 炸单赔偿金扣除：0 ≤ deduction ≤ compensation_amount（仅该单设置了赔偿金时提交）
+  const deduction = orderCompensationAmount.value > 0 ? Number(payout.deduction) || 0 : 0
+  if (orderCompensationAmount.value > 0) {
+    payload.deduction = deduction
+  }
+
   reviewModal.value.submitting = true
-  const result = await ordersStore.confirmOrder(order.value.id, payload)
+  const result = await ordersStore.reviewClaim(order.value.id, claim.id, payload)
   reviewModal.value.submitting = false
   if (result.success) {
-    const text = payout.mode === 'partial'
-      ? `已按 ${formatPrice(Number(payout.amount))} 部分到账，订单完结`
-      : '审核通过，全额已计入打手余额'
+    const gross = payout.mode === 'partial' ? Number(payout.amount) : Number(order.value?.price ?? 0)
+    const net = Math.max(0, gross - deduction)
+    let text
+    if (deduction > 0) {
+      text = `已入账 ${formatPrice(gross)}，炸单赔偿金扣除 ${formatPrice(deduction)}、返还 ${formatPrice(Math.max(0, orderCompensationAmount.value - deduction))}，单 #${claim.id} 已结算`
+    } else {
+      text = payout.mode === 'partial'
+        ? `已按 ${formatPrice(Number(payout.amount))} 部分到账，单 #${claim.id} 已结算`
+        : `审核通过，单 #${claim.id} 报酬已计入打手余额`
+    }
     message.value = { type: 'success', text }
     closeReviewModal()
-    await fetchOrder()
+    await Promise.all([fetchOrder(), ordersStore.fetchClaims(order.value.id)])
   } else {
-    message.value = { type: 'error', text: formatApiError(result.error) || '确认失败' }
+    message.value = { type: 'error', text: formatApiError(result.error) || '审核失败' }
   }
 }
 
@@ -349,7 +423,7 @@ async function fetchOrder() {
 }
 
 onMounted(async () => {
-  // 并行拉取：订单详情与报名名单互不依赖（远程库延迟下串行会翻倍）
+  // 并行拉取：订单详情与接单名单互不依赖（远程库延迟下串行会翻倍）
   await Promise.all([fetchOrder(), ordersStore.fetchClaims(props.id)])
   loading.value = false
 })
@@ -377,9 +451,9 @@ onMounted(async () => {
     <template v-else-if="order">
       <!-- 订单信息（订单详情 tab） -->
       <section v-if="detailTab === 'info'" class="surface-card p-6 sm:p-8">
-        <h1 class="text-xl font-semibold text-ink-1">{{ order.title || `${order.current_rank || '?'} → ${order.target_rank || '?'}` }}</h1>
+        <h1 class="text-xl font-semibold text-ink-1">{{ order.title || `${order.game_name} 订单` }}</h1>
         <p class="mt-1 text-sm text-ink-3">
-          #{{ order.id }} · {{ order.game_name }}<template v-if="order.current_rank || order.target_rank"> · {{ order.current_rank || '?' }} → {{ order.target_rank || '?' }}</template>
+          #{{ order.id }} · {{ order.game_name }}
         </p>
         <p v-if="order.intro" class="mt-3 break-words text-sm leading-6 text-ink-2">{{ order.intro }}</p>
 
@@ -399,6 +473,22 @@ onMounted(async () => {
           <div class="info-tile">
             <p class="info-tile__label">发布时间</p>
             <p class="info-tile__value">{{ formatDateTime(order.created_at) }}</p>
+          </div>
+        </div>
+
+        <!-- 增量契约字段：老板ID / 炸单赔偿金 / 到账时效（有值才展示） -->
+        <div v-if="order.boss_contact || Number(order.compensation_amount) > 0 || order.payout_delay_days" class="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div v-if="order.boss_contact" class="info-tile min-w-0">
+            <p class="info-tile__label">老板ID</p>
+            <p class="info-tile__value break-words">{{ order.boss_contact }}</p>
+          </div>
+          <div v-if="Number(order.compensation_amount) > 0" class="info-tile">
+            <p class="info-tile__label">炸单赔偿金</p>
+            <p class="info-tile__value tabular-nums">{{ formatPrice(order.compensation_amount) }}</p>
+          </div>
+          <div v-if="order.payout_delay_days" class="info-tile">
+            <p class="info-tile__label">到账时效</p>
+            <p class="info-tile__value tabular-nums">{{ order.payout_delay_days }}天到账</p>
           </div>
         </div>
 
@@ -430,10 +520,10 @@ onMounted(async () => {
         </div>
       </section>
 
-      <!-- 子导航：订单详情 / 报名名单 / 审核列表 -->
+      <!-- 子导航：订单详情 / 接单名单 / 审核列表 -->
       <nav class="tab-bar" aria-label="派单处理视图">
         <button type="button" :class="detailTab === 'info' ? 'tab-pill-active' : 'tab-pill'" @click="detailTab = 'info'">订单详情</button>
-        <button type="button" :class="detailTab === 'claims' ? 'tab-pill-active' : 'tab-pill'" @click="detailTab = 'claims'">报名名单</button>
+        <button type="button" :class="detailTab === 'claims' ? 'tab-pill-active' : 'tab-pill'" @click="detailTab = 'claims'">接单名单</button>
         <button type="button" :class="detailTab === 'review' ? 'tab-pill-active' : 'tab-pill'" @click="detailTab = 'review'">
           审核列表<span v-if="pendingReviewCount" class="ml-1 rounded-full bg-warning px-1.5 text-xs text-white">{{ pendingReviewCount }}</span>
         </button>
@@ -461,7 +551,7 @@ onMounted(async () => {
               <input id="edit-title" v-model="editPanel.title" type="text" class="input" placeholder="订单标题" :disabled="editPanel.submitting" />
             </div>
             <div>
-              <label class="label" for="edit-max-claims">最大抢单人数</label>
+              <label class="label" for="edit-max-claims">最大接单人数</label>
               <input id="edit-max-claims" v-model="editPanel.max_claims" type="number" min="1" max="100" class="input" :disabled="editPanel.submitting" />
             </div>
           </div>
@@ -473,18 +563,62 @@ onMounted(async () => {
             <label class="label" for="edit-description">需求描述</label>
             <textarea id="edit-description" v-model="editPanel.description" class="input resize-none" rows="3" :disabled="editPanel.submitting"></textarea>
           </div>
-          <div class="grid gap-4 sm:grid-cols-3">
+          <!-- 价格：只保留一个发单价格输入（区间价格已下线） -->
+          <div>
+            <label class="label" for="edit-price">发单价格</label>
+            <input
+              id="edit-price"
+              v-model="editPanel.price"
+              type="number"
+              min="0.01"
+              step="0.01"
+              class="input"
+              placeholder="例如 60"
+              :disabled="editPanel.submitting"
+            />
+          </div>
+
+          <!-- 增量契约字段：老板ID / 炸单赔偿金 / 到账时效 -->
+          <div class="grid gap-4 sm:grid-cols-2">
             <div>
-              <label class="label" for="edit-price">固定价格</label>
-              <input id="edit-price" v-model="editPanel.price" type="number" min="0.01" step="0.01" class="input" placeholder="价格" :disabled="editPanel.submitting" />
+              <label class="label" for="edit-boss-contact">老板ID（可选）</label>
+              <input
+                id="edit-boss-contact"
+                v-model="editPanel.boss_contact"
+                type="text"
+                class="input"
+                maxlength="64"
+                placeholder="接单后打手可见，用于添加你为好友"
+                :disabled="editPanel.submitting"
+              />
             </div>
             <div>
-              <label class="label" for="edit-price-min">区间最低</label>
-              <input id="edit-price-min" v-model="editPanel.price_min" type="number" min="0.01" step="0.01" class="input" placeholder="最低" :disabled="editPanel.submitting" />
+              <label class="label" for="edit-payout-delay">到账时效</label>
+              <select id="edit-payout-delay" v-model="editPanel.payout_delay_days" class="input" :disabled="editPanel.submitting">
+                <option v-for="option in payoutDelayOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+              </select>
             </div>
-            <div>
-              <label class="label" for="edit-price-max">区间最高</label>
-              <input id="edit-price-max" v-model="editPanel.price_max" type="number" min="0.01" step="0.01" class="input" placeholder="最高" :disabled="editPanel.submitting" />
+          </div>
+          <!-- 炸单赔偿金：开关默认关，开启后填写金额（>0） -->
+          <div class="rounded-tile border border-line-1 p-4">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p class="text-sm font-semibold text-ink-1">炸单赔偿金</p>
+                <p class="mt-1 text-xs leading-5 text-ink-3">打手接单时冻结，订单完结自动返还；炸单可由管理员扣除。</p>
+              </div>
+              <button
+                type="button"
+                :class="editPanel.compensation_enabled ? 'filter-pill-active' : 'filter-pill'"
+                :aria-pressed="editPanel.compensation_enabled"
+                :disabled="editPanel.submitting"
+                @click="editPanel.compensation_enabled = !editPanel.compensation_enabled"
+              >
+                {{ editPanel.compensation_enabled ? '已开启' : '未开启' }}
+              </button>
+            </div>
+            <div v-if="editPanel.compensation_enabled" class="mt-3">
+              <label class="label" for="edit-compensation">赔偿金额</label>
+              <input id="edit-compensation" v-model="editPanel.compensation_amount" type="number" min="0.01" step="0.01" class="input" placeholder="例如 50" :disabled="editPanel.submitting" />
             </div>
           </div>
           <div>
@@ -539,64 +673,99 @@ onMounted(async () => {
         </form>
       </section>
 
-      <!-- 报名名单 tab -->
+      <!-- 接单名单 tab -->
       <section v-if="detailTab === 'claims'" class="surface-card p-6 sm:p-8">
-        <h2 class="text-lg font-semibold text-ink-1">报名名单</h2>
-        <p class="mt-1 text-sm text-ink-3">{{ claims.length || Number(order.claimed_count ?? 0) }}/{{ Number(order.max_claims ?? 0) }} 人已报名</p>
+        <h2 class="text-lg font-semibold text-ink-1">接单名单</h2>
+        <p class="mt-1 text-sm text-ink-3">{{ claims.length || Number(order.claimed_count ?? 0) }}/{{ Number(order.max_claims ?? 0) }} 人已接单</p>
 
         <div v-if="claimsLoading" class="mt-4 space-y-2" aria-busy="true">
           <div v-for="n in 2" :key="`claim-skeleton-${n}`" class="skeleton h-14 !rounded-tile"></div>
         </div>
         <div v-else-if="!claims.length" class="empty-state mt-4">
           <div class="empty-state__icon" aria-hidden="true">🙋</div>
-          <h4 class="empty-state__title">暂无报名</h4>
+          <h4 class="empty-state__title">暂无接单</h4>
           <p class="empty-state__copy">打手确认订单后会出现在这里。</p>
         </div>
         <ul v-else class="mt-4 space-y-2">
           <li v-for="claim in claims" :key="claim.id" class="claims-item">
-            <div class="flex items-center justify-between gap-2">
-              <div class="flex min-w-0 items-center gap-2">
-                <p class="truncate text-sm font-semibold text-ink-1">{{ claim.booster_nickname || `#${claim.booster_id}` }}</p>
-                <span v-if="claim.is_first" class="tag !bg-warning-soft !text-warning">首抢</span>
-                <span v-if="claim.booster_id === order.booster_id" class="tag !bg-success-soft !text-success">接单人</span>
+            <!-- 首行：左侧打手名 + claim 状态标签；右上「首抢」徽标 -->
+            <div class="flex items-start justify-between gap-2">
+              <div class="flex min-w-0 flex-wrap items-center gap-2">
+                <p class="truncate text-sm font-semibold text-ink-1">{{ claimBoosterName(claim) }}</p>
+                <span :class="claimStatusMeta(claim).tagClass">{{ claimStatusMeta(claim).label }}</span>
               </div>
-              <p class="shrink-0 text-xs tabular-nums text-ink-3">{{ formatDateTime(claim.created_at) }}</p>
+              <span v-if="claim.is_first" class="tag shrink-0 !bg-warning-soft !text-warning">首抢</span>
+            </div>
+            <!-- 次行：左下单号；右下接单时间 -->
+            <div class="mt-2 flex flex-wrap items-center justify-between gap-2">
+              <p class="text-xs tabular-nums text-ink-3">单号 #{{ claim.id }}</p>
+              <p class="text-xs tabular-nums text-ink-3">接单于 {{ formatDateTime(claim.created_at) }}</p>
             </div>
           </li>
         </ul>
       </section>
 
-      <!-- 审核列表 tab：交付打手提交的结束汇报 -->
+      <!-- 审核列表 tab：每个已交付的 claim 是一条待审核记录；已结算的归入「已通过」分组 -->
       <section v-if="detailTab === 'review'" class="surface-card p-6 sm:p-8">
         <h2 class="text-lg font-semibold text-ink-1">审核列表</h2>
         <p class="mt-1 text-sm text-ink-3">待审核 {{ pendingReviewCount }} 人 · 已通过 {{ approvedCount }} 人</p>
 
-        <div v-if="!reviewSubmissions.length" class="empty-state mt-4">
+        <div v-if="claimsLoading" class="mt-4 space-y-2" aria-busy="true">
+          <div v-for="n in 2" :key="`review-skeleton-${n}`" class="skeleton h-14 !rounded-tile"></div>
+        </div>
+
+        <div v-else-if="!pendingReviewClaims.length && !settledClaims.length" class="empty-state mt-4">
           <div class="empty-state__icon" aria-hidden="true">📭</div>
           <h4 class="empty-state__title">暂无提交</h4>
           <p class="empty-state__copy">打手点击「结束订单」提交汇报后，会出现在这里等待审核。</p>
         </div>
 
-        <ul v-else class="mt-4 space-y-2">
-          <li v-for="(item, index) in reviewSubmissions" :key="index">
-            <button
-              type="button"
-              class="claims-item w-full text-left"
-              :class="item.status === 'DELIVERED' ? 'cursor-pointer hover:border-primary' : 'cursor-default opacity-80'"
-              @click="openReviewModal(item)"
-            >
-              <div class="flex items-center justify-between gap-2">
-                <div class="flex min-w-0 items-center gap-2">
-                  <p class="truncate text-sm font-semibold text-ink-1">{{ item.booster?.username || '未指派打手' }}</p>
-                  <span v-if="item.status === 'DELIVERED'" class="tag !bg-warning-soft !text-warning">待审核</span>
-                  <span v-else class="tag !bg-success-soft !text-success">已通过</span>
+        <template v-else>
+          <!-- 待审核（DELIVERED） -->
+          <ul v-if="pendingReviewClaims.length" class="mt-4 space-y-2">
+            <li v-for="claim in pendingReviewClaims" :key="claim.id">
+              <button
+                type="button"
+                class="claims-item w-full text-left transition-colors duration-base hover:border-primary"
+                @click="openReviewModal(claim)"
+              >
+                <div class="flex items-start justify-between gap-2">
+                  <div class="flex min-w-0 flex-wrap items-center gap-2">
+                    <p class="truncate text-sm font-semibold text-ink-1">{{ claimBoosterName(claim) }}</p>
+                    <span class="tag !bg-warning-soft !text-warning">待审核</span>
+                  </div>
+                  <p class="shrink-0 text-xs tabular-nums text-ink-3">单号 #{{ claim.id }}</p>
                 </div>
-                <p class="shrink-0 text-xs tabular-nums text-ink-3">{{ item.delivered_at ? formatDateTime(item.delivered_at) : '' }}</p>
-              </div>
-              <p class="mt-1 truncate text-xs text-ink-3">{{ item.note || '未填写文字汇报' }}</p>
-            </button>
-          </li>
-        </ul>
+                <p class="mt-1 truncate text-xs text-ink-3">{{ claim.delivery_note || '未填写文字汇报' }}</p>
+                <p class="mt-1 text-xs tabular-nums text-ink-3">{{ claim.delivered_at ? `提交于 ${formatDateTime(claim.delivered_at)}` : '' }}</p>
+              </button>
+            </li>
+          </ul>
+
+          <!-- 已通过（SETTLED） -->
+          <div v-if="settledClaims.length" class="mt-6">
+            <p class="label">已通过</p>
+            <ul class="mt-2 space-y-2">
+              <li v-for="claim in settledClaims" :key="claim.id">
+                <button
+                  type="button"
+                  class="claims-item w-full text-left transition-colors duration-base hover:border-primary"
+                  @click="openReviewModal(claim)"
+                >
+                  <div class="flex items-start justify-between gap-2">
+                    <div class="flex min-w-0 flex-wrap items-center gap-2">
+                      <p class="truncate text-sm font-semibold text-ink-1">{{ claimBoosterName(claim) }}</p>
+                      <span class="tag !bg-success-soft !text-success">已结算</span>
+                    </div>
+                    <p class="shrink-0 text-xs tabular-nums text-ink-3">单号 #{{ claim.id }}</p>
+                  </div>
+                  <p class="mt-1 truncate text-xs text-ink-3">{{ claim.delivery_note || '未填写文字汇报' }}</p>
+                  <p class="mt-1 text-xs tabular-nums text-ink-3">{{ claim.settled_at ? `结算于 ${formatDateTime(claim.settled_at)}` : '' }}</p>
+                </button>
+              </li>
+            </ul>
+          </div>
+        </template>
       </section>
 
       <!-- 管理操作 -->
@@ -604,13 +773,13 @@ onMounted(async () => {
         <h2 class="text-lg font-semibold text-ink-1">管理操作</h2>
         <div class="mt-4 flex flex-wrap gap-2">
           <button v-if="order.claim_status === 'OPEN'" type="button" class="btn-secondary min-h-[44px] !px-4 !py-2" :disabled="actionKey === 'control-pause'" @click="controlOrder('pause')">
-            {{ actionKey === 'control-pause' ? '处理中…' : '暂停报名' }}
+            {{ actionKey === 'control-pause' ? '处理中…' : '暂停接单' }}
           </button>
           <button v-else-if="order.claim_status === 'PAUSED'" type="button" class="btn-secondary min-h-[44px] !px-4 !py-2" :disabled="actionKey === 'control-resume'" @click="controlOrder('resume')">
-            {{ actionKey === 'control-resume' ? '处理中…' : '恢复报名' }}
+            {{ actionKey === 'control-resume' ? '处理中…' : '恢复接单' }}
           </button>
           <button v-if="order.claim_status !== 'CLOSED' && !order.is_archived" type="button" class="btn-secondary min-h-[44px] !px-4 !py-2" :disabled="actionKey === 'control-close'" @click="controlOrder('close')">
-            {{ actionKey === 'control-close' ? '处理中…' : '截止报名' }}
+            {{ actionKey === 'control-close' ? '处理中…' : '截止接单' }}
           </button>
           <button v-if="!order.is_archived" type="button" class="btn-ghost min-h-[44px] !px-4 !py-2" :disabled="actionKey === 'control-archive'" @click="controlOrder('archive')">
             {{ actionKey === 'control-archive' ? '处理中…' : '归档' }}
@@ -643,10 +812,10 @@ onMounted(async () => {
         <div class="relative z-10">
           <div class="flex items-start justify-between gap-3">
             <div class="min-w-0">
-              <h3 class="text-2xl font-semibold text-ink-1">审核 · {{ reviewModal.item.booster?.username || '打手' }}</h3>
+              <h3 class="text-2xl font-semibold text-ink-1">审核 · {{ claimBoosterName(reviewModal.claim) }}</h3>
               <p class="mt-2 text-sm text-ink-2">
-                报酬 <span class="font-semibold tabular-nums text-price">{{ priceLabel(order) }}</span>
-                <template v-if="reviewModal.item.status === 'COMPLETED'"> · 已通过</template>
+                单号 #{{ reviewModal.claim.id }} · 报酬 <span class="font-semibold tabular-nums text-price">{{ priceLabel(order) }}</span>
+                <template v-if="reviewModal.claim.status === 'SETTLED'"> · 已结算</template>
               </p>
             </div>
             <button type="button" class="btn-ghost shrink-0 !px-4 !py-2" @click="closeReviewModal">关闭</button>
@@ -654,18 +823,18 @@ onMounted(async () => {
 
           <div class="mt-5">
             <p class="info-tile__label">汇报说明</p>
-            <p class="mt-2 break-words text-sm leading-6 text-ink-2">{{ reviewModal.item.note || '打手未填写文字汇报' }}</p>
+            <p class="mt-2 break-words text-sm leading-6 text-ink-2">{{ reviewModal.claim.delivery_note || '打手未填写文字汇报' }}</p>
           </div>
 
-          <div v-if="reviewModal.item.attachments.length" class="mt-4">
+          <div v-if="claimAttachments(reviewModal.claim).length" class="mt-4">
             <p class="info-tile__label">汇报图片（点击放大）</p>
             <div class="mt-2 grid grid-cols-3 gap-3 sm:grid-cols-5">
               <button
-                v-for="(image, index) in reviewModal.item.attachments"
+                v-for="(image, index) in claimAttachments(reviewModal.claim)"
                 :key="image.url + index"
                 type="button"
                 class="group relative overflow-hidden rounded-tile border border-line-1 bg-surface-2"
-                @click="openLightbox(reviewModal.item.attachments, index)"
+                @click="openLightbox(claimAttachments(reviewModal.claim), index)"
               >
                 <img :src="image.url" :alt="image.name || '汇报截图'" class="h-24 w-full object-cover transition group-hover:opacity-90" loading="lazy" />
               </button>
@@ -673,7 +842,7 @@ onMounted(async () => {
           </div>
 
           <!-- 打款区：仅待审核时显示 -->
-          <div v-if="reviewModal.item.status === 'DELIVERED'" class="mt-5 space-y-3">
+          <div v-if="reviewModal.claim.status === 'DELIVERED'" class="mt-5 space-y-3">
             <label class="flex cursor-pointer items-start gap-3 rounded-tile border border-line-1 p-4" :class="reviewModal.payout.mode === 'full' ? 'border-primary bg-primary-soft' : ''">
               <input v-model="reviewModal.payout.mode" type="radio" value="full" class="mt-1" />
               <div>
@@ -688,10 +857,32 @@ onMounted(async () => {
                 <p class="mt-1 text-sm text-ink-3">手动编辑具体到账金额，剩余部分不予结算</p>
                 <div v-if="reviewModal.payout.mode === 'partial'" class="mt-3">
                   <label class="label" for="payout-amount">到账金额</label>
-                  <input id="payout-amount" v-model="reviewModal.payout.amount" type="number" min="0.01" step="0.01" class="input" :placeholder="`最多 ${Math.max(Number(order.price ?? 0), Number(order.price_max ?? 0))}`" :disabled="reviewModal.submitting" />
+                  <input id="payout-amount" v-model="reviewModal.payout.amount" type="number" min="0.01" step="0.01" class="input" :placeholder="`最多 ${payoutCeiling()}`" :disabled="reviewModal.submitting" />
                 </div>
               </div>
             </label>
+            <!-- 炸单赔偿金扣除：该单设置了赔偿金时显示（0 ≤ 扣除 ≤ 赔偿金） -->
+            <div v-if="orderCompensationAmount > 0" class="rounded-tile border border-line-1 p-4">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <p class="text-sm font-semibold text-ink-1">扣除炸单赔偿金</p>
+                <p class="text-xs tabular-nums text-ink-3">该单赔偿金 {{ formatPrice(orderCompensationAmount) }}</p>
+              </div>
+              <div class="mt-3">
+                <label class="label" for="payout-deduction">扣除金额（0 ~ {{ formatPrice(orderCompensationAmount) }}）</label>
+                <input
+                  id="payout-deduction"
+                  v-model="reviewModal.payout.deduction"
+                  type="number"
+                  min="0"
+                  :max="orderCompensationAmount"
+                  step="0.01"
+                  class="input"
+                  :disabled="reviewModal.submitting"
+                />
+                <p class="mt-1.5 text-xs leading-5 text-ink-3">打手炸单时填写，从冻结的炸单赔偿金中扣除；默认 0 不扣。</p>
+                <p v-if="payoutDeductionError()" class="mt-1.5 text-xs text-danger">{{ payoutDeductionError() }}</p>
+              </div>
+            </div>
             <div>
               <label class="label" for="payout-note">打款备注（可选）</label>
               <input id="payout-note" v-model="reviewModal.payout.note" type="text" class="input" maxlength="500" placeholder="例如：目标未全部达成，按 80% 结算" :disabled="reviewModal.submitting" />
@@ -700,7 +891,7 @@ onMounted(async () => {
 
           <div class="mt-6 flex justify-end gap-3">
             <button type="button" class="btn-secondary !px-5 !py-2" @click="closeReviewModal">关闭</button>
-            <button v-if="reviewModal.item.status === 'DELIVERED'" type="button" class="btn-success !px-5 !py-2" :disabled="reviewModal.submitting" @click="submitPayout">
+            <button v-if="reviewModal.claim.status === 'DELIVERED'" type="button" class="btn-success !px-5 !py-2" :disabled="reviewModal.submitting" @click="submitPayout">
               {{ reviewModal.submitting ? '确认中…' : (reviewModal.payout.mode === 'full' ? '审核通过（全额到账）' : '确认部分到账') }}
             </button>
           </div>
@@ -718,7 +909,7 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-/* 报名/审核条目卡片：与 AdminView 的 .claims-item 保持一致（该类仅在 AdminView 内 scoped 定义） */
+/* 接单/审核条目卡片：与 AdminView 的 .claims-item 保持一致（该类仅在 AdminView 内 scoped 定义） */
 .claims-item {
   border-radius: 14px;
   border: 1px solid var(--line-1);

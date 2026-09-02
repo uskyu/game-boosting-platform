@@ -33,6 +33,6 @@ class SiteSettingResponse(BaseModel):
     favicon_url: str | None
     updated_by: int | None
     updated_at: datetime
-    logo_recommendation: str = "建议使用 512×512 以上的 PNG、JPEG 或 WebP 图片，文件不超过 2MB。"
+    logo_recommendation: str = "建议使用 512×512 以上的 PNG、JPEG 或 WebP 图片，文件不超过 10MB。"
 
     model_config = ConfigDict(from_attributes=True)

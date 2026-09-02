@@ -13,6 +13,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
 from app.models.base import Base
+from app.models.user import UserRole
 
 if TYPE_CHECKING:
     from app.models.booster_service import BoosterService
@@ -39,6 +40,15 @@ class ClaimStatus(str, PyEnum):
     PAUSED = "PAUSED"
     FULL = "FULL"
     CLOSED = "CLOSED"
+
+
+class ClaimLifecycleStatus(str, PyEnum):
+    """Per-claim delivery lifecycle (名额制): each claim independently goes
+    CLAIMED -> DELIVERED -> SETTLED without affecting the other claims."""
+
+    CLAIMED = "CLAIMED"      # Booster registered on the order, work in progress
+    DELIVERED = "DELIVERED"  # Booster submitted completion, awaiting review
+    SETTLED = "SETTLED"      # Review approved and payout settled
 
 
 class PaymentStatus(str, PyEnum):
@@ -141,6 +151,16 @@ class Order(Base):
         Numeric(precision=10, scale=2),
         nullable=False,
     )
+
+    # 用户发单附加信息
+    # 老板联系 ID：仅发布人、管理员与已接单打手可见（序列化层控制）
+    boss_contact: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 炸单赔偿金：打手接单时从其可用余额冻结，结算时返还/扣除
+    compensation_amount: Mapped[Decimal | None] = mapped_column(
+        Numeric(precision=10, scale=2), nullable=True
+    )
+    # 到账时效（天，1-5）：交付后到时自动结算
+    payout_delay_days: Mapped[int | None] = mapped_column(nullable=True)
 
     # Dispatch controls (legacy status remains the workflow status)
     max_claims: Mapped[int] = mapped_column(default=1, server_default="1", nullable=False)
@@ -288,12 +308,40 @@ class Order(Base):
         """Check if customer can confirm completion."""
         return self.status == OrderStatus.DELIVERED
 
+    @property
+    def escrow_amount(self) -> Decimal | None:
+        """发布人托管总额：非管理员发布时 = price × max_claims，管理员发布（平台单）无托管。"""
+        publisher = self.user
+        if publisher is None or publisher.role == UserRole.ADMIN:
+            return None
+        return Decimal(str(self.price)) * int(self.max_claims)
+
 
 class OrderClaim(Base):
-    """A booster claim, retained separately so multi-claim orders remain auditable."""
+    """A booster claim (名额), retained separately so multi-claim orders remain auditable.
+
+    Each claim walks its own lifecycle CLAIMED -> DELIVERED -> SETTLED; the
+    order itself only completes once every claim is settled and the quota is
+    exhausted (or claiming was closed).
+    """
     __tablename__ = "order_claims"
     __table_args__ = (UniqueConstraint("order_id", "booster_id", name="uq_order_claim_booster"),)
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     order_id: Mapped[int] = mapped_column(ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
     booster_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    status: Mapped[ClaimLifecycleStatus] = mapped_column(
+        Enum(
+            ClaimLifecycleStatus,
+            name="claim_lifecycle_enum",
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        default=ClaimLifecycleStatus.CLAIMED,
+        server_default="CLAIMED",
+        nullable=False,
+        index=True,
+    )
+    delivery_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    delivery_attachments: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    settled_at: Mapped[datetime | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=func.now(), server_default=func.now(), nullable=False)

@@ -1,8 +1,8 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 
-import api from '@/utils/api'
 import { useAuthStore } from '@/stores/auth'
+import { useOrdersStore } from '@/stores/orders'
 import { useWalletStore } from '@/stores/wallet'
 import {
   TRANSACTION_TYPE_META,
@@ -12,32 +12,63 @@ import {
   getWithdrawalStatusLabel,
   getWithdrawalStatusTagClass,
 } from '@/stores/wallet'
-import { formatCount, formatDateTime, formatPrice } from '@/utils/display'
+import { formatCount, formatDateTime, formatOrderPrice, formatPrice } from '@/utils/display'
 
 const walletStore = useWalletStore()
 const authStore = useAuthStore()
+const ordersStore = useOrdersStore()
 
-// 审核中订单：打手已提交结束汇报、等待老板确认打款的订单
-const reviewOrders = ref([])
-const reviewLoading = ref(false)
+// 审核中订单：打手已交付汇报、等待管理员审核打款的报名单（claims/mine?status=DELIVERED）
+const reviewClaims = computed(() => ordersStore.myClaims)
+const reviewLoading = computed(() => ordersStore.myClaimsLoading)
 
-async function fetchReviewOrders() {
+async function fetchReviewClaims() {
   if (authStore.isAdmin) return
-  reviewLoading.value = true
-  try {
-    const res = await api.get('/orders/', { params: { status: 'DELIVERED', page: 1, page_size: 10 } })
-    reviewOrders.value = res.data?.items || []
-  } catch {
-    reviewOrders.value = []
-  } finally {
-    reviewLoading.value = false
-  }
+  await ordersStore.fetchMyClaims('DELIVERED')
 }
 
 const withdrawForm = ref({ amount: '', channel: 'ALIPAY', account_name: '', account_no: '' })
 const formErrors = ref({})
 const withdrawMessage = ref({ type: '', text: '' })
 const submittingWithdrawal = ref(false)
+
+// ── 收款二维码（ALIPAY / WECHAT 可选，PNG/JPEG/WebP ≤10MB）──
+const qrcode = ref(null) // 上传成功后 {url,name,size,content_type}
+const qrcodeUploading = ref(false)
+const qrcodeError = ref('')
+const QRCODE_TYPES = ['image/png', 'image/jpeg', 'image/webp']
+const QRCODE_MAX_SIZE = 10 * 1024 * 1024
+
+// BANK 渠道隐藏上传控件；切换渠道保留已传二维码，仅按渠道显隐
+const showQrcodeUpload = computed(() => ['ALIPAY', 'WECHAT'].includes(withdrawForm.value.channel))
+
+async function handleQrcodeChange(event) {
+  const file = event.target.files?.[0]
+  event.target.value = ''
+  if (!file) return
+  qrcodeError.value = ''
+  if (!QRCODE_TYPES.includes((file.type || '').toLowerCase())) {
+    qrcodeError.value = '二维码仅支持 PNG、JPEG、WebP 图片'
+    return
+  }
+  if (file.size > QRCODE_MAX_SIZE) {
+    qrcodeError.value = '二维码图片不能超过 10MB'
+    return
+  }
+  qrcodeUploading.value = true
+  const result = await walletStore.uploadWithdrawalQrcode(file)
+  qrcodeUploading.value = false
+  if (result.success) {
+    qrcode.value = result.data
+  } else {
+    qrcodeError.value = result.error || '二维码上传失败'
+  }
+}
+
+function removeQrcode() {
+  qrcode.value = null
+  qrcodeError.value = ''
+}
 
 const walletInfo = computed(() =>
   walletStore.wallet || { available_balance: 0, frozen_balance: 0, total_income: 0, total_withdrawn: 0 }
@@ -109,12 +140,16 @@ async function submitWithdrawal() {
   }
 
   submittingWithdrawal.value = true
-  const result = await walletStore.createWithdrawal({
+  const payload = {
     amount: Number(withdrawForm.value.amount),
     channel: withdrawForm.value.channel,
     account_name: withdrawForm.value.account_name.trim(),
     account_no: withdrawForm.value.account_no.trim(),
-  })
+  }
+  if (qrcode.value?.url) {
+    payload.qrcode_url = qrcode.value.url
+  }
+  const result = await walletStore.createWithdrawal(payload)
 
   if (result.success) {
     withdrawMessage.value = { type: 'success', text: '提现申请已提交，请等待管理员审核打款' }
@@ -125,6 +160,7 @@ async function submitWithdrawal() {
       account_no: withdrawForm.value.account_no,
     }
     formErrors.value = {}
+    removeQrcode()
     await Promise.all([
       walletStore.fetchWallet(),
       walletStore.fetchMyWithdrawals({ page: 1 }),
@@ -159,55 +195,58 @@ async function refreshAll() {
 }
 
 onMounted(() => {
-  // 并行拉取：钱包数据与审核中订单互不依赖，串行会放大远程库延迟
-  Promise.all([refreshAll(), fetchReviewOrders()])
+  // 并行拉取：钱包数据与审核中报名单互不依赖，串行会放大远程库延迟
+  Promise.all([refreshAll(), fetchReviewClaims()])
 })
 </script>
 
 <template>
   <div class="page-shell space-y-6">
-    <section class="hero-panel p-6 sm:p-8">
+    <section class="hero-panel p-5 sm:p-6 lg:p-8">
       <div class="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
         <div class="space-y-3">
           <p class="eyebrow">资金中心</p>
           <h1 class="section-title">我的钱包</h1>
         </div>
 
-        <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <article v-for="card in statCards" :key="card.label" :class="[card.cardClass, 'min-w-[150px]']">
+        <!-- 手机 2×2 统计卡，桌面端一行四张 -->
+        <div class="grid w-full grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
+          <article v-for="card in statCards" :key="card.label" :class="card.cardClass">
             <p class="text-xs font-medium uppercase tracking-[0.16em] text-ink-2">{{ card.label }}</p>
-            <p class="mt-2.5 text-2xl font-semibold tabular-nums" :class="card.valueClass">{{ card.value }}</p>
+            <p class="mt-2 text-xl font-semibold tabular-nums sm:mt-2.5 sm:text-2xl" :class="card.valueClass">{{ card.value }}</p>
           </article>
         </div>
       </div>
     </section>
 
-    <!-- 审核中订单：已提交汇报、等待老板打款的订单 -->
-    <section v-if="!authStore.isAdmin" class="surface-card p-6 sm:p-8">
+    <!-- 审核中订单：已交付汇报、等待订单发布人审核打款的接单记录 -->
+    <section v-if="!authStore.isAdmin" class="surface-card p-4 sm:p-6 lg:p-8">
       <div class="flex items-center justify-between gap-4">
         <h2 class="text-lg font-semibold text-ink-1">审核中的订单</h2>
-        <span v-if="reviewOrders.length" class="tag !bg-warning-soft !text-warning tabular-nums">{{ reviewOrders.length }} 单待审核</span>
+        <span v-if="reviewClaims.length" class="tag !bg-warning-soft !text-warning tabular-nums">{{ reviewClaims.length }} 单待审核</span>
       </div>
-      <p class="mt-1 text-sm text-ink-3">你已提交结束汇报，老板确认打款后报酬会计入余额。</p>
+      <p class="mt-1 text-sm text-ink-3">你已提交结束汇报，订单发布人确认打款后报酬会计入余额。</p>
 
       <div v-if="reviewLoading" class="mt-4 space-y-2" aria-busy="true">
         <div v-for="n in 2" :key="`review-skeleton-${n}`" class="skeleton h-14 !rounded-tile"></div>
       </div>
-      <div v-else-if="!reviewOrders.length" class="empty-state mt-4">
+      <div v-else-if="!reviewClaims.length" class="empty-state mt-4">
         <div class="empty-state__icon" aria-hidden="true">📭</div>
         <h4 class="empty-state__title">暂无审核中的订单</h4>
-        <p class="empty-state__copy">完成订单并提交汇报后，会在这里等待老板审核。</p>
+        <p class="empty-state__copy">完成订单并提交汇报后，会在这里等待订单发布人审核。</p>
       </div>
       <ul v-else class="mt-4 space-y-2">
-        <li v-for="order in reviewOrders" :key="order.id" class="claims-item">
-          <router-link :to="{ name: 'order-detail', params: { id: order.id } }" class="flex items-center justify-between gap-3">
+        <li v-for="claim in reviewClaims" :key="claim.id" class="claims-item">
+          <router-link :to="{ name: 'order-detail', params: { id: claim.order?.id || claim.order_id } }" class="flex items-center justify-between gap-3">
             <div class="min-w-0">
-              <p class="truncate text-sm font-semibold text-ink-1">{{ order.title || `${order.current_rank || '?'} → ${order.target_rank || '?'}` }}</p>
-              <p class="mt-1 text-xs text-ink-3">#{{ order.id }} · {{ order.game_name }}<template v-if="order.delivered_at"> · 提交于 {{ formatDateTime(order.delivered_at) }}</template></p>
+              <p class="truncate text-sm font-semibold text-ink-1">{{ claim.order?.title || claim.order?.game_name || '代练订单' }}</p>
+              <p class="mt-1 text-xs text-ink-3">
+                单号 #{{ claim.id }} · {{ claim.order?.game_name || '' }}<template v-if="claim.delivered_at"> · 交付于 {{ formatDateTime(claim.delivered_at) }}</template>
+              </p>
             </div>
             <div class="shrink-0 text-right">
-              <p class="text-sm font-semibold tabular-nums text-price">{{ formatPrice(order.price) }}</p>
-              <p class="mt-0.5 text-xs text-warning">待老板审核</p>
+              <p class="text-sm font-semibold tabular-nums text-price">{{ claim.order ? formatOrderPrice(claim.order) : formatPrice(0) }}</p>
+              <p class="mt-0.5 text-xs text-warning">待发布人审核</p>
             </div>
           </router-link>
         </li>
@@ -215,7 +254,7 @@ onMounted(() => {
     </section>
 
     <div class="wallet-grid">
-    <section class="surface-card p-6 sm:p-8">
+    <section class="surface-card p-4 sm:p-6 lg:p-8">
       <div class="flex items-center justify-between gap-4">
         <h2 class="text-2xl font-semibold text-ink-1">申请提现</h2>
         <button class="btn-secondary !px-4 !py-2" :disabled="walletStore.walletLoading" @click="refreshAll">
@@ -278,6 +317,33 @@ onMounted(() => {
           <p v-if="formErrors.account_no" class="mt-2 text-xs text-danger">{{ formErrors.account_no }}</p>
         </div>
 
+        <!-- 收款二维码：仅支付宝 / 微信渠道显示（切换渠道保留已传图，仅按渠道显隐） -->
+        <div v-if="showQrcodeUpload" class="lg:col-span-2">
+          <label class="label" for="withdraw-qrcode">收款二维码（可选）</label>
+          <div v-if="qrcode" class="flex flex-wrap items-center gap-4">
+            <img
+              :src="qrcode.url"
+              alt="收款二维码"
+              class="h-24 w-24 rounded-tile border border-line-1 bg-surface-2 object-cover"
+            />
+            <button type="button" class="btn-secondary min-h-[44px] !px-4 !py-2" :disabled="qrcodeUploading" @click="removeQrcode">
+              删除二维码
+            </button>
+          </div>
+          <input
+            v-else
+            id="withdraw-qrcode"
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            class="input min-h-[44px]"
+            :disabled="qrcodeUploading"
+            @change="handleQrcodeChange"
+          />
+          <p class="mt-1.5 text-xs text-ink-3">支持 PNG、JPEG、WebP，不超过 10MB；上传后管理员打款时可直接扫码。</p>
+          <p v-if="qrcodeUploading" class="mt-2 text-sm text-primary">二维码上传中…</p>
+          <p v-if="qrcodeError" class="mt-2 text-xs text-danger">{{ qrcodeError }}</p>
+        </div>
+
         <div class="lg:col-span-2">
           <button class="btn-primary w-full py-3 sm:w-auto sm:!px-10" :disabled="submittingWithdrawal || walletStore.submitting">
             {{ submittingWithdrawal ? '提交中...' : '提交申请' }}
@@ -287,7 +353,7 @@ onMounted(() => {
       </form>
     </section>
 
-    <section class="surface-card p-6 sm:p-8">
+    <section class="surface-card p-4 sm:p-6 lg:p-8">
       <div class="flex items-center justify-between gap-4">
         <h2 class="text-2xl font-semibold text-ink-1">资金流水</h2>
         <button class="btn-ghost !px-4 !py-2 text-sm" :disabled="walletStore.transactionsLoading" @click="refreshAll">
@@ -312,21 +378,21 @@ onMounted(() => {
         <article
           v-for="item in transactions"
           :key="item.id"
-          class="info-tile flex flex-wrap items-center justify-between gap-x-6 gap-y-3 !p-4 transition-colors duration-base hover:bg-surface-3"
+          class="info-tile flex flex-col gap-2.5 !p-4 transition-colors duration-base hover:bg-surface-3 sm:flex-row sm:items-center sm:justify-between sm:gap-x-6"
         >
           <div class="flex min-w-0 items-center gap-3">
             <span class="tag flex-none">{{ getTransactionTypeLabel(item.type) }}</span>
             <p class="truncate text-sm text-ink-2">{{ item.remark || '—' }}</p>
           </div>
 
-          <div class="flex flex-wrap items-center gap-x-6 gap-y-2">
+          <!-- 手机：时间靠左、金额+变动后余额靠右一行；桌面：三段横排 -->
+          <div class="flex items-end justify-between gap-3 sm:items-center sm:justify-end sm:gap-x-6">
             <p class="text-xs text-ink-3">{{ formatDateTime(item.created_at) }}</p>
-            <p class="w-32 text-right text-lg font-semibold" :class="transactionAmountClass(item)">
-              {{ transactionAmountText(item) }}
-            </p>
-            <div class="min-w-[110px] text-right">
-              <p class="info-tile__label">变动后余额</p>
-              <p class="mt-1 text-sm font-medium tabular-nums text-ink-1">{{ formatPrice(item.balance_after) }}</p>
+            <div class="text-right">
+              <p class="text-lg font-semibold" :class="transactionAmountClass(item)">
+                {{ transactionAmountText(item) }}
+              </p>
+              <p class="mt-0.5 text-xs text-ink-3">变动后 {{ formatPrice(item.balance_after) }}</p>
             </div>
           </div>
         </article>
@@ -343,7 +409,7 @@ onMounted(() => {
       </div>
     </section>
 
-    <section class="surface-card p-6 sm:p-8">
+    <section class="surface-card p-4 sm:p-6 lg:p-8">
       <h2 class="text-2xl font-semibold text-ink-1">我的提现记录</h2>
 
       <div v-if="walletStore.myWithdrawalsLoading" class="mt-6 space-y-3" aria-busy="true">

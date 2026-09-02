@@ -414,7 +414,7 @@ class ChatService:
                 detail="仅支持上传 jpg、png、gif、webp 图片",
             )
 
-        max_size = 5 * 1024 * 1024
+        max_size = 10 * 1024 * 1024
         file_bytes = await file.read(max_size + 1)
         if not file_bytes:
             raise HTTPException(
@@ -425,7 +425,7 @@ class ChatService:
         if len(file_bytes) > max_size:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="图片大小不能超过5MB",
+                detail="图片大小不能超过10MB",
             )
 
         upload_dir = Path(settings.UPLOAD_DIR) / "chat"

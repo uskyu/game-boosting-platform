@@ -2,6 +2,7 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import api from '@/utils/api'
 import { useAuthStore } from '@/stores/auth'
+import { useToastsStore } from '@/stores/toasts'
 
 const DEFAULT_MESSAGE_LIMIT = 30
 const MAX_RECONNECT_DELAY = 30000
@@ -799,6 +800,18 @@ export const useChatStore = defineStore('chat', () => {
             await markRead(conversationId, message.id)
           } else {
             incrementConversationUnread(conversationId)
+            // 网页内弹窗推送：仅真人发来的新消息（sender_id 为空的是订单系统推送，不弹）
+            if (message.sender_id != null) {
+              const conversation = conversations.value.find((item) => item.id === conversationId)
+              const senderName = message.sender?.username
+                || conversation?.other_participants?.map((item) => item.username).filter(Boolean).join(' / ')
+                || '新消息'
+              useToastsStore().pushToast({
+                title: `💬 ${senderName}`,
+                body: message.content ? String(message.content).slice(0, 60) : '[图片消息]',
+                to: { name: 'chat-detail', params: { id: conversationId } },
+              })
+            }
           }
         }
         break

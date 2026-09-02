@@ -87,7 +87,7 @@ async def upload_game_logo(
     logo: UploadFile = File(...),
 ) -> GameResponse:
     game = await _get_game_or_404(db, game_id, current_admin)
-    logo_url = await save_image_upload(logo, "games", max_size_bytes=2 * 1024 * 1024)
+    logo_url = await save_image_upload(logo, "games", max_size_bytes=10 * 1024 * 1024)
     game.logo_url = logo_url
     await db.flush()
     await db.refresh(game)

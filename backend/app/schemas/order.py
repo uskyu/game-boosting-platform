@@ -17,7 +17,7 @@ class OrderAttachment(BaseModel):
 
     url: str = Field(min_length=1, max_length=500)
     name: str = Field(min_length=1, max_length=255)
-    size: int = Field(ge=1, le=5 * 1024 * 1024)
+    size: int = Field(ge=1, le=10 * 1024 * 1024)
     content_type: str = Field(pattern=r"^image/(png|jpeg|webp)$")
 
     @field_validator("url")
@@ -47,7 +47,7 @@ class OrderDeliveryAttachment(BaseModel):
 
     url: str = Field(min_length=1, max_length=500)
     name: str = Field(min_length=1, max_length=255)
-    size: int = Field(ge=1, le=5 * 1024 * 1024)
+    size: int = Field(ge=1, le=10 * 1024 * 1024)
     content_type: str = Field(pattern=r"^image/(png|jpeg|webp)$")
 
     @field_validator("url")
@@ -137,6 +137,24 @@ class OrderCreate(BaseModel):
     max_claims: int = Field(default=1, ge=1, le=100)
     deadline: datetime | None = None
     attachments: AttachmentList | None = Field(default=None, max_length=5)
+
+    boss_contact: str | None = Field(
+        default=None,
+        max_length=64,
+        description="老板联系 ID（仅发布人、管理员与已接单打手可见）",
+    )
+    compensation_amount: Decimal | None = Field(
+        default=None,
+        gt=0,
+        le=100000,
+        description="炸单赔偿金（可选）：打手接单时冻结，结算时返还/扣除",
+    )
+    payout_delay_days: int | None = Field(
+        default=None,
+        ge=1,
+        le=5,
+        description="到账时效（天，1-5）：打手交付后到时自动结算",
+    )
 
     description_ai: str | None = Field(
         default=None,
@@ -269,6 +287,23 @@ class OrderConfirmRequest(BaseModel):
     note: str | None = Field(default=None, max_length=500)
 
 
+class ClaimReviewRequest(BaseModel):
+    """管理员审核某个名额（claim）交付记录的请求体。"""
+
+    action: str = Field(default="approve", pattern="^approve$", description="审核动作，当前仅支持 approve")
+    amount: Decimal | None = Field(
+        default=None,
+        gt=0,
+        description="打款金额；缺省按订单全额结算（扣除佣金）",
+    )
+    note: str | None = Field(default=None, max_length=500, description="打款备注")
+    deduction: Decimal | None = Field(
+        default=None,
+        ge=0,
+        description="炸单赔偿扣除金额（0 ~ compensation_amount，缺省 0 不扣除）",
+    )
+
+
 # =============================================================================
 # OUTPUT SCHEMAS (Response Bodies)
 # =============================================================================
@@ -321,6 +356,7 @@ class UserBrief(BaseModel):
     id: int
     username: str
     email: str
+    role: str | None = Field(default=None, description="发布人角色：ADMIN=管理员发布，USER=用户发布")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -368,9 +404,32 @@ class OrderResponse(BaseModel):
     payment_status: str = Field(default=PaymentStatus.UNPAID.value, description="支付状态")
     paid_at: datetime | None = Field(default=None, description="支付时间")
 
+    # 用户发单附加信息
+    boss_contact: str | None = Field(
+        default=None,
+        description="老板联系 ID（仅发布人、管理员与已接单打手可见，其余视角返回 null）",
+    )
+    compensation_amount: Decimal | None = Field(
+        default=None,
+        description="炸单赔偿金（打手接单时冻结，结算时返还/扣除）",
+    )
+    payout_delay_days: int | None = Field(
+        default=None,
+        description="到账时效（天）：交付后到时自动结算",
+    )
+    escrow_amount: Decimal | None = Field(
+        default=None,
+        description="发布人托管总额（非管理员发布 = price × max_claims，管理员平台单为 null）",
+    )
+
     # Nested user information
     user: UserBrief | None = Field(default=None, description="下单用户")
     booster: UserBrief | None = Field(default=None, description="接单代练")
+
+    # Claim-aware extras (populated by the endpoints for the current viewer)
+    my_claim: "OrderClaimItem | None" = Field(default=None, description="当前用户在此订单的报名记录（未报名时为 null）")
+    pending_review_count: int = Field(default=0, description="待审核（DELIVERED）名额数（管理端）")
+    settled_count: int = Field(default=0, description="已结算（SETTLED）名额数（管理端）")
 
     model_config = ConfigDict(
         from_attributes=True,
@@ -428,14 +487,21 @@ class OrderListResponse(BaseModel):
 
 
 class OrderClaimItem(BaseModel):
-    """A booster claim (报名记录) on an order."""
+    """A booster claim (报名记录/名额) on an order."""
 
     id: int = Field(description="报名记录ID")
     order_id: int = Field(description="订单ID")
     booster_id: int = Field(description="报名用户ID")
     booster_nickname: str | None = Field(default=None, description="报名用户昵称")
     booster_email: str | None = Field(default=None, description="报名用户邮箱")
+    status: str = Field(default="CLAIMED", description="名额状态：CLAIMED/DELIVERED/SETTLED")
+    delivery_note: str | None = Field(default=None, description="交付汇报说明")
+    delivery_attachments: DeliveryAttachmentList | None = Field(
+        default=None, max_length=5, description="交付附件"
+    )
     created_at: datetime = Field(description="报名时间")
+    delivered_at: datetime | None = Field(default=None, description="交付时间")
+    settled_at: datetime | None = Field(default=None, description="结算时间")
     is_first: bool = Field(default=False, description="是否首抢（该用户即订单当前接单人）")
 
     model_config = ConfigDict(from_attributes=True)
@@ -446,3 +512,47 @@ class OrderClaimListResponse(BaseModel):
 
     items: list[OrderClaimItem] = Field(description="报名记录列表")
     total: int = Field(description="报名总数")
+
+
+class ClaimOrderSummary(BaseModel):
+    """Order summary embedded in a booster's own claim list."""
+
+    id: int = Field(description="订单ID")
+    title: str | None = Field(default=None, description="订单标题")
+    intro: str | None = Field(default=None, description="订单简介")
+    game_name: str = Field(description="游戏名称")
+    price: Decimal = Field(description="订单价格")
+    price_min: Decimal | None = Field(default=None, description="价格区间下限")
+    price_max: Decimal | None = Field(default=None, description="价格区间上限")
+    status: str = Field(description="订单状态")
+    claim_status: str = Field(description="抢单状态：OPEN/PAUSED/FULL/CLOSED")
+    claimed_count: int = Field(description="已报名人数")
+    max_claims: int = Field(description="名额总数")
+    boss_contact: str | None = Field(
+        default=None,
+        description="老板联系 ID（我的报名必然已接单，可见）",
+    )
+    compensation_amount: Decimal | None = Field(
+        default=None,
+        description="炸单赔偿金",
+    )
+    payout_delay_days: int | None = Field(
+        default=None,
+        description="到账时效（天）",
+    )
+
+
+class MyOrderClaimItem(OrderClaimItem):
+    """A booster's own claim enriched with the order summary."""
+
+    order: ClaimOrderSummary = Field(description="关联订单摘要")
+
+
+class MyOrderClaimListResponse(BaseModel):
+    """Paginated claims of the current user (我的报名)."""
+
+    items: list[MyOrderClaimItem] = Field(description="报名记录列表")
+    total: int = Field(description="总数量")
+    page: int = Field(description="当前页码")
+    page_size: int = Field(description="每页数量")
+    pages: int = Field(description="总页数")
