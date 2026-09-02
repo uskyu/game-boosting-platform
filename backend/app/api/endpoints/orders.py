@@ -84,10 +84,18 @@ def _serialize_order(order, viewer: User) -> OrderResponse:
 async def _enrich_order_response(db, response: OrderResponse, order, viewer: User) -> OrderResponse:
     """Attach viewer-dependent claim info to a single order response.
 
-    Non-admins get ``my_claim`` (their own claim on the order); admins get
-    ``pending_review_count`` / ``settled_count``.
+    Admins and order publishers get aggregate claim status counts. Non-admins
+    also get their own claim (when present) and the boss contact.
     """
     order_service = get_order_service(db)
+    if viewer.role == UserRole.ADMIN or order.user_id == viewer.id:
+        counts = await order_service.claim_status_counts([order.id])
+        status_counts = counts.get(order.id, {})
+        response.pending_review_count = status_counts.get(
+            ClaimLifecycleStatus.DELIVERED.value, 0
+        )
+        response.settled_count = status_counts.get(ClaimLifecycleStatus.SETTLED.value, 0)
+
     if viewer.role != UserRole.ADMIN:
         claim_view = await order_service.get_order_claim_view(order, viewer)
         if claim_view is not None:
@@ -95,13 +103,6 @@ async def _enrich_order_response(db, response: OrderResponse, order, viewer: Use
             # 已接单打手可见老板联系方式
             if response.boss_contact is None:
                 response.boss_contact = order.boss_contact
-    else:
-        counts = await order_service.claim_status_counts([order.id])
-        status_counts = counts.get(order.id, {})
-        response.pending_review_count = status_counts.get(
-            ClaimLifecycleStatus.DELIVERED.value, 0
-        )
-        response.settled_count = status_counts.get(ClaimLifecycleStatus.SETTLED.value, 0)
     return response
 
 
@@ -112,15 +113,17 @@ async def _enrich_order_responses(
     if not orders:
         return responses
     order_service = get_order_service(db)
-    if viewer.role != UserRole.ADMIN:
-        claim_views = await order_service.claims_view_for_booster(orders, viewer)
-        for response in responses:
-            claim_view = claim_views.get(response.id)
-            if claim_view is not None:
-                response.my_claim = OrderClaimItem.model_validate(claim_view)
-    else:
-        order_ids = [order.id for order in orders]
-        counts = await order_service.claim_status_counts(order_ids)
+    orders_by_id = {order.id: order for order in orders}
+
+    # One grouped query covers every order the viewer may manage. For admins
+    # that is the complete page; for regular users it is only their own orders.
+    count_order_ids = [
+        order.id
+        for order in orders
+        if viewer.role == UserRole.ADMIN or order.user_id == viewer.id
+    ]
+    if count_order_ids:
+        counts = await order_service.claim_status_counts(count_order_ids)
         for response in responses:
             status_counts = counts.get(response.id, {})
             response.pending_review_count = status_counts.get(
@@ -129,6 +132,17 @@ async def _enrich_order_responses(
             response.settled_count = status_counts.get(
                 ClaimLifecycleStatus.SETTLED.value, 0
             )
+
+    if viewer.role != UserRole.ADMIN:
+        claim_views = await order_service.claims_view_for_booster(orders, viewer)
+        for response in responses:
+            claim_view = claim_views.get(response.id)
+            if claim_view is not None:
+                response.my_claim = OrderClaimItem.model_validate(claim_view)
+                # 已接单打手可见老板联系方式；_serialize_order 已覆盖首抢，
+                # 这里补齐其他名额接单者的可见性。
+                if response.boss_contact is None:
+                    response.boss_contact = orders_by_id[response.id].boss_contact
     return responses
 
 

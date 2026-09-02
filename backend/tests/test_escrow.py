@@ -171,3 +171,123 @@ async def test_settle_pays_and_deducts_compensation(
     # 单名额订单结算后自动完结
     resp = await client.get(f"/orders/{order_id}", headers=auth_header(admin_user))
     assert resp.json()["status"] == "COMPLETED"
+
+
+async def test_publisher_sees_claim_counts_in_detail_and_list(
+    client: AsyncClient, admin_user: dict
+):
+    """A regular publisher sees pending/settled counts on detail and lists."""
+    publisher = await _register(client, "counts.pub@example.com", "CountsPub")
+    await _adjust_balance(client, admin_user, publisher, "1000.00")
+
+    order_response = await client.post(
+        "/orders/create",
+        json={
+            "game_name": "王者荣耀",
+            "price": "100.00",
+            "max_claims": 1,
+            "boss_contact": "counts-boss-contact",
+        },
+        headers=auth_header(publisher),
+    )
+    assert order_response.status_code == 201
+    order_id = order_response.json()["id"]
+
+    claim_order_response = await client.post(
+        "/orders/create",
+        json={
+            "game_name": "王者荣耀",
+            "price": "100.00",
+            "boss_contact": "admin-boss-contact",
+        },
+        headers=auth_header(admin_user),
+    )
+    assert claim_order_response.status_code == 201
+    claim_order_id = claim_order_response.json()["id"]
+
+    booster = await _register(client, "counts.booster@example.com", "CountsBooster")
+    assert (
+        await client.put(
+            f"/orders/{order_id}/accept", headers=auth_header(booster)
+        )
+    ).status_code == 200
+    booster_detail = await client.get(
+        f"/orders/{order_id}", headers=auth_header(booster)
+    )
+    assert booster_detail.status_code == 200
+    assert booster_detail.json()["my_claim"] is not None
+    assert booster_detail.json()["boss_contact"] == "counts-boss-contact"
+
+    assert (
+        await client.put(
+            f"/orders/{order_id}/deliver", headers=auth_header(booster)
+        )
+    ).status_code == 200
+
+    # The same regular user publishes one order and claims another, so both
+    # publisher counts and my_claim must coexist in one batched response.
+    publisher_claim = await client.put(
+        f"/orders/{claim_order_id}/accept", headers=auth_header(publisher)
+    )
+    assert publisher_claim.status_code == 200
+
+    publisher_detail = await client.get(
+        f"/orders/{order_id}", headers=auth_header(publisher)
+    )
+    assert publisher_detail.status_code == 200
+    assert publisher_detail.json()["pending_review_count"] == 1
+    assert publisher_detail.json()["settled_count"] == 0
+
+    publisher_list = await client.get(
+        "/orders/?mine_published=true&page=1&page_size=100",
+        headers=auth_header(publisher),
+    )
+    assert publisher_list.status_code == 200
+    listed = {item["id"]: item for item in publisher_list.json()["items"]}
+    assert listed[order_id]["pending_review_count"] == 1
+    assert listed[order_id]["settled_count"] == 0
+
+    all_orders = await client.get(
+        "/orders/?page=1&page_size=100", headers=auth_header(publisher)
+    )
+    assert all_orders.status_code == 200
+    listed = {item["id"]: item for item in all_orders.json()["items"]}
+    assert listed[order_id]["pending_review_count"] == 1
+    assert listed[claim_order_id]["my_claim"] is not None
+    assert listed[claim_order_id]["my_claim"]["booster_id"] == publisher["user"]["id"]
+    assert listed[claim_order_id]["boss_contact"] == "admin-boss-contact"
+
+    combined_detail = await client.get(
+        f"/orders/{claim_order_id}", headers=auth_header(publisher)
+    )
+    assert combined_detail.status_code == 200
+    assert combined_detail.json()["pending_review_count"] == 0
+    assert combined_detail.json()["settled_count"] == 0
+    assert combined_detail.json()["my_claim"] is not None
+
+    claims_response = await client.get(
+        f"/orders/{order_id}/claims", headers=auth_header(publisher)
+    )
+    assert claims_response.status_code == 200
+    claim_id = claims_response.json()["items"][0]["id"]
+    review_response = await client.put(
+        f"/orders/{order_id}/claims/{claim_id}/review",
+        json={"action": "approve"},
+        headers=auth_header(publisher),
+    )
+    assert review_response.status_code == 200
+    assert review_response.json()["status"] == "SETTLED"
+
+    publisher_detail = await client.get(
+        f"/orders/{order_id}", headers=auth_header(publisher)
+    )
+    assert publisher_detail.json()["pending_review_count"] == 0
+    assert publisher_detail.json()["settled_count"] == 1
+
+    publisher_list = await client.get(
+        "/orders/?mine_published=true&page=1&page_size=100",
+        headers=auth_header(publisher),
+    )
+    listed = {item["id"]: item for item in publisher_list.json()["items"]}
+    assert listed[order_id]["pending_review_count"] == 0
+    assert listed[order_id]["settled_count"] == 1

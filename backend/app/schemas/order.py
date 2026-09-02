@@ -428,8 +428,8 @@ class OrderResponse(BaseModel):
 
     # Claim-aware extras (populated by the endpoints for the current viewer)
     my_claim: "OrderClaimItem | None" = Field(default=None, description="当前用户在此订单的报名记录（未报名时为 null）")
-    pending_review_count: int = Field(default=0, description="待审核（DELIVERED）名额数（管理端）")
-    settled_count: int = Field(default=0, description="已结算（SETTLED）名额数（管理端）")
+    pending_review_count: int = Field(default=0, description="待审核（DELIVERED）名额数（管理员或订单发布人）")
+    settled_count: int = Field(default=0, description="已结算（SETTLED）名额数（管理员或订单发布人）")
 
     model_config = ConfigDict(
         from_attributes=True,

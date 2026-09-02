@@ -5,9 +5,9 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy import delete as sql_delete, func, select
 
-from app.api.deps import DatabaseSession, OptionalCurrentUser, get_current_admin
+from app.api.deps import DatabaseSession, get_current_admin
 from app.models.game import Game, GameCategory, GamePlatform
-from app.models.user import User, UserRole
+from app.models.user import User
 from app.models.order import Order
 from app.schemas.game import GameBulkAction, GameCreate, GameListResponse, GameResponse, GameUpdate
 from app.schemas.user import MessageResponse
@@ -16,17 +16,14 @@ from app.services.file_service import save_image_upload
 router = APIRouter(prefix="/games", tags=["games"])
 
 
-def _should_include_inactive(current_user: User | None) -> bool:
-    return current_user is not None and current_user.role == UserRole.ADMIN
-
-
 async def _get_game_or_404(
     db: DatabaseSession,
     game_id: int,
-    current_user: User | None = None,
+    *,
+    include_inactive: bool = False,
 ) -> Game:
     stmt = select(Game).where(Game.id == game_id)
-    if not _should_include_inactive(current_user):
+    if not include_inactive:
         stmt = stmt.where(Game.is_active.is_(True))
 
     result = await db.execute(stmt)
@@ -42,19 +39,16 @@ async def _get_game_or_404(
 @router.get("/", response_model=GameListResponse)
 async def list_games(
     db: DatabaseSession,
-    current_user: OptionalCurrentUser,
     category: Annotated[GameCategory | None, Query(description="按分类筛选")] = None,
     platform: Annotated[GamePlatform | None, Query(description="按平台筛选")] = None,
     page: Annotated[int, Query(ge=1, description="页码")] = 1,
     page_size: Annotated[int, Query(ge=1, le=100, description="每页数量")] = 100,
 ) -> GameListResponse:
-    filters = []
+    filters = [Game.is_active.is_(True)]
     if category is not None:
         filters.append(Game.category == category)
     if platform is not None:
         filters.append(Game.platform == platform)
-    if not _should_include_inactive(current_user):
-        filters.append(Game.is_active.is_(True))
 
     count_stmt = select(func.count()).select_from(Game).where(*filters)
     total = (await db.execute(count_stmt)).scalar_one()
@@ -86,7 +80,7 @@ async def upload_game_logo(
     current_admin: Annotated[User, Depends(get_current_admin)],
     logo: UploadFile = File(...),
 ) -> GameResponse:
-    game = await _get_game_or_404(db, game_id, current_admin)
+    game = await _get_game_or_404(db, game_id, include_inactive=True)
     logo_url = await save_image_upload(logo, "games", max_size_bytes=10 * 1024 * 1024)
     game.logo_url = logo_url
     await db.flush()
@@ -100,7 +94,7 @@ async def delete_game_logo(
     db: DatabaseSession,
     current_admin: Annotated[User, Depends(get_current_admin)],
 ) -> MessageResponse:
-    game = await _get_game_or_404(db, game_id, current_admin)
+    game = await _get_game_or_404(db, game_id, include_inactive=True)
     game.logo_url = None
     await db.flush()
     return MessageResponse(message="游戏 Logo 已清除", success=True)
@@ -140,9 +134,8 @@ async def bulk_game_action(
 async def get_game(
     game_id: int,
     db: DatabaseSession,
-    current_user: OptionalCurrentUser,
 ) -> GameResponse:
-    game = await _get_game_or_404(db, game_id, current_user)
+    game = await _get_game_or_404(db, game_id)
     return GameResponse.model_validate(game)
 
 
@@ -170,7 +163,7 @@ async def update_game(
     db: DatabaseSession,
     current_admin: Annotated[User, Depends(get_current_admin)],
 ) -> GameResponse:
-    game = await _get_game_or_404(db, game_id, current_admin)
+    game = await _get_game_or_404(db, game_id, include_inactive=True)
     update_data = payload.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(game, field, value)
@@ -186,7 +179,7 @@ async def delete_game(
     db: DatabaseSession,
     current_admin: Annotated[User, Depends(get_current_admin)],
 ) -> MessageResponse:
-    game = await _get_game_or_404(db, game_id, current_admin)
+    game = await _get_game_or_404(db, game_id, include_inactive=True)
     await db.delete(game)
     await db.flush()
     return MessageResponse(message="游戏已删除", success=True)

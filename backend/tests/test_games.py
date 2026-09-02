@@ -2,7 +2,7 @@
 
 业务背景：所有 seed 游戏默认下架（is_active=0），老板（管理员）在后台
 自行添加并上架要用的游戏。对外列表（用户/打手视角）只返回上架游戏，
-管理员视角（/admin/games 与 /games 管理员鉴权）能看到全部。
+管理员视角（/admin/games）能看到全部。
 """
 
 from httpx import AsyncClient
@@ -43,7 +43,10 @@ async def test_public_list_hides_inactive_games(
     assert game["is_active"] is False
     game_id = game["id"]
 
-    # 用户视角仍看不到
+    # 公开列表即使携带管理员令牌，也只返回已上架游戏
+    resp = await client.get("/games/", headers=auth_header(admin_user))
+    assert resp.status_code == 200
+    assert resp.json()["total"] == 0
     resp = await client.get("/games/", headers=auth_header(registered_user))
     assert resp.json()["total"] == 0
 
@@ -76,11 +79,11 @@ async def test_public_list_hides_inactive_games(
     resp = await client.get("/games/", headers=auth_header(registered_user))
     assert resp.json()["total"] == 0
 
-    # 单个游戏详情：用户 404，管理员可见
+    # 单个公开游戏详情：inactive 对普通用户和管理员令牌都不可见
     resp = await client.get(f"/games/{game_id}", headers=auth_header(registered_user))
     assert resp.status_code == 404
     resp = await client.get(f"/games/{game_id}", headers=auth_header(admin_user))
-    assert resp.status_code == 200
+    assert resp.status_code == 404
 
 
 async def test_admin_game_crud_lifecycle(
