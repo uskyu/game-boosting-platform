@@ -32,7 +32,13 @@ export const useAdminUsersStore = defineStore('adminUsers', () => {
   async function resetPassword(id, password) { try { const r = await api.post(`/admin/users/${id}/reset-password`, { password }); return { success: true, data: r.data } } catch (e) { return fail(e) } }
   async function setStatus(id, isActive) { try { const r = await api.post(`/admin/users/${id}/status`, { is_active: isActive }); replace(r.data); return { success: true, data: r.data } } catch (e) { return fail(e) } }
   async function adjustBalance(id, amount, reason) { try { const r = await api.post(`/admin/users/${id}/adjust-balance`, { amount: Number(amount), reason }); return { success: true, data: r.data } } catch (e) { return fail(e) } }
+  async function fetchUserTransactions(id, page = 1) {
+    try {
+      const r = await api.get(`/admin/users/${id}/transactions`, { params: { page, page_size: 20 } })
+      return { success: true, data: r.data }
+    } catch (e) { return fail(e) }
+  }
   function replace(user) { const index = users.value.findIndex((item) => item.id === user?.id); if (index >= 0) users.value.splice(index, 1, user) }
   function fail(e) { return { success: false, error: e.message || '操作失败' } }
-  return { users, pagination, loading, error, fetchUsers, getUser, updateUser, resetPassword, setStatus, adjustBalance }
+  return { users, pagination, loading, error, fetchUsers, getUser, updateUser, resetPassword, setStatus, adjustBalance, fetchUserTransactions }
 })

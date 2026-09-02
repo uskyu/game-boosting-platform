@@ -27,10 +27,10 @@ router = APIRouter(prefix="/services", tags=["services"])
 
 
 def _ensure_booster_user(current_user: User) -> None:
-    if current_user.role != UserRole.BOOSTER:
+    if current_user.role == UserRole.ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="只有代练可以发布和管理服务",
+            detail="管理员不发布打手服务",
         )
 
 

@@ -26,7 +26,7 @@ async def test_assign_order_locks_order(
     client: AsyncClient, registered_user: dict, booster_user: dict, admin_user: dict
 ):
     """Admin assign sets booster_id, status LOCKED and locked_at."""
-    order = await _create_order(client, registered_user)
+    order = await _create_order(client, admin_user)
     booster_id = booster_user["user"]["id"]
 
     resp = await client.put(
@@ -45,7 +45,7 @@ async def test_assign_rejects_non_booster_user(
     client: AsyncClient, registered_user: dict, admin_user: dict
 ):
     """A regular USER cannot be assigned an order."""
-    order = await _create_order(client, registered_user)
+    order = await _create_order(client, admin_user)
 
     # A second regular user
     resp = await client.post("/auth/register", json={
@@ -68,7 +68,7 @@ async def test_assign_rejects_non_pending_order(
     client: AsyncClient, registered_user: dict, booster_user: dict, admin_user: dict
 ):
     """Orders that are already locked/assigned cannot be assigned again."""
-    order = await _create_order(client, registered_user)
+    order = await _create_order(client, admin_user)
     booster_id = booster_user["user"]["id"]
 
     resp = await client.put(
@@ -94,7 +94,7 @@ async def test_assign_rejects_quota_full(
     db_session,
 ):
     """A booster with no free quota cannot take more orders."""
-    order = await _create_order(client, registered_user)
+    order = await _create_order(client, admin_user)
 
     # Create a booster with zero quota
     resp = await client.post("/auth/register", json={
@@ -126,7 +126,7 @@ async def test_assign_rejects_inactive_booster(
     db_session,
 ):
     """An inactive booster cannot be assigned orders."""
-    order = await _create_order(client, registered_user)
+    order = await _create_order(client, admin_user)
 
     resp = await client.post("/auth/register", json={
         "email": "inactive@example.com",
@@ -152,10 +152,10 @@ async def test_assign_rejects_inactive_booster(
 
 
 async def test_assign_requires_admin(
-    client: AsyncClient, registered_user: dict, booster_user: dict
+    client: AsyncClient, registered_user: dict, booster_user: dict, admin_user: dict
 ):
     """Non-admin users (including boosters) cannot call the assign endpoint."""
-    order = await _create_order(client, registered_user)
+    order = await _create_order(client, admin_user)
 
     resp = await client.put(
         f"/admin/orders/{order['id']}/assign",
@@ -177,7 +177,7 @@ async def test_assign_nonexistent_order_404(client: AsyncClient, admin_user: dic
 async def test_assign_nonexistent_booster_404(
     client: AsyncClient, registered_user: dict, admin_user: dict
 ):
-    order = await _create_order(client, registered_user)
+    order = await _create_order(client, admin_user)
     resp = await client.put(
         f"/admin/orders/{order['id']}/assign",
         json={"booster_id": 999999},

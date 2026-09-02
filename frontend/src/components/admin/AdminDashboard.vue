@@ -50,11 +50,12 @@ const overviewCards = computed(() => {
   const o = overview.value
   return [
     { label: '总用户', value: o.total_users, color: 'text-ink-1' },
-    { label: '代练', value: o.total_boosters, color: 'text-info' },
-    { label: '总订单', value: o.total_orders, color: 'text-ink-1' },
-    { label: '总收入', value: `¥${o.total_revenue.toFixed(2)}`, color: 'text-price' },
+    { label: '打手', value: o.total_boosters, color: 'text-info' },
+    { label: '总派单', value: o.total_orders, color: 'text-ink-1' },
+    { label: '成交额', value: `¥${o.total_revenue.toFixed(2)}`, color: 'text-price' },
     { label: '待接单', value: o.pending_orders, color: 'text-warning' },
     { label: '进行中', value: o.active_orders, color: 'text-info' },
+    { label: '待审核', value: o.delivered_orders, color: 'text-warning' },
     { label: '已完成', value: o.completed_orders, color: 'text-success' },
     { label: '争议', value: o.disputed_orders, color: 'text-danger' },
   ]
@@ -68,7 +69,7 @@ const orderTrendOption = computed(() => {
   return {
     backgroundColor: 'transparent',
     tooltip: { trigger: 'axis' },
-    legend: { data: ['订单数', '金额'], textStyle: { color: c.ink2 } },
+    legend: { data: ['派单数', '金额'], textStyle: { color: c.ink2 } },
     grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
     xAxis: {
       type: 'category',
@@ -77,12 +78,12 @@ const orderTrendOption = computed(() => {
       axisLine: { lineStyle: { color: c.line2 } },
     },
     yAxis: [
-      { type: 'value', name: '订单数', axisLabel: { color: c.ink2 }, splitLine: { lineStyle: { color: c.line1 } } },
+      { type: 'value', name: '派单数', axisLabel: { color: c.ink2 }, splitLine: { lineStyle: { color: c.line1 } } },
       { type: 'value', name: '金额(¥)', axisLabel: { color: c.ink2 }, splitLine: { show: false } },
     ],
     series: [
       {
-        name: '订单数',
+        name: '派单数',
         type: 'bar',
         data: pts.map((p) => p.count),
         itemStyle: { color: c.primary, borderRadius: [4, 4, 0, 0] },
@@ -277,7 +278,7 @@ onBeforeUnmount(() => {
       <div class="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
         <section class="surface-card p-5">
           <div class="flex flex-wrap items-center justify-between gap-3">
-            <h3 class="text-lg font-semibold text-ink-1">订单趋势</h3>
+            <h3 class="text-lg font-semibold text-ink-1">派单趋势</h3>
             <div class="flex gap-2">
               <button
                 v-for="p in ['day', 'week', 'month']"
@@ -319,7 +320,7 @@ onBeforeUnmount(() => {
 
       <!-- Booster ranking table -->
       <section class="surface-card p-5">
-        <h3 class="text-lg font-semibold text-ink-1">代练排行榜</h3>
+        <h3 class="text-lg font-semibold text-ink-1">打手排行榜</h3>
 
         <div v-if="!boosterRank?.items?.length" class="empty-state mt-4 !py-10">
           <div class="empty-state__icon !h-11 !w-11 !text-lg" aria-hidden="true">🏆</div>
@@ -331,7 +332,7 @@ onBeforeUnmount(() => {
             <thead>
               <tr>
                 <th>#</th>
-                <th>代练</th>
+                <th>打手</th>
                 <th>信誉</th>
                 <th>等级</th>
                 <th>完成</th>

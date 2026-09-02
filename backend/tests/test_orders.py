@@ -21,8 +21,8 @@ async def _create_order(client: AsyncClient, user_data: dict) -> dict:
     return resp.json()
 
 
-async def test_create_order(client: AsyncClient, registered_user: dict):
-    order = await _create_order(client, registered_user)
+async def test_create_order(client: AsyncClient, admin_user: dict):
+    order = await _create_order(client, admin_user)
     assert order["status"] == "PENDING"
     assert order["game_name"] == "王者荣耀"
     assert order["payment_status"] == "UNPAID"
@@ -39,9 +39,9 @@ async def test_create_order_no_auth(client: AsyncClient):
 
 
 async def test_accept_order(
-    client: AsyncClient, registered_user: dict, booster_user: dict
+    client: AsyncClient, admin_user: dict, booster_user: dict
 ):
-    order = await _create_order(client, registered_user)
+    order = await _create_order(client, admin_user)
     resp = await client.put(
         f"/orders/{order['id']}/accept",
         headers=auth_header(booster_user),
@@ -51,9 +51,10 @@ async def test_accept_order(
 
 
 async def test_accept_order_non_booster(
-    client: AsyncClient, registered_user: dict
+    client: AsyncClient, registered_user: dict, admin_user: dict
 ):
-    order = await _create_order(client, registered_user)
+    """新权限模型：注册用户（USER 角色）无需打手身份即可抢单；管理员不能接单。"""
+    order = await _create_order(client, admin_user)
 
     # Register a second regular user
     resp = await client.post("/auth/register", json={
@@ -63,18 +64,33 @@ async def test_accept_order_non_booster(
     })
     regular = resp.json()
 
+    # 普通用户可直接抢单（人人皆打手）
     resp = await client.put(
         f"/orders/{order['id']}/accept",
         headers=auth_header(regular),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "LOCKED"
+
+
+async def test_accept_order_rejects_admin(
+    client: AsyncClient, admin_user: dict
+):
+    """管理员（老板）不能作为打手接自己的单：403。"""
+    order = await _create_order(client, admin_user)
+
+    resp = await client.put(
+        f"/orders/{order['id']}/accept",
+        headers=auth_header(admin_user),
     )
     assert resp.status_code == 403
 
 
 async def test_deliver_order(
-    client: AsyncClient, registered_user: dict, booster_user: dict
+    client: AsyncClient, admin_user: dict, booster_user: dict
 ):
     """Booster delivers order -> status becomes DELIVERED."""
-    order = await _create_order(client, registered_user)
+    order = await _create_order(client, admin_user)
     await client.put(
         f"/orders/{order['id']}/accept",
         headers=auth_header(booster_user),
@@ -88,10 +104,10 @@ async def test_deliver_order(
 
 
 async def test_confirm_order(
-    client: AsyncClient, registered_user: dict, booster_user: dict
+    client: AsyncClient, admin_user: dict, booster_user: dict
 ):
-    """Customer confirms delivered order -> status becomes COMPLETED."""
-    order = await _create_order(client, registered_user)
+    """Boss confirms delivered order -> status becomes COMPLETED."""
+    order = await _create_order(client, admin_user)
     await client.put(
         f"/orders/{order['id']}/accept",
         headers=auth_header(booster_user),
@@ -102,17 +118,17 @@ async def test_confirm_order(
     )
     resp = await client.put(
         f"/orders/{order['id']}/confirm",
-        headers=auth_header(registered_user),
+        headers=auth_header(admin_user),
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "COMPLETED"
 
 
-async def test_pay_order(client: AsyncClient, registered_user: dict):
-    order = await _create_order(client, registered_user)
+async def test_pay_order(client: AsyncClient, admin_user: dict):
+    order = await _create_order(client, admin_user)
     resp = await client.put(
         f"/orders/{order['id']}/pay",
-        headers=auth_header(registered_user),
+        headers=auth_header(admin_user),
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -194,11 +210,19 @@ async def test_booster_cannot_create_order(client: AsyncClient, booster_user: di
     assert resp.status_code == 403
 
 
-async def test_user_create_order_unaffected(client: AsyncClient, registered_user: dict):
-    """普通用户下单逻辑不受管理员放开影响。"""
-    order = await _create_order(client, registered_user)
-    assert order["status"] == "PENDING"
-    assert order["booster_id"] is None
+async def test_user_cannot_create_order(client: AsyncClient, registered_user: dict):
+    """发单已收敛为管理员（老板）专属：普通用户下单返回 403。"""
+    resp = await client.post(
+        "/orders/create",
+        json={
+            "game_name": "王者荣耀",
+            "current_rank": "钻石",
+            "target_rank": "王者",
+            "price": "500.00",
+        },
+        headers=auth_header(registered_user),
+    )
+    assert resp.status_code == 403
 
 
 async def test_admin_create_order_notifies_boosters(

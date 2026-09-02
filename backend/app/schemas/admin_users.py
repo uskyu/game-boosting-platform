@@ -49,11 +49,15 @@ class AdminUserDetailResponse(AdminUserResponse):
 
 
 class AdminUserUpdate(BaseModel):
-    """Fields an administrator may edit; email and role are intentionally absent."""
+    """Fields an administrator may edit; email is intentionally absent.
+
+    role 仅支持两态：ADMIN（管理员）/ BOOSTER（打手，即普通接单用户）。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     username: str | None = Field(default=None, min_length=2, max_length=50)
+    role: UserRole | None = None
     phone: str | None = Field(default=None, max_length=20)
     bio: str | None = Field(default=None, max_length=500)
     is_verified: bool | None = None

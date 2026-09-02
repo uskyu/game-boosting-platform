@@ -35,7 +35,7 @@ class DashboardService:
         user_count_q = select(func.count()).select_from(User)
         total_users = (await self.db.execute(user_count_q)).scalar_one()
 
-        booster_count_q = select(func.count()).where(User.role == UserRole.BOOSTER)
+        booster_count_q = select(func.count()).where(User.role != UserRole.ADMIN)
         total_boosters = (await self.db.execute(booster_count_q)).scalar_one()
 
         # Order counts
@@ -50,14 +50,14 @@ class DashboardService:
         status_map = {row.status: row.cnt for row in status_rows}
 
         pending = status_map.get(OrderStatus.PENDING, 0)
-        active = status_map.get(OrderStatus.LOCKED, 0) + status_map.get(OrderStatus.DELIVERED, 0)
+        active = status_map.get(OrderStatus.LOCKED, 0)
+        delivered = status_map.get(OrderStatus.DELIVERED, 0)
         completed = status_map.get(OrderStatus.COMPLETED, 0)
         disputed = status_map.get(OrderStatus.DISPUTED, 0)
 
-        # Revenue from completed + paid orders
+        # 成交额：已完结派单的报酬总额（派单平台不走前置支付，按完结口径统计）
         revenue_q = select(func.coalesce(func.sum(Order.price), 0)).where(
             Order.status == OrderStatus.COMPLETED,
-            Order.payment_status == PaymentStatus.PAID,
         )
         total_revenue = float((await self.db.execute(revenue_q)).scalar_one())
 
@@ -68,6 +68,7 @@ class DashboardService:
             total_revenue=total_revenue,
             pending_orders=pending,
             active_orders=active,
+            delivered_orders=delivered,
             completed_orders=completed,
             disputed_orders=disputed,
         )
@@ -152,7 +153,7 @@ class DashboardService:
                 func.coalesce(revenue_sub.c.total_revenue, 0).label("total_revenue"),
             )
             .outerjoin(revenue_sub, User.id == revenue_sub.c.booster_id)
-            .where(User.role.in_([UserRole.BOOSTER, UserRole.ADMIN]))
+            .where(User.role != UserRole.ADMIN)
             .order_by(User.total_completed.desc(), User.credit_score.desc())
             .limit(limit)
         )

@@ -257,6 +257,18 @@ class OrderDeliverRequest(BaseModel):
     notes: str | None = Field(default=None, max_length=2000)
 
 
+class OrderConfirmRequest(BaseModel):
+    """老板确认完成时的打款参数。
+
+    amount 缺省表示审核通过、按订单全额结算；
+    传入金额表示部分到账（0 < amount <= 订单价格）。
+    note 为打款备注，随钱包流水留存。
+    """
+
+    amount: Decimal | None = Field(default=None, gt=0)
+    note: str | None = Field(default=None, max_length=500)
+
+
 # =============================================================================
 # OUTPUT SCHEMAS (Response Bodies)
 # =============================================================================

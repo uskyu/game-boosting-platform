@@ -338,10 +338,18 @@ class WalletService:
     # Order settlement
     # ------------------------------------------------------------------
 
-    async def settle_order_income(self, order: Order) -> Optional[WalletTransaction]:
+    async def settle_order_income(
+        self,
+        order: Order,
+        payout_amount: Decimal | None = None,
+        note: str | None = None,
+    ) -> Optional[WalletTransaction]:
         """
-        Credit the booster's income for a completed order:
-        order.price * (1 - COMMISSION_RATE), rounded to cents.
+        Credit the booster's income for a completed order.
+
+        Default income: order.price * (1 - COMMISSION_RATE), rounded to cents.
+        payout_amount（部分到账）直接覆盖该金额，不再计佣金。
+        note 为老板打款备注，写入流水 remark 留存。
 
         Idempotent via the (order_id, type='ORDER_INCOME') unique constraint:
         if the ledger row already exists the duplicate-key error is caught
@@ -360,10 +368,19 @@ class WalletService:
         if existing.scalar_one_or_none() is not None:
             return None
 
-        commission_rate = Decimal(str(settings.COMMISSION_RATE))
-        income = (
-            _to_decimal(order.price) * (Decimal("1") - commission_rate)
-        ).quantize(_CENT, rounding=ROUND_HALF_UP)
+        if payout_amount is not None:
+            income = Decimal(str(payout_amount)).quantize(_CENT, rounding=ROUND_HALF_UP)
+            remark = f"订单 #{order.id} 部分到账"
+            if note:
+                remark = f"{remark}：{note}"
+        else:
+            commission_rate = Decimal(str(settings.COMMISSION_RATE))
+            income = (
+                _to_decimal(order.price) * (Decimal("1") - commission_rate)
+            ).quantize(_CENT, rounding=ROUND_HALF_UP)
+            remark = f"订单 #{order.id} 结算收入"
+            if note:
+                remark = f"{remark}：{note}"
 
         try:
             async with self._db.begin_nested():
@@ -373,7 +390,7 @@ class WalletService:
                     amount=income,
                     tx_type=WalletTransactionType.ORDER_INCOME,
                     order_id=order.id,
-                    remark=f"订单 #{order.id} 结算收入",
+                    remark=remark,
                 )
                 return transaction
         except IntegrityError:

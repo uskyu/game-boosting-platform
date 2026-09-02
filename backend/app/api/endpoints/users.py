@@ -129,10 +129,10 @@ async def get_booster_profile(
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
 
-    if user is None or user.role not in (UserRole.BOOSTER, UserRole.ADMIN):
+    if user is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="代练不存在",
+            detail="用户不存在",
         )
 
     return BoosterProfileResponse.model_validate(user)

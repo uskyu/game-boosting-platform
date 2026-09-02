@@ -17,7 +17,8 @@ export const useAuthStore = defineStore('auth', () => {
 
   // Getters
   const isAuthenticated = computed(() => !!accessToken.value && !!user.value)
-  const isBooster = computed(() => user.value?.role === 'BOOSTER')
+  // 平台模型：管理员（老板）发单，其余注册用户一律视为打手，可抢单/交付/提现
+  const isBooster = computed(() => !!user.value && user.value.role !== 'ADMIN')
   const isAdmin = computed(() => user.value?.role === 'ADMIN')
   const userRole = computed(() => user.value?.role || null)
 

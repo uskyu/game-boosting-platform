@@ -10,7 +10,7 @@ import { useChatStore } from '@/stores/chat'
 import { useOrdersStore } from '@/stores/orders'
 import { getGameImage } from '@/data/gameImages'
 import api from '@/utils/api'
-import { formatDateTime, formatPrice } from '@/utils/display'
+import { formatDateTime, formatPrice, formatShortDate } from '@/utils/display'
 import { getOrderStatusBadgeClass, getOrderStatusLabel, getOrderStatusMeta, getHumanStatusLabel, getHumanStatusSubtitle } from '@/utils/order'
 
 const props = defineProps({
@@ -379,16 +379,16 @@ onMounted(async () => {
             <p class="break-words text-sm text-ink-2">{{ order.intro || compactSummary() }}</p>
           </div>
 
-          <!-- 统计卡 2×2：移动端不再纵向堆叠占屏 -->
+          <!-- 统计卡 2×2：四卡等尺寸（单行值+截断），移动端不再纵向堆叠占屏 -->
           <div class="grid grid-cols-2 gap-3 sm:gap-4">
             <article v-for="item in [
                 { icon: 'S', label: '服务', value: order.service_type || '未指定' },
                 { icon: 'R', label: '区服', value: order.server || '未指定' },
                 { icon: '$', label: '金额', value: formatPrice(order.price), valueClass: 'text-price' },
-                { icon: 'T', label: '发布时间', value: formatDateTime(order.created_at) },
-              ]" :key="item.label" class="stat-card flex items-center gap-3 sm:gap-4">
+                { icon: 'T', label: '发布时间', value: formatShortDate(order.created_at) },
+              ]" :key="item.label" class="stat-card flex h-16 items-center gap-3 overflow-hidden sm:h-[4.5rem] sm:gap-4">
               <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-tile border border-line-1 bg-primary-soft text-base font-semibold text-primary sm:h-11 sm:w-11 sm:text-lg">{{ item.icon }}</div>
-              <div class="min-w-0"><p class="text-xs uppercase tracking-[0.12em] text-ink-3">{{ item.label }}</p><p class="mt-1.5 break-words text-sm font-medium tabular-nums text-ink-1 sm:mt-2" :class="item.valueClass">{{ item.value }}</p></div>
+              <div class="min-w-0 flex-1"><p class="text-xs uppercase tracking-[0.12em] text-ink-3">{{ item.label }}</p><p class="mt-1.5 truncate text-sm font-medium tabular-nums text-ink-1 sm:mt-2" :class="item.valueClass">{{ item.value }}</p></div>
             </article>
           </div>
         </div>

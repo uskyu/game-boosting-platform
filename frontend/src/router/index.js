@@ -145,6 +145,13 @@ const routes = [
     meta: { title: '管理台', requiresAuth: true, adminOnly: true },
   },
   {
+    path: '/admin/dispatch/:id',
+    name: 'admin-dispatch-detail',
+    component: () => import('@/views/AdminDispatchDetail.vue'),
+    meta: { title: '派单处理', requiresAuth: true, adminOnly: true },
+    props: true,
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFound.vue'),

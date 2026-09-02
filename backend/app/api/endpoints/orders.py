@@ -25,6 +25,7 @@ from app.schemas.order import (
     OrderAnalyzeRequest,
     OrderClaimItem,
     OrderClaimListResponse,
+    OrderConfirmRequest,
     OrderCreate,
     OrderDeliverRequest,
     OrderListResponse,
@@ -561,22 +562,29 @@ async def deliver_order(
     "/{order_id}/confirm",
     response_model=OrderResponse,
     summary="确认完成",
-    description="客户确认订单完成",
+    description="老板确认订单完成；可携带 amount 部分到账与 note 打款备注",
 )
 async def confirm_order(
     order_id: int,
     current_user: CurrentUser,
     db: DatabaseSession,
+    payload: OrderConfirmRequest | None = None,
 ) -> OrderResponse:
     """
-    Customer confirms order completion.
+    Boss confirms order completion.
 
     - Only order owner or admin can confirm
     - Only DELIVERED orders can be confirmed
+    - payload.amount（可选）：部分到账金额，缺省全额结算
+    - payload.note（可选）：打款备注，随钱包流水留存
     """
     order_service = get_order_service(db)
 
-    order = await order_service.confirm_order(order_id, current_user)
+    payout_amount = payload.amount if payload else None
+    note = (payload.note or None) if payload else None
+    order = await order_service.confirm_order(
+        order_id, current_user, payout_amount=payout_amount, note=note
+    )
     await send_order_system_message(
         db=db,
         order_id=order.id,

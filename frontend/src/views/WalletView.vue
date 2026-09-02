@@ -1,6 +1,8 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 
+import api from '@/utils/api'
+import { useAuthStore } from '@/stores/auth'
 import { useWalletStore } from '@/stores/wallet'
 import {
   TRANSACTION_TYPE_META,
@@ -13,6 +15,24 @@ import {
 import { formatCount, formatDateTime, formatPrice } from '@/utils/display'
 
 const walletStore = useWalletStore()
+const authStore = useAuthStore()
+
+// 审核中订单：打手已提交结束汇报、等待老板确认打款的订单
+const reviewOrders = ref([])
+const reviewLoading = ref(false)
+
+async function fetchReviewOrders() {
+  if (authStore.isAdmin) return
+  reviewLoading.value = true
+  try {
+    const res = await api.get('/orders/', { params: { status: 'DELIVERED', page: 1, page_size: 10 } })
+    reviewOrders.value = res.data?.items || []
+  } catch {
+    reviewOrders.value = []
+  } finally {
+    reviewLoading.value = false
+  }
+}
 
 const withdrawForm = ref({ amount: '', channel: 'ALIPAY', account_name: '', account_no: '' })
 const formErrors = ref({})
@@ -139,7 +159,8 @@ async function refreshAll() {
 }
 
 onMounted(() => {
-  refreshAll()
+  // 并行拉取：钱包数据与审核中订单互不依赖，串行会放大远程库延迟
+  Promise.all([refreshAll(), fetchReviewOrders()])
 })
 </script>
 
@@ -159,6 +180,38 @@ onMounted(() => {
           </article>
         </div>
       </div>
+    </section>
+
+    <!-- 审核中订单：已提交汇报、等待老板打款的订单 -->
+    <section v-if="!authStore.isAdmin" class="surface-card p-6 sm:p-8">
+      <div class="flex items-center justify-between gap-4">
+        <h2 class="text-lg font-semibold text-ink-1">审核中的订单</h2>
+        <span v-if="reviewOrders.length" class="tag !bg-warning-soft !text-warning tabular-nums">{{ reviewOrders.length }} 单待审核</span>
+      </div>
+      <p class="mt-1 text-sm text-ink-3">你已提交结束汇报，老板确认打款后报酬会计入余额。</p>
+
+      <div v-if="reviewLoading" class="mt-4 space-y-2" aria-busy="true">
+        <div v-for="n in 2" :key="`review-skeleton-${n}`" class="skeleton h-14 !rounded-tile"></div>
+      </div>
+      <div v-else-if="!reviewOrders.length" class="empty-state mt-4">
+        <div class="empty-state__icon" aria-hidden="true">📭</div>
+        <h4 class="empty-state__title">暂无审核中的订单</h4>
+        <p class="empty-state__copy">完成订单并提交汇报后，会在这里等待老板审核。</p>
+      </div>
+      <ul v-else class="mt-4 space-y-2">
+        <li v-for="order in reviewOrders" :key="order.id" class="claims-item">
+          <router-link :to="{ name: 'order-detail', params: { id: order.id } }" class="flex items-center justify-between gap-3">
+            <div class="min-w-0">
+              <p class="truncate text-sm font-semibold text-ink-1">{{ order.title || `${order.current_rank || '?'} → ${order.target_rank || '?'}` }}</p>
+              <p class="mt-1 text-xs text-ink-3">#{{ order.id }} · {{ order.game_name }}<template v-if="order.delivered_at"> · 提交于 {{ formatDateTime(order.delivered_at) }}</template></p>
+            </div>
+            <div class="shrink-0 text-right">
+              <p class="text-sm font-semibold tabular-nums text-price">{{ formatPrice(order.price) }}</p>
+              <p class="mt-0.5 text-xs text-warning">待老板审核</p>
+            </div>
+          </router-link>
+        </li>
+      </ul>
     </section>
 
     <div class="wallet-grid">
@@ -358,3 +411,13 @@ onMounted(() => {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* 审核中订单列表项（与运营台同款卡片样式） */
+.claims-item {
+  border-radius: 14px;
+  border: 1px solid var(--line-1);
+  background: var(--surface-2);
+  padding: 12px;
+}
+</style>

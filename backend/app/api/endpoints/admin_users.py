@@ -22,6 +22,7 @@ from app.schemas.admin_users import (
     AdminUserStatusRequest,
     AdminUserUpdate,
 )
+from app.schemas.wallet import WalletTransactionListResponse, WalletTransactionResponse
 from app.services.user_service import get_user_service
 from app.services.wallet_service import get_wallet_service
 
@@ -111,6 +112,11 @@ async def update_admin_user(
     data = payload.model_dump(exclude_unset=True)
     if not data:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="没有可更新的字段")
+    if data.get("role") is not None:
+        if user_id == current_admin.id and data["role"] != UserRole.ADMIN:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能降级自己的管理员角色")
+        if data["role"] not in (UserRole.ADMIN, UserRole.BOOSTER):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="角色仅支持 管理员/打手 两种")
     new_username = data.get("username")
     if new_username is not None and new_username != user.username:
         duplicate = await db.execute(
@@ -175,4 +181,28 @@ async def adjust_admin_user_balance(
         total_income=wallet.total_income,
         total_withdrawn=wallet.total_withdrawn,
         transaction_id=transaction.id,
+    )
+
+
+@router.get("/{user_id}/transactions", response_model=WalletTransactionListResponse)
+async def list_admin_user_transactions(
+    user_id: int,
+    db: DatabaseSession,
+    current_admin: Annotated[User, Depends(get_current_admin)],
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> WalletTransactionListResponse:
+    """指定用户的余额增减明细（时间倒序，含关联订单号与备注）。"""
+    await _load_user(user_id, db)
+    wallet_service = get_wallet_service(db)
+    transactions, total = await wallet_service.list_transactions(
+        user_id, page=page, page_size=page_size
+    )
+    pages = (total + page_size - 1) // page_size
+    return WalletTransactionListResponse(
+        items=[WalletTransactionResponse.model_validate(tx) for tx in transactions],
+        total=total,
+        page=page,
+        page_size=page_size,
+        pages=pages,
     )

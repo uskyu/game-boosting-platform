@@ -7,7 +7,6 @@ import { useChatStore } from '@/stores/chat'
 import { useOrdersStore } from '@/stores/orders'
 import { formatCount, formatPrice, formatShortDate } from '@/utils/display'
 import { ORDER_STATUS_OPTIONS, getOrderStatusBadgeClass, getOrderStatusLabel } from '@/utils/order'
-import { getGameImage } from '@/data/gameImages'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -44,16 +43,6 @@ const headerStats = computed(() => [
 
 function getOrderUnreadCount(orderId) {
   return Number(unreadMap.value[orderId] || 0)
-}
-
-function gameBadgeStyle(gameName) {
-  const { color } = getGameImage(gameName)
-
-  // 游戏主题色为内容资产：品牌色淡底，无发光
-  return {
-    borderColor: `${color}66`,
-    background: `linear-gradient(135deg, ${color}22, ${color}10)`,
-  }
 }
 
 function buildSummary(order) {
@@ -126,8 +115,11 @@ watch(searchGame, () => {
 
 onMounted(async () => {
   fetchOrders()
-  await chatStore.fetchConversations({ pageSize: 100 })
-  await chatStore.fetchUnreadSummary()
+  // 并行拉取：会话列表与未读数互不依赖
+  await Promise.all([
+    chatStore.fetchConversations({ pageSize: 100 }),
+    chatStore.fetchUnreadSummary(),
+  ])
 })
 
 onUnmounted(() => {
@@ -137,32 +129,15 @@ onUnmounted(() => {
 
 <template>
   <div class="page-shell space-y-6">
-    <section class="hero-panel p-6 sm:p-8">
-      <div class="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-        <div class="space-y-3">
-          <p class="eyebrow">我的订单</p>
-          <h1 class="section-title">订单列表</h1>
-          <p class="section-copy max-w-xl">全部需求的列表视图，可按游戏与状态筛选。</p>
+    <section class="surface-card p-4 sm:p-5">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div class="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+          <h1 class="text-lg font-semibold text-ink-1">我的订单</h1>
+          <p class="text-xs tabular-nums text-ink-3">
+            当前页 {{ headerStats[0].value }} · 待接单 {{ headerStats[1].value }} · 进行中 {{ headerStats[2].value }}
+          </p>
         </div>
-
-        <router-link
-          v-if="!isBooster && !isAdmin"
-          to="/orders/create"
-          class="btn-primary shrink-0 self-start px-6"
-        >
-          发布需求
-        </router-link>
-      </div>
-
-      <div class="mt-6 grid grid-cols-3 gap-3 sm:gap-4">
-        <article
-          v-for="item in headerStats"
-          :key="item.label"
-          class="stat-card"
-        >
-          <p class="stat-value text-ink-1">{{ item.value }}</p>
-          <p class="mt-1.5 text-[13px] text-ink-2">{{ item.label }}</p>
-        </article>
+        <router-link v-if="isAdmin" to="/orders/create" class="btn-primary shrink-0 !px-4 !py-2">发布订单</router-link>
       </div>
     </section>
 
@@ -212,14 +187,7 @@ onUnmounted(() => {
       >
         <div class="flex items-start justify-between gap-4">
           <div class="flex items-start gap-4">
-            <div
-              class="flex h-14 w-14 items-center justify-center rounded-tile border text-lg font-semibold text-ink-1"
-              :style="gameBadgeStyle(order.game_name)"
-            >
-              {{ order.game_name?.slice(0, 1) || '?' }}
-            </div>
-
-              <div class="space-y-3">
+            <div class="min-w-0 space-y-3">
               <div class="flex flex-wrap items-center gap-2">
                 <h2 class="text-xl font-semibold text-ink-1">{{ order.game_name }}</h2>
                 <span v-if="getOrderUnreadCount(order.id)" class="tag !bg-warning-soft !text-warning">
@@ -233,17 +201,6 @@ onUnmounted(() => {
           <div class="flex flex-wrap items-center justify-end gap-2">
             <span :class="getOrderStatusBadgeClass(order.status)">
               {{ getOrderStatusLabel(order.status) }}
-            </span>
-            <span
-              v-if="order.payment_status"
-              :class="{
-                tag: true,
-                '!bg-warning-soft !text-warning': order.payment_status === 'UNPAID',
-                '!bg-success-soft !text-success': order.payment_status === 'PAID',
-                '!bg-surface-3 !text-ink-2': order.payment_status === 'REFUNDED',
-              }"
-            >
-              {{ order.payment_status === 'UNPAID' ? '待支付' : order.payment_status === 'PAID' ? '已支付' : '已退款' }}
             </span>
           </div>
         </div>

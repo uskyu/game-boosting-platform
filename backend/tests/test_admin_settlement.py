@@ -28,7 +28,7 @@ async def test_admin_completion_credits_assigned_booster(
     booster_user: dict,
     admin_user: dict,
 ):
-    order = await _create_order(client, registered_user)
+    order = await _create_order(client, admin_user)
     response = await client.put(
         f"/orders/{order['id']}/accept",
         headers=auth_header(booster_user),
@@ -62,7 +62,7 @@ async def test_repeated_admin_completion_does_not_double_credit(
     booster_user: dict,
     admin_user: dict,
 ):
-    order = await _create_order(client, registered_user)
+    order = await _create_order(client, admin_user)
     response = await client.put(
         f"/orders/{order['id']}/accept",
         headers=auth_header(booster_user),
@@ -94,7 +94,7 @@ async def test_admin_completion_without_booster_is_safe(
     registered_user: dict,
     admin_user: dict,
 ):
-    order = await _create_order(client, registered_user)
+    order = await _create_order(client, admin_user)
     response = await client.put(
         f"/admin/orders/{order['id']}/intervene",
         json={"action": "COMPLETED", "reason": "无接单人，管理员处理"},
@@ -104,12 +104,12 @@ async def test_admin_completion_without_booster_is_safe(
     assert response.json()["status"] == "COMPLETED"
 
 
-async def test_normal_customer_confirmation_still_settles(
+async def test_owner_confirmation_still_settles(
     client: AsyncClient,
-    registered_user: dict,
     booster_user: dict,
+    admin_user: dict,
 ):
-    order = await _create_order(client, registered_user)
+    order = await _create_order(client, admin_user)
     for action in ("accept", "deliver"):
         response = await client.put(
             f"/orders/{order['id']}/{action}",
@@ -119,7 +119,7 @@ async def test_normal_customer_confirmation_still_settles(
 
     response = await client.put(
         f"/orders/{order['id']}/confirm",
-        headers=auth_header(registered_user),
+        headers=auth_header(admin_user),
     )
     assert response.status_code == 200
     assert response.json()["status"] == "COMPLETED"

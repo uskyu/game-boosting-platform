@@ -72,9 +72,10 @@ async def notify_boosters_new_order(
     Returns:
         实际写入的通知条数。
     """
+    # 平台模型：管理员发单，其余注册用户均为打手，全部纳入通知范围
     result = await db.execute(
         select(User.id).where(
-            User.role == UserRole.BOOSTER,
+            User.role != UserRole.ADMIN,
             User.is_active.is_(True),
         )
     )

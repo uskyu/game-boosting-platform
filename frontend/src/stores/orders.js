@@ -268,12 +268,13 @@ export const useOrdersStore = defineStore('orders', () => {
     }
   }
 
-  async function confirmOrder(orderId) {
+  // payload: { amount?: number|string, note?: string } —— amount 缺省全额结算
+  async function confirmOrder(orderId, payload = null) {
     loading.value = true
     error.value = null
 
     try {
-      const response = await api.put(`/orders/${orderId}/confirm`)
+      const response = await api.put(`/orders/${orderId}/confirm`, payload || {})
 
       const index = orders.value.findIndex(o => o.id === orderId)
       if (index !== -1) {

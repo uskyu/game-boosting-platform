@@ -8,11 +8,12 @@ class OverviewStats(BaseModel):
     """Platform-wide overview numbers."""
 
     total_users: int = Field(description="总用户数")
-    total_boosters: int = Field(description="代练总数")
+    total_boosters: int = Field(description="打手数（非管理员用户）")
     total_orders: int = Field(description="订单总数")
     total_revenue: float = Field(description="总收入(已完成)")
     pending_orders: int = Field(description="待接单数")
     active_orders: int = Field(description="进行中订单")
+    delivered_orders: int = Field(description="待审核订单（打手已交单）")
     completed_orders: int = Field(description="已完成订单")
     disputed_orders: int = Field(description="争议订单")
 

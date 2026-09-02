@@ -622,10 +622,10 @@ class OrderService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="目标用户不存在",
             )
-        if locked_booster.role != UserRole.BOOSTER:
+        if locked_booster.role == UserRole.ADMIN:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="只能派单给代练角色用户",
+                detail="管理员账号不能作为打手接单",
             )
         if not locked_booster.is_active:
             raise HTTPException(
@@ -737,30 +737,40 @@ class OrderService:
 
         return order
 
-    async def settle_order_income(self, order: Order) -> None:
+    async def settle_order_income(
+        self,
+        order: Order,
+        payout_amount: Decimal | None = None,
+        note: str | None = None,
+    ) -> None:
         """Settle an order's booster income when business rules allow it.
 
         Settlement is deliberately kept on the order service so every order
         completion path uses the same transaction and idempotent wallet logic.
         Existing completion rules permit settlement without requiring a paid
         status, while orders without an assigned booster are a safe no-op.
+        payout_amount 覆盖默认全额结算（审核部分到账时传入）。
         """
         if order.booster_id is None:
             return
         wallet_service = get_wallet_service(self._db)
-        await wallet_service.settle_order_income(order)
+        await wallet_service.settle_order_income(order, payout_amount=payout_amount, note=note)
 
     async def confirm_order(
         self,
         order_id: int,
         user: User,
+        payout_amount: Decimal | None = None,
+        note: str | None = None,
     ) -> Order:
         """
-        Customer confirms order completion. Increments service order_count.
+        Boss confirms order completion. Increments service order_count.
 
         Args:
-            order_id: Order ID to confirm.
+            order_id: int - Order ID to confirm.
             user: User confirming (must be order owner or admin).
+            payout_amount: Decimal | None - 部分到账金额；缺省按订单全额结算。
+            note: str | None - 打款备注，随钱包流水留存。
 
         Returns:
             Updated Order instance.
@@ -787,6 +797,17 @@ class OrderService:
                 detail="只有下单用户才能确认完成",
             )
 
+        if payout_amount is not None:
+            # 区间价订单按最高价作为上限
+            price = Decimal(str(order.price))
+            if order.price_max is not None:
+                price = max(price, Decimal(str(order.price_max)))
+            if payout_amount > price:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"到账金额不能超过订单报酬 {price}",
+                )
+
         order.status = OrderStatus.COMPLETED
         order.completed_at = datetime.now(timezone.utc)
 
@@ -802,7 +823,7 @@ class OrderService:
         # Settle booster income in the same transaction (DELIVERED -> COMPLETED).
         # Idempotent via the (order_id, ORDER_INCOME) unique constraint, so a
         # duplicate settle call is a no-op instead of double-crediting.
-        await self.settle_order_income(order)
+        await self.settle_order_income(order, payout_amount=payout_amount, note=note)
 
         await self._db.refresh(order)
 
