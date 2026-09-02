@@ -42,10 +42,8 @@ services:
   # Backend Service - FastAPI
   # ===========================================================================
   backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-      target: production
+    image: ${BACKEND_IMAGE:-ghcr.io/uskyu/game-boosting-platform-backend:latest}
+    pull_policy: always
     container_name: game-boosting-backend
     restart: unless-stopped
     environment:
@@ -86,10 +84,8 @@ services:
   # Frontend Service - Vue.js + Nginx
   # ===========================================================================
   frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-      target: production
+    image: ${FRONTEND_IMAGE:-ghcr.io/uskyu/game-boosting-platform-frontend:latest}
+    pull_policy: always
     container_name: game-boosting-frontend
     restart: unless-stopped
     ports:
