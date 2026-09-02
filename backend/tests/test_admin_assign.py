@@ -41,24 +41,41 @@ async def test_assign_order_locks_order(
     assert data["locked_at"] is not None
 
 
-async def test_assign_rejects_non_booster_user(
+async def test_assign_regular_user_as_booster(
     client: AsyncClient, registered_user: dict, admin_user: dict
 ):
-    """A regular USER cannot be assigned an order."""
+    """Any registered non-admin user acts as a booster and can be assigned."""
     order = await _create_order(client, admin_user)
 
-    # A second regular user
+    # A second regular user: serialized as BOOSTER (non-admin = booster)
     resp = await client.post("/auth/register", json={
         "email": "plain@example.com",
         "username": "PlainUser",
         "password": "PlainPass1",
     })
     plain = resp.json()
-    assert plain["user"]["role"] == "USER"
+    assert plain["user"]["role"] == "BOOSTER"
 
     resp = await client.put(
         f"/admin/orders/{order['id']}/assign",
         json={"booster_id": plain["user"]["id"]},
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "LOCKED"
+    assert data["booster_id"] == plain["user"]["id"]
+
+
+async def test_assign_rejects_admin_account(
+    client: AsyncClient, admin_user: dict
+):
+    """Admin accounts cannot be assigned as boosters."""
+    order = await _create_order(client, admin_user)
+
+    resp = await client.put(
+        f"/admin/orders/{order['id']}/assign",
+        json={"booster_id": admin_user["user"]["id"]},
         headers=auth_header(admin_user),
     )
     assert resp.status_code == 400

@@ -12,11 +12,11 @@ from tests.conftest import auth_header
 
 async def _full_completed_order(
     client: AsyncClient,
-    registered_user: dict,
+    admin_user: dict,
     booster_user: dict,
     price: str = "500.00",
 ) -> dict:
-    """Helper: create order, booster accepts + delivers, customer confirms."""
+    """Helper: boss creates order, booster accepts + delivers, boss confirms."""
     resp = await client.post(
         "/orders/create",
         json={
@@ -25,7 +25,7 @@ async def _full_completed_order(
             "target_rank": "王者",
             "price": price,
         },
-        headers=auth_header(registered_user),
+        headers=auth_header(admin_user),
     )
     assert resp.status_code == 201
     order = resp.json()
@@ -39,7 +39,7 @@ async def _full_completed_order(
     )
     assert resp.status_code == 200
     resp = await client.put(
-        f"/orders/{order['id']}/confirm", headers=auth_header(registered_user)
+        f"/orders/{order['id']}/confirm", headers=auth_header(admin_user)
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "COMPLETED"
@@ -47,10 +47,10 @@ async def _full_completed_order(
 
 
 async def test_confirm_order_credits_booster_wallet(
-    client: AsyncClient, registered_user: dict, booster_user: dict
+    client: AsyncClient, admin_user: dict, booster_user: dict
 ):
     """Order completion credits the booster wallet with price - commission."""
-    order = await _full_completed_order(client, registered_user, booster_user, "500.00")
+    order = await _full_completed_order(client, admin_user, booster_user, "500.00")
 
     resp = await client.get("/wallet", headers=auth_header(booster_user))
     assert resp.status_code == 200
@@ -76,12 +76,12 @@ async def test_confirm_order_credits_booster_wallet(
 
 async def test_duplicate_settle_does_not_double_credit(
     client: AsyncClient,
-    registered_user: dict,
+    admin_user: dict,
     booster_user: dict,
     db_session,
 ):
     """Re-settling the same order must be a no-op (idempotent)."""
-    order = await _full_completed_order(client, registered_user, booster_user, "500.00")
+    order = await _full_completed_order(client, admin_user, booster_user, "500.00")
 
     # Call the settlement service again against the same order
     from app.services.wallet_service import get_wallet_service
@@ -95,7 +95,7 @@ async def test_duplicate_settle_does_not_double_credit(
 
     # Also a second confirm attempt through the API must be rejected
     resp = await client.put(
-        f"/orders/{order['id']}/confirm", headers=auth_header(registered_user)
+        f"/orders/{order['id']}/confirm", headers=auth_header(admin_user)
     )
     assert resp.status_code == 400
 

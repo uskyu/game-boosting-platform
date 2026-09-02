@@ -640,7 +640,9 @@ class OrderService:
             )
         )
         active_orders_count = int(active_orders_count_result.scalar() or 0)
-        if locked_booster.booster_quota <= active_orders_count:
+        # Quota caps only apply to reviewed BOOSTER accounts; any registered
+        # USER may be assigned, mirroring accept_order's open-claiming rule.
+        if locked_booster.role == UserRole.BOOSTER and locked_booster.booster_quota <= active_orders_count:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="该代练当前接单额度已满，请先完成现有订单",
