@@ -973,8 +973,9 @@
     .od-step { flex-basis: 96px; min-width: 96px; max-width: 96px; }
   }
 
-  /* 钱包页：桌面端提现表单与提现记录左右并排，资金流水整行置底 */
-  .wallet-grid { display: grid; gap: 24px; }
+  /* 钱包页：minmax(0, 1fr) 防止文件上传控件在手机端撑宽页面 */
+  .wallet-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; }
+  .wallet-grid > section { min-width: 0; }
   @media (min-width: 1280px) {
     .wallet-grid {
       grid-template-columns: 0.92fr 1.08fr;
