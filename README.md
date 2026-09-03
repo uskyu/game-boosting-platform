@@ -1,124 +1,159 @@
-# 三角洲派单平台 · Delta Dispatch
+# Game Boosting Platform · 游戏派单平台
 
-面向个人运营者的**三角洲行动派单系统**：老板（管理员）在后台派单，打手注册账号后进入大厅抢单，订单完成后自动结算到打手钱包余额，打手随时申请提现，管理员在后台逐笔人工审核并标记打款。
+> Multi-slot order dispatch, first-come-first-served claiming, publisher self-review + settlement, wallet & withdrawals, dispute handling, real-time chat.
 
-围绕"一个人管、几个人跑单"的真实使用场景设计——没有复杂的支付网关，资金闭环由人工转账 + 平台账本完成，每一分钱都有流水可查。
+Game Boosting Platform is a self-hosted **game boosting order dispatch system** for solo operators and small teams: publishers post orders with escrowed funds, boosters claim slots first-come-first-served, deliver the work, get reviewed, and settle earnings into their wallet — then withdraw, with every cent traceable in an immutable ledger.
 
-## 核心流程
+游戏派单中心：老板发单并托管资金，打手抢单交付，老板审核后自动结算到钱包，打手提现，管理员逐笔人工打款——每一分钱都有流水可查。
+
+## Keywords / SEO
+
+`game boosting` · `order dispatch` · 派单 · 代练 · `dantai` / 陪玩 · `Delta Force` · `claim & settle` · `wallet ledger` · escrow · withdrawals · dispute resolution
+
+## Core Flow（核心流程）
 
 ```
-管理员派单 ──► 订单进入大厅 ──► 打手抢单（或被指派）
-     │                                   │
-     │                            完成并提交交付
-     │                                   │
-     ├── 客户确认 ──► 自动结算 ◄─────────┘
-     │              打手余额 + 订单收入
-     │
-     └── 打手申请提现 ──► 金额冻结 ──► 管理员逐笔处理
-                          ├─ 通过 ──► 线下打款 ──► 标记已打款（填写流水号）
-                          └─ 驳回 ──► 冻结金额自动退回可用余额
+publish ──► escrow (price × slots frozen from publisher wallet)
+                │
+                ▼
+        claim (first-come-first-served, row lock + quota control)
+                │
+                ▼
+        deliver (claim: CLAIMED ──► DELIVERED)
+                │
+                ▼
+        review (publisher approves per claim, or payout-delay auto-settles)
+                │
+                ▼
+        settle (claim: DELIVERED ──► SETTLED, earnings credited in same transaction)
+                │
+                ▼
+        withdraw (booster requests → amount frozen → admin processes each case)
+                │
+                ▼
+        manual payout (offline transfer → admin marks paid with transaction no.;
+                       reject → auto-unfreeze back to available balance)
 ```
 
-## 功能特性
+Order-level states: `PENDING → LOCKED → DELIVERED → COMPLETED / DISPUTED / CANCELLED`.
 
-### 派单与抢单
-- 管理员创建订单或直接在后台把订单**指派给指定打手**（校验角色、状态与接单额度）
-- 打手在订单大厅**抢单**，数据库行锁 + 接单额度并发控制，同一订单绝不会被两人抢到
-- 完整订单状态机：待接单 → 进行中 → 待确认 → 已完成 / 争议中 / 已取消
-- 订单争议人工介入处理
+## Features（功能列表）
 
-### 钱包与结算
-- 每个用户独立钱包：**可用余额 / 冻结金额 / 累计收入 / 累计提现**
-- 订单确认完成时**同一事务内自动结算**给接单打手，支持平台佣金比例（`COMMISSION_RATE`）
-- `(order_id, type)` 唯一约束 + SAVEPOINT 保证**订单只入账一次**，并发确认也不会重复结算
-- 金额全程 `Decimal` 运算，每次余额变动都会写入**不可变流水**（变动前后余额快照、操作人、备注）
+### Dispatch & Claiming（派单与抢单）
 
-### 提现
-- 打手提交提现申请（支付宝 / 微信 / 银行卡），金额立即从可用余额转入冻结
-- 管理员后台逐笔处理：**通过 → 线下打款 → 标记已打款（记录打款流水号）**，或**驳回（自动解冻）**
-- 已打款记录永久可查，包含收款人、收款账号、打款流水号、处理时间
+- Publishers create orders with **multiple slots** (`max_claims`); boosters **claim** slots first-come-first-served, with DB row locks + claim-quota concurrency control — the same slot is never double-claimed
+- Full **escrow on publish**: `price × slots` is frozen from the publisher's wallet before the order enters the hall; insufficient balance rejects the order
+- Admins can **assign** an order directly to a specific booster (role / status / quota validated)
+- Per-claim lifecycle: **CLAIMED → DELIVERED → SETTLED**, tracked independently per slot
+- **Dispute + admin intervene**: disputed orders / claims can be acted on by admins (cancel, mark delivered, complete)
 
-### 运营管理台
-- 数据看板：用户 / 订单 / 收入趋势、游戏分布、打手排行
-- 打手资质审核（带证明截图上传、接单额度设置）
-- 订单管理（状态干预、派单按钮）、提现处理、钱包调账（手动充值/扣减）、游戏管理
+### Settlement（结算）
 
-### 平台能力
-- JWT 双令牌认证 + 自动刷新，三角色权限体系（用户 / 打手 / 管理员）
-- 实时聊天（WebSocket）、站内通知、双向评价与信誉分
-- AI 需求解析（可选，DeepSeek 接口）
+- On review approval, the claim settles **in the same transaction**: booster balance += order income
+- **No commission**: `COMMISSION_RATE = 0.0` — boosters receive the full order price
+- Idempotent settlement via `(order_id, type)` unique constraint + SAVEPOINT — repeated confirms never double-credit, even concurrently
+- All amounts computed with `Decimal`; every balance change writes an **immutable ledger entry** (before/after snapshots, operator, memo)
 
-## 技术栈
+### Payout Delay（灵活到账时效）
 
-| 层 | 技术 |
+- Each order can set a payout delay: **days part** (`payout_delay_days`, 0–30) + **hours part** (`payout_delay_hours`, 0–23); both null = no delay
+- After delivery, a background scheduler **auto-settles** claims once the delay elapses
+
+### Wallet & Withdrawals（钱包与提现）
+
+- Per-user wallet: **available balance / frozen amount / total earned / total withdrawn**
+- Withdrawal request (Alipay / WeChat / bank card) moves the amount from available to frozen immediately
+- Admin processes each case: **approve → offline payout → mark paid (with payout transaction no.)**, or **reject (auto-unfreeze)**
+- Paid records are permanently queryable (payee, account, transaction no., timestamps)
+
+### Platform（平台能力）
+
+- **Captcha on register** (`captcha_service`) to block bots
+- JWT dual-token auth + auto refresh; three roles (user / booster / admin)
+- **Real-time chat** (WebSocket) between order parties, plus support chat
+- **Notifications**: in-site notifications for claims, deliveries, settlements, withdrawals
+- **Admin dashboard**: user / order / revenue trends, game distribution, booster ranking, booster qualification review (with proof-image upload + quota setting), order intervention, withdrawal processing, manual wallet adjustments (top-up / deduct), game management
+- Mutual reviews with credit scoring; optional AI requirement parsing (DeepSeek API)
+
+## Tech Stack（技术栈）
+
+| Layer | Tech |
 |---|---|
-| 后端 | Python 3.10+ · FastAPI · SQLAlchemy 2（async）· Alembic · aiomysql |
-| 前端 | Vue 3 · Vite 5 · Pinia · Vue Router · Tailwind CSS · ECharts |
-| 数据库 | MySQL 8（utf8mb4）|
-| 部署 | Docker Compose（一键起 MySQL + 后端 + 前端）|
+| Backend | Python 3.10+ · FastAPI · SQLAlchemy 2 (async) · Alembic · aiomysql |
+| Frontend | Vue 3 · Vite 5 · Pinia · Vue Router · Tailwind CSS · ECharts |
+| Database | MySQL 8 (utf8mb4) |
+| Deploy | Docker Compose (MySQL + backend + frontend in one shot) |
 
-## 快速开始
+## Quick Start（快速开始）
 
-### Docker Compose（推荐）
+### Docker Compose (recommended)
 
 ```bash
-cp backend/.env.example backend/.env   # 编辑：数据库、SECRET_KEY、管理员密码
-docker compose up -d --build           # 首次启动自动执行数据库迁移
+cp backend/.env.example backend/.env   # edit: DB, SECRET_KEY, admin password
+docker compose up -d --build           # first boot runs DB migrations automatically
 ```
 
-| 服务 | 地址 |
+| Service | URL |
 |---|---|
-| 前端 | http://localhost |
-| 后端 API | http://localhost:8000 |
-| Swagger 文档 | http://localhost:8000/api/v1/docs |
-| 健康检查 | http://localhost:8000/health |
+| Frontend | http://localhost |
+| Backend API | http://localhost:8000 |
+| Swagger docs | http://localhost:8000/api/v1/docs |
+| Health check | http://localhost:8000/health |
 
-### 本地开发
+### Local dev
 
 ```bash
-# 后端（Python 3.10–3.12）
+# Backend (Python 3.10–3.12)
 cd backend
 python -m venv .venv && .venv/Scripts/pip install -r requirements.txt   # Windows
 # Linux/macOS: python -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/Scripts/python -m alembic upgrade head
 .venv/Scripts/python -m uvicorn app.main:app --port 8000
 
-# 前端
+# Frontend
 cd frontend
 npm ci
-npm run dev            # http://localhost:3000，/api 代理到 8000
+npm run dev            # http://localhost:3000, /api proxied to 8000
 ```
 
-### 环境变量（backend/.env）
+### Env vars (backend/.env)（环境变量）
 
-| 变量 | 说明 |
+| Variable | Description |
 |---|---|
 | `DB_URL` | `mysql+aiomysql://user:pass@host:3306/dbname` |
-| `SECRET_KEY` | JWT 签名密钥，务必替换为随机值 |
-| `DEFAULT_ADMIN_EMAIL` / `DEFAULT_ADMIN_PASSWORD` | 首次启动自动创建的管理员账号（密码 ≥ 8 位才创建）|
-| `COMMISSION_RATE` | 平台佣金比例，0–1 之间，默认 `0`（全额结算给打手）|
-| `DEEPSEEK_API_KEY` | 可选，AI 需求解析用，测试环境可填占位值 |
+| `SECRET_KEY` | JWT signing key — replace with a random value |
+| `DEFAULT_ADMIN_EMAIL` / `DEFAULT_ADMIN_PASSWORD` | Admin account auto-created on first boot (password must be ≥ 8 chars) |
+| `COMMISSION_RATE` | Platform commission ratio, 0–1; default `0.0` (full amount settles to booster, i.e. no commission) |
+| `DEEPSEEK_API_KEY` | Optional, for AI requirement parsing; placeholder value is fine in test env |
 
-## 资金安全设计
+## Fund Safety（资金安全设计）
 
-- **幂等结算**：订单入账依赖数据库唯一约束，重复确认不会二次入账
-- **行级锁**：所有余额变动 `SELECT ... FOR UPDATE`，并发提现不可能透支
-- **冻结模型**：提现申请即冻结，驳回自动解冻，打款扣减冻结——任何时刻账实相符
-- **完整流水**：`wallet_transactions` 记录每一笔变动的类型、金额、前后余额、关联订单/提现单与操作人
-- **权限隔离**：资金接口全部要求登录，管理员接口独立鉴权
+- **Idempotent settlement**: ledger credit relies on a DB unique constraint — duplicate confirms never double-credit
+- **Row-level locks**: all balance changes use `SELECT ... FOR UPDATE` — concurrent withdrawals can't overdraw
+- **Freeze model**: withdrawal request freezes instantly, rejection auto-unfreezes, payout deducts from frozen — books always reconcile
+- **Full ledger**: `wallet_transactions` records every change's type, amount, before/after balances, linked order/withdrawal, and operator
+- **Permission isolation**: all fund endpoints require login; admin endpoints have separate authorization
 
-## 测试
+## Tests（测试）
 
 ```bash
 cd backend
 .venv/Scripts/pip install -r requirements-dev.txt
-.venv/Scripts/python -m pytest tests/ -v        # 42 用例（含资金域 14 个）
+.venv/Scripts/python -m pytest tests/ -v        # ~100 cases (funds domain: escrow, settlement, wallet, withdrawals, multi-claim)
 cd ../frontend
-npm test                                         # 27 用例
+npm test                                         # ~27 cases
 ```
 
-> 测试会创建并重建独立的 `game_boosting_test` 数据库，请勿指向生产库。
+> Tests create and rebuild an isolated `game_boosting_test` database — never point them at production.
 
-## 许可证
+## Commercial License（商用授权）
 
-[MIT](LICENSE)
+Game Boosting Platform is open source under the **Apache License 2.0** — see [LICENSE](LICENSE).
+
+- ✅ Free for personal use, learning, and research
+- ✅ Commercial **deployment / SaaS operation / redistribution** requires a commercial license
+
+📧 Contact（联系方式）:
+
+- Email: **uskybox@outlook.com**
+- WeChat（微信）: **togetUSD**
