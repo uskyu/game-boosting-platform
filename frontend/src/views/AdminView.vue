@@ -358,10 +358,7 @@ async function uploadOrderAttachments(orderId, files, state) {
   state.uploadProgress = ''
 }
 
-const publishPriorityOptions = [
-  { value: 1, label: '普通' },
-  { value: 5, label: '加急' },
-]
+const ADMIN_PUBLISH_SERVICE_TYPE = '陪玩'
 
 // 到账时效：不设置（默认）/ 1-5 天 → payout_delay_days
 const publishPayoutDelayOptions = [
@@ -390,7 +387,7 @@ async function openPublishModal() {
     deadline: '',
     attachments: null,
     description: '',
-    priority: 1,
+    service_type: ADMIN_PUBLISH_SERVICE_TYPE,
     server: '',
     boss_contact: '',
     compensation_enabled: false,
@@ -475,7 +472,7 @@ async function submitPublishModal() {
     max_claims: Number(state.max_claims) || 1,
     deadline: state.deadline || null,
     description_raw: state.description.trim() || null,
-    priority: state.priority,
+    service_type: ADMIN_PUBLISH_SERVICE_TYPE,
     server: state.server.trim() || null,
     boss_contact: bossContact || null,
     payout_delay_days: payoutDelay,
@@ -1283,6 +1280,10 @@ onMounted(async () => {
               <label class="label" for="publish-intro">简介</label>
               <textarea id="publish-intro" v-model="publishModal.intro" rows="2" class="input resize-none" maxlength="5000"></textarea>
             </div>
+            <div>
+              <label class="label" for="publish-service-type">服务类型</label>
+              <input id="publish-service-type" v-model="publishModal.service_type" class="input" type="text" disabled />
+            </div>
             <!-- 价格：只保留一个发单价格输入（区间价格已下线） -->
             <div>
               <label class="label" for="publish-price">发单价格</label>
@@ -1355,21 +1356,6 @@ onMounted(async () => {
               <div v-if="publishModal.compensation_enabled" class="mt-3">
                 <label class="label" for="publish-compensation">赔偿金额</label>
                 <input id="publish-compensation" v-model="publishModal.compensation_amount" type="number" min="0.01" step="0.01" class="input" placeholder="例如 50" />
-              </div>
-            </div>
-
-            <div>
-              <p class="label">优先级</p>
-              <div class="flex flex-wrap gap-2">
-                <button
-                  v-for="option in publishPriorityOptions"
-                  :key="option.value"
-                  type="button"
-                  :class="publishModal.priority === option.value ? 'filter-pill-active' : 'filter-pill'"
-                  @click="publishModal.priority = option.value"
-                >
-                  {{ option.label }}
-                </button>
               </div>
             </div>
 

@@ -661,7 +661,7 @@ async def accept_order(
     await send_order_system_message(
         db=db,
         order_id=order.id,
-        content=f"打手 {current_user.username} 已确认订单",
+        content=f"打手 {current_user.username} 已接手订单",
         meta_json={
             "event": "order_accepted",
             "order_id": order.id,
@@ -672,8 +672,8 @@ async def accept_order(
         db,
         user_id=order.user_id,
         type=NotificationType.ORDER_ACCEPTED,
-        title="订单已被确认",
-        content=f"打手 {current_user.username} 已确认您的订单「{order.game_name}」",
+        title="订单已被接手",
+        content=f"打手 {current_user.username} 已接手您的订单「{order.game_name}」",
         link=f"/orders/{order.id}",
         ref_id=order.id,
     )

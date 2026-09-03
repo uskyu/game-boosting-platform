@@ -5,7 +5,6 @@ import { useRouter } from 'vue-router'
 import { useGamesStore } from '@/stores/games'
 import { useOrdersStore } from '@/stores/orders'
 import api from '@/utils/api'
-import { getGameServiceTypes } from '@/utils/gameCatalog'
 import { getPublishButtonLabel } from '@/utils/humanCopy'
 
 const router = useRouter()
@@ -53,11 +52,8 @@ const formData = ref({
   price: '',
   server: '',
   role: '',
-  service_type: '',
-  priority: 3,
+  service_type: '陪玩',
   notes: '',
-  game_account: '',
-  game_password: '',
   ai_tags: null,
   attachments: null,
   description_raw: '',
@@ -78,18 +74,11 @@ const payoutDelayOptions = [
   { value: 5, label: '5天' },
 ]
 
-const priorityOptions = [
-  { value: 1, label: '普通', hint: '按标准节奏排队处理' },
-  { value: 5, label: '加急', hint: '希望尽快开始推进' },
-  { value: 8, label: '高优先级', hint: '更强调时效和连续处理' },
-]
-
 // 游戏下拉：只列管理员上架的游戏；仅有一个时默认选中
 const catalogGames = computed(() => gamesStore.games)
 const selectedGame = computed(() => (
   formData.value.game_id ? gamesStore.getGameById(Number(formData.value.game_id)) : null
 ))
-const selectedGameServiceTypes = computed(() => getGameServiceTypes(selectedGame.value))
 const isSubmitting = computed(() => ordersStore.loading)
 
 // 余额托管提示：发布后冻结 ¥price × max_claims，完结后结算给打手
@@ -111,15 +100,9 @@ const canPublish = computed(() => {
 })
 
 function handleGameChange() {
+  formData.value.service_type = '陪玩'
   const game = selectedGame.value
-  if (!game) {
-    formData.value.service_type = ''
-    return
-  }
-  formData.value.game_name = game.name
-  if (!getGameServiceTypes(game).includes(formData.value.service_type)) {
-    formData.value.service_type = getGameServiceTypes(game)[0] || ''
-  }
+  formData.value.game_name = game?.name || ''
 }
 
 async function publishOrder() {
@@ -172,13 +155,10 @@ async function publishOrder() {
     title: title || null,
     price: Number(formData.value.price),
     description_raw: formData.value.description_raw.trim(),
-    service_type: formData.value.service_type || getGameServiceTypes(selectedGame.value)[0] || '',
+    service_type: '陪玩',
     server: formData.value.server.trim() || null,
     role: formData.value.role.trim() || null,
     notes: formData.value.notes.trim() || null,
-    priority: formData.value.priority,
-    game_account: formData.value.game_account.trim() || null,
-    game_password: formData.value.game_password.trim() || null,
     boss_contact: bossContact || null,
     max_claims: maxClaims,
     payout_delay_days: payoutDelay,
@@ -201,7 +181,7 @@ async function publishOrder() {
     return
   }
 
-  successMessage.value = `需求发出去了，等${formData.value.service_type || '代练'}接单。`
+  successMessage.value = '需求发出去了，等陪玩接单。'
   window.setTimeout(() => {
     router.push({ name: 'orders' })
   }, 900)
@@ -249,9 +229,7 @@ onMounted(async () => {
         </div>
         <div>
           <label class="label" for="create-service-type">服务类型</label>
-          <select id="create-service-type" v-model="formData.service_type" class="input" :disabled="!selectedGame">
-            <option v-for="serviceType in selectedGameServiceTypes" :key="serviceType" :value="serviceType">{{ serviceType }}</option>
-          </select>
+          <input id="create-service-type" :value="formData.service_type" type="text" class="input" readonly />
         </div>
 
         <div class="sm:col-span-2">
@@ -320,37 +298,6 @@ onMounted(async () => {
             <input id="create-compensation" v-model="formData.compensation_amount" type="number" min="0.01" step="0.01" class="input" placeholder="例如：50" />
           </div>
         </div>
-
-        <div class="sm:col-span-2">
-          <p class="label">优先级</p>
-          <div class="grid gap-3 sm:grid-cols-3">
-            <button
-              v-for="option in priorityOptions"
-              :key="option.value"
-              type="button"
-              class="rounded-tile border p-4 text-left transition-all duration-200 ease-smooth"
-              :class="formData.priority === option.value
-                ? 'border border-primary bg-surface-2'
-                : 'border border-line-1 bg-surface-2 hover:-translate-y-0.5 hover:border-line-2 hover:bg-surface-3'"
-              @click="formData.priority = option.value"
-            >
-              <p class="text-sm font-semibold text-ink-1">{{ option.label }}</p>
-              <p class="mt-2 text-xs leading-6 text-ink-2">{{ option.hint }}</p>
-            </button>
-          </div>
-        </div>
-
-        <div>
-          <label class="label" for="create-account">游戏账号（可选）</label>
-          <input id="create-account" v-model="formData.game_account" type="text" class="input" placeholder="代练上号用" />
-        </div>
-        <div>
-          <label class="label" for="create-password">游戏密码（可选）</label>
-          <input id="create-password" v-model="formData.game_password" type="password" class="input" placeholder="代练上号用" />
-        </div>
-        <p v-if="formData.service_type === '代练'" class="text-xs text-ink-2 sm:col-span-2 -mt-2">
-          代练会用你填写的账号上号，请确认信息准确。
-        </p>
 
         <div class="sm:col-span-2">
           <label class="label" for="create-attachments">图片附件（可选）</label>

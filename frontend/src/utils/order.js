@@ -2,12 +2,12 @@ export const ORDER_STATUS_META = {
   PENDING: {
     label: '待接单',
     badgeClass: 'badge-pending',
-    description: '订单已发布，等待打手确认订单。',
+    description: '订单已发布，等待打手接手订单。',
   },
   LOCKED: {
     label: '进行中',
     badgeClass: 'badge-locked',
-    description: '打手已确认订单，正在进行了。',
+    description: '打手已接手订单，正在进行了。',
   },
   DELIVERED: {
     label: '待确认',
@@ -123,7 +123,7 @@ export function getApplicationStatusMeta(status) {
 
 /**
  * 返回人性化的状态标签，区分老板/打手视角。
- * 打手动线：确认订单 → 进行中 → 结束订单（提交汇报）→ 老板确认。
+ * 打手动线：接手订单 → 进行中 → 结束订单（提交汇报）→ 老板确认。
  * viewRole: 'owner' | 'booster'
  */
 export function getHumanStatusLabel(status, serviceType, viewRole = 'owner') {
@@ -131,7 +131,7 @@ export function getHumanStatusLabel(status, serviceType, viewRole = 'owner') {
 
   if (isBoosterView) {
     const map = {
-      PENDING: '待确认订单',
+      PENDING: '待接手订单',
       LOCKED: '进行中',
       DELIVERED: '已结束，待老板确认',
       COMPLETED: '已完成',
@@ -142,7 +142,7 @@ export function getHumanStatusLabel(status, serviceType, viewRole = 'owner') {
   }
 
   const map = {
-    PENDING: '等待打手确认订单',
+    PENDING: '等待打手接手订单',
     LOCKED: '打手进行中',
     DELIVERED: '打手已结束，请确认',
     COMPLETED: '订单完成了！',
@@ -161,7 +161,7 @@ export function getHumanStatusSubtitle(status, serviceType, viewRole = 'owner') 
 
   if (isBoosterView) {
     const map = {
-      PENDING: '点击「确认订单」开始进行',
+      PENDING: '点击「接手订单」开始进行',
       LOCKED: '完成后点击「结束订单」并提交汇报',
       DELIVERED: '已结束订单，老板确认后收入计入余额',
       COMPLETED: '辛苦了，等待老板评价',
@@ -172,7 +172,7 @@ export function getHumanStatusSubtitle(status, serviceType, viewRole = 'owner') 
   }
 
   const map = {
-    PENDING: '订单已发出，等待打手确认',
+    PENDING: '订单已发出，等待打手接手',
     LOCKED: '打手正在进行订单',
     DELIVERED: '核实打手的结束汇报，确认后完成结算',
     COMPLETED: '记得说说这次体验',

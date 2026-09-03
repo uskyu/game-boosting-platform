@@ -34,7 +34,7 @@ const reviewForm = ref({ rating: 5, content: '' })
 const editingReview = ref(false)
 const confirmSuccess = ref(false)
 const showDeliverModal = ref(false)
-// 两步抢单：详情页先弹「确认报名」，确认后才调 acceptOrder
+// 两步抢单：详情页先弹「接手订单」，确认后才调 acceptOrder
 const showClaimModal = ref(false)
 // 灯箱：订单画廊 / 交付附件各自独立索引
 const orderLightboxVisible = ref(false)
@@ -207,7 +207,7 @@ const hasClaimed = computed(() => {
   })
 })
 
-// 确认报名弹窗正文用的订单标题（标题缺省时回退游戏名）
+// 接手订单弹窗正文用的订单标题（标题缺省时回退游戏名）
 const claimSubject = computed(() => {
   if (!order.value) return ''
   return order.value.title || order.value.game_name || '代练订单'
@@ -344,8 +344,8 @@ async function handleConfirmClaim() {
   const result = await ordersStore.acceptOrder(order.value.id)
   if (result.success) {
     showClaimModal.value = false
-    successMessage.value = '订单已确认，开始进行吧'
-    // 刷新订单状态与报名名单，让按钮切到「结束订单」/「已确认订单」态
+    successMessage.value = '已接手订单，开始进行吧'
+    // 刷新订单状态与报名名单，让按钮切到「结束订单」/「已接手订单」态
     await ordersStore.fetchOrder(order.value.id)
     await loadClaims()
   } else {
@@ -689,7 +689,7 @@ onMounted(async () => {
               :disabled="actionLoading || hasClaimed"
               @click="openClaimModal"
             >
-              {{ hasClaimed ? '已确认订单' : '确认订单' }}
+              {{ hasClaimed ? '已接手订单' : '接手订单' }}
             </button>
 
             <button
@@ -698,7 +698,7 @@ onMounted(async () => {
               class="od-ops__chip btn-secondary w-full py-3"
               disabled
             >
-              已确认订单 · 排队中
+              已接手订单 · 排队中
             </button>
 
             <button
@@ -823,20 +823,20 @@ onMounted(async () => {
     <template v-if="order">
       <OrderDeliverModal v-model="showDeliverModal" :order-id="order.id" @success="onDeliverSuccess" />
 
-      <!-- 两步确认：详情页先弹「确认订单」，确认后订单进入进行中 -->
+      <!-- 两步确认：详情页先弹「接手订单」，确认后订单进入进行中 -->
       <teleport to="body">
         <div v-if="showClaimModal" class="modal-scrim" @click.self="closeClaimModal">
-          <div class="modal-card" role="dialog" aria-modal="true" aria-label="确认订单">
-            <h3 class="text-lg font-semibold text-ink-1">确认订单</h3>
+          <div class="modal-card" role="dialog" aria-modal="true" aria-label="接手订单">
+            <h3 class="text-lg font-semibold text-ink-1">接手订单</h3>
             <p class="mt-3 text-sm leading-6 text-ink-2">
-              即将接下订单「{{ claimSubject }}」，报酬
+              即将接手订单「{{ claimSubject }}」，报酬
               <span class="font-semibold tabular-nums text-price">{{ formatOrderPrice(order) }}</span>
-              ，确认后开始进行，完成后点击「结束订单」提交汇报。
+              ，接手后开始进行，完成后点击「结束订单」提交汇报。
             </p>
             <div class="mt-6 flex gap-3">
               <button type="button" class="btn-secondary flex-1" :disabled="actionLoading" @click="closeClaimModal">取消</button>
               <button type="button" class="btn-primary flex-1" :disabled="actionLoading" @click="handleConfirmClaim">
-                {{ actionLoading ? '确认中…' : '确认订单' }}
+                {{ actionLoading ? '接手中…' : '接手订单' }}
               </button>
             </div>
           </div>

@@ -535,7 +535,7 @@ onMounted(async () => {
           <h2 class="text-lg font-semibold text-ink-1">编辑相关信息</h2>
           <button type="button" class="btn-secondary !px-5 !py-2" @click="openEditPanel">编辑订单</button>
         </div>
-        <p class="mt-2 text-sm text-ink-3">订单被确认前可修改标题、简介、报酬、名额与截止时间，也可补充或删除图片。</p>
+        <p class="mt-2 text-sm text-ink-3">订单被接手前可修改标题、简介、报酬、名额与截止时间，也可补充或删除图片。</p>
       </section>
 
       <section v-if="detailTab === 'info' && editPanel" class="surface-card p-6 sm:p-8">
@@ -684,7 +684,7 @@ onMounted(async () => {
         <div v-else-if="!claims.length" class="empty-state mt-4">
           <div class="empty-state__icon" aria-hidden="true">🙋</div>
           <h4 class="empty-state__title">暂无接单</h4>
-          <p class="empty-state__copy">打手确认订单后会出现在这里。</p>
+          <p class="empty-state__copy">打手接手订单后会出现在这里。</p>
         </div>
         <ul v-else class="mt-4 space-y-2">
           <li v-for="claim in claims" :key="claim.id" class="claims-item">

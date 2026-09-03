@@ -12,7 +12,7 @@ import { ORDER_STATUS_OPTIONS, getOrderStatusBadgeClass, getOrderStatusLabel } f
  * 订单大厅（IA v2：/ = 产品心脏）。
  * 顶部统计条（待接单 / 进行中 / 今日完成，大数字）→ 游戏/状态筛选一行
  * → 订单卡网格（桌面 2 列、移动 1 列）→ 空态。
- * 卡片信息层级（减法）：价格最大最显眼 → 当前情况 X/Y · 剩 Z 席
+ * 卡片信息层级（减法）：价格最大最显眼 → 当前情况 X/Y
  * → 炸单赔偿 / 到账时效 chips → 底部次要信息行（需求摘要 · 游戏名 · 时间 · #id）+「查看详情 →」。
  * 接单两步走：整卡点击进详情，详情页内确认接单。
  * 挂载后每 30 秒静默刷新当前页（页面可见时），检测到新订单弹轻提示。
@@ -300,7 +300,7 @@ onUnmounted(() => {
         :class="['catalog-card cursor-pointer hall-order-card', { 'hall-order-card--full': isFullOrder(order) }]"
         @click="goToOrder(order.id)"
       >
-        <!-- 主数据行：¥价格 红24 tabular + 当前情况 X/Y 胶囊 + 剩 Z 席；满员已抢空徽标 + 整卡置灰 -->
+        <!-- 主数据行：¥价格 红24 tabular + 当前情况 X/Y 胶囊；满员已抢空徽标 + 整卡置灰 -->
         <div class="flex items-start justify-between gap-2">
           <p class="shrink-0 text-2xl font-semibold tabular-nums leading-7 text-price">{{ getPriceLabel(order) }}</p>
           <div class="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
@@ -317,11 +317,7 @@ onUnmounted(() => {
               class="tag !px-2.5 !py-1 tabular-nums"
             >当前情况 {{ getClaimMeta(order).claimed }}/{{ getClaimMeta(order).max }}</span>
             <span v-if="isFullOrder(order)" class="badge-cancelled">已抢空</span>
-            <span
-              v-else-if="isOrderClaimable(order) && getClaimMeta(order).remaining != null"
-              class="text-[13px] tabular-nums text-ink-3"
-            >剩 {{ getClaimMeta(order).remaining }} 席</span>
-            <span v-else :class="getOrderDisplayBadgeClass(order)">{{ getOrderDisplayStatus(order) }}</span>
+            <span v-else-if="!isOrderClaimable(order)" :class="getOrderDisplayBadgeClass(order)">{{ getOrderDisplayStatus(order) }}</span>
           </div>
         </div>
 
