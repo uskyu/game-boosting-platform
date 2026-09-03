@@ -33,7 +33,7 @@ const orders = computed(() => ordersStore.orders)
 const terminalStatuses = ['COMPLETED', 'CANCELLED', 'EXPIRED', 'ARCHIVED']
 
 function isOrderClaimable(order) {
-  if (!order || order.status !== 'PENDING' || order.claim_status !== 'OPEN' || order.is_archived) return false
+  if (!order || !['PENDING', 'LOCKED'].includes(order.status) || order.claim_status !== 'OPEN' || order.is_archived) return false
   if (Number(order.claimed_count ?? 0) >= Number(order.max_claims ?? 0)) return false
   if (!order.deadline) return true
   const deadline = new Date(order.deadline)
