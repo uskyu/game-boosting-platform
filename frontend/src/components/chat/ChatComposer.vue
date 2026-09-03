@@ -64,7 +64,7 @@ function handleFileChange(event) {
       请勿在聊天中发送账号密码等敏感信息
     </div>
 
-    <div class="flex items-end gap-3">
+    <div class="flex items-center gap-2 sm:gap-3">
       <input
         ref="fileInputRef"
         type="file"
@@ -86,7 +86,7 @@ function handleFileChange(event) {
         <span class="sr-only">输入消息</span>
         <textarea
           :value="modelValue"
-          rows="3"
+          rows="1"
           class="chat-textarea"
           :disabled="disabled || sending"
           placeholder="输入聊天内容，Enter 发送，Shift + Enter 换行"
@@ -97,7 +97,7 @@ function handleFileChange(event) {
 
       <button
         type="button"
-        class="btn-primary min-w-16 justify-center py-3 sm:min-w-28"
+        class="btn-primary h-11 min-w-16 justify-center !py-0 sm:min-w-28"
         :disabled="disabled || sending || !modelValue.trim()"
         @click="handleSubmit"
       >

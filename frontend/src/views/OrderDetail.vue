@@ -48,6 +48,7 @@ const currentUser = computed(() => authStore.user)
 const isBooster = computed(() => authStore.isBooster)
 const isOwner = computed(() => order.value?.user_id === currentUser.value?.id)
 const isAssignedBooster = computed(() => order.value?.booster_id === currentUser.value?.id)
+const isAdmin = computed(() => authStore.isAdmin)
 const chatTargetUserId = computed(() => {
   if (!order.value || !currentUser.value) {
     return null
@@ -755,6 +756,29 @@ onMounted(async () => {
             >
               取消订单
             </button>
+
+            <!-- 争议状态：管理员跳转派单台，争议双方联系管理员 -->
+            <template v-if="order.status === 'DISPUTED'">
+              <p v-if="isAdmin" class="message-warning text-xs leading-6">
+                该订单有争议，请前往派单台处理。
+              </p>
+              <button
+                v-if="isAdmin"
+                type="button"
+                class="od-ops__primary btn-primary w-full py-3"
+                @click="router.push({ name: 'admin-dispatch-detail', params: { id: order.id } })"
+              >
+                前往派单台处理
+              </button>
+              <button
+                v-else-if="isOwner || isAssignedBooster"
+                type="button"
+                class="btn-secondary w-full py-3"
+                @click="router.push({ name: 'support' })"
+              >
+                联系管理员
+              </button>
+            </template>
 
             <button class="od-ops__back btn-secondary w-full py-3" @click="router.push({ name: 'orders' })">返回列表</button>
           </div>

@@ -564,6 +564,19 @@
     @apply mt-2 text-sm font-medium text-ink-1;
   }
 
+  .info-tile--compact {
+    @apply px-3 py-2;
+    min-width: 96px;
+  }
+
+  .info-tile--compact .info-tile__label {
+    @apply text-xs normal-case tracking-normal;
+  }
+
+  .info-tile--compact .info-tile__value {
+    @apply mt-1;
+  }
+
   /* ──────────────────────────────
      表格 / 列表行（无斑马纹、hover surface-2、line-1 分隔）
   ────────────────────────────── */
@@ -1275,17 +1288,17 @@
   }
 
   .chat-composer {
-    @apply space-y-2 sm:space-y-4;
+    @apply space-y-1.5 sm:space-y-4;
   }
 
   .chat-security-notice {
-    @apply rounded-tile px-3 py-1.5 text-xs sm:px-4 sm:py-3 sm:text-sm;
+    @apply rounded-tile px-3 py-1 text-xs leading-5 sm:px-4 sm:py-3 sm:text-sm;
     color: var(--warning);
     background: var(--warning-soft);
   }
 
   .chat-icon-button {
-    @apply inline-flex items-center justify-center rounded-field px-4 py-2.5 text-sm font-semibold text-primary transition-colors duration-base;
+    @apply inline-flex h-11 min-w-11 items-center justify-center rounded-field px-3 text-sm font-semibold text-primary transition-colors duration-base;
     background: var(--surface-3);
   }
 
@@ -1299,16 +1312,18 @@
   }
 
   .chat-textarea {
-    @apply w-full rounded-field px-3 py-2.5 text-sm text-ink-1 outline-none transition sm:px-4 sm:py-3.5;
-    min-height: 56px;
-    max-height: 220px;
-    resize: none;
+    @apply w-full resize-none overflow-y-auto rounded-field px-3 text-sm leading-6 text-ink-1 outline-none transition sm:px-4;
+    height: 44px;
+    min-height: 44px;
+    max-height: 120px;
+    padding-top: 10px;
+    padding-bottom: 10px;
     background: var(--surface-3);
     border: none;
   }
 
   @media (min-width: 640px) {
-    .chat-textarea { min-height: 96px; }
+    .chat-textarea { min-height: 44px; }
   }
 
   .chat-textarea:focus {

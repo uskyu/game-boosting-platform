@@ -44,13 +44,51 @@ const claimStatusOptions = [
   { value: 'CLAIMED', label: '进行中' },
   { value: 'DELIVERED', label: '待审核' },
   { value: 'SETTLED', label: '已结算' },
+  // 后端 GET /orders/claims/mine 的 status 只支持 CLAIMED/DELIVERED/SETTLED，
+  // DISPUTED 走本地过滤（按 claim.order.status === 'DISPUTED'），不调服务端过滤
+  { value: 'DISPUTED', label: '争议中' },
 ]
+
+// 争议筛选为本地过滤：claim 自身状态仍是 CLAIMED/DELIVERED，看关联订单是否 DISPUTED
+const displayedClaims = computed(() => {
+  if (claimStatus.value === 'DISPUTED') {
+    return myClaims.value.filter((claim) => claim.order?.status === 'DISPUTED' || claim.status === 'DISPUTED')
+  }
+  return myClaims.value
+})
 
 function getOrderUnreadCount(orderId) {
   return Number(unreadMap.value[orderId] || 0)
 }
 
+function getClaimMeta(order) {
+  const claimed = Number(order.claimed_count ?? order.accepted_count ?? 0)
+  const max = Number(order.max_claims ?? order.max_boosters ?? 0)
+  const safeClaimed = Number.isNaN(claimed) ? 0 : claimed
+  const safeMax = Number.isNaN(max) ? 0 : max
+  return { claimed: safeClaimed, max: safeMax, remaining: safeMax ? Math.max(0, safeMax - safeClaimed) : null }
+}
+
+function getAttachment(order) {
+  const attachments = order.attachments || order.attachment_urls || []
+  const first = Array.isArray(attachments) ? attachments[0] : attachments
+  const url = typeof first === 'string' ? first : first?.url || ''
+  return typeof url === 'string' && url.startsWith('/uploads/orders/') ? url : ''
+}
+
+function getMetaLine(order) {
+  const pieces = []
+  if (order.compensation_amount) pieces.push(`炸单赔偿 ${formatPrice(order.compensation_amount)}`)
+  if (order.payout_delay_days) pieces.push(`${order.payout_delay_days}天到账`)
+  const { claimed, max } = getClaimMeta(order)
+  if (max > 0) pieces.push(`当前情况 ${claimed}/${max}`)
+  return pieces.join(' · ')
+}
+
 function buildSummary(order) {
+  if (order.intro) {
+    return order.intro.length > 28 ? `${order.intro.slice(0, 28)}...` : order.intro
+  }
   const detail = order.ai_tags?.detail || {}
   const requirements = Array.isArray(detail.requirements) ? detail.requirements.filter(Boolean) : []
   const pieces = [
@@ -77,7 +115,9 @@ async function fetchOrders() {
 }
 
 async function fetchClaims() {
-  await ordersStore.fetchMyClaims(claimStatus.value || undefined)
+  // DISPUTED 本地过滤：服务端不支持该值，拉全量再过滤
+  const serverStatus = claimStatus.value === 'DISPUTED' ? undefined : (claimStatus.value || undefined)
+  await ordersStore.fetchMyClaims(serverStatus)
 }
 
 function switchTab(tab) {
@@ -187,26 +227,38 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <section v-else-if="myClaims.length" class="space-y-3">
+      <section v-else-if="displayedClaims.length" class="space-y-3">
         <article
-          v-for="claim in myClaims"
+          v-for="claim in displayedClaims"
           :key="claim.id"
           class="surface-card cursor-pointer p-4 sm:p-5"
           @click="goToOrder(claim.order?.id || claim.order_id)"
         >
-          <div class="flex flex-wrap items-start justify-between gap-3">
-            <div class="min-w-0">
-              <div class="flex flex-wrap items-center gap-2">
-                <h2 class="truncate text-lg font-semibold text-ink-1">{{ claim.order?.title || claim.order?.game_name || '代练订单' }}</h2>
-                <span :class="getClaimStatusMeta(claim.status).tagClass">{{ getClaimStatusMeta(claim.status).label }}</span>
+          <h2 class="truncate text-[15px] font-semibold text-ink-1">{{ claim.order?.title || claim.order?.game_name || '代练订单' }}</h2>
+          <p v-if="claim.order && getMetaLine(claim.order)" class="mt-1.5 truncate text-[13px] tabular-nums text-ink-2">{{ getMetaLine(claim.order) }}</p>
+          <p v-if="claim.order" class="mt-1.5 truncate text-sm text-ink-2">{{ buildSummary(claim.order) }}</p>
+          <div v-if="claim.order && getAttachment(claim.order)" class="mt-3 overflow-hidden rounded-tile"><img :src="getAttachment(claim.order)" alt="订单附件" loading="lazy" class="max-h-40 w-full rounded object-cover" /></div>
+          <div class="mt-4 border-t border-line-1 pt-3.5">
+            <div class="flex flex-wrap items-end justify-between gap-3">
+              <div class="min-w-0">
+                <div class="flex flex-wrap items-center gap-2">
+                  <span :class="getClaimStatusMeta(claim.status).tagClass">{{ getClaimStatusMeta(claim.status).label }}</span>
+                  <span v-if="claim.order?.status === 'DISPUTED'" class="tag !bg-danger-soft !text-danger">订单争议中</span>
+                </div>
+                <p class="mt-2 truncate text-[13px] text-ink-3">
+                  {{ claim.order?.game_name || '' }} · {{ formatShortDate(claim.created_at) }} · 接单 #{{ claim.id }} · 订单 #{{ claim.order?.id || claim.order_id }}<template v-if="claim.delivered_at"> · 交付于 {{ formatDateTime(claim.delivered_at) }}</template>
+                </p>
               </div>
-              <p class="mt-1.5 text-xs text-ink-3">
-                接单号 #{{ claim.id }} · 订单 #{{ claim.order?.id || claim.order_id }} · {{ claim.order?.game_name || '' }}<template v-if="claim.delivered_at"> · 交付于 {{ formatDateTime(claim.delivered_at) }}</template>
-              </p>
-            </div>
-            <div class="shrink-0 text-right">
-              <p class="text-base font-semibold tabular-nums text-price">{{ claim.order ? formatOrderPrice(claim.order) : formatPrice(0) }}</p>
-              <p class="mt-0.5 text-xs text-ink-3">{{ formatShortDate(claim.created_at) }}</p>
+              <div class="flex shrink-0 gap-2">
+                <div class="info-tile info-tile--compact">
+                  <p class="info-tile__label">价格</p>
+                  <p class="info-tile__value text-sm font-semibold tabular-nums text-price">{{ claim.order ? formatOrderPrice(claim.order) : formatPrice(0) }}</p>
+                </div>
+                <div class="info-tile info-tile--compact">
+                  <p class="info-tile__label">接单状态</p>
+                  <p class="info-tile__value text-sm">{{ getClaimStatusMeta(claim.status).label }}</p>
+                </div>
+              </div>
             </div>
           </div>
         </article>
@@ -266,42 +318,41 @@ onUnmounted(() => {
           class="catalog-card cyber-corner cursor-pointer"
           @click="goToOrder(order.id)"
         >
-          <div class="flex items-start justify-between gap-4">
-            <div class="flex items-start gap-4">
-              <div class="min-w-0 space-y-3">
+          <h2 class="truncate text-[15px] font-semibold text-ink-1">{{ order.title || order.game_name }}</h2>
+          <p v-if="getMetaLine(order)" class="mt-1.5 truncate text-[13px] tabular-nums text-ink-2">{{ getMetaLine(order) }}</p>
+          <p class="mt-1.5 truncate text-sm text-ink-2">{{ buildSummary(order) }}</p>
+          <div v-if="getAttachment(order)" class="mt-3 overflow-hidden rounded-tile"><img :src="getAttachment(order)" alt="订单附件" loading="lazy" class="max-h-40 w-full rounded object-cover" /></div>
+
+          <div class="mt-4 border-t border-line-1 pt-3.5">
+            <div class="flex flex-wrap items-end justify-between gap-3">
+              <div class="min-w-0">
                 <div class="flex flex-wrap items-center gap-2">
-                  <h2 class="text-xl font-semibold text-ink-1">{{ order.game_name }}</h2>
+                  <span :class="getOrderStatusBadgeClass(order.status)">{{ getOrderStatusLabel(order.status) }}</span>
+                  <span v-if="Number(order.pending_review_count)" class="tag !bg-warning-soft !text-warning">
+                    {{ order.pending_review_count }} 人待审核
+                  </span>
                   <span v-if="getOrderUnreadCount(order.id)" class="tag !bg-warning-soft !text-warning">
                     消息 {{ getOrderUnreadCount(order.id) }}
                   </span>
                 </div>
-                <p class="text-sm text-ink-2">{{ buildSummary(order) }}</p>
+                <p class="mt-2 truncate text-[13px] text-ink-3">{{ order.game_name }} · {{ formatShortDate(order.created_at) }} · #{{ order.id }}</p>
+              </div>
+              <div class="flex shrink-0 gap-2">
+                <div class="info-tile info-tile--compact">
+                  <p class="info-tile__label">价格</p>
+                  <p class="info-tile__value text-sm font-semibold tabular-nums text-price">{{ formatOrderPrice(order) }}</p>
+                </div>
+                <div class="info-tile info-tile--compact">
+                  <p class="info-tile__label">接单情况</p>
+                  <p class="info-tile__value text-sm tabular-nums">{{ Number(order.claimed_count ?? 0) }} / {{ Number(order.max_claims ?? 1) }} 人</p>
+                </div>
               </div>
             </div>
-            <div class="flex flex-wrap items-center justify-end gap-2">
-              <span v-if="Number(order.pending_review_count)" class="tag !bg-warning-soft !text-warning">
-                {{ order.pending_review_count }} 人待审核
-              </span>
-              <span :class="getOrderStatusBadgeClass(order.status)">{{ getOrderStatusLabel(order.status) }}</span>
+            <div class="mt-3 flex justify-end">
+              <button class="btn-secondary !px-4 !py-2" @click.stop="goToOrder(order.id)">
+                {{ Number(order.pending_review_count) ? '去审核' : '详情' }}
+              </button>
             </div>
-          </div>
-
-          <div class="mt-5 grid gap-3 sm:grid-cols-2">
-            <div class="info-tile">
-              <p class="info-tile__label">价格</p>
-              <p class="info-tile__value text-base font-semibold tabular-nums text-price">{{ formatOrderPrice(order) }}</p>
-            </div>
-            <div class="info-tile">
-              <p class="info-tile__label">接单情况</p>
-              <p class="info-tile__value tabular-nums">{{ Number(order.claimed_count ?? 0) }} / {{ Number(order.max_claims ?? 1) }} 人</p>
-            </div>
-          </div>
-
-          <div class="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-line-1 pt-4">
-            <p class="text-sm text-ink-3">#{{ order.id }} · {{ formatShortDate(order.created_at) }}</p>
-            <button class="btn-secondary !px-4 !py-2" @click.stop="goToOrder(order.id)">
-              {{ Number(order.pending_review_count) ? '去审核' : '详情' }}
-            </button>
           </div>
         </article>
       </section>

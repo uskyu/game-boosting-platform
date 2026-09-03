@@ -893,6 +893,23 @@ async def dispute_order(
             link=f"/orders/{order.id}",
             ref_id=order.id,
         )
+    # 争议发起同时通知管理员（管理派单台路径），发起人是管理员时不再重复通知
+    if current_user.role != UserRole.ADMIN:
+        admin_result = await db.execute(
+            select(User.id).where(User.role == UserRole.ADMIN, User.is_active.is_(True))
+        )
+        for (admin_id,) in admin_result.all():
+            if admin_id == current_user.id:
+                continue
+            await notify_user(
+                db,
+                user_id=admin_id,
+                type=NotificationType.ORDER_DISPUTED,
+                title="订单争议待处理",
+                content=f"订单 #{order.id}「{order.game_name}」被 {current_user.username} 发起争议",
+                link=f"/admin/dispatch/{order.id}",
+                ref_id=order.id,
+            )
 
     return OrderResponse.model_validate(order)
 

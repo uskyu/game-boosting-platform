@@ -396,6 +396,26 @@ async function refundOrder() {
   }
 }
 
+// ── 争议处理：PUT /admin/orders/{id}/intervene（action 取自后端 allowed_actions） ──
+
+async function interveneOrder(action) {
+  const label = action === 'COMPLETED' ? '完结并结算给打手' : '取消订单'
+  const hint = action === 'COMPLETED'
+    ? '订单将变为 COMPLETED 并按现有逻辑结算给打手。'
+    : '订单将变为 CANCELLED；如已支付，需再点「退款」退回款项。'
+  if (!window.confirm(`确定对订单 #${order.value.id} 执行「${label}」吗？${hint}`)) return
+  actionKey.value = `intervene-${action}`
+  try {
+    const response = await api.put(`/admin/orders/${order.value.id}/intervene`, { action })
+    order.value = response.data
+    message.value = { type: 'success', text: `已${label}` }
+  } catch (err) {
+    message.value = { type: 'error', text: err.message || '处理失败' }
+  } finally {
+    actionKey.value = ''
+  }
+}
+
 async function deleteThisOrder() {
   if (!window.confirm(`确定删除订单 #${order.value.id} 吗？此操作不可恢复。`)) return
   actionKey.value = 'delete'
@@ -793,6 +813,25 @@ onMounted(async () => {
           >
             {{ actionKey === 'refund' ? '退款中…' : '退款' }}
           </button>
+          <!-- 争议处理组：仅 DISPUTED 显示，action 严格取自后端 allowed_actions -->
+          <template v-if="order.status === 'DISPUTED'">
+            <button
+              type="button"
+              class="btn-success min-h-[44px] !px-4 !py-2"
+              :disabled="actionKey === 'intervene-COMPLETED'"
+              @click="interveneOrder('COMPLETED')"
+            >
+              {{ actionKey === 'intervene-COMPLETED' ? '结算中…' : '完结并结算给打手' }}
+            </button>
+            <button
+              type="button"
+              class="btn-secondary min-h-[44px] !px-4 !py-2"
+              :disabled="actionKey === 'intervene-CANCELLED'"
+              @click="interveneOrder('CANCELLED')"
+            >
+              {{ actionKey === 'intervene-CANCELLED' ? '处理中…' : '取消订单退款' }}
+            </button>
+          </template>
           <button type="button" class="btn-danger min-h-[44px] !px-4 !py-2" :disabled="actionKey === 'delete'" @click="deleteThisOrder">
             {{ actionKey === 'delete' ? '删除中…' : '删除订单' }}
           </button>
