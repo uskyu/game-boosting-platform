@@ -5,6 +5,7 @@ import { useRouter } from 'vue-router'
 import { useGamesStore } from '@/stores/games'
 import { useOrdersStore } from '@/stores/orders'
 import api from '@/utils/api'
+import { parsePayoutDelay } from '@/utils/display'
 import { getPublishButtonLabel } from '@/utils/humanCopy'
 
 const router = useRouter()
@@ -63,16 +64,22 @@ const formData = ref({
   compensation_enabled: false,
   compensation_amount: '',
   payout_delay_days: '',
+  payout_delay_hours: '',
 })
 
-const payoutDelayOptions = [
-  { value: '', label: '不设置' },
-  { value: 1, label: '1天' },
-  { value: 2, label: '2天' },
-  { value: 3, label: '3天' },
-  { value: 4, label: '4天' },
-  { value: 5, label: '5天' },
+// 到账时效快捷选项：点选后填入天/小时输入框
+const payoutDelayShortcuts = [
+  { label: '1天', days: 1, hours: '' },
+  { label: '3天', days: 3, hours: '' },
+  { label: '7天', days: 7, hours: '' },
+  { label: '12小时', days: '', hours: 12 },
+  { label: '1天12小时', days: 1, hours: 12 },
 ]
+
+function applyPayoutDelayShortcut(shortcut) {
+  formData.value.payout_delay_days = shortcut.days
+  formData.value.payout_delay_hours = shortcut.hours
+}
 
 // 游戏下拉：只列管理员上架的游戏；仅有一个时默认选中
 const catalogGames = computed(() => gamesStore.games)
@@ -136,9 +143,9 @@ async function publishOrder() {
     }
   }
 
-  const payoutDelay = formData.value.payout_delay_days === '' ? null : Number(formData.value.payout_delay_days)
-  if (payoutDelay != null && (!Number.isInteger(payoutDelay) || payoutDelay < 1 || payoutDelay > 5)) {
-    errorMessage.value = '到账时效需为 1-5 天'
+  const payoutDelay = parsePayoutDelay(formData.value.payout_delay_days, formData.value.payout_delay_hours)
+  if (payoutDelay.error) {
+    errorMessage.value = payoutDelay.error
     return
   }
 
@@ -161,7 +168,8 @@ async function publishOrder() {
     notes: formData.value.notes.trim() || null,
     boss_contact: bossContact || null,
     max_claims: maxClaims,
-    payout_delay_days: payoutDelay,
+    payout_delay_days: payoutDelay.days,
+    payout_delay_hours: payoutDelay.hours,
   }
   if (compensationAmount != null) {
     payload.compensation_amount = compensationAmount
@@ -271,10 +279,24 @@ onMounted(async () => {
           <input id="create-boss-contact" v-model="formData.boss_contact" type="text" class="input" maxlength="64" placeholder="接单后打手可见，用于添加你为好友" />
         </div>
         <div>
-          <label class="label" for="create-payout-delay">到账时效</label>
-          <select id="create-payout-delay" v-model="formData.payout_delay_days" class="input">
-            <option v-for="option in payoutDelayOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-          </select>
+          <label class="label" for="create-payout-delay-days">到账时效（都不填=不设置）</label>
+          <div class="flex items-center gap-2">
+            <input id="create-payout-delay-days" v-model="formData.payout_delay_days" type="number" min="0" max="30" step="1" class="input" placeholder="天（0-30）" />
+            <span class="text-sm text-ink-3">天</span>
+            <input id="create-payout-delay-hours" v-model="formData.payout_delay_hours" type="number" min="0" max="23" step="1" class="input" placeholder="小时（0-23）" />
+            <span class="text-sm text-ink-3">小时</span>
+          </div>
+          <div class="mt-2 flex flex-wrap gap-2">
+            <button
+              v-for="shortcut in payoutDelayShortcuts"
+              :key="shortcut.label"
+              type="button"
+              class="filter-pill"
+              @click="applyPayoutDelayShortcut(shortcut)"
+            >
+              {{ shortcut.label }}
+            </button>
+          </div>
         </div>
 
         <!-- 炸单赔偿金：开关默认关，开启后填写金额（>0） -->

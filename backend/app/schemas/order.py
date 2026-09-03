@@ -151,9 +151,15 @@ class OrderCreate(BaseModel):
     )
     payout_delay_days: int | None = Field(
         default=None,
-        ge=1,
-        le=5,
-        description="到账时效（天，1-5）：打手交付后到时自动结算",
+        ge=0,
+        le=30,
+        description="到账时效天部分（0-30，0 表示仅用小时部分）：打手交付后到时自动结算",
+    )
+    payout_delay_hours: int | None = Field(
+        default=None,
+        ge=0,
+        le=23,
+        description="到账时效小时部分（0-23）：打手交付后到时自动结算",
     )
 
     description_ai: str | None = Field(
@@ -229,6 +235,15 @@ class OrderCreate(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def validate_payout_delay(self) -> "OrderCreate":
+        days = self.payout_delay_days if self.payout_delay_days is not None else None
+        hours = self.payout_delay_hours if self.payout_delay_hours is not None else None
+        # 都为 null = 不设置（允许）；显式 0 天 0 小时 = 无意义，拒绝
+        if days == 0 and hours == 0:
+            raise ValueError("到账时效不能同时为 0 天 0 小时（不设置请都留空）")
+        return self
+
+    @model_validator(mode="after")
     def validate_game_reference(self) -> "OrderCreate":
         if self.game_id is None and not self.game_name:
             raise ValueError("game_id 和 game_name 至少需要提供一个")
@@ -260,6 +275,30 @@ class OrderUpdate(BaseModel):
     server: str | None = Field(default=None, max_length=100)
     priority: int | None = Field(default=None, ge=0, le=10)
     notes: str | None = Field(default=None, max_length=1000)
+    payout_delay_days: int | None = Field(
+        default=None,
+        ge=0,
+        le=30,
+        description="到账时效天部分（0-30，0 表示仅用小时部分）",
+    )
+    payout_delay_hours: int | None = Field(
+        default=None,
+        ge=0,
+        le=23,
+        description="到账时效小时部分（0-23）",
+    )
+
+    @model_validator(mode="after")
+    def validate_payout_delay(self) -> "OrderUpdate":
+        # 部分更新：仅当两项都被显式传入时才做组合校验，避免误杀单字段更新
+        if "payout_delay_days" in self.model_fields_set and "payout_delay_hours" in self.model_fields_set:
+            days = self.payout_delay_days
+            hours = self.payout_delay_hours
+            if days is None and hours is None:
+                return self  # 不设置
+            if (days or 0) <= 0 and (hours or 0) <= 0:
+                raise ValueError("到账时效需至少设置天数或小时数中的一项（不设置请都留空）")
+        return self
 
 
 class ClaimControlRequest(BaseModel):
@@ -415,7 +454,11 @@ class OrderResponse(BaseModel):
     )
     payout_delay_days: int | None = Field(
         default=None,
-        description="到账时效（天）：交付后到时自动结算",
+        description="到账时效天部分（0-30）：交付后到时自动结算",
+    )
+    payout_delay_hours: int | None = Field(
+        default=None,
+        description="到账时效小时部分（0-23）：交付后到时自动结算",
     )
     escrow_amount: Decimal | None = Field(
         default=None,
@@ -538,7 +581,11 @@ class ClaimOrderSummary(BaseModel):
     )
     payout_delay_days: int | None = Field(
         default=None,
-        description="到账时效（天）",
+        description="到账时效天部分",
+    )
+    payout_delay_hours: int | None = Field(
+        default=None,
+        description="到账时效小时部分",
     )
 
 

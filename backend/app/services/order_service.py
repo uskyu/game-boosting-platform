@@ -212,6 +212,7 @@ class OrderService:
             boss_contact=order_data.boss_contact,
             compensation_amount=order_data.compensation_amount,
             payout_delay_days=order_data.payout_delay_days,
+            payout_delay_hours=order_data.payout_delay_hours,
             status=OrderStatus.PENDING,
         )
 
@@ -848,6 +849,7 @@ class OrderService:
                 "boss_contact": order.boss_contact,
                 "compensation_amount": order.compensation_amount,
                 "payout_delay_days": order.payout_delay_days,
+                "payout_delay_hours": order.payout_delay_hours,
             }
             items.append(item)
         return items, total
@@ -1205,7 +1207,7 @@ class OrderService:
         """
         if claim.status != ClaimLifecycleStatus.DELIVERED:
             return False
-        if order.payout_delay_days is None:
+        if order.payout_delay_days is None and order.payout_delay_hours is None:
             return False
         await self._settle_booster_funds(
             order,

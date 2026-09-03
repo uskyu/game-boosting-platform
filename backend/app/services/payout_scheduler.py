@@ -1,7 +1,8 @@
 """到账时效自动结算调度器。
 
-订单可设置 payout_delay_days（1-5 天）：打手交付（claim 变为
-DELIVERED）后，经过该天数自动按全额、无扣除走与人工审核相同的
+订单可设置到账时效（天部分 payout_delay_days 0-30 + 小时部分
+payout_delay_hours 0-23，都为 null = 不设置）：打手交付（claim 变为
+DELIVERED）后，经过该时长自动按全额、无扣除走与人工审核相同的
 结算函数，并给打手发送到账通知。
 
 scan_due_payouts 是可注入 ``now`` 的扫描函数（便于测试，不依赖
@@ -12,7 +13,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.notification import NotificationType
@@ -31,9 +32,13 @@ def _as_utc(value: datetime) -> datetime:
 
 def _claim_due(claim: OrderClaim, order: Order, now: datetime) -> bool:
     """该名额的到账时效是否已到期。"""
-    if order.payout_delay_days is None or claim.delivered_at is None:
+    days = order.payout_delay_days
+    hours = getattr(order, "payout_delay_hours", None)
+    if (days is None and hours is None) or claim.delivered_at is None:
         return False
-    due_at = _as_utc(claim.delivered_at) + timedelta(days=int(order.payout_delay_days))
+    due_at = _as_utc(claim.delivered_at) + timedelta(
+        days=int(days or 0), hours=int(hours or 0)
+    )
     return due_at <= now
 
 
@@ -42,8 +47,8 @@ async def scan_due_payouts(
 ) -> list[int]:
     """扫描并自动结算到账时效到期的交付名额。
 
-    - 候选：status=DELIVERED 且所属订单设置了 payout_delay_days；
-    - 到期判定：delivered_at + payout_delay_days 天 <= now（now 可注入）；
+    - 候选：status=DELIVERED 且所属订单设置了到账时效（天/小时任一非空）；
+    - 到期判定：delivered_at + 天数 + 小时数 <= now（now 可注入）；
     - 每个名额独立 savepoint 结算（全额、deduction=0，走与
       review_claim 相同的结算函数），失败只 log 不影响其他名额；
     - 结算成功后给打手发到账通知（尽力而为）。
@@ -58,7 +63,10 @@ async def scan_due_payouts(
         .join(Order, OrderClaim.order_id == Order.id)
         .where(
             OrderClaim.status == ClaimLifecycleStatus.DELIVERED,
-            Order.payout_delay_days.isnot(None),
+            or_(
+                Order.payout_delay_days.isnot(None),
+                Order.payout_delay_hours.isnot(None),
+            ),
         )
         .order_by(OrderClaim.id.asc())
     )

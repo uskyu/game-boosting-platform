@@ -3,9 +3,10 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import Lightbox from '@/components/Lightbox.vue'
+import { useChatStore } from '@/stores/chat'
 import { useOrdersStore } from '@/stores/orders'
 import api from '@/utils/api'
-import { formatDateTime, formatOrderPrice, formatPrice } from '@/utils/display'
+import { formatDateTime, formatOrderPrice, formatPayoutDelay, formatPrice, parsePayoutDelay } from '@/utils/display'
 import { getClaimStatusMeta, getOrderStatusBadgeClass, getOrderStatusLabel } from '@/utils/order'
 
 const props = defineProps({
@@ -16,6 +17,7 @@ const props = defineProps({
 })
 
 const router = useRouter()
+const chatStore = useChatStore()
 const ordersStore = useOrdersStore()
 
 const order = ref(null)
@@ -23,6 +25,8 @@ const loading = ref(true)
 const error = ref('')
 const message = ref({ type: '', text: '' })
 const actionKey = ref('')
+const chatLoading = ref(false)
+const chatTarget = ref(null) // 'owner' | 'booster'
 
 // 子导航：订单详情 / 接单名单 / 审核列表
 const detailTab = ref('info')
@@ -70,6 +74,28 @@ function claimBoosterName(claim) {
 
 const orderAttachments = computed(() => normalizeAttachments(order.value?.attachments))
 
+// ── 联系双方（照抄 OrderDetail.vue handleStartConversation：chatStore.startConversation 成功后跳 chat-detail）──
+const ownerId = computed(() => order.value?.user_id ?? null)
+const boosterId = computed(() => order.value?.booster_id ?? null)
+
+async function handleStartConversation(target) {
+  const targetUserId = target === 'owner' ? ownerId.value : boosterId.value
+  if (targetUserId == null || chatLoading.value) {
+    return
+  }
+  chatTarget.value = target
+  chatLoading.value = true
+  message.value = { type: '', text: '' }
+  const result = await chatStore.startConversation(targetUserId, order.value.id)
+  if (result.success) {
+    router.push({ name: 'chat-detail', params: { id: result.data.id } })
+  } else {
+    message.value = { type: 'error', text: result.error }
+  }
+  chatLoading.value = false
+  chatTarget.value = null
+}
+
 // ── 灯箱：订单图片 / 汇报图片共用 ──
 
 const lightbox = ref({ visible: false, images: [], index: 0 })
@@ -107,17 +133,23 @@ function applyEditData(state, o) {
   state.compensation_enabled = Number(o.compensation_amount ?? 0) > 0
   state.compensation_amount = o.compensation_amount != null ? String(o.compensation_amount) : ''
   state.payout_delay_days = o.payout_delay_days != null ? String(o.payout_delay_days) : ''
+  state.payout_delay_hours = o.payout_delay_hours != null ? String(o.payout_delay_hours) : ''
 }
 
-// 到账时效选项：不设置（默认）/ 1-5 天
-const payoutDelayOptions = [
-  { value: '', label: '不设置' },
-  { value: '1', label: '1天' },
-  { value: '2', label: '2天' },
-  { value: '3', label: '3天' },
-  { value: '4', label: '4天' },
-  { value: '5', label: '5天' },
+// 到账时效快捷选项：点选后填入天/小时输入框
+const payoutDelayShortcuts = [
+  { label: '1天', days: 1, hours: '' },
+  { label: '3天', days: 3, hours: '' },
+  { label: '7天', days: 7, hours: '' },
+  { label: '12小时', days: '', hours: 12 },
+  { label: '1天12小时', days: 1, hours: 12 },
 ]
+
+function applyPayoutDelayShortcut(state, shortcut) {
+  if (!state) return
+  state.payout_delay_days = shortcut.days
+  state.payout_delay_hours = shortcut.hours
+}
 
 function openEditPanel() {
   const o = order.value
@@ -125,7 +157,7 @@ function openEditPanel() {
   editPanel.value = {
     title: '', intro: '', description: '', price: '',
     max_claims: 1, deadline: '', attachments: [], newFiles: null,
-    boss_contact: '', compensation_enabled: false, compensation_amount: '', payout_delay_days: '',
+    boss_contact: '', compensation_enabled: false, compensation_amount: '', payout_delay_days: '', payout_delay_hours: '',
     error: '', submitting: false, uploading: '', uploadProgress: '', removingIndex: -1,
   }
   applyEditData(editPanel.value, o)
@@ -226,9 +258,9 @@ async function submitEdit() {
     }
   }
 
-  const payoutDelay = state.payout_delay_days === '' ? null : Number(state.payout_delay_days)
-  if (payoutDelay != null && (!Number.isInteger(payoutDelay) || payoutDelay < 1 || payoutDelay > 5)) {
-    state.error = '到账时效需为 1-5 天'
+  const payoutDelay = parsePayoutDelay(state.payout_delay_days, state.payout_delay_hours)
+  if (payoutDelay.error) {
+    state.error = payoutDelay.error
     return
   }
 
@@ -245,7 +277,8 @@ async function submitEdit() {
     deadline: state.deadline || null,
     boss_contact: bossContact || null,
     compensation_amount: compensationAmount,
-    payout_delay_days: payoutDelay,
+    payout_delay_days: payoutDelay.days,
+    payout_delay_hours: payoutDelay.hours,
   })
   if (!result.success) {
     state.submitting = false
@@ -497,7 +530,7 @@ onMounted(async () => {
         </div>
 
         <!-- 增量契约字段：老板ID / 炸单赔偿金 / 到账时效（有值才展示） -->
-        <div v-if="order.boss_contact || Number(order.compensation_amount) > 0 || order.payout_delay_days" class="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div v-if="order.boss_contact || Number(order.compensation_amount) > 0 || formatPayoutDelay(order)" class="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <div v-if="order.boss_contact" class="info-tile min-w-0">
             <p class="info-tile__label">老板ID</p>
             <p class="info-tile__value break-words">{{ order.boss_contact }}</p>
@@ -506,9 +539,9 @@ onMounted(async () => {
             <p class="info-tile__label">炸单赔偿金</p>
             <p class="info-tile__value tabular-nums">{{ formatPrice(order.compensation_amount) }}</p>
           </div>
-          <div v-if="order.payout_delay_days" class="info-tile">
+          <div v-if="formatPayoutDelay(order)" class="info-tile">
             <p class="info-tile__label">到账时效</p>
-            <p class="info-tile__value tabular-nums">{{ order.payout_delay_days }}天到账</p>
+            <p class="info-tile__value tabular-nums">{{ formatPayoutDelay(order) }}到账</p>
           </div>
         </div>
 
@@ -613,10 +646,25 @@ onMounted(async () => {
               />
             </div>
             <div>
-              <label class="label" for="edit-payout-delay">到账时效</label>
-              <select id="edit-payout-delay" v-model="editPanel.payout_delay_days" class="input" :disabled="editPanel.submitting">
-                <option v-for="option in payoutDelayOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-              </select>
+              <label class="label" for="edit-payout-delay-days">到账时效（都不填=不设置）</label>
+              <div class="flex items-center gap-2">
+                <input id="edit-payout-delay-days" v-model="editPanel.payout_delay_days" type="number" min="0" max="30" step="1" class="input" placeholder="天（0-30）" :disabled="editPanel.submitting" />
+                <span class="text-sm text-ink-3">天</span>
+                <input id="edit-payout-delay-hours" v-model="editPanel.payout_delay_hours" type="number" min="0" max="23" step="1" class="input" placeholder="小时（0-23）" :disabled="editPanel.submitting" />
+                <span class="text-sm text-ink-3">小时</span>
+              </div>
+              <div class="mt-2 flex flex-wrap gap-2">
+                <button
+                  v-for="shortcut in payoutDelayShortcuts"
+                  :key="shortcut.label"
+                  type="button"
+                  class="filter-pill"
+                  :disabled="editPanel.submitting"
+                  @click="applyPayoutDelayShortcut(editPanel, shortcut)"
+                >
+                  {{ shortcut.label }}
+                </button>
+              </div>
             </div>
           </div>
           <!-- 炸单赔偿金：开关默认关，开启后填写金额（>0） -->
@@ -791,6 +839,24 @@ onMounted(async () => {
       <!-- 管理操作 -->
       <section class="surface-card p-6 sm:p-8">
         <h2 class="text-lg font-semibold text-ink-1">管理操作</h2>
+        <div class="mt-4 grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            class="btn-secondary min-h-[44px] !px-4 !py-2"
+            :disabled="chatLoading || ownerId == null"
+            @click="handleStartConversation('owner')"
+          >
+            {{ chatLoading && chatTarget === 'owner' ? '打开中…' : '联系发布人' }}
+          </button>
+          <button
+            type="button"
+            class="btn-secondary min-h-[44px] !px-4 !py-2"
+            :disabled="chatLoading || boosterId == null"
+            @click="handleStartConversation('booster')"
+          >
+            {{ boosterId == null ? '联系打手（暂无打手）' : (chatLoading && chatTarget === 'booster' ? '打开中…' : '联系打手') }}
+          </button>
+        </div>
         <div class="mt-4 flex flex-wrap gap-2">
           <button v-if="order.claim_status === 'OPEN'" type="button" class="btn-secondary min-h-[44px] !px-4 !py-2" :disabled="actionKey === 'control-pause'" @click="controlOrder('pause')">
             {{ actionKey === 'control-pause' ? '处理中…' : '暂停接单' }}

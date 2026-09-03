@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 
 import { useChatStore } from '@/stores/chat'
 import { useOrdersStore } from '@/stores/orders'
-import { formatCount, formatDateTime, formatOrderPrice, formatPrice, formatShortDate } from '@/utils/display'
+import { formatCount, formatDateTime, formatOrderPrice, formatPayoutDelay, formatPrice, formatShortDate } from '@/utils/display'
 import { ORDER_STATUS_OPTIONS, getClaimStatusMeta, getOrderStatusBadgeClass, getOrderStatusLabel } from '@/utils/order'
 
 const router = useRouter()
@@ -79,7 +79,8 @@ function getAttachment(order) {
 function getMetaLine(order) {
   const pieces = []
   if (order.compensation_amount) pieces.push(`炸单赔偿 ${formatPrice(order.compensation_amount)}`)
-  if (order.payout_delay_days) pieces.push(`${order.payout_delay_days}天到账`)
+  const payoutText = formatPayoutDelay(order)
+  if (payoutText) pieces.push(`${payoutText}到账`)
   const { claimed, max } = getClaimMeta(order)
   if (max > 0) pieces.push(`当前情况 ${claimed}/${max}`)
   return pieces.join(' · ')

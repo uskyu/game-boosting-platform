@@ -159,8 +159,9 @@ class Order(Base):
     compensation_amount: Mapped[Decimal | None] = mapped_column(
         Numeric(precision=10, scale=2), nullable=True
     )
-    # 到账时效（天，1-5）：交付后到时自动结算
+    # 到账时效：天部分 0-30 + 小时部分 0-23（都为 null=不设置；交付后到时自动结算）
     payout_delay_days: Mapped[int | None] = mapped_column(nullable=True)
+    payout_delay_hours: Mapped[int | None] = mapped_column(nullable=True)
 
     # Dispatch controls (legacy status remains the workflow status)
     max_claims: Mapped[int] = mapped_column(default=1, server_default="1", nullable=False)

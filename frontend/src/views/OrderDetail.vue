@@ -10,7 +10,7 @@ import { useChatStore } from '@/stores/chat'
 import { useOrdersStore } from '@/stores/orders'
 import { getGameImage } from '@/data/gameImages'
 import api from '@/utils/api'
-import { formatDateTime, formatOrderPrice, formatPrice, formatShortDate } from '@/utils/display'
+import { formatDateTime, formatOrderPrice, formatPayoutDelay, formatPrice, formatShortDate } from '@/utils/display'
 import { getClaimStatusMeta, getOrderStatusBadgeClass, getOrderStatusLabel, getOrderStatusMeta, getHumanStatusLabel, getHumanStatusSubtitle } from '@/utils/order'
 
 const props = defineProps({
@@ -540,9 +540,9 @@ onMounted(async () => {
             <p class="info-tile__label">炸单赔偿金</p>
             <p class="info-tile__value tabular-nums text-warning">{{ formatPrice(order.compensation_amount) }}</p>
           </div>
-          <div v-if="order.payout_delay_days" class="od-key__item">
+          <div v-if="formatPayoutDelay(order)" class="od-key__item">
             <p class="info-tile__label">到账时效</p>
-            <p class="info-tile__value">{{ order.payout_delay_days }} 天</p>
+            <p class="info-tile__value">{{ formatPayoutDelay(order) }}</p>
           </div>
           <div class="od-key__item">
             <p class="info-tile__label">订单号</p>

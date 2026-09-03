@@ -75,3 +75,41 @@ export function formatCount(value) {
   const numericValue = Number(value ?? 0)
   return countFormatter.format(Number.isNaN(numericValue) ? 0 : numericValue)
 }
+
+/**
+ * 到账时效统一展示：X天Y小时（如 1天 / 12小时 / 1天12小时 / 3天）。
+ * 天和小时都为空（或都为 0）时返回空字符串 = 不设置。
+ */
+export function formatPayoutDelay(order) {
+  if (!order) return ''
+  const days = Number(order.payout_delay_days)
+  const hours = Number(order.payout_delay_hours)
+  const hasDays = Number.isFinite(days) && days > 0
+  const hasHours = Number.isFinite(hours) && hours > 0
+  if (!hasDays && !hasHours) return ''
+  const daysText = hasDays ? `${days}天` : ''
+  const hoursText = hasHours ? `${hours}小时` : ''
+  return `${daysText}${hoursText}`
+}
+
+/**
+ * 到账时效表单解析：两个 number input（天 0-30，小时 0-23）→ payload。
+ * 返回 { days, hours }（null = 不设置）或 { error }。
+ */
+export function parsePayoutDelay(daysRaw, hoursRaw) {
+  const daysEmpty = daysRaw === '' || daysRaw == null
+  const hoursEmpty = hoursRaw === '' || hoursRaw == null
+  if (daysEmpty && hoursEmpty) return { days: null, hours: null }
+  const days = daysEmpty ? 0 : Number(daysRaw)
+  const hours = hoursEmpty ? 0 : Number(hoursRaw)
+  if (!Number.isInteger(days) || days < 0 || days > 30) {
+    return { error: '到账天数需为 0-30 的整数' }
+  }
+  if (!Number.isInteger(hours) || hours < 0 || hours > 23) {
+    return { error: '到账小时需为 0-23 的整数' }
+  }
+  if (days === 0 && hours === 0) {
+    return { error: '到账时效需至少设置天数或小时数（不设置请都留空）' }
+  }
+  return { days: daysEmpty ? null : days, hours: hoursEmpty ? null : hours }
+}

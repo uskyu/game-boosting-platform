@@ -17,7 +17,7 @@ import {
   getWithdrawalStatusTagClass,
 } from '@/stores/wallet'
 import api from '@/utils/api'
-import { formatDateTime, formatOrderPrice, formatPrice } from '@/utils/display'
+import { formatDateTime, formatOrderPrice, formatPayoutDelay, formatPrice, parsePayoutDelay } from '@/utils/display'
 import {
   getOrderStatusBadgeClass,
   getOrderStatusLabel,
@@ -360,15 +360,20 @@ async function uploadOrderAttachments(orderId, files, state) {
 
 const ADMIN_PUBLISH_SERVICE_TYPE = '陪玩'
 
-// 到账时效：不设置（默认）/ 1-5 天 → payout_delay_days
-const publishPayoutDelayOptions = [
-  { value: '', label: '不设置' },
-  { value: 1, label: '1天' },
-  { value: 2, label: '2天' },
-  { value: 3, label: '3天' },
-  { value: 4, label: '4天' },
-  { value: 5, label: '5天' },
+// 到账时效快捷选项：点选后填入天/小时输入框
+const publishPayoutDelayShortcuts = [
+  { label: '1天', days: 1, hours: '' },
+  { label: '3天', days: 3, hours: '' },
+  { label: '7天', days: 7, hours: '' },
+  { label: '12小时', days: '', hours: 12 },
+  { label: '1天12小时', days: 1, hours: 12 },
 ]
+
+function applyPublishPayoutDelayShortcut(shortcut) {
+  if (!publishModal.value) return
+  publishModal.value.payout_delay_days = shortcut.days
+  publishModal.value.payout_delay_hours = shortcut.hours
+}
 
 const publishGameOptions = computed(() => gamesStore.adminGames)
 const hasActivePublishGame = computed(() => publishGameOptions.value.some((game) => game.is_active))
@@ -393,6 +398,7 @@ async function openPublishModal() {
     compensation_enabled: false,
     compensation_amount: '',
     payout_delay_days: '',
+    payout_delay_hours: '',
     error: '',
     submitting: false,
     uploading: '',
@@ -456,9 +462,9 @@ async function submitPublishModal() {
     }
   }
 
-  const payoutDelay = state.payout_delay_days === '' ? null : Number(state.payout_delay_days)
-  if (payoutDelay != null && (!Number.isInteger(payoutDelay) || payoutDelay < 1 || payoutDelay > 5)) {
-    state.error = '到账时效需为 1-5 天'
+  const payoutDelay = parsePayoutDelay(state.payout_delay_days, state.payout_delay_hours)
+  if (payoutDelay.error) {
+    state.error = payoutDelay.error
     return
   }
 
@@ -475,7 +481,8 @@ async function submitPublishModal() {
     service_type: ADMIN_PUBLISH_SERVICE_TYPE,
     server: state.server.trim() || null,
     boss_contact: bossContact || null,
-    payout_delay_days: payoutDelay,
+    payout_delay_days: payoutDelay.days,
+    payout_delay_hours: payoutDelay.hours,
   }
   if (state.compensation_enabled) {
     payload.compensation_amount = compensationAmount
@@ -1319,10 +1326,24 @@ onMounted(async () => {
                 />
               </div>
               <div>
-                <label class="label" for="publish-payout-delay">到账时效</label>
-                <select id="publish-payout-delay" v-model="publishModal.payout_delay_days" class="input">
-                  <option v-for="option in publishPayoutDelayOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-                </select>
+                <label class="label" for="publish-payout-delay-days">到账时效（都不填=不设置）</label>
+                <div class="flex items-center gap-2">
+                  <input id="publish-payout-delay-days" v-model="publishModal.payout_delay_days" type="number" min="0" max="30" step="1" class="input" placeholder="天（0-30）" />
+                  <span class="text-sm text-ink-3">天</span>
+                  <input id="publish-payout-delay-hours" v-model="publishModal.payout_delay_hours" type="number" min="0" max="23" step="1" class="input" placeholder="小时（0-23）" />
+                  <span class="text-sm text-ink-3">小时</span>
+                </div>
+                <div class="mt-2 flex flex-wrap gap-2">
+                  <button
+                    v-for="shortcut in publishPayoutDelayShortcuts"
+                    :key="shortcut.label"
+                    type="button"
+                    class="filter-pill"
+                    @click="applyPublishPayoutDelayShortcut(shortcut)"
+                  >
+                    {{ shortcut.label }}
+                  </button>
+                </div>
               </div>
               <div class="sm:col-span-2">
                 <label class="label" for="publish-boss-contact">老板ID（可选）</label>
