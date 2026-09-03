@@ -10,9 +10,13 @@ from tests.conftest import auth_header
 
 
 async def _register(client: AsyncClient, email: str, username: str) -> dict:
+    from app.services import captcha_service
+    captcha_id, _ = captcha_service.create()
+    code, _ = captcha_service._store[captcha_id]
     resp = await client.post(
         "/auth/register",
-        json={"email": email, "username": username, "password": "Passw0rd123"},
+        json={"email": email, "username": username, "password": "Passw0rd123",
+              "captcha_id": captcha_id, "captcha_code": code},
     )
     assert resp.status_code in (200, 201)
     return resp.json()

@@ -57,7 +57,7 @@ async def test_assign_order_locks_order(
 
 
 async def test_assign_regular_user_as_booster(
-    client: AsyncClient, registered_user: dict, admin_user: dict
+    client: AsyncClient, registered_user: dict, admin_user: dict, captcha_pair: dict
 ):
     """Any registered non-admin user acts as a booster and can be assigned."""
     order = await _create_order(client, admin_user)
@@ -67,6 +67,7 @@ async def test_assign_regular_user_as_booster(
         "email": "plain@example.com",
         "username": "PlainUser",
         "password": "PlainPass1",
+        **captcha_pair,
     })
     plain = resp.json()
     assert plain["user"]["role"] == "BOOSTER"
@@ -124,6 +125,7 @@ async def test_assign_rejects_quota_full(
     registered_user: dict,
     admin_user: dict,
     db_session,
+    captcha_pair: dict,
 ):
     """A booster with no free quota cannot take more orders."""
     order = await _create_order(client, admin_user)
@@ -133,6 +135,7 @@ async def test_assign_rejects_quota_full(
         "email": "zeroboost@example.com",
         "username": "ZeroBoost",
         "password": "ZeroPass1",
+        **captcha_pair,
     })
     zero = resp.json()
     result = await db_session.execute(
@@ -156,6 +159,7 @@ async def test_assign_rejects_inactive_booster(
     registered_user: dict,
     admin_user: dict,
     db_session,
+    captcha_pair: dict,
 ):
     """An inactive booster cannot be assigned orders."""
     order = await _create_order(client, admin_user)
@@ -164,6 +168,7 @@ async def test_assign_rejects_inactive_booster(
         "email": "inactive@example.com",
         "username": "InactiveBoost",
         "password": "InactPass1",
+        **captcha_pair,
     })
     inactive = resp.json()
     result = await db_session.execute(

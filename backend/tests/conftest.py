@@ -118,24 +118,35 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
 
 
 @pytest.fixture
-async def registered_user(client: AsyncClient) -> dict:
+def captcha_pair() -> dict:
+    """Generate a fresh captcha id+code pair (single-use, function scope)."""
+    from app.services import captcha_service
+    captcha_id, _ = captcha_service.create()
+    code, _ = captcha_service._store[captcha_id]
+    return {"captcha_id": captcha_id, "captcha_code": code}
+
+
+@pytest.fixture
+async def registered_user(client: AsyncClient, captcha_pair: dict) -> dict:
     """Register and return a regular user with tokens."""
     resp = await client.post("/auth/register", json={
         "email": "testuser@example.com",
         "username": "TestUser",
         "password": "TestPass123",
+        **captcha_pair,
     })
     assert resp.status_code in (200, 201)
     return resp.json()
 
 
 @pytest.fixture
-async def booster_user(client: AsyncClient, db_session: AsyncSession) -> dict:
+async def booster_user(client: AsyncClient, db_session: AsyncSession, captcha_pair: dict) -> dict:
     """Register a user then promote to BOOSTER via DB."""
     resp = await client.post("/auth/register", json={
         "email": "booster@example.com",
         "username": "TestBooster",
         "password": "BoostPass123",
+        **captcha_pair,
     })
     assert resp.status_code in (200, 201)
     data = resp.json()
@@ -159,12 +170,13 @@ async def booster_user(client: AsyncClient, db_session: AsyncSession) -> dict:
 
 
 @pytest.fixture
-async def admin_user(client: AsyncClient, db_session: AsyncSession) -> dict:
+async def admin_user(client: AsyncClient, db_session: AsyncSession, captcha_pair: dict) -> dict:
     """Register a user then promote to ADMIN via DB."""
     resp = await client.post("/auth/register", json={
         "email": "admin_test@example.com",
         "username": "TestAdmin",
         "password": "AdminPass123",
+        **captcha_pair,
     })
     assert resp.status_code in (200, 201)
 
