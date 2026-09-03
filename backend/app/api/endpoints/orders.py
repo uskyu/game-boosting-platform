@@ -200,8 +200,8 @@ async def analyze_requirement(
     "/create",
     response_model=OrderResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="创建订单",
-    description="管理员发布新的代练订单进公共大厅；普通用户和打手不能发单",
+    summary="发布订单（所有注册用户）",
+    description="所有注册用户可发布；非管理员发布时托管 发单价格×可接单人数",
 )
 async def create_order(
     order_data: OrderCreate,
@@ -211,8 +211,8 @@ async def create_order(
     """
     Create a new boosting order.
 
-    Requires authentication. ADMIN publishes orders directly into the public
-    hall; every non-admin account can grab orders but cannot create them.
+    Requires authentication. All registered users may publish orders;
+    non-admin publishers escrow price x max_claims at creation.
 
     - **game_name**: Name of the game
     - **current_rank**: Current player rank

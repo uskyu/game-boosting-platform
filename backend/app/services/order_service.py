@@ -602,6 +602,7 @@ class OrderService:
         if existing.scalar_one_or_none() is not None:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="您已报名过该订单，无需重复报名")
         self._db.add(OrderClaim(order_id=order.id, booster_id=booster.id))
+        # 行锁串行化配额检查，唯一约束兜底并发重复报名转409
         order.claimed_count += 1
         if order.booster_id is None:
             order.booster_id = booster.id

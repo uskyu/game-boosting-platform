@@ -80,6 +80,7 @@ async def upload_game_logo(
     current_admin: Annotated[User, Depends(get_current_admin)],
     logo: UploadFile = File(...),
 ) -> GameResponse:
+    # 管理操作：需管理员token，允许操作下架游戏
     game = await _get_game_or_404(db, game_id, include_inactive=True)
     logo_url = await save_image_upload(logo, "games", max_size_bytes=10 * 1024 * 1024)
     game.logo_url = logo_url
@@ -94,6 +95,7 @@ async def delete_game_logo(
     db: DatabaseSession,
     current_admin: Annotated[User, Depends(get_current_admin)],
 ) -> MessageResponse:
+    # 管理操作：需管理员token，允许操作下架游戏
     game = await _get_game_or_404(db, game_id, include_inactive=True)
     game.logo_url = None
     await db.flush()
@@ -163,6 +165,7 @@ async def update_game(
     db: DatabaseSession,
     current_admin: Annotated[User, Depends(get_current_admin)],
 ) -> GameResponse:
+    # 管理操作：需管理员token，允许操作下架游戏
     game = await _get_game_or_404(db, game_id, include_inactive=True)
     update_data = payload.model_dump(exclude_unset=True)
     for field, value in update_data.items():
@@ -179,6 +182,7 @@ async def delete_game(
     db: DatabaseSession,
     current_admin: Annotated[User, Depends(get_current_admin)],
 ) -> MessageResponse:
+    # 管理操作：需管理员token，允许操作下架游戏
     game = await _get_game_or_404(db, game_id, include_inactive=True)
     await db.delete(game)
     await db.flush()

@@ -96,11 +96,12 @@ function getPriceLabel(order) {
   return formatPrice(order?.price)
 }
 
-function getRemainingSlots(order) {
-  const value = order.remaining_slots ?? order.remaining_quota ?? order.slots_remaining
-  if (value != null) return value
-  if (order.max_boosters != null && order.accepted_count != null) return Math.max(0, order.max_boosters - order.accepted_count)
-  return null
+function getClaimMeta(order) {
+  const claimed = Number(order.claimed_count ?? order.accepted_count ?? 0)
+  const max = Number(order.max_claims ?? order.max_boosters ?? 0)
+  const safeClaimed = Number.isNaN(claimed) ? 0 : claimed
+  const safeMax = Number.isNaN(max) ? 0 : max
+  return { claimed: safeClaimed, max: safeMax, remaining: safeMax ? Math.max(0, safeMax - safeClaimed) : null }
 }
 
 function getAttachment(order) {
@@ -110,12 +111,13 @@ function getAttachment(order) {
   return typeof url === 'string' && url.startsWith('/uploads/orders/') ? url : ''
 }
 
-function getClaimMeta(order) {
-  const claimed = Number(order.claimed_count ?? order.accepted_count ?? 0)
-  const max = Number(order.max_claims ?? order.max_boosters ?? 0)
-  const remainingRaw = getRemainingSlots(order)
-  const remaining = remainingRaw != null ? Number(remainingRaw) : (max ? Math.max(0, max - claimed) : null)
-  return { claimed: Number.isNaN(claimed) ? 0 : claimed, max: Number.isNaN(max) ? 0 : max, remaining }
+function getMetaLine(order) {
+  const pieces = []
+  if (order.compensation_amount) pieces.push(`炸单赔偿 ${formatPrice(order.compensation_amount)}`)
+  if (order.payout_delay_days) pieces.push(`${order.payout_delay_days}天到账`)
+  const { claimed, max } = getClaimMeta(order)
+  if (max > 0) pieces.push(`当前情况 ${claimed}/${max}`)
+  return pieces.join(' · ')
 }
 
 function isFullOrder(order) {
@@ -254,25 +256,27 @@ onUnmounted(() => {
       >🔔 有新订单发布</p>
     </transition>
 
-    <!-- 筛选一行：游戏 + 状态（窄屏横向滚动不折行，文档 7 节） -->
+    <!-- 筛选一行：游戏 + 状态 + 复选框 + 按钮同一行，窄屏横向滚动不折行（文档 7 节） -->
     <section class="surface-card p-4 sm:p-5">
-      <div class="hall-filters scroll-x flex flex-nowrap items-end gap-3">
+      <div class="hall-filters scroll-x flex flex-nowrap items-center gap-3">
         <div class="w-56 shrink-0 sm:w-64">
           <label class="label" for="hall-game">游戏</label>
-          <input id="hall-game" v-model="searchGame" list="hall-games" type="text" class="input" placeholder="搜索游戏" />
+          <input id="hall-game" v-model="searchGame" list="hall-games" type="text" class="input h-11" placeholder="搜索游戏" />
           <datalist id="hall-games"><option v-for="game in gameOptions" :key="game" :value="game" /></datalist>
         </div>
 
         <div class="w-36 shrink-0 sm:w-44">
           <label class="label" for="hall-status">状态</label>
-          <select id="hall-status" v-model="selectedStatus" class="input" @change="handleSearch">
+          <select id="hall-status" v-model="selectedStatus" class="input h-11" @change="handleSearch">
             <option v-for="option in ORDER_STATUS_OPTIONS" :key="option.value" :value="option.value">{{ option.label }}</option>
           </select>
         </div>
 
-        <label class="filter-check shrink-0"><input v-model="openOnly" type="checkbox" /> 仅看可抢</label>
-        <label class="filter-check shrink-0"><input v-model="showHistory" type="checkbox" /> 历史订单</label>
-        <div class="flex shrink-0 gap-2 pb-0.5"><button class="btn-secondary !px-4" @click="handleSearch">筛选</button><button class="btn-ghost !px-4" @click="resetFilters">重置</button></div>
+        <div class="flex shrink-0 items-center gap-2">
+          <label class="filter-check"><input v-model="openOnly" type="checkbox" /> 仅看可抢</label>
+          <label class="filter-check"><input v-model="showHistory" type="checkbox" /> 历史订单</label>
+          <button class="btn-secondary shrink-0 !px-4" @click="handleSearch">筛选</button><button class="btn-ghost shrink-0 !px-4" @click="resetFilters">重置</button>
+        </div>
       </div>
     </section>
 
@@ -300,33 +304,20 @@ onUnmounted(() => {
         :class="['catalog-card cursor-pointer hall-order-card', { 'hall-order-card--full': isFullOrder(order) }]"
         @click="goToOrder(order.id)"
       >
-        <!-- 主数据行：¥价格 红24 tabular + 当前情况 X/Y 胶囊；满员已抢空徽标 + 整卡置灰 -->
+        <!-- 层级：价格最大红字 → 标题 → 一行小字元信息 → 底部次要行 -->
         <div class="flex items-start justify-between gap-2">
           <p class="shrink-0 text-2xl font-semibold tabular-nums leading-7 text-price">{{ getPriceLabel(order) }}</p>
-          <div class="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
-            <span
-              v-if="order.compensation_amount"
-              class="tag shrink-0 !bg-warning-soft !text-warning tabular-nums"
-            >炸单赔偿 {{ formatPrice(order.compensation_amount) }}</span>
-            <span
-              v-if="order.payout_delay_days"
-              class="tag shrink-0 tabular-nums"
-            >{{ order.payout_delay_days }}天到账</span>
-            <span
-              v-if="getClaimMeta(order).max > 0"
-              class="tag !px-2.5 !py-1 tabular-nums"
-            >当前情况 {{ getClaimMeta(order).claimed }}/{{ getClaimMeta(order).max }}</span>
-            <span v-if="isFullOrder(order)" class="badge-cancelled">已抢空</span>
-            <span v-else-if="!isOrderClaimable(order)" :class="getOrderDisplayBadgeClass(order)">{{ getOrderDisplayStatus(order) }}</span>
-          </div>
+          <span v-if="isFullOrder(order)" class="badge-cancelled shrink-0">已抢空</span>
+          <span v-else-if="!isOrderClaimable(order)" :class="[getOrderDisplayBadgeClass(order), 'shrink-0']">{{ getOrderDisplayStatus(order) }}</span>
         </div>
 
-        <div v-if="getAttachment(order)" class="order-attachment"><img :src="getAttachment(order)" alt="订单附件" loading="lazy" /></div>
+        <!-- 标题 -->
+        <p v-if="order.title" class="mt-3 truncate text-[15px] font-semibold text-ink-1">{{ order.title }}</p>
 
-        <!-- 层级 2：订单标题为主锚点（抢单动作移入详情页） -->
-        <div class="mt-3 min-w-0">
-          <p v-if="order.title" class="truncate text-[15px] font-semibold text-ink-1">{{ order.title }}</p>
-        </div>
+        <!-- 炸单赔偿 / 到账时效 / 当前情况收敛为一行 13px 小字 -->
+        <p v-if="getMetaLine(order)" class="mt-1.5 truncate text-[13px] tabular-nums text-ink-2">{{ getMetaLine(order) }}</p>
+
+        <div v-if="getAttachment(order)" class="mt-3 overflow-hidden rounded-tile"><img :src="getAttachment(order)" alt="订单附件" loading="lazy" class="max-h-40 w-full rounded object-cover" /></div>
 
         <!-- 层级 3：底部次要信息行（需求摘要 + 游戏名 + 时间）与「查看详情 →」入口 -->
         <div class="mt-4 border-t border-line-1 pt-3.5 text-[13px]">

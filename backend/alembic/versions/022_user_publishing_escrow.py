@@ -43,6 +43,7 @@ def upgrade() -> None:
         sa.Column("payout_delay_days", sa.Integer(), nullable=True),
     )
     # MySQL 枚举扩展：MODIFY 整体替换定义，旧值全部保留在新列表前部
+    # 仅MySQL：MODIFY整体替换枚举定义；本项目生产/CI均为MySQL，切库需重写本迁移
     op.execute(
         f"ALTER TABLE wallet_transactions MODIFY COLUMN `type` "
         f"ENUM({_NEW_ENUM_VALUES}) NOT NULL"
@@ -50,6 +51,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # 仅MySQL：MODIFY整体替换枚举定义；本项目生产/CI均为MySQL，切库需重写本迁移
     op.execute(
         f"ALTER TABLE wallet_transactions MODIFY COLUMN `type` "
         f"ENUM({_OLD_ENUM_VALUES}) NOT NULL"
