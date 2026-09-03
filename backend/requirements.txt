@@ -28,3 +28,4 @@ httpx==0.27.0
 # Utilities
 email-validator==2.1.0.post1
 python-dateutil==2.8.2
+captcha==0.7.1

@@ -41,7 +41,16 @@ export const useAuthStore = defineStore('auth', () => {
     user.value = userData
   }
 
-  async function register(email, username, password) {
+  async function fetchCaptcha() {
+    try {
+      const response = await api.get('/auth/captcha')
+      return { success: true, captchaId: response.data.captcha_id, image: response.data.image }
+    } catch (err) {
+      return { success: false, error: err.message }
+    }
+  }
+
+  async function register(email, username, password, captchaId, captchaCode) {
     loading.value = true
     error.value = null
     
@@ -50,6 +59,8 @@ export const useAuthStore = defineStore('auth', () => {
         email,
         username,
         password,
+        captcha_id: captchaId,
+        captcha_code: captchaCode,
       })
       
       const { access_token, refresh_token, user: userData } = response.data
@@ -59,7 +70,7 @@ export const useAuthStore = defineStore('auth', () => {
       return { success: true }
     } catch (err) {
       error.value = err.message
-      return { success: false, error: err.message }
+      return { success: false, error: err.message, status: err.status }
     } finally {
       loading.value = false
     }
@@ -176,6 +187,7 @@ export const useAuthStore = defineStore('auth', () => {
     setTokens,
     clearTokens,
     setUser,
+    fetchCaptcha,
     register,
     login,
     fetchCurrentUser,

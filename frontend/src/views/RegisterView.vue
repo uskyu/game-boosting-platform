@@ -48,6 +48,10 @@ const confirmPassword = ref('')
 const showPassword = ref(false)
 const isTyping = ref(false)
 const errorMessage = ref('')
+const captchaId = ref('')
+const captchaCode = ref('')
+const captchaImage = ref('')
+const captchaLoading = ref(false)
 const backgroundUrl = ref(PAGE_BACKGROUNDS.register)
 const spotlightTitle = ref(copy.defaultSpotlight)
 const spotlightMeta = ref(copy.defaultMeta)
@@ -75,9 +79,28 @@ const isFormValid = computed(() => {
     email.value.trim() !== '' &&
     username.value.trim() !== '' &&
     isPasswordStrong(password.value) &&
-    password.value === confirmPassword.value
+    password.value === confirmPassword.value &&
+    captchaCode.value.trim() !== ''
   )
 })
+
+async function refreshCaptcha() {
+  captchaLoading.value = true
+  const result = await authStore.fetchCaptcha()
+  if (result.success) {
+    captchaId.value = result.captchaId
+    captchaImage.value = result.image
+  } else {
+    captchaId.value = ''
+    captchaImage.value = ''
+  }
+  captchaLoading.value = false
+}
+
+function isCaptchaError(result) {
+  if (result.status === 400) return true
+  return /验证码/.test(result.error || '')
+}
 
 async function handleRegister() {
   if (!isFormValid.value) {
@@ -87,13 +110,17 @@ async function handleRegister() {
 
   errorMessage.value = ''
 
-  const result = await authStore.register(email.value, username.value, password.value)
+  const result = await authStore.register(email.value, username.value, password.value, captchaId.value, captchaCode.value.trim())
   if (result.success) {
     router.push('/')
     return
   }
 
   errorMessage.value = result.error
+  if (isCaptchaError(result)) {
+    captchaCode.value = ''
+    await refreshCaptcha()
+  }
 }
 
 function togglePassword() {
@@ -101,6 +128,7 @@ function togglePassword() {
 }
 
 onMounted(async () => {
+  refreshCaptcha()
   await gamesStore.ensureCatalog()
 
   // 默认展示三角洲行动（有本地素材的旗舰游戏）；缺图阶段保留 fallback 到 randomGame。
@@ -192,6 +220,38 @@ onMounted(async () => {
           <p v-if="passwordError" class="helper-text !text-danger">
             {{ passwordError }}
           </p>
+        </div>
+
+        <div class="min-w-0">
+          <label for="register-captcha" class="label">验证码</label>
+          <div class="flex min-w-0 items-stretch gap-3">
+            <input
+              id="register-captcha"
+              v-model="captchaCode"
+              type="text"
+              class="input min-w-0 flex-1"
+              placeholder="输入图中字符"
+              maxlength="6"
+              autocomplete="one-time-code"
+              required
+            />
+            <button
+              type="button"
+              title="点击刷新"
+              :disabled="captchaLoading"
+              class="flex h-11 w-28 shrink-0 items-center justify-center overflow-hidden rounded-field border border-line-1 bg-surface-2 text-xs text-ink-2 transition-opacity hover:opacity-80 disabled:opacity-60"
+              @click="refreshCaptcha"
+            >
+              <img
+                v-if="captchaImage"
+                :src="captchaImage"
+                alt="验证码"
+                title="点击刷新"
+                class="h-full w-full object-cover"
+              />
+              <span v-else>点击重试</span>
+            </button>
+          </div>
         </div>
 
         <button

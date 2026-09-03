@@ -4,7 +4,9 @@ Handles user registration, login, and token management.
 """
 
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Request, status
+from fastapi.exceptions import HTTPException
+from pydantic import BaseModel, Field
 
 from app.api.deps import CurrentUser, DatabaseSession
 from app.schemas.user import (
@@ -18,8 +20,37 @@ from app.schemas.user import (
     UserUpdate,
 )
 from app.services.user_service import get_user_service
+from app.services import captcha_service
 
 router = APIRouter(prefix="/auth", tags=["认证"])
+
+
+class CaptchaResponse(BaseModel):
+    captcha_id: str = Field(description="验证码ID")
+    image: str = Field(description="base64 data URI 图片")
+
+
+@router.get(
+    "/captcha",
+    response_model=CaptchaResponse,
+    summary="获取注册图形验证码",
+    description="返回验证码ID和base64图片，有效期5分钟，一次性使用",
+)
+async def get_captcha(request: Request) -> CaptchaResponse:
+    import base64
+
+    ip = request.client.host if request.client else "unknown"
+    if not captcha_service.check_rate_limit(ip):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="请求过于频繁，请稍后再试",
+        )
+    captcha_id, png_bytes = captcha_service.create()
+    b64 = base64.b64encode(png_bytes).decode("ascii")
+    return CaptchaResponse(
+        captcha_id=captcha_id,
+        image=f"data:image/png;base64,{b64}",
+    )
 
 
 @router.post(
@@ -42,6 +73,13 @@ async def register(
     - Public registration always creates a USER account
     """
     user_service = get_user_service(db)
+
+    # 先校验图形验证码（一次性消费）
+    if not captcha_service.verify(user_data.captcha_id, user_data.captcha_code):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="验证码错误或已过期",
+        )
 
     # Register user
     user = await user_service.register_user(user_data)

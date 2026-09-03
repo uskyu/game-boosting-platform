@@ -43,6 +43,18 @@ class UserRegister(BaseModel):
         description="用户角色",
     )
 
+    captcha_id: str = Field(
+        ...,
+        description="图形验证码ID",
+    )
+
+    captcha_code: str = Field(
+        ...,
+        min_length=1,
+        max_length=10,
+        description="图形验证码",
+    )
+
     @field_validator("username")
     @classmethod
     def validate_username(cls, v: str) -> str:
