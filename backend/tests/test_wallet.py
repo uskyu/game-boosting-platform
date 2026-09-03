@@ -113,7 +113,7 @@ async def test_multi_claim_order_settles_each_booster_independently(
     client: AsyncClient,
     admin_user: dict,
     booster_user: dict,
-    captcha_pair: dict,
+    make_captcha,
 ):
     """Two boosters on one order: each review settles only that booster."""
     # Boss publishes a 2-slot order
@@ -136,7 +136,7 @@ async def test_multi_claim_order_settles_each_booster_independently(
         "email": "booster2@example.com",
         "username": "TestBooster2",
         "password": "BoostPass123",
-        **captcha_pair,
+        **make_captcha(),
     })
     booster2 = resp.json()
 

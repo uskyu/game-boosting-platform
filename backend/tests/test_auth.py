@@ -3,12 +3,12 @@
 from httpx import AsyncClient
 
 
-async def test_register_success(client: AsyncClient, captcha_pair: dict):
+async def test_register_success(client: AsyncClient, make_captcha):
     resp = await client.post("/auth/register", json={
         "email": "new@example.com",
         "username": "NewUser",
         "password": "StrongPass1",
-        **captcha_pair,
+        **make_captcha(),
     })
     assert resp.status_code in (200, 201)
     data = resp.json()
@@ -16,13 +16,13 @@ async def test_register_success(client: AsyncClient, captcha_pair: dict):
     assert "access_token" in data
 
 
-async def test_register_duplicate_email(client: AsyncClient, captcha_pair: dict):
+async def test_register_duplicate_email(client: AsyncClient, make_captcha):
     from app.services import captcha_service
     payload = {
         "email": "dup@example.com",
         "username": "First",
         "password": "StrongPass1",
-        **captcha_pair,
+        **make_captcha(),
     }
     resp1 = await client.post("/auth/register", json=payload)
     assert resp1.status_code in (200, 201)
@@ -47,36 +47,36 @@ async def test_register_missing_captcha_rejected(client: AsyncClient):
     assert resp.status_code == 422
 
 
-async def test_register_wrong_captcha_rejected(client: AsyncClient, captcha_pair: dict):
+async def test_register_wrong_captcha_rejected(client: AsyncClient, make_captcha):
     """Register with wrong captcha code -> 400."""
     payload = {
         "email": "badcaptcha@example.com",
         "username": "BadCaptcha",
         "password": "StrongPass1",
-        **captcha_pair,
+        **make_captcha(),
     }
     payload["captcha_code"] = "WRONG"
     resp = await client.post("/auth/register", json=payload)
     assert resp.status_code == 400
 
 
-async def test_register_weak_password(client: AsyncClient, captcha_pair: dict):
+async def test_register_weak_password(client: AsyncClient, make_captcha):
     resp = await client.post("/auth/register", json={
         "email": "weak@example.com",
         "username": "WeakUser",
         "password": "nodigits",
-        **captcha_pair,
+        **make_captcha(),
     })
     assert resp.status_code == 422
 
 
-async def test_login_success(client: AsyncClient, captcha_pair: dict):
+async def test_login_success(client: AsyncClient, make_captcha):
     # Register first
     await client.post("/auth/register", json={
         "email": "login@example.com",
         "username": "LoginUser",
         "password": "LoginPass1",
-        **captcha_pair,
+        **make_captcha(),
     })
 
     resp = await client.post("/auth/login", json={
@@ -89,12 +89,12 @@ async def test_login_success(client: AsyncClient, captcha_pair: dict):
     assert "refresh_token" in data
 
 
-async def test_login_wrong_password(client: AsyncClient, captcha_pair: dict):
+async def test_login_wrong_password(client: AsyncClient, make_captcha):
     await client.post("/auth/register", json={
         "email": "wrongpw@example.com",
         "username": "WrongPw",
         "password": "CorrectPass1",
-        **captcha_pair,
+        **make_captcha(),
     })
 
     resp = await client.post("/auth/login", json={

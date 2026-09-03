@@ -51,7 +51,7 @@ async def test_accept_order(
 
 
 async def test_accept_order_non_booster(
-    client: AsyncClient, registered_user: dict, admin_user: dict, captcha_pair: dict
+    client: AsyncClient, registered_user: dict, admin_user: dict, make_captcha
 ):
     """新权限模型：注册用户（USER 角色）无需打手身份即可抢单；管理员不能接单。"""
     order = await _create_order(client, admin_user)
@@ -61,7 +61,7 @@ async def test_accept_order_non_booster(
         "email": "regular2@example.com",
         "username": "Regular2",
         "password": "RegularPass1",
-        **captcha_pair,
+        **make_captcha(),
     })
     regular = resp.json()
 
@@ -301,7 +301,7 @@ async def test_mine_published_filters_to_regular_users_own_orders(
 
 
 async def test_mine_published_filters_to_admin_own_orders(
-    client: AsyncClient, admin_user: dict, db_session, captcha_pair: dict
+    client: AsyncClient, admin_user: dict, db_session, make_captcha
 ):
     """Admins using mine_published also see only orders they published."""
     from sqlalchemy import select
@@ -310,7 +310,7 @@ async def test_mine_published_filters_to_admin_own_orders(
     other = await client.post(
         "/auth/register",
         json={"email": "mine.admin.other@example.com", "username": "Other", "password": "Pass12345",
-              **captcha_pair},
+              **make_captcha()},
     )
     assert other.status_code in (200, 201)
     result = await db_session.execute(
