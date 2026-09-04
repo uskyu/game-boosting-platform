@@ -36,6 +36,8 @@ const confirmSuccess = ref(false)
 const showDeliverModal = ref(false)
 // 两步抢单：详情页先弹「接手订单」，确认后才调 acceptOrder
 const showClaimModal = ref(false)
+// 接单失败中央强提醒（复用 modal-scrim/modal-card，保留顶部 errorMessage 的同时弹窗）
+const showClaimFailModal = ref(false)
 // 灯箱：订单画廊 / 交付附件各自独立索引
 const orderLightboxVisible = ref(false)
 const orderLightboxIndex = ref(0)
@@ -350,9 +352,10 @@ async function handleConfirmClaim() {
     await ordersStore.fetchOrder(order.value.id)
     await loadClaims()
   } else {
-    // 失败（含 409 重复确认）走页面既有错误提示
+    // 失败（含 409 重复确认）：保留页面顶部错误提示，同时中央强提醒
     showClaimModal.value = false
     errorMessage.value = result.error
+    showClaimFailModal.value = true
   }
   actionLoading.value = false
 }
@@ -862,6 +865,19 @@ onMounted(async () => {
               <button type="button" class="btn-primary flex-1" :disabled="actionLoading" @click="handleConfirmClaim">
                 {{ actionLoading ? '接手中…' : '接手订单' }}
               </button>
+            </div>
+          </div>
+        </div>
+      </teleport>
+
+      <!-- 接单失败中央强提醒：复用 modal-scrim/modal-card，顶部 errorMessage 同步保留 -->
+      <teleport to="body">
+        <div v-if="showClaimFailModal" class="modal-scrim" @click.self="showClaimFailModal = false">
+          <div class="modal-card" role="alertdialog" aria-modal="true" aria-label="接手失败">
+            <h3 class="text-lg font-semibold text-ink-1">接手失败</h3>
+            <p class="mt-3 text-sm leading-6 text-ink-2">{{ errorMessage || '接手失败，请稍后重试' }}</p>
+            <div class="mt-6 flex gap-3">
+              <button type="button" class="btn-primary flex-1" @click="showClaimFailModal = false">知道了</button>
             </div>
           </div>
         </div>

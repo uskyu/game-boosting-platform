@@ -262,6 +262,10 @@ async def list_orders(
         bool,
         Query(description="仅查看当前用户发布的订单"),
     ] = False,
+    boss_contact: Annotated[
+        str | None,
+        Query(description="按老板ID模糊筛选", max_length=64),
+    ] = None,
 ) -> OrderListResponse:
     """
     List orders with filtering and pagination.
@@ -273,6 +277,7 @@ async def list_orders(
     - **game_name**: Filter by game name (partial match)
     - **status**: Filter by order status
     - **mine_published**: Only orders published by the current user
+    - **boss_contact**: Filter by boss contact ID (partial match)
 
     Pagination:
     - **page**: Page number (default: 1)
@@ -287,6 +292,7 @@ async def list_orders(
         page=page,
         page_size=page_size,
         mine_published=mine_published,
+        boss_contact=boss_contact,
     )
 
     # Calculate total pages

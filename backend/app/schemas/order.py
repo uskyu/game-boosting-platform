@@ -318,11 +318,11 @@ class OrderConfirmRequest(BaseModel):
     """老板确认完成时的打款参数。
 
     amount 缺省表示审核通过、按订单全额结算；
-    传入金额表示部分到账（0 < amount <= 订单价格）。
+    传入金额表示部分到账（0 <= amount <= 订单价格，0 表示 0 元打款）。
     note 为打款备注，随钱包流水留存。
     """
 
-    amount: Decimal | None = Field(default=None, gt=0)
+    amount: Decimal | None = Field(default=None, ge=0)
     note: str | None = Field(default=None, max_length=500)
 
 
@@ -332,8 +332,8 @@ class ClaimReviewRequest(BaseModel):
     action: str = Field(default="approve", pattern="^approve$", description="审核动作，当前仅支持 approve")
     amount: Decimal | None = Field(
         default=None,
-        gt=0,
-        description="打款金额；缺省按订单全额结算（扣除佣金）",
+        ge=0,
+        description="打款金额；缺省按订单全额结算（扣除佣金），0 表示 0 元打款",
     )
     note: str | None = Field(default=None, max_length=500, description="打款备注")
     deduction: Decimal | None = Field(

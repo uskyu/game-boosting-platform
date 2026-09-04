@@ -395,6 +395,36 @@ class WalletService:
             if note:
                 remark = f"{remark}：{note}"
 
+        if income < _ZERO:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="打款金额不能为负数",
+            )
+        if income == _ZERO:
+            # 0 元打款：credit 拒收 0 金额，这里经 _apply 直记一条 0 元
+            # ORDER_INCOME 流水（余额/累计收入不动），只占幂等位，
+            # 保证重复审核走唯一键幂等返回，不重不漏。
+            try:
+                async with self._db.begin_nested():
+                    wallet = await self.get_or_create_wallet(booster_id)
+                    transaction = await self._apply(
+                        wallet,
+                        tx_type=WalletTransactionType.ORDER_INCOME,
+                        amount=_ZERO,
+                        available_delta=_ZERO,
+                        order_id=order.id,
+                        booster_id=booster_id,
+                        remark=remark,
+                    )
+                    return transaction
+            except IntegrityError:
+                logger.info(
+                    "Order %s income already settled for booster %s",
+                    order.id,
+                    booster_id,
+                )
+                return None
+
         try:
             async with self._db.begin_nested():
                 wallet = await self.get_or_create_wallet(booster_id)

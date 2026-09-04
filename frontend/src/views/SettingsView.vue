@@ -31,6 +31,7 @@ const NOTIFICATION_TYPES = [
 ]
 
 const localNotificationSettings = ref({})
+const localDnd = ref(false)
 const localPrivacySettings = ref({ profile_visible: true, show_online_status: true })
 
 const preferences = computed(() => settingsStore.preferences)
@@ -43,6 +44,7 @@ watch(preferences, (pref) => {
       merged[t.key] = ns[t.key] !== undefined ? ns[t.key] : true
     })
     localNotificationSettings.value = merged
+    localDnd.value = ns.global_dnd === true
     localPrivacySettings.value = {
       profile_visible: pref.profile_visible ?? true,
       show_online_status: pref.show_online_status ?? true,
@@ -60,7 +62,7 @@ async function saveNotificationSettings() {
   saving.value = true
   message.value = { type: '', text: '' }
   const result = await settingsStore.updatePreferences({
-    notification_settings: { ...localNotificationSettings.value },
+    notification_settings: { ...localNotificationSettings.value, global_dnd: localDnd.value },
   })
   message.value = result.success
     ? { type: 'success', text: '通知偏好已保存' }
@@ -153,6 +155,23 @@ onMounted(async () => {
       <section v-if="activeTab === 'notifications'" class="surface-card space-y-5 p-6">
         <h2 class="text-xl font-semibold text-ink-1">通知偏好</h2>
         <p class="text-sm text-ink-2">选择您希望接收的通知类型</p>
+
+        <div class="info-tile flex items-center justify-between gap-4">
+          <div>
+            <p class="text-sm font-medium text-ink-1">免打扰</p>
+            <p class="mt-0.5 text-xs text-ink-2">开启后通知类只收不弹，聊天消息照常弹出</p>
+          </div>
+          <label class="relative inline-flex cursor-pointer items-center">
+            <input
+              v-model="localDnd"
+              type="checkbox"
+              class="peer sr-only"
+              :true-value="true"
+              :false-value="false"
+            />
+            <div class="h-6 w-11 rounded-full border border-line-1 bg-surface-3 transition-colors duration-base after:absolute after:left-[3px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:bg-knob after:transition-all after:duration-base after:content-[''] peer-checked:border-transparent peer-checked:bg-primary peer-checked:after:translate-x-full peer-checked:after:bg-on-primary peer-focus-visible:ring-2 peer-focus-visible:ring-primary"></div>
+          </label>
+        </div>
 
         <div class="space-y-3">
           <div

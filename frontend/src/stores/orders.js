@@ -24,6 +24,7 @@ export const useOrdersStore = defineStore('orders', () => {
   const filters = ref({
     gameName: '',
     status: '',
+    bossContact: '',
   })
   const claims = ref([])
   const claimsLoading = ref(false)
@@ -111,8 +112,18 @@ export const useOrdersStore = defineStore('orders', () => {
       params.status = filters.value.status
     }
 
+    // bossContact 只在我的派单（minePublished）上下文生效，避免与大厅共用
+    // filters 串扰：大厅轮询不带该参数时不发送残留值
+    if (options.minePublished && filters.value.bossContact) {
+      params.boss_contact = filters.value.bossContact
+    }
+
     if (options.minePublished) {
       params.mine_published = true
+    }
+
+    if (options.bossContact) {
+      params.boss_contact = options.bossContact
     }
 
     try {

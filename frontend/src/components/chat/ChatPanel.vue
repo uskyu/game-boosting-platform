@@ -324,7 +324,7 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="chat-shell">
-    <div v-if="conversation" class="flex h-full flex-col">
+    <div v-if="conversation" class="flex h-full min-h-0 flex-col overflow-hidden">
       <header class="chat-panel-header">
         <div class="min-w-0">
           <div class="flex flex-wrap items-center gap-2 sm:gap-3">
@@ -376,7 +376,7 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div class="min-h-0 flex-1 px-3 py-4 sm:px-8 sm:py-6">        <ChatMessageList
+      <div class="min-h-0 flex-1 overflow-hidden px-3 py-4 sm:px-8 sm:py-6">        <ChatMessageList
           ref="messageListRef"
           :messages="messages"
           :conversation="conversation"
@@ -391,7 +391,7 @@ onBeforeUnmount(() => {
         />
       </div>
 
-      <div class="border-t border-line-1 px-3 py-3 sm:px-8 sm:py-5">
+      <div class="shrink-0 border-t border-line-1 px-3 py-3 sm:px-8 sm:py-5">
         <ChatComposer
           v-model="draft"
           :disabled="!conversation"

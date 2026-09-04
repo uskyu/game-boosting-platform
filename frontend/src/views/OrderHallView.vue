@@ -136,8 +136,6 @@ function buildSummary(order) {
   const requirements = Array.isArray(detail.requirements) ? detail.requirements.filter(Boolean) : []
   const pieces = [
     order.service_type,
-    order.server,
-    detail.role,
     requirements[0],
   ].filter(Boolean)
 
@@ -197,8 +195,8 @@ watch(isAuthenticated, (loggedIn) => {
   }
 })
 
-// 大厅自动刷新：每 30 秒页面可见时静默拉取；首屏出现新单时轻提示（不弹骨架、不清列表）
-const HALL_REFRESH_INTERVAL = 30_000
+// 大厅自动刷新：每 8 秒页面可见时静默拉取；首屏出现新单时轻提示（不弹骨架、不清列表）
+const HALL_REFRESH_INTERVAL = 8_000
 const newOrderTip = ref(false)
 let hallRefreshTimer = null
 let knownFirstPageIds = null

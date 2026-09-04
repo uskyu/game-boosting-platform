@@ -1224,8 +1224,10 @@
   }
 
   .chat-message-list {
-    @apply relative h-full overflow-y-auto pr-2;
+    @apply relative overflow-y-auto pr-2;
+    height: 55vh;
     min-height: 28rem;
+    max-height: 100%;
     scroll-behavior: smooth;
     scrollbar-width: thin;
     scrollbar-color: var(--scrollbar-thumb) transparent;

@@ -1,5 +1,6 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
+import { playClaimed, playNewOrder } from '@/utils/sound'
 
 // 网页内轻提示（新消息推送等）：仅在新事件时弹出，几秒自动消失，可点 X 手动关
 let seq = 0
@@ -17,7 +18,8 @@ export const useToastsStore = defineStore('toasts', () => {
     toasts.value = toasts.value.filter((item) => item.id !== id)
   }
 
-  function pushToast({ title, body = '', duration = 4500, to = null }) {
+  // sound: 'new-order'（来单一声）| 'claimed'（被接手两声）| null（静默）
+  function pushToast({ title, body = '', duration = 4500, to = null, sound = null }) {
     const id = ++seq
     toasts.value.push({ id, title, body, to })
     if (toasts.value.length > 3) {
@@ -29,6 +31,11 @@ export const useToastsStore = defineStore('toasts', () => {
       toasts.value.shift()
     }
     timers.set(id, window.setTimeout(() => dismissToast(id), duration))
+    if (sound === 'new-order') {
+      playNewOrder()
+    } else if (sound === 'claimed') {
+      playClaimed()
+    }
     return id
   }
 

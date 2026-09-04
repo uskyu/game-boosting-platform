@@ -14,6 +14,7 @@ const ordersStore = useOrdersStore()
 // 双栏：我的接单（claims/mine）/ 我的派单（自己发布的订单）
 const activeTab = ref('claims')
 const searchGame = ref('')
+const searchBossContact = ref('')
 const selectedStatus = ref('')
 const claimStatus = ref('')
 
@@ -94,8 +95,6 @@ function buildSummary(order) {
   const requirements = Array.isArray(detail.requirements) ? detail.requirements.filter(Boolean) : []
   const pieces = [
     order.service_type,
-    order.server,
-    detail.role,
     requirements[0],
   ].filter(Boolean)
 
@@ -111,6 +110,7 @@ async function fetchOrders() {
   ordersStore.setFilters({
     gameName: searchGame.value,
     status: selectedStatus.value,
+    bossContact: searchBossContact.value.trim(),
   })
   await ordersStore.fetchOrders({ minePublished: true })
 }
@@ -136,6 +136,7 @@ function handleSearch() {
 
 function resetFilters() {
   searchGame.value = ''
+  searchBossContact.value = ''
   selectedStatus.value = ''
   claimStatus.value = ''
   ordersStore.setPage(1)
@@ -285,10 +286,14 @@ onUnmounted(() => {
     <!-- ── 我的派单：自己发布的订单（点进去审核交付、打款） ── -->
     <template v-else>
       <section class="surface-card p-4 sm:p-5">
-        <div class="grid gap-4 lg:grid-cols-[1.2fr_240px_auto] lg:items-end">
+        <div class="grid gap-4 lg:grid-cols-[1.2fr_1fr_240px_auto] lg:items-end">
           <div>
             <label class="label" for="order-search">游戏</label>
             <input id="order-search" v-model="searchGame" type="text" class="input" placeholder="搜索游戏" />
+          </div>
+          <div>
+            <label class="label" for="order-boss-contact">老板ID</label>
+            <input id="order-boss-contact" v-model="searchBossContact" type="text" class="input" maxlength="64" placeholder="搜老板ID" @keyup.enter="handleSearch" />
           </div>
           <div>
             <label class="label" for="order-status">状态</label>
@@ -336,7 +341,7 @@ onUnmounted(() => {
                     消息 {{ getOrderUnreadCount(order.id) }}
                   </span>
                 </div>
-                <p class="mt-2 truncate text-[13px] text-ink-3">{{ order.game_name }} · {{ formatShortDate(order.created_at) }} · #{{ order.id }}</p>
+                <p class="mt-2 truncate text-[13px] text-ink-3">{{ order.game_name }} · {{ formatShortDate(order.created_at) }} · #{{ order.id }}<template v-if="order.boss_contact"> · 老板ID {{ order.boss_contact }}</template></p>
               </div>
               <div class="flex shrink-0 gap-2">
                 <div class="info-tile info-tile--compact">

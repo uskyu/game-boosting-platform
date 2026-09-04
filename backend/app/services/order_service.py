@@ -429,6 +429,7 @@ class OrderService:
         page: int = 1,
         page_size: int = 20,
         mine_published: bool = False,
+        boss_contact: str | None = None,
     ) -> tuple[list[Order], int]:
         """
         List orders with filtering and pagination.
@@ -439,6 +440,9 @@ class OrderService:
                 this scope takes precedence over the hall/assigned-order scope.
             game_name: Optional game name filter.
             status_filter: Optional status filter.
+            boss_contact: Optional boss-contact fuzzy filter (ilike); typically
+                combined with mine_published=true so publishers can find their
+                own orders by the boss ID they filled in.
             page: Page number (1-indexed).
             page_size: Items per page.
 
@@ -497,6 +501,12 @@ class OrderService:
         if status_filter:
             query = query.where(Order.status == status_filter)
             count_query = count_query.where(Order.status == status_filter)
+
+        # Apply boss-contact fuzzy filter
+        if boss_contact:
+            pattern = f"%{escape_like(boss_contact)}%"
+            query = query.where(Order.boss_contact.ilike(pattern))
+            count_query = count_query.where(Order.boss_contact.ilike(pattern))
 
         # Get total count
         total_result = await self._db.execute(count_query)

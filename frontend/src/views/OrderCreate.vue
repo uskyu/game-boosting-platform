@@ -51,8 +51,6 @@ const formData = ref({
   game_name: '',
   title: '',
   price: '',
-  server: '',
-  role: '',
   service_type: '陪玩',
   notes: '',
   ai_tags: null,
@@ -163,8 +161,6 @@ async function publishOrder() {
     price: Number(formData.value.price),
     description_raw: formData.value.description_raw.trim(),
     service_type: '陪玩',
-    server: formData.value.server.trim() || null,
-    role: formData.value.role.trim() || null,
     notes: formData.value.notes.trim() || null,
     boss_contact: bossContact || null,
     max_claims: maxClaims,
@@ -263,15 +259,6 @@ onMounted(async () => {
         <div>
           <label class="label" for="create-max-claims">最大接单人数</label>
           <input id="create-max-claims" v-model="formData.max_claims" type="number" min="1" max="100" step="1" class="input" placeholder="例如：1" />
-        </div>
-
-        <div>
-          <label class="label" for="create-server">区服（可选）</label>
-          <input id="create-server" v-model="formData.server" type="text" class="input" placeholder="例如：微信区 / 艾欧尼亚" />
-        </div>
-        <div>
-          <label class="label" for="create-role">位置 / 角色偏好（可选）</label>
-          <input id="create-role" v-model="formData.role" type="text" class="input" placeholder="例如：打野 / 中单" />
         </div>
 
         <div>
