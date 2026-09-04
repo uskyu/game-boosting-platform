@@ -132,7 +132,14 @@ class OrderService:
             - 任何活跃用户均可发单。ADMIN（平台单）不冻结资金；
             - 非管理员发布时托管 price × max_claims：发布人可用余额
               减少、冻结余额增加（ESCROW_HOLD），余额不足返回 400。
+            - 被禁止发单（can_publish=False）的非管理员返回 403；
+              ADMIN 发单不受 can_publish 限。
         """
+        if user.role != UserRole.ADMIN and not user.can_publish:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="您已被禁止发布订单",
+            )
         game = await self._resolve_game(
             game_id=order_data.game_id,
             game_name=order_data.game_name,
@@ -551,6 +558,11 @@ class OrderService:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="代练账号不可用",
             )
+        if not locked_booster.can_accept:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="您已被禁止接单",
+            )
 
         active_orders_count_result = await self._db.execute(
             select(func.count(Order.id)).where(
@@ -902,6 +914,11 @@ class OrderService:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="代练账号不可用",
+            )
+        if not locked_booster.can_accept:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="该用户已被禁止接单",
             )
 
         active_orders_count_result = await self._db.execute(

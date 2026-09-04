@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useAdminUsersStore } from '@/stores/adminUsers'
@@ -11,7 +11,7 @@ const store = useAdminUsersStore()
 
 // ── 筛选（角色两态：管理员 / 打手）──
 
-const filters = reactive({ query: '', role: '', isActive: '' })
+const filters = reactive({ query: '', role: '', isActive: '', restriction: '' })
 const roleFilterOptions = [
   { value: '', label: '全部角色' },
   { value: 'ADMIN', label: '管理员' },
@@ -22,6 +22,18 @@ const statusFilterOptions = [
   { value: true, label: '启用' },
   { value: false, label: '禁用' },
 ]
+const restrictionFilterOptions = [
+  { value: '', label: '全部限制' },
+  { value: 'no_publish', label: '禁发单' },
+  { value: 'no_accept', label: '禁接单' },
+]
+
+// 限制状态本地过滤（后端 list 暂无该筛选）
+const visibleUsers = computed(() => {
+  if (filters.restriction === 'no_publish') return store.users.filter((u) => u.can_publish === false)
+  if (filters.restriction === 'no_accept') return store.users.filter((u) => u.can_accept === false)
+  return store.users
+})
 
 // ── 通知 flash ──
 
@@ -128,10 +140,38 @@ async function resetPassword(user) {
 
 // ── 启用 / 禁用 ──
 
+function isSelf(user) {
+  return user.id === auth.user?.id
+}
+
 async function toggleStatus(user) {
   const result = await store.setStatus(user.id, !user.is_active)
   if (result.success) {
     flash('success', '状态已更新')
+    await load(store.pagination.page)
+  } else {
+    flash('error', result.error)
+  }
+}
+
+// ── 禁发单 / 禁接单 ──
+
+async function togglePublish(user) {
+  const next = !(user.can_publish ?? true)
+  const result = await store.setRestrictions(user.id, { can_publish: next })
+  if (result.success) {
+    flash('success', next ? '已解除禁发单' : '已禁发单')
+    await load(store.pagination.page)
+  } else {
+    flash('error', result.error)
+  }
+}
+
+async function toggleAccept(user) {
+  const next = !(user.can_accept ?? true)
+  const result = await store.setRestrictions(user.id, { can_accept: next })
+  if (result.success) {
+    flash('success', next ? '已解除禁接单' : '已禁接单')
     await load(store.pagination.page)
   } else {
     flash('error', result.error)
@@ -246,6 +286,9 @@ onMounted(load)
       <select v-model="filters.isActive" class="input min-h-[44px] sm:w-32" aria-label="状态筛选">
         <option v-for="option in statusFilterOptions" :key="String(option.value)" :value="option.value">{{ option.label }}</option>
       </select>
+      <select v-model="filters.restriction" class="input min-h-[44px] sm:w-32" aria-label="限制筛选">
+        <option v-for="option in restrictionFilterOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+      </select>
       <button type="button" class="btn-primary min-h-[44px] !px-6" :disabled="store.loading" @click="load(1)">
         {{ store.loading ? '搜索中...' : '搜索' }}
       </button>
@@ -260,7 +303,7 @@ onMounted(load)
 
     <template v-else>
       <!-- 空态 -->
-      <div v-if="!store.users.length" class="empty-state mt-6">
+      <div v-if="!visibleUsers.length" class="empty-state mt-6">
         <div class="empty-state__icon" aria-hidden="true">👥</div>
         <h3 class="empty-state__title">暂无用户</h3>
         <p class="empty-state__copy">换个关键词或筛选条件试试。</p>
@@ -284,7 +327,7 @@ onMounted(load)
               </tr>
             </thead>
             <tbody>
-              <tr v-for="user in store.users" :key="user.id">
+              <tr v-for="user in visibleUsers" :key="user.id">
                 <td class="tabular-nums text-ink-3">#{{ user.id }}</td>
                 <td>
                   <div class="flex items-center gap-3">
@@ -292,6 +335,10 @@ onMounted(load)
                     <div class="min-w-0">
                       <p class="truncate font-medium text-ink-1">{{ user.username }}</p>
                       <p class="truncate text-xs text-ink-3">{{ user.email }}</p>
+                      <div v-if="user.can_publish === false || user.can_accept === false" class="mt-1 flex flex-wrap gap-1">
+                        <span v-if="user.can_publish === false" class="badge-cancelled">禁发单</span>
+                        <span v-if="user.can_accept === false" class="badge-cancelled">禁接单</span>
+                      </div>
                     </div>
                   </div>
                 </td>
@@ -307,6 +354,20 @@ onMounted(load)
                     <button type="button" class="btn-secondary !px-3 !py-1.5" @click="openTransactions(user)">明细</button>
                     <button type="button" class="btn-ghost !px-3 !py-1.5" @click="resetPassword(user)">重置密码</button>
                     <button type="button" class="btn-ghost !px-3 !py-1.5" @click="toggleStatus(user)">{{ user.is_active ? '禁用' : '启用' }}</button>
+                    <button
+                      type="button"
+                      class="btn-ghost !px-3 !py-1.5"
+                      :disabled="isSelf(user)"
+                      :title="isSelf(user) ? '不能给自己设置' : ''"
+                      @click="togglePublish(user)"
+                    >{{ (user.can_publish ?? true) ? '禁发单' : '解禁发单' }}</button>
+                    <button
+                      type="button"
+                      class="btn-ghost !px-3 !py-1.5"
+                      :disabled="isSelf(user)"
+                      :title="isSelf(user) ? '不能给自己设置' : ''"
+                      @click="toggleAccept(user)"
+                    >{{ (user.can_accept ?? true) ? '禁接单' : '解除禁接单' }}</button>
                     <button type="button" class="btn-ghost !px-3 !py-1.5" @click="openBalance(user)">调余额</button>
                   </div>
                 </td>
@@ -317,7 +378,7 @@ onMounted(load)
 
         <!-- 移动端（<sm）：卡片列表 -->
         <div class="mt-5 space-y-3 sm:hidden">
-          <article v-for="user in store.users" :key="user.id" class="rounded-tile border border-line-1 bg-surface-2 p-4">
+          <article v-for="user in visibleUsers" :key="user.id" class="rounded-tile border border-line-1 bg-surface-2 p-4">
             <div class="flex items-center gap-3">
               <span class="user-avatar">{{ avatarText(user) }}</span>
               <div class="min-w-0 flex-1">
@@ -325,6 +386,8 @@ onMounted(load)
                   <p class="truncate font-semibold text-ink-1">{{ user.username }}</p>
                   <span :class="roleTagClass(user.role)">{{ roleLabel(user.role) }}</span>
                   <span :class="user.is_active ? 'badge-approved' : 'badge-cancelled'">{{ user.is_active ? '启用' : '禁用' }}</span>
+                  <span v-if="user.can_publish === false" class="badge-cancelled">禁发单</span>
+                  <span v-if="user.can_accept === false" class="badge-cancelled">禁接单</span>
                 </div>
                 <p class="mt-0.5 truncate text-xs text-ink-3">#{{ user.id }} · {{ user.email }}</p>
               </div>
@@ -338,6 +401,20 @@ onMounted(load)
               <button type="button" class="btn-ghost min-h-[44px] !px-4 !py-2" @click="openEdit(user)">编辑</button>
               <button type="button" class="btn-ghost min-h-[44px] !px-4 !py-2" @click="resetPassword(user)">重置密码</button>
               <button type="button" class="btn-ghost min-h-[44px] !px-4 !py-2" @click="toggleStatus(user)">{{ user.is_active ? '禁用' : '启用' }}</button>
+              <button
+                type="button"
+                class="btn-ghost min-h-[44px] !px-4 !py-2"
+                :disabled="isSelf(user)"
+                :title="isSelf(user) ? '不能给自己设置' : ''"
+                @click="togglePublish(user)"
+              >{{ (user.can_publish ?? true) ? '禁发单' : '解禁发单' }}</button>
+              <button
+                type="button"
+                class="btn-ghost min-h-[44px] !px-4 !py-2"
+                :disabled="isSelf(user)"
+                :title="isSelf(user) ? '不能给自己设置' : ''"
+                @click="toggleAccept(user)"
+              >{{ (user.can_accept ?? true) ? '禁接单' : '解除禁接单' }}</button>
               <button type="button" class="btn-ghost min-h-[44px] !px-4 !py-2" @click="openBalance(user)">调余额</button>
             </div>
           </article>

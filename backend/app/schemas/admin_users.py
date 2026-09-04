@@ -26,6 +26,8 @@ class AdminUserResponse(BaseModel):
     role: UserRole
     is_active: bool
     is_verified: bool
+    can_publish: bool = True
+    can_accept: bool = True
     created_at: datetime
     booster_quota: int
     wallet: AdminUserBalanceSummary
@@ -62,6 +64,8 @@ class AdminUserUpdate(BaseModel):
     bio: str | None = Field(default=None, max_length=500)
     is_verified: bool | None = None
     booster_quota: int | None = Field(default=None, ge=0, le=50)
+    can_publish: bool | None = None
+    can_accept: bool | None = None
 
     @field_validator("username")
     @classmethod
@@ -91,6 +95,16 @@ class AdminResetPasswordRequest(BaseModel):
 
 class AdminUserStatusRequest(BaseModel):
     is_active: bool
+
+
+class AdminUserRestrictionRequest(BaseModel):
+    """Per-action restrictions, decoupled from global is_active."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    can_publish: bool | None = None
+    can_accept: bool | None = None
+    reason: str | None = Field(default=None, max_length=500)
 
 
 class AdminAdjustBalanceRequest(BaseModel):

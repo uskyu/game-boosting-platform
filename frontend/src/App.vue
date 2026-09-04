@@ -11,6 +11,7 @@ import { useNotificationsStore } from '@/stores/notifications'
 import { useSettingsStore } from '@/stores/settings'
 import { useSiteStore } from '@/stores/site'
 import { useToastsStore } from '@/stores/toasts'
+import api from '@/utils/api'
 import { getUserRoleMeta } from '@/utils/order'
 
 const route = useRoute()
@@ -34,6 +35,58 @@ function handleToastClick(toast) {
 settingsStore.initTheme()
 
 let unreadPollingTimer = null
+
+const NOTIF_POLL_INTERVAL = 10_000
+let notifPollTimer = null
+let knownNotifIds = null
+
+async function pollOrderNotifications({ baseline = false } = {}) {
+  if (!authStore.isAuthenticated || document.visibilityState !== 'visible') {
+    return
+  }
+  let items = []
+  try {
+    const response = await api.get('/notifications', { params: { page: 1, page_size: 10 } })
+    items = response.data?.items || []
+  } catch {
+    return
+  }
+  if (knownNotifIds === null) {
+    knownNotifIds = new Set(items.map((n) => Number(n.id)))
+    return
+  }
+  const newItems = items.filter((n) => !knownNotifIds.has(Number(n.id)))
+  newItems.forEach((n) => knownNotifIds.add(Number(n.id)))
+  // 只保留最近 200 个 ID，避免 Set 无限增长
+  if (knownNotifIds.size > 200) {
+    const ids = [...knownNotifIds].slice(-200)
+    knownNotifIds = new Set(ids)
+  }
+  if (baseline || newItems.length === 0) {
+    return
+  }
+  // 订单类通知只更新角标，不弹窗、不出声
+  try {
+    await notificationsStore.fetchUnreadCount()
+  } catch {
+    // 角标刷新失败不影响列表
+  }
+}
+
+function stopNotifPolling() {
+  if (notifPollTimer) {
+    window.clearInterval(notifPollTimer)
+    notifPollTimer = null
+  }
+}
+
+async function startNotifPolling() {
+  stopNotifPolling()
+  await pollOrderNotifications({ baseline: true })
+  notifPollTimer = window.setInterval(() => {
+    pollOrderNotifications().catch(() => {})
+  }, NOTIF_POLL_INTERVAL)
+}
 
 const copy = {
   brandTitle: '游戏服务平台',
@@ -208,16 +261,21 @@ async function syncChatLifecycle(isLoggedIn) {
     await notificationsStore.fetchUnreadCount()
     chatStore.connectWebSocket()
     startUnreadPolling()
+    startNotifPolling()
     return
   }
 
   stopUnreadPolling()
+  stopNotifPolling()
+  knownNotifIds = null
   chatStore.disconnectWebSocket({ clearState: true })
   notificationsStore.resetState()
 }
 
 async function handleLogout() {
   stopUnreadPolling()
+  stopNotifPolling()
+  knownNotifIds = null
   chatStore.disconnectWebSocket({ clearState: true })
   authStore.logout()
   router.push({ name: 'login' })
@@ -242,6 +300,7 @@ watch(
 
 onBeforeUnmount(() => {
   stopUnreadPolling()
+  stopNotifPolling()
   chatStore.disconnectWebSocket()
 })
 </script>

@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 import api from '@/utils/api'
 import { useAuthStore } from '@/stores/auth'
 import { useToastsStore } from '@/stores/toasts'
+import { playChatMessage } from '@/utils/sound'
 
 const DEFAULT_MESSAGE_LIMIT = 30
 const MAX_RECONNECT_DELAY = 30000
@@ -810,6 +811,7 @@ export const useChatStore = defineStore('chat', () => {
                 title: `💬 ${senderName}`,
                 body: message.content ? String(message.content).slice(0, 60) : '[图片消息]',
                 to: { name: 'chat-detail', params: { id: conversationId } },
+                sound: 'chat-message',
               })
             }
           }
@@ -878,50 +880,14 @@ export const useChatStore = defineStore('chat', () => {
       }
 
       case 'notification': {
-        // Delegate to the notifications store for real-time badge update
+        // 订单类通知：只做角标+列表更新（notifications store 落库），不弹窗、不出声。
+        // 真人聊天走 new_message 事件弹窗，不受影响。
         try {
           const { useNotificationsStore } = await import('@/stores/notifications')
           const notificationsStore = useNotificationsStore()
           notificationsStore.handleRealtimeNotification(data)
         } catch {
           // notifications store may not be loaded yet – ignore
-        }
-        // 来单 / 被接手：toast + 声音提示（实际出声在 toasts.pushToast 内按 sound 参数触发）
-        // 免打扰（notification_settings.global_dnd）开时通知类只收不弹：
-        // 角标已在上面更新，这里直接跳过弹窗；聊天消息走 new_message 事件，不受影响
-        try {
-          const { useSettingsStore } = await import('@/stores/settings')
-          const settingsStore = useSettingsStore()
-          if (!settingsStore.preferences) {
-            try {
-              await settingsStore.fetchPreferences()
-            } catch {
-              // 偏好拉取失败时默认不静默，保证通知可达
-            }
-          }
-          if (settingsStore.preferences?.notification_settings?.global_dnd === true
-            && data.type !== 'NEW_MESSAGE') {
-            break
-          }
-          const orderId = Number(data.ref_id || (String(data.link || '').match(/\/orders\/(\d+)/) || [])[1] || 0) || null
-          const to = orderId ? { name: 'order-detail', params: { id: orderId } } : null
-          if (data.type === 'ORDER_ACCEPTED') {
-            useToastsStore().pushToast({
-              title: `✅ ${data.title || '订单已被接手'}`,
-              body: data.content ? String(data.content).slice(0, 60) : '',
-              to,
-              sound: 'claimed',
-            })
-          } else if (data.type === 'SYSTEM_ANNOUNCEMENT' && String(data.title || '').includes('新订单')) {
-            useToastsStore().pushToast({
-              title: `🔔 ${data.title || '新订单发布'}`,
-              body: data.content ? String(data.content).slice(0, 60) : '',
-              to,
-              sound: 'new-order',
-            })
-          }
-        } catch {
-          // toast/声音失败不影响通知落库与角标
         }
         break
       }

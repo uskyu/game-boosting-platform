@@ -19,6 +19,7 @@ from app.schemas.admin_users import (
     AdminUserListResponse,
     AdminUserMessageResponse,
     AdminUserResponse,
+    AdminUserRestrictionRequest,
     AdminUserStatusRequest,
     AdminUserUpdate,
 )
@@ -46,6 +47,8 @@ def _user_response(user: User, wallet: Wallet | None) -> AdminUserResponse:
         role=user.role,
         is_active=user.is_active,
         is_verified=user.is_verified,
+        can_publish=user.can_publish,
+        can_accept=user.can_accept,
         created_at=user.created_at,
         booster_quota=user.booster_quota,
         wallet=_summary(wallet),
@@ -156,6 +159,28 @@ async def set_admin_user_status(
     if user.id == current_admin.id and not payload.is_active:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能禁用自己的账户")
     user.is_active = payload.is_active
+    await db.flush()
+    wallet = (await db.execute(select(Wallet).where(Wallet.user_id == user_id))).scalar_one_or_none()
+    return AdminUserDetailResponse(**_user_response(user, wallet).model_dump(), phone=user.phone, bio=user.bio)
+
+
+@router.post("/{user_id}/restrictions", response_model=AdminUserDetailResponse)
+async def set_admin_user_restrictions(
+    user_id: int,
+    payload: AdminUserRestrictionRequest,
+    db: DatabaseSession,
+    current_admin: Annotated[User, Depends(get_current_admin)],
+) -> AdminUserDetailResponse:
+    """单独禁止/恢复某用户的发单或接单权限，与全局封号解耦。"""
+    user = await _load_user(user_id, db)
+    if user_id == current_admin.id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能给自己设置管控限制")
+    data = payload.model_dump(exclude_unset=True)
+    updates = {k: v for k, v in data.items() if k in ("can_publish", "can_accept") and v is not None}
+    if not updates:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="没有可更新的限制字段")
+    for field, value in updates.items():
+        setattr(user, field, value)
     await db.flush()
     wallet = (await db.execute(select(Wallet).where(Wallet.user_id == user_id))).scalar_one_or_none()
     return AdminUserDetailResponse(**_user_response(user, wallet).model_dump(), phone=user.phone, bio=user.bio)

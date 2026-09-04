@@ -96,6 +96,17 @@ class User(Base):
         nullable=False,
     )
 
+    # Per-action restrictions, decoupled from global is_active ban.
+    can_publish: Mapped[bool] = mapped_column(
+        default=True,
+        nullable=False,
+    )
+
+    can_accept: Mapped[bool] = mapped_column(
+        default=True,
+        nullable=False,
+    )
+
     is_verified: Mapped[bool] = mapped_column(
         default=False,
         nullable=False,
