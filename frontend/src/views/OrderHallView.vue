@@ -5,6 +5,7 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import { useOrdersStore } from '@/stores/orders'
+import { useToastsStore } from '@/stores/toasts'
 import { formatCount, formatPayoutDelay, formatPrice, formatShortDate } from '@/utils/display'
 import { ORDER_STATUS_OPTIONS, getOrderStatusBadgeClass, getOrderStatusLabel } from '@/utils/order'
 
@@ -21,6 +22,7 @@ const router = useRouter()
 const authStore = useAuthStore()
 const chatStore = useChatStore()
 const ordersStore = useOrdersStore()
+const toastsStore = useToastsStore()
 
 const searchGame = ref('')
 const selectedStatus = ref('')
@@ -214,6 +216,8 @@ async function silentRefresh() {
   knownFirstPageIds = currentIds
   if (previousIds && currentIds.length && currentIds.some((id) => !previousIds.includes(id))) {
     newOrderTip.value = true
+    // 轮询发现新单：轻提示 + 来单一声（WS 广播兜底，双保险）
+    toastsStore.pushToast({ title: '来新订单了', body: '大厅有新订单发布', sound: 'new-order' })
     window.clearTimeout(newOrderTipTimer)
     newOrderTipTimer = window.setTimeout(() => { newOrderTip.value = false }, 3000)
   }

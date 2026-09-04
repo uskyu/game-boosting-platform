@@ -57,13 +57,16 @@ function beep({ frequency = 880, duration = 0.15, delay = 0, type = 'sine', gain
   }
 }
 
-// 来单：一声短促高音
+// 来单：上行琶音四连音（特色长音，一听就是来单了）
 export function playNewOrder() {
-  beep({ frequency: 880, duration: 0.18 })
+  beep({ frequency: 523, duration: 0.22, type: 'triangle' })
+  beep({ frequency: 659, duration: 0.22, delay: 0.2, type: 'triangle' })
+  beep({ frequency: 784, duration: 0.22, delay: 0.4, type: 'triangle' })
+  beep({ frequency: 1047, duration: 0.4, delay: 0.6, type: 'triangle' })
 }
 
-// 被接手：两声区分（低→高）
+// 被接手：下行双音收尾（和来单区分）
 export function playClaimed() {
-  beep({ frequency: 660, duration: 0.12 })
-  beep({ frequency: 990, duration: 0.16, delay: 0.16 })
+  beep({ frequency: 880, duration: 0.2, type: 'triangle' })
+  beep({ frequency: 660, duration: 0.45, delay: 0.22, type: 'triangle' })
 }

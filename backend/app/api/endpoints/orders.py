@@ -226,9 +226,8 @@ async def create_order(
 
     order = await order_service.create_order(order_data, current_user)
 
-    # 管理员（老板）发单：向所有活跃打手广播"新订单"通知（批量、单事务）
-    if current_user.role == UserRole.ADMIN:
-        await notify_boosters_new_order(db, order=order, exclude_user_id=current_user.id)
+    # 任何人发单：向所有活跃非管理员广播"新订单"通知（批量、单事务，排除自己）
+    await notify_boosters_new_order(db, order=order, exclude_user_id=current_user.id)
 
     return OrderResponse.model_validate(order)
 
