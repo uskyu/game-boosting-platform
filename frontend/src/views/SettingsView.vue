@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 
 import { useAuthStore } from '@/stores/auth'
 import { useSettingsStore } from '@/stores/settings'
+import { getPushStatus, pushCapability, subscribeToPush, unsubscribeFromPush } from '@/services/push'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -35,6 +36,27 @@ const localDnd = ref(false)
 const localPrivacySettings = ref({ profile_visible: true, show_online_status: true })
 
 const preferences = computed(() => settingsStore.preferences)
+const pushSupported = ref(false)
+const pushEnabled = ref(false)
+const pushBusy = ref(false)
+
+async function refreshPushStatus() {
+  const status = await getPushStatus()
+  pushSupported.value = status.supported
+  pushEnabled.value = status.subscribed
+}
+
+async function togglePush() {
+  pushBusy.value = true
+  try {
+    if (pushEnabled.value) await unsubscribeFromPush()
+    else await subscribeToPush()
+    await refreshPushStatus()
+    message.value = { type: 'success', text: pushEnabled.value ? '后台通知已开启' : '后台通知已关闭' }
+  } catch (error) {
+    message.value = { type: 'error', text: error.message || '后台通知操作失败' }
+  } finally { pushBusy.value = false }
+}
 
 watch(preferences, (pref) => {
   if (pref) {
@@ -118,6 +140,7 @@ function clearAllLocalData() {
 
 onMounted(async () => {
   await settingsStore.fetchPreferences()
+  await refreshPushStatus()
 })
 </script>
 
@@ -158,21 +181,13 @@ onMounted(async () => {
 
         <div class="info-tile flex items-center justify-between gap-4">
           <div>
-            <p class="text-sm font-medium text-ink-1">免打扰</p>
-            <p class="mt-0.5 text-xs text-ink-2">开启后通知类只收不弹，聊天消息照常弹出</p>
+            <p class="text-sm font-medium text-ink-1">后台通知</p>
+            <p class="mt-0.5 text-xs text-ink-2">{{ pushSupported ? (pushEnabled ? '已开启，订单和消息可在后台提醒' : '点击开启后接收后台提醒') : '当前浏览器不支持后台通知' }}</p>
           </div>
-          <label class="relative inline-flex cursor-pointer items-center">
-            <input
-              v-model="localDnd"
-              type="checkbox"
-              class="peer sr-only"
-              :true-value="true"
-              :false-value="false"
-            />
-            <div class="h-6 w-11 rounded-full border border-line-1 bg-surface-3 transition-colors duration-base after:absolute after:left-[3px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:bg-knob after:transition-all after:duration-base after:content-[''] peer-checked:border-transparent peer-checked:bg-primary peer-checked:after:translate-x-full peer-checked:after:bg-on-primary peer-focus-visible:ring-2 peer-focus-visible:ring-primary"></div>
-          </label>
+          <button class="btn-secondary !px-4" :disabled="!pushSupported || pushBusy" @click="togglePush">
+            {{ pushBusy ? '处理中...' : (pushEnabled ? '关闭' : '开启') }}
+          </button>
         </div>
-
         <div class="space-y-3">
           <div
             v-for="nt in NOTIFICATION_TYPES"

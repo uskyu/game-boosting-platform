@@ -13,6 +13,7 @@ from app.api.endpoints import (
     chat_router,
     games_router,
     notifications_router,
+    push_router,
     orders_router,
     order_templates_router,
     reviews_router,
@@ -39,6 +40,7 @@ api_router.include_router(admin_users_router)
 api_router.include_router(chat_router)
 api_router.include_router(games_router)
 api_router.include_router(notifications_router)
+api_router.include_router(push_router)
 api_router.include_router(services_router)
 api_router.include_router(search_router)
 api_router.include_router(site_router)

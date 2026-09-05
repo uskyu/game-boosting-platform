@@ -13,6 +13,7 @@ import { useSiteStore } from '@/stores/site'
 import { useToastsStore } from '@/stores/toasts'
 import api from '@/utils/api'
 import { getUserRoleMeta } from '@/utils/order'
+import { restorePushSubscription, unsubscribeFromPush } from '@/services/push'
 
 const route = useRoute()
 const router = useRouter()
@@ -257,6 +258,7 @@ function startUnreadPolling() {
 
 async function syncChatLifecycle(isLoggedIn) {
   if (isLoggedIn) {
+    await restorePushSubscription().catch(() => {})
     await settingsStore.fetchPreferences()
     await chatStore.fetchUnreadSummary()
     await notificationsStore.fetchUnreadCount()
@@ -278,6 +280,7 @@ async function handleLogout() {
   stopNotifPolling()
   knownNotifIds = null
   chatStore.disconnectWebSocket({ clearState: true })
+  await unsubscribeFromPush().catch(() => {})
   authStore.logout()
   router.push({ name: 'login' })
 }

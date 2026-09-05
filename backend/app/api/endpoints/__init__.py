@@ -10,6 +10,7 @@ from app.api.endpoints.auth import router as auth_router
 from app.api.endpoints.chat import router as chat_router
 from app.api.endpoints.games import router as games_router
 from app.api.endpoints.notifications import router as notifications_router
+from app.api.endpoints.push import router as push_router
 from app.api.endpoints.orders import router as orders_router
 from app.api.endpoints.order_templates import router as order_templates_router
 from app.api.endpoints.reviews import router as reviews_router
@@ -28,6 +29,7 @@ __all__ = [
     "chat_router",
     "games_router",
     "notifications_router",
+    "push_router",
     "orders_router",
     "order_templates_router",
     "reviews_router",

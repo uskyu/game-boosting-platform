@@ -15,6 +15,7 @@ from app.models.user import User, UserRole
 from app.schemas.notification import NotificationResponse
 from app.services.connection_manager import get_connection_manager
 from app.services.notification_service import get_notification_service
+from app.services.web_push import push_user_notification
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,13 @@ async def notify_user(
         await cm.send_notification(user_id, payload)
     except Exception:
         logger.debug("WebSocket push failed for user %s, notification saved to DB", user_id)
+
+    should_push = (type == NotificationType.SYSTEM_ANNOUNCEMENT and "新订单" in title) or type in (NotificationType.ORDER_ACCEPTED, NotificationType.NEW_MESSAGE)
+    if should_push:
+        try:
+            await push_user_notification(db, user_id, payload)
+        except Exception:
+            logger.debug("Web Push failed for user %s", user_id, exc_info=True)
 
 
 async def notify_boosters_new_order(

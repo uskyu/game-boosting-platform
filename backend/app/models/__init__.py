@@ -15,6 +15,7 @@ from app.models.chat import (
 )
 from app.models.game import Game, GameCategory, GamePlatform
 from app.models.notification import Notification, NotificationType, UserPreference
+from app.models.push_subscription import PushSubscription
 from app.models.order import Order, OrderStatus, PaymentStatus
 from app.models.order_template import OrderTemplate
 from app.models.review import Review
@@ -48,6 +49,7 @@ __all__ = [
     "User",
     "UserPreference",
     "UserRole",
+    "PushSubscription",
     "Wallet",
     "WalletTransaction",
     "WalletTransactionType",

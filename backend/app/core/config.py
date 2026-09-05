@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     # Wallet: platform commission rate charged on order settlement.
     # Booster income = order_price * (1 - COMMISSION_RATE), rounded to cents.
     COMMISSION_RATE: float = 0.0
+    PUSH_VAPID_PUBLIC_KEY: str = ""
+    PUSH_VAPID_PRIVATE_KEY: str = ""
+    PUSH_VAPID_SUBJECT: str = "mailto:admin@example.com"
+    PUSH_ENABLED: bool = False
 
     @property
     def cors_origins(self) -> list[str]:

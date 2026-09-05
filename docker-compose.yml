@@ -53,6 +53,11 @@ services:
       # API Keys
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-your_api_key_here}
       SECRET_KEY: ${SECRET_KEY:-your_super_secret_key_change_in_production}
+      # Web Push / VAPID（私钥仅从服务器 .env 注入，不提交到仓库）
+      PUSH_ENABLED: ${PUSH_ENABLED:-false}
+      PUSH_VAPID_PUBLIC_KEY: ${PUSH_VAPID_PUBLIC_KEY:-}
+      PUSH_VAPID_PRIVATE_KEY: ${PUSH_VAPID_PRIVATE_KEY:-}
+      PUSH_VAPID_SUBJECT: ${PUSH_VAPID_SUBJECT:-mailto:admin@example.com}
       # Application settings
       DEBUG: ${BACKEND_DEBUG:-false}
       APP_NAME: "Game Boosting Platform"
