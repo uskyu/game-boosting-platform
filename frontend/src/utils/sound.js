@@ -1,5 +1,7 @@
 // 来单 / 被接手声音提示：WebAudio Oscillator 短促 beep，无外部依赖，不加开关。
 let audioContext = null
+let newOrderAudio = null
+let claimedAudio = null
 
 function ensureContext() {
   try {
@@ -71,18 +73,48 @@ async function beep({ frequency = 880, duration = 0.15, delay = 0, type = 'sine'
   }
 }
 
-// 来单：上行琶音四连音（特色长音，一听就是来单了）
-export function playNewOrder() {
+function playStaticAudio(src, currentAudio) {
+  try {
+    const audio = currentAudio || new Audio(src)
+    audio.currentTime = 0
+    const result = audio.play()
+    if (result && typeof result.catch === 'function') {
+      result.catch(() => {})
+    }
+    return { audio, played: true }
+  } catch {
+    return { audio: currentAudio, played: false }
+  }
+}
+
+function playNewOrderWebAudio() {
   beep({ frequency: 523, duration: 0.22, type: 'triangle' }).catch(() => {})
   beep({ frequency: 659, duration: 0.22, delay: 0.2, type: 'triangle' }).catch(() => {})
   beep({ frequency: 784, duration: 0.22, delay: 0.4, type: 'triangle' }).catch(() => {})
   beep({ frequency: 1047, duration: 0.4, delay: 0.6, type: 'triangle' }).catch(() => {})
 }
 
-// 被接手：下行双音收尾（和来单区分）
-export function playClaimed() {
+function playClaimedWebAudio() {
   beep({ frequency: 880, duration: 0.2, type: 'triangle' }).catch(() => {})
   beep({ frequency: 660, duration: 0.45, delay: 0.22, type: 'triangle' }).catch(() => {})
+}
+
+// 来单：优先播放静态音频，失败时回退到 WebAudio 琶音
+export function playNewOrder() {
+  const result = playStaticAudio('/sounds/new-order.wav', newOrderAudio)
+  newOrderAudio = result.audio
+  if (!result.played) {
+    playNewOrderWebAudio()
+  }
+}
+
+// 被接手：优先播放静态音频，失败时回退到 WebAudio 下行双音
+export function playClaimed() {
+  const result = playStaticAudio('/sounds/order-claimed.wav', claimedAudio)
+  claimedAudio = result.audio
+  if (!result.played) {
+    playClaimedWebAudio()
+  }
 }
 
 // 真人聊天：短促双音，只提醒聊天消息，不与订单状态音混淆
