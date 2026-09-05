@@ -4,15 +4,52 @@ import { useRouter } from 'vue-router'
 
 import { useGamesStore } from '@/stores/games'
 import { useOrdersStore } from '@/stores/orders'
+import { useOrderTemplatesStore } from '@/stores/orderTemplates'
 import api from '@/utils/api'
 import { parsePayoutDelay } from '@/utils/display'
 import { getPublishButtonLabel } from '@/utils/humanCopy'
+import { cleanTemplatePayload, resetOrderForm } from '@/utils/orderTemplates'
 
 const router = useRouter()
 const gamesStore = useGamesStore()
 const ordersStore = useOrdersStore()
-
+const templatesStore = useOrderTemplatesStore()
+const templateSheetOpen = ref(false)
+const saveTemplateOpen = ref(false)
+const templateName = ref('')
+const templateMessage = ref('')
 const errorMessage = ref('')
+const submitting = ref(false)
+
+function templateFields() {
+  const fields = cleanTemplatePayload(formData.value)
+  delete fields.attachments
+  return fields
+}
+
+async function saveTemplate() {
+  if (!templateName.value.trim()) { templateMessage.value = '请输入模板名称'; return }
+  const result = await templatesStore.createTemplate(templateName.value, templateFields())
+  if (!result.success) { templateMessage.value = result.error; return }
+  saveTemplateOpen.value = false; templateName.value = ''; templateMessage.value = '模板已保存'
+}
+
+function applyTemplate(template) {
+  formData.value = resetOrderForm({
+    game_id: null, game_name: '', title: '', price: '', service_type: '陪玩', notes: '',
+    description_raw: '', boss_contact: '', max_claims: 1, compensation_enabled: false,
+    compensation_amount: '', payout_delay_days: '', payout_delay_hours: '',
+    attachments: formData.value.attachments,
+  }, template)
+  handleGameChange()
+  templateSheetOpen.value = false
+  templateMessage.value = `已应用模板：${template.name}`
+}
+
+async function removeTemplate(template) {
+  await templatesStore.deleteTemplate(template.id)
+}
+
 const successMessage = ref('')
 const attachmentTypes = ['image/png', 'image/jpeg', 'image/webp']
 const maxAttachmentCount = 5
@@ -111,13 +148,14 @@ function handleGameChange() {
 }
 
 async function publishOrder() {
+  if (submitting.value) return
   if (!canPublish.value) {
     errorMessage.value = '游戏、需求和价格都是必填项。'
     return
   }
 
-  errorMessage.value = ''
-  successMessage.value = ''
+  submitting.value = true
+  try {
   uploadProgress.value = ''
 
   const attachmentError = validateAttachments(formData.value.attachments)
@@ -189,6 +227,9 @@ async function publishOrder() {
   window.setTimeout(() => {
     router.push({ name: 'orders' })
   }, 900)
+  } finally {
+    submitting.value = false
+  }
 }
 
 watch(
@@ -203,7 +244,7 @@ watch(
 )
 
 onMounted(async () => {
-  await gamesStore.ensureCatalog()
+  await Promise.all([gamesStore.ensureCatalog(), templatesStore.fetchTemplates()])
 })
 </script>
 
@@ -220,6 +261,31 @@ onMounted(async () => {
 
     <div v-if="errorMessage" class="message-error">{{ errorMessage }}</div>
     <div v-if="successMessage" class="message-success">{{ successMessage }}</div>
+
+    <div v-if="templateMessage" class="message-info">{{ templateMessage }}</div>
+
+    <section class="surface-card flex flex-wrap items-center justify-between gap-3 p-4">
+      <div><p class="text-sm font-semibold text-ink-1">订单模板</p><p class="text-xs text-ink-3">保存常用订单字段，附件不会保存</p></div>
+      <div class="flex gap-2">
+        <button type="button" class="filter-pill" @click="templateSheetOpen = true">选择模板</button>
+        <button type="button" class="filter-pill-active" @click="saveTemplateOpen = true">保存为模板</button>
+      </div>
+    </section>
+
+      <div v-if="templateSheetOpen" class="modal-scrim modal-scrim--sheet" @click.self="templateSheetOpen = false">
+      <section class="modal-card modal-sheet mx-auto max-w-lg" role="dialog" aria-modal="true" aria-label="选择订单模板">
+        <div class="mb-4 flex items-center justify-between"><h2 class="text-lg font-semibold">选择订单模板</h2><button type="button" class="filter-pill" @click="templateSheetOpen = false">关闭</button></div>
+        <p v-if="!templatesStore.hasTemplates" class="text-sm text-ink-3">暂无模板</p>
+        <div v-for="template in templatesStore.templates" :key="template.id" class="flex items-center justify-between border-b border-line-1 py-3">
+          <button type="button" class="text-left text-sm font-semibold text-primary" @click="applyTemplate(template)">{{ template.name }}</button>
+          <button type="button" class="text-xs text-danger" @click="removeTemplate(template)">删除</button>
+        </div>
+      </section>
+    </div>
+
+    <div v-if="saveTemplateOpen" class="modal-scrim" @click.self="saveTemplateOpen = false">
+      <section class="modal-card max-w-md" role="dialog" aria-modal="true" aria-label="保存订单模板"><h2 class="text-lg font-semibold">保存订单模板</h2><input v-model="templateName" class="input mt-4" maxlength="50" placeholder="模板名称" @keyup.enter="saveTemplate" /><p v-if="templateMessage" class="mt-2 text-sm text-danger">{{ templateMessage }}</p><div class="mt-5 flex justify-end gap-2"><button type="button" class="filter-pill" @click="saveTemplateOpen = false">取消</button><button type="button" class="btn-primary" @click="saveTemplate">保存</button></div></section>
+    </div>
 
     <section class="surface-card p-6 sm:p-8">
       <div class="grid gap-5 sm:grid-cols-2">

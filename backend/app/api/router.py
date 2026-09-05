@@ -14,6 +14,7 @@ from app.api.endpoints import (
     games_router,
     notifications_router,
     orders_router,
+    order_templates_router,
     reviews_router,
     search_router,
     site_router,
@@ -30,6 +31,7 @@ api_router = APIRouter()
 # Include all endpoint routers
 api_router.include_router(auth_router)
 api_router.include_router(orders_router)
+api_router.include_router(order_templates_router)
 api_router.include_router(users_router)
 api_router.include_router(admin_router)
 api_router.include_router(admin_site_router)
