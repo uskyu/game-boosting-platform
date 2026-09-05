@@ -880,12 +880,12 @@ export const useChatStore = defineStore('chat', () => {
       }
 
       case 'notification': {
-        // 订单类通知：只做角标+列表更新（notifications store 落库），不弹窗、不出声。
-        // 真人聊天走 new_message 事件弹窗，不受影响。
+        // 与全站轮询共用通知偏好和 toast 去重；真人聊天仍走 new_message。
         try {
           const { useNotificationsStore } = await import('@/stores/notifications')
           const notificationsStore = useNotificationsStore()
           notificationsStore.handleRealtimeNotification(data)
+          notificationsStore.announceOrderNotification(data)
         } catch {
           // notifications store may not be loaded yet – ignore
         }

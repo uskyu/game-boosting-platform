@@ -6,6 +6,8 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import api from '@/utils/api'
+import { useSettingsStore } from '@/stores/settings'
+import { useToastsStore } from '@/stores/toasts'
 
 export const useNotificationsStore = defineStore('notifications', () => {
   const notifications = ref([])
@@ -13,6 +15,7 @@ export const useNotificationsStore = defineStore('notifications', () => {
   const unreadCount = ref(0)
   const loading = ref(false)
   const error = ref(null)
+  const receivedIds = new Set()
 
   const hasUnread = computed(() => unreadCount.value > 0)
 
@@ -29,6 +32,7 @@ export const useNotificationsStore = defineStore('notifications', () => {
     try {
       const response = await api.get('/notifications', { params })
       notifications.value = response.data.items || []
+      notifications.value.forEach((item) => receivedIds.add(String(item.id)))
       total.value = response.data.total || 0
       unreadCount.value = response.data.unread_count || 0
       return { success: true, data: response.data }
@@ -79,13 +83,40 @@ export const useNotificationsStore = defineStore('notifications', () => {
     }
   }
 
+  function announceOrderNotification(payload) {
+    if (payload?.id == null) return
+    const settings = useSettingsStore().preferences?.notification_settings || {}
+    if (settings.global_dnd === true || settings[payload.type] === false) return
+    const sound = payload.type === 'ORDER_ACCEPTED'
+      ? 'claimed'
+      : payload.type === 'SYSTEM_ANNOUNCEMENT' && String(payload.title || '').includes('新订单')
+        ? 'new-order'
+        : null
+    if (!sound) return
+    useToastsStore().pushToast({
+      title: payload.title,
+      body: payload.content || '',
+      to: payload.link || null,
+      sound,
+      dedupKey: `notif-${payload.id}`,
+    })
+  }
+
   function handleRealtimeNotification(payload) {
+    if (payload?.id == null) return false
+    const id = String(payload.id)
+    if (receivedIds.has(id) || notifications.value.some((item) => String(item.id) === id)) {
+      return false
+    }
+    receivedIds.add(id)
     notifications.value.unshift(payload)
-    unreadCount.value += 1
+    if (!payload.is_read) unreadCount.value += 1
     total.value += 1
+    return true
   }
 
   function resetState() {
+    receivedIds.clear()
     notifications.value = []
     total.value = 0
     unreadCount.value = 0
@@ -104,6 +135,7 @@ export const useNotificationsStore = defineStore('notifications', () => {
     markRead,
     markAllRead,
     handleRealtimeNotification,
+    announceOrderNotification,
     resetState,
   }
 })

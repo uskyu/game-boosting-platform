@@ -65,7 +65,7 @@ async function pollOrderNotifications({ baseline = false } = {}) {
   if (baseline || newItems.length === 0) {
     return
   }
-  // 订单类通知只更新角标，不弹窗、不出声
+  newItems.forEach((notification) => notificationsStore.announceOrderNotification(notification))
   try {
     await notificationsStore.fetchUnreadCount()
   } catch {
@@ -257,6 +257,7 @@ function startUnreadPolling() {
 
 async function syncChatLifecycle(isLoggedIn) {
   if (isLoggedIn) {
+    await settingsStore.fetchPreferences()
     await chatStore.fetchUnreadSummary()
     await notificationsStore.fetchUnreadCount()
     chatStore.connectWebSocket()

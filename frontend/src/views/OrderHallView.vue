@@ -214,7 +214,7 @@ async function silentRefresh() {
   knownFirstPageIds = currentIds
   if (previousIds && currentIds.length && currentIds.some((id) => !previousIds.includes(id))) {
     newOrderTip.value = true
-    // 轮询发现新单：仅顶部小黄条轻提示，不弹窗、不出声
+    // 大厅仅保留顶部提示，toast 和声音统一由全站通知处理。
     window.clearTimeout(newOrderTipTimer)
     newOrderTipTimer = window.setTimeout(() => { newOrderTip.value = false }, 3000)
   }
