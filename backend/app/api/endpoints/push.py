@@ -12,6 +12,12 @@ router = APIRouter(prefix="/push", tags=["push"])
 @router.get("/public-key")
 async def public_key():
     return {"public_key": settings.PUSH_VAPID_PUBLIC_KEY}
+@router.get("/subscribe", response_model=list[PushSubscriptionResponse])
+async def list_subscriptions(current_user: Annotated[User, Depends(get_current_user)], db: Annotated[AsyncSession, Depends(get_async_session)]):
+    result = await db.execute(select(PushSubscription).where(PushSubscription.user_id == current_user.id, PushSubscription.enabled.is_(True)))
+    return list(result.scalars().all())
+
+
 @router.post("/subscribe", response_model=PushSubscriptionResponse)
 async def subscribe(data: PushSubscriptionCreate, current_user: Annotated[User, Depends(get_current_user)], db: Annotated[AsyncSession, Depends(get_async_session)]):
     result = await db.execute(select(PushSubscription).where(PushSubscription.endpoint == data.endpoint))
