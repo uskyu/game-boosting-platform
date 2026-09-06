@@ -61,6 +61,10 @@ const chatTargetUserId = computed(() => {
   if (isAssignedBooster.value) {
     return order.value.user_id || null
   }
+  // 已报名但不是首抢打手时，历史订单仍可联系发布者
+  if (myClaim.value && isBooster.value && !isOwner.value) {
+    return order.value.user_id || null
+  }
   // 代练在 PENDING 状态下也可以和老板聊（接单前沟通）
   if (isBooster.value && !isOwner.value && order.value.status === 'PENDING') {
     return order.value.user_id || null

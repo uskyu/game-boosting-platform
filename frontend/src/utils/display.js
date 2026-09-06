@@ -5,7 +5,10 @@ const priceFormatter = new Intl.NumberFormat('zh-CN', {
   maximumFractionDigits: 2,
 })
 
+const DISPLAY_TIME_ZONE = 'Asia/Shanghai'
+
 const shortDateFormatter = new Intl.DateTimeFormat('zh-CN', {
+  timeZone: DISPLAY_TIME_ZONE,
   month: '2-digit',
   day: '2-digit',
   hour: '2-digit',
@@ -13,6 +16,7 @@ const shortDateFormatter = new Intl.DateTimeFormat('zh-CN', {
 })
 
 const fullDateFormatter = new Intl.DateTimeFormat('zh-CN', {
+  timeZone: DISPLAY_TIME_ZONE,
   year: 'numeric',
   month: '2-digit',
   day: '2-digit',
@@ -21,6 +25,7 @@ const fullDateFormatter = new Intl.DateTimeFormat('zh-CN', {
 })
 
 const dateFormatter = new Intl.DateTimeFormat('zh-CN', {
+  timeZone: DISPLAY_TIME_ZONE,
   year: 'numeric',
   month: '2-digit',
   day: '2-digit',

@@ -12,6 +12,7 @@ services:
     container_name: game-boosting-db
     restart: unless-stopped
     environment:
+      TZ: ${TZ:-UTC}
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-game_boosting}
       MYSQL_USER: ${MYSQL_USER:-boosting_user}
@@ -27,6 +28,7 @@ services:
       - game-boosting-network
     command: >
       --default-authentication-plugin=mysql_native_password
+      --default-time-zone='+00:00'
       --character-set-server=utf8mb4
       --collation-server=utf8mb4_unicode_ci
       --innodb-buffer-pool-size=256M
@@ -47,7 +49,7 @@ services:
     container_name: game-boosting-backend
     restart: unless-stopped
     environment:
-      # Database configuration
+      TZ: ${TZ:-UTC}
       DB_URL: mysql+aiomysql://${MYSQL_USER:-boosting_user}:${MYSQL_PASSWORD:-boosting_password}@db:3306/${MYSQL_DATABASE:-game_boosting}
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
       # API Keys

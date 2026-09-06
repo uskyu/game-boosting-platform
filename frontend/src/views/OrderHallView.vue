@@ -163,8 +163,9 @@ function handleSearch() {
 function resetFilters() {
   searchGame.value = ''
   selectedStatus.value = ''
-  ordersStore.setPage(1)
-  fetchOrders()
+  openOnly.value = true
+  showHistory.value = false
+  handleSearch()
 }
 
 function goToOrder(orderId) {
@@ -179,44 +180,22 @@ function handlePageChange(page) {
   fetchOrders()
 }
 
-let searchTimeout = null
-
-watch(searchGame, () => {
-  window.clearTimeout(searchTimeout)
-  searchTimeout = window.setTimeout(() => {
-    ordersStore.setPage(1)
-    fetchOrders()
-  }, 300)
-})
-
 watch(isAuthenticated, (loggedIn) => {
   if (loggedIn) {
     fetchOrders()
   }
 })
 
-// 大厅自动刷新：每 8 秒页面可见时静默拉取；首屏出现新单时轻提示（不弹骨架、不清列表）
+// 大厅自动刷新：每 8 秒页面可见时静默拉取；订单提醒统一由 App 全站通知处理
 const HALL_REFRESH_INTERVAL = 8_000
-const newOrderTip = ref(false)
 let hallRefreshTimer = null
-let knownFirstPageIds = null
-let newOrderTipTimer = null
 
 async function silentRefresh() {
   if (document.visibilityState !== 'visible' || !isAuthenticated.value) return
-  const previousIds = knownFirstPageIds
   try {
     await ordersStore.fetchOrders({ silent: true })
   } catch {
     return // 静默失败等下一轮
-  }
-  const currentIds = ordersStore.orders.slice(0, 20).map((o) => o.id)
-  knownFirstPageIds = currentIds
-  if (previousIds && currentIds.length && currentIds.some((id) => !previousIds.includes(id))) {
-    newOrderTip.value = true
-    // 大厅仅保留顶部提示，toast 和声音统一由全站通知处理。
-    window.clearTimeout(newOrderTipTimer)
-    newOrderTipTimer = window.setTimeout(() => { newOrderTip.value = false }, 3000)
   }
 }
 
@@ -225,15 +204,12 @@ onMounted(async () => {
     fetchOrders()
     await chatStore.fetchConversations({ pageSize: 100 })
     await chatStore.fetchUnreadSummary()
-    knownFirstPageIds = ordersStore.orders.slice(0, 20).map((o) => o.id)
     hallRefreshTimer = window.setInterval(silentRefresh, HALL_REFRESH_INTERVAL)
   }
 })
 
 onUnmounted(() => {
-  window.clearTimeout(searchTimeout)
   window.clearInterval(hallRefreshTimer)
-  window.clearTimeout(newOrderTipTimer)
 })
 </script>
 
@@ -247,37 +223,32 @@ onUnmounted(() => {
       <router-link v-if="isAuthenticated" :to="{ name: 'order-create' }" class="btn-primary flex shrink-0 items-center !px-5">发布订单</router-link>
     </section>
 
-    <!-- 自动刷新捕获到新单时的轻提示（3 秒自动消失） -->
-    <transition name="page-fade">
-      <p
-        v-if="newOrderTip"
-        class="fixed left-1/2 top-20 z-50 -translate-x-1/2 rounded-full bg-ink-1 px-4 py-2 text-sm font-medium text-surface shadow-lg"
-        role="status"
-      >🔔 有新订单发布</p>
-    </transition>
+    <!-- 手机单列，桌面紧凑横排并允许空间不足时回流。 -->
 
-    <!-- 筛选一行：游戏 + 状态 + 复选框 + 按钮同一行，窄屏横向滚动不折行（文档 7 节） -->
     <section class="surface-card p-4 sm:p-5">
-      <div class="hall-filters scroll-x flex flex-nowrap items-center gap-3">
-        <div class="w-56 shrink-0 sm:w-64">
+      <form class="hall-filters flex min-w-0 flex-col gap-3 lg:flex-row lg:flex-wrap lg:items-end" @submit.prevent="handleSearch">
+        <div class="min-w-0 w-full lg:w-64">
           <label class="label" for="hall-game">游戏</label>
           <input id="hall-game" v-model="searchGame" list="hall-games" type="text" class="input h-11" placeholder="搜索游戏" />
           <datalist id="hall-games"><option v-for="game in gameOptions" :key="game" :value="game" /></datalist>
         </div>
 
-        <div class="w-36 shrink-0 sm:w-44">
+        <div class="min-w-0 w-full lg:w-44">
           <label class="label" for="hall-status">状态</label>
-          <select id="hall-status" v-model="selectedStatus" class="input h-11" @change="handleSearch">
+          <select id="hall-status" v-model="selectedStatus" class="input h-11">
             <option v-for="option in ORDER_STATUS_OPTIONS" :key="option.value" :value="option.value">{{ option.label }}</option>
           </select>
         </div>
 
-        <div class="flex shrink-0 items-center gap-2">
+        <div class="flex min-w-0 flex-wrap items-center gap-3 lg:min-h-11">
           <label class="filter-check"><input v-model="openOnly" type="checkbox" /> 仅看可抢</label>
           <label class="filter-check"><input v-model="showHistory" type="checkbox" /> 历史订单</label>
-          <button class="btn-secondary shrink-0 !px-4" @click="handleSearch">筛选</button><button class="btn-ghost shrink-0 !px-4" @click="resetFilters">重置</button>
         </div>
-      </div>
+        <div class="flex min-w-0 flex-wrap items-center gap-2">
+          <button type="submit" class="btn-secondary !px-4">筛选</button>
+          <button type="button" class="btn-ghost !px-4" @click="resetFilters">重置</button>
+        </div>
+      </form>
     </section>
 
     <div v-if="error" class="message-error">{{ error }}</div>

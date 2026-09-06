@@ -24,10 +24,10 @@ logger = logging.getLogger(__name__)
 
 
 def _as_utc(value: datetime) -> datetime:
-    """MySQL DATETIME 返回 naive 时间，补 UTC 再参与比较。"""
+    """Interpret naive database/application datetimes as UTC."""
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
-    return value
+    return value.astimezone(timezone.utc)
 
 
 def _claim_due(claim: OrderClaim, order: Order, now: datetime) -> bool:
@@ -56,7 +56,7 @@ async def scan_due_payouts(
     Returns:
         本次成功结算的 claim id 列表。
     """
-    now = now or datetime.now(timezone.utc)
+    now = _as_utc(now or datetime.now(timezone.utc))
 
     candidates = await db.execute(
         select(OrderClaim, Order)
