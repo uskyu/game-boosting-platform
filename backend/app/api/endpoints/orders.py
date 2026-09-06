@@ -284,6 +284,14 @@ async def list_orders(
     """
     order_service = get_order_service(db)
 
+    # 老板ID搜索仅用于"我的派单"（发布人查自己的单）与管理员；
+    # 对普通打手关闭该过滤，防止把老板ID当作探测他人订单的条件。
+    effective_boss_contact = (
+        boss_contact
+        if (mine_published or current_user.role == UserRole.ADMIN)
+        else None
+    )
+
     orders, total = await order_service.list_orders(
         user=current_user,
         game_name=game_name,
@@ -291,7 +299,7 @@ async def list_orders(
         page=page,
         page_size=page_size,
         mine_published=mine_published,
-        boss_contact=boss_contact,
+        boss_contact=effective_boss_contact,
     )
 
     # Calculate total pages
