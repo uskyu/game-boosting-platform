@@ -128,7 +128,8 @@ async def update_admin_user(
         if duplicate.scalar_one_or_none() is not None:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="用户名已被占用")
     try:
-        user = await get_user_service(db).update_user(user, payload)
+        # 管理员后台改名不受 90 天冷却限制
+        user = await get_user_service(db).update_user(user, payload, bypass_username_cooldown=True)
     except IntegrityError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="用户名已被占用") from exc
     wallet = (await db.execute(select(Wallet).where(Wallet.user_id == user_id))).scalar_one_or_none()

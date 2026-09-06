@@ -4,7 +4,7 @@ Business logic for user management and authentication.
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -24,6 +24,10 @@ from app.models.user import BoosterApplicationStatus, User, UserRole
 from app.schemas.user import UserRegister, UserUpdate
 
 logger = logging.getLogger(__name__)
+
+# 普通用户自助修改用户名的冷却期（老板要求：三个月只能改一次）；
+# 管理员在后台改名走 bypass_username_cooldown，不受限。
+USERNAME_CHANGE_COOLDOWN_DAYS = 90
 
 
 class UserService:
@@ -324,6 +328,8 @@ class UserService:
         self,
         user: User,
         update_data: UserUpdate,
+        *,
+        bypass_username_cooldown: bool = False,
     ) -> User:
         """
         Update user profile.
@@ -331,6 +337,8 @@ class UserService:
         Args:
             user: User to update.
             update_data: Update data.
+            bypass_username_cooldown: 管理员改名旁路 90 天冷却
+                （用户自助改名默认受限，管理员后台改名不受限）。
 
         Returns:
             Updated User instance.
@@ -342,7 +350,25 @@ class UserService:
         # surface as a generic 500 — and without this check users could
         # attempt to grab an existing display name.
         new_username = data.get("username")
-        if new_username is not None and new_username != user.username:
+        username_changed = new_username is not None and new_username != user.username
+        if username_changed:
+            # 冷却期检查：上次改名后 90 天内（未旁路时）拒绝再次修改。
+            if not bypass_username_cooldown and user.username_changed_at is not None:
+                changed_at = user.username_changed_at
+                # MySQL DATETIME 返回 naive，按项目时区约定补 UTC
+                if changed_at.tzinfo is None:
+                    changed_at = changed_at.replace(tzinfo=timezone.utc)
+                cooldown = timedelta(days=USERNAME_CHANGE_COOLDOWN_DAYS)
+                elapsed = datetime.now(timezone.utc) - changed_at
+                if elapsed < cooldown:
+                    remaining_days = max(1, (cooldown - elapsed).days)
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=(
+                            f"用户名每 {USERNAME_CHANGE_COOLDOWN_DAYS} 天仅可修改一次，"
+                            f"还需等待约 {remaining_days} 天（如有需要请联系管理员修改）"
+                        ),
+                    )
             collision = await self._get_user_by_username(new_username)
             if collision is not None and collision.id != user.id:
                 raise HTTPException(
@@ -353,6 +379,10 @@ class UserService:
         for field, value in data.items():
             if hasattr(user, field):
                 setattr(user, field, value)
+
+        if username_changed:
+            # 存 naive UTC（项目约定：库内 DATETIME 一律 UTC 墙钟）
+            user.username_changed_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
         try:
             await self._db.flush()

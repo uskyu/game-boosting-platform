@@ -169,6 +169,10 @@ class UserResponse(BaseModel):
     phone: str | None = Field(default=None, description="手机号")
     bio: str | None = Field(default=None, description="个人简介")
     created_at: datetime = Field(description="注册时间")
+    username_changed_at: datetime | None = Field(
+        default=None,
+        description="上次修改用户名的时间（普通用户 90 天内仅可自助修改一次）",
+    )
 
     @field_serializer("role")
     def serialize_role(self, role: UserRole) -> str:

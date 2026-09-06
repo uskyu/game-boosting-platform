@@ -186,6 +186,12 @@ class User(Base):
         nullable=True,
     )
 
+    # 上次修改用户名的时间（naive UTC）：普通用户 90 天内仅可自助改名一次，
+    # 管理员在后台改名不受限。NULL 表示从未改过，首次改名不受限。
+    username_changed_at: Mapped[datetime | None] = mapped_column(
+        nullable=True,
+    )
+
     review_note: Mapped[str | None] = mapped_column(
         Text,
         nullable=True,

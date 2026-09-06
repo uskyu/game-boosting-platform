@@ -459,6 +459,7 @@ onMounted(load)
             <div>
               <label class="label" for="edit-username">用户名</label>
               <input id="edit-username" v-model="editModal.username" type="text" class="input" maxlength="50" :disabled="editModal.submitting" />
+              <p class="mt-1 text-xs text-ink-3">管理员修改用户名不受限制；用户自己每 90 天仅可修改一次</p>
             </div>
             <div class="grid gap-4 sm:grid-cols-2">
               <div>

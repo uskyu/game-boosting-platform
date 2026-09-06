@@ -48,6 +48,19 @@ function resetProfileForm() {
   }
 }
 
+// 用户名改名冷却：90 天（三个月）仅可自助修改一次；管理员后台不受限
+const USERNAME_COOLDOWN_DAYS = 90
+
+const usernameCooldownDaysLeft = computed(() => {
+  const changedAt = user.value?.username_changed_at
+  if (!changedAt) return 0
+  const iso = String(changedAt)
+  const changed = new Date(iso.endsWith('Z') ? iso : `${iso}Z`)
+  if (Number.isNaN(changed.getTime())) return 0
+  const remainingMs = changed.getTime() + USERNAME_COOLDOWN_DAYS * 86400000 - Date.now()
+  return remainingMs > 0 ? Math.ceil(remainingMs / 86400000) : 0
+})
+
 async function updateProfile() {
   profileMessage.value = { type: '', text: '' }
   savingProfile.value = true
@@ -145,7 +158,17 @@ onMounted(async () => {
             <div class="grid gap-5 sm:grid-cols-2">
               <div>
                 <label class="label" for="profile-username">昵称</label>
-                <input id="profile-username" v-model="profileForm.username" type="text" class="input" />
+                <input
+                  id="profile-username"
+                  v-model="profileForm.username"
+                  type="text"
+                  class="input"
+                  :disabled="usernameCooldownDaysLeft > 0"
+                />
+                <p v-if="usernameCooldownDaysLeft > 0" class="mt-1 text-xs text-warning">
+                  用户名每 90 天仅可修改一次，还需等待约 {{ usernameCooldownDaysLeft }} 天（如有需要可联系管理员修改）
+                </p>
+                <p v-else class="mt-1 text-xs text-ink-3">用户名每 90 天仅可修改一次，请谨慎修改</p>
               </div>
               <div>
                 <label class="label" for="profile-phone">手机号</label>
