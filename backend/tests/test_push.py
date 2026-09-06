@@ -51,7 +51,9 @@ async def test_user_cannot_delete_another_users_endpoint(client, registered_user
     endpoint = {"endpoint": SUBSCRIPTION["endpoint"]}
     assert (await client.post("/push/subscribe", json=SUBSCRIPTION, headers=auth_header(registered_user))).status_code in (200, 201)
     response = await client.request("DELETE", "/push/subscribe", json=endpoint, headers=auth_header(booster_user))
-    assert response.status_code in (403, 404)
+    assert response.status_code == 200
+    listed = await client.get("/push/subscribe", headers=auth_header(registered_user))
+    assert any(item["endpoint"] == SUBSCRIPTION["endpoint"] for item in listed.json())
 
 
 @pytest.mark.asyncio
