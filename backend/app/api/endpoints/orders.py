@@ -68,15 +68,13 @@ def _serialize_order(order, viewer: User) -> OrderResponse:
     Otherwise a booster browsing the PENDING list could harvest every
     user's game account.
 
-    boss_contact（老板联系 ID）同样仅对 发布人/管理员/首抢打手 直接可见；
-    其他已接单打手的可见性由 _enrich_* 依据 my_claim 回填。
+    boss_contact（老板联系 ID）同样仅对 发布人/管理员/拥有该订单 OrderClaim 的打手可见；
+    已报名打手的可见性由 _enrich_* 依据 my_claim 回填。
     """
     response = OrderResponse.model_validate(order)
     if viewer.role == UserRole.ADMIN:
         return response
     if viewer.id == order.user_id:
-        return response
-    if order.booster_id is not None and viewer.id == order.booster_id:
         return response
     return response.model_copy(update={"game_account": None, "boss_contact": None})
 
@@ -103,6 +101,9 @@ async def _enrich_order_response(db, response: OrderResponse, order, viewer: Use
             # 已接单打手可见老板联系方式
             if response.boss_contact is None:
                 response.boss_contact = order.boss_contact
+        elif order.user_id != viewer.id:
+            # Reset even if the incoming response was not serialized defensively.
+            response.boss_contact = None
     return response
 
 
@@ -139,10 +140,11 @@ async def _enrich_order_responses(
             claim_view = claim_views.get(response.id)
             if claim_view is not None:
                 response.my_claim = OrderClaimItem.model_validate(claim_view)
-                # 已接单打手可见老板联系方式；_serialize_order 已覆盖首抢，
-                # 这里补齐其他名额接单者的可见性。
+                # All claim viewers, including the first claimant, are restored here.
                 if response.boss_contact is None:
                     response.boss_contact = orders_by_id[response.id].boss_contact
+            elif orders_by_id[response.id].user_id != viewer.id:
+                response.boss_contact = None
     return responses
 
 
