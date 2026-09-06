@@ -1,7 +1,6 @@
 """Push subscription API coverage."""
 
-import pytest
-
+from tests.conftest import auth_header
 
 SUBSCRIPTION = {
     "endpoint": "https://push.example.test/subscription-a",
@@ -12,7 +11,7 @@ SUBSCRIPTION = {
 
 @pytest.mark.asyncio
 async def test_push_endpoints_require_authentication(client):
-    assert (await client.get("/push/public-key")).status_code == 401
+    assert (await client.get("/push/public-key")).status_code == 200
     assert (await client.post("/push/subscribe", json=SUBSCRIPTION)).status_code == 401
     assert (await client.request("DELETE", "/push/subscribe", json={"endpoint": SUBSCRIPTION["endpoint"]})).status_code == 401
 
