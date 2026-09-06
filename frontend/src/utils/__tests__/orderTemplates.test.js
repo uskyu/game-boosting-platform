@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { cleanTemplatePayload, resetOrderForm } from '../orderTemplates'
+import { formatShortDate } from '../display'
 
 describe('order template contract', () => {
   it('trims strings, omits blanks, preserves zero, and excludes unknown fields', () => {
@@ -13,5 +14,9 @@ describe('order template contract', () => {
 
   it('clears compensation residue when template has no amount', () => {
     expect(resetOrderForm({ compensation_enabled: true, compensation_amount: 20, attachments: null }, { payload: { title: 'x' } })).toEqual({ compensation_enabled: false, compensation_amount: '', attachments: null, title: 'x' })
+  })
+
+  it('interprets API DATETIME without offset as Shanghai wall-clock time', () => {
+    expect(formatShortDate('2026-09-06T20:22:27')).toContain('20:22')
   })
 })

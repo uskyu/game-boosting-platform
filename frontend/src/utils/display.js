@@ -38,7 +38,15 @@ function parseDate(value) {
     return null
   }
 
-  const parsed = new Date(value)
+  const raw = String(value).trim()
+  // MySQL DATETIME API 值没有 offset，当前数据库约定保存上海墙钟时间；
+  // 先按 Asia/Shanghai 解释，再交给 Intl 的上海时区 formatter，避免少/多 8 小时。
+  const hasExplicitZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw)
+  const parsed = hasExplicitZone
+    ? new Date(raw)
+    : /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?$/.test(raw)
+      ? new Date(`${raw.replace(' ', 'T')}+08:00`)
+      : new Date(raw)
   return Number.isNaN(parsed.getTime()) ? null : parsed
 }
 
