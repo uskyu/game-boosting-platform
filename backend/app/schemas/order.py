@@ -3,11 +3,11 @@ Order schemas module.
 Pydantic models for order-related API request/response validation.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 
 from app.models.order import PaymentStatus, ClaimStatus
 
@@ -473,6 +473,13 @@ class OrderResponse(BaseModel):
     my_claim: "OrderClaimItem | None" = Field(default=None, description="当前用户在此订单的报名记录（未报名时为 null）")
     pending_review_count: int = Field(default=0, description="待审核（DELIVERED）名额数（管理员或订单发布人）")
     settled_count: int = Field(default=0, description="已结算（SETTLED）名额数（管理员或订单发布人）")
+
+    @field_serializer("deadline", "created_at", "updated_at", "locked_at", "delivered_at", "completed_at", "paid_at")
+    def serialize_datetime(self, value: datetime | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return normalized.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
     model_config = ConfigDict(
         from_attributes=True,
