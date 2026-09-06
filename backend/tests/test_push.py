@@ -1,5 +1,7 @@
 """Push subscription API coverage."""
 
+import pytest
+
 from tests.conftest import auth_header
 
 SUBSCRIPTION = {
