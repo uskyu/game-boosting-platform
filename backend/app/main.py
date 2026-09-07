@@ -134,6 +134,33 @@ logger.info("Configured CORS origins: %s", settings.cors_origins)
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_PATH)), name="uploads")
 
 
+# 用户可读的中文表单字段名，覆盖常见请求字段；未映射的字段回退为原始英文名。
+FIELD_LABELS_ZH = {
+    "email": "邮箱",
+    "username": "昵称",
+    "password": "密码",
+    "current_password": "当前密码",
+    "new_password": "新密码",
+    "captcha_id": "验证码",
+    "captcha_code": "验证码",
+    "title": "标题",
+    "game": "游戏",
+    "game_name": "游戏名称",
+    "service_type": "服务类型",
+    "price": "价格",
+    "amount": "金额",
+    "deadline": "截止时间",
+    "note": "备注",
+    "description": "描述",
+    "content": "内容",
+    "current_rank": "当前段位",
+    "target_rank": "目标段位",
+    "proof_url": "证明材料",
+    "name": "名称",
+    "days": "天数",
+}
+
+
 # Custom exception handlers
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(
@@ -141,27 +168,49 @@ async def validation_exception_handler(
     exc: RequestValidationError,
 ) -> JSONResponse:
     """
-    Handle Pydantic validation errors with Chinese messages.
+    Handle Pydantic validation errors with Chinese messages that include the
+    concrete reason (field label + limit) so the frontend can show it directly.
     """
-    errors = exc.errors()
-
-    # Translate common validation messages
     translated_errors = []
-    for error in errors:
-        field = ".".join(str(loc) for loc in error["loc"] if loc != "body")
+    for error in exc.errors():
+        loc_parts = [str(loc) for loc in error["loc"] if loc != "body"]
+        field = ".".join(loc_parts)
+        leaf = loc_parts[-1] if loc_parts else ""
+        label = FIELD_LABELS_ZH.get(leaf, leaf)
         error_type = error["type"]
+        ctx = error.get("ctx") or {}
 
-        # Map error types to Chinese messages
-        message_map = {
-            "missing": f"字段 '{field}' 不能为空",
-            "string_too_short": f"字段 '{field}' 长度不足",
-            "string_too_long": f"字段 '{field}' 长度超限",
-            "value_error": f"字段 '{field}' 格式错误",
-            "type_error": f"字段 '{field}' 类型错误",
-            "json_invalid": "JSON格式无效",
-        }
+        if error_type == "missing":
+            msg = f"请填写{label}" if label else "存在未填写的必填项"
+        elif error_type == "string_too_short":
+            minimum = ctx.get("min_length")
+            msg = f"{label}至少需要 {minimum} 个字符" if minimum else f"{label}长度不足"
+        elif error_type == "string_too_long":
+            maximum = ctx.get("max_length")
+            msg = f"{label}最多 {maximum} 个字符" if maximum else f"{label}长度超限"
+        elif error_type == "string_pattern_mismatch":
+            msg = f"{label}格式不正确"
+        elif error_type in ("greater_than", "greater_than_equal", "less_than", "less_than_equal"):
+            msg = f"{label}数值超出允许范围"
+        elif error_type == "value_error":
+            custom = str(ctx.get("error") or "").strip()
+            if leaf == "email":
+                # 邮箱库的错误信息是英文，统一换成中文
+                msg = "邮箱格式不正确"
+            elif custom and any("\u4e00" <= ch <= "\u9fff" for ch in custom):
+                # schema 自定义校验器抛出的中文错误，直接使用
+                msg = custom
+            else:
+                msg = f"{label}格式不正确"
+        elif error_type in ("enum", "literal_error"):
+            msg = f"{label}取值不合法"
+        elif error_type in ("int_parsing", "float_parsing", "int_from_float"):
+            msg = f"{label}必须是数字"
+        elif error_type == "json_invalid":
+            msg = "请求内容不是有效的 JSON"
+        else:
+            msg = f"{label}填写有误（{error['msg']}）"
 
-        msg = message_map.get(error_type, f"字段 '{field}' 验证失败: {error['msg']}")
         translated_errors.append({"field": field, "message": msg})
 
     return JSONResponse(

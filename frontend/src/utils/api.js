@@ -65,6 +65,39 @@ function doRefresh(authStore) {
   return refreshPromise
 }
 
+// ── Error message extraction ──
+// 后端 422 验证失败返回 { detail, errors: [{field, message}] }，把 errors 的
+// 具体原因合并成一句可读文案；其余错误沿用 detail。所有 store/页面统一受益。
+function readableApiError(error) {
+  const data = error.response?.data
+  const messages = []
+
+  if (Array.isArray(data?.errors)) {
+    for (const item of data.errors) {
+      if (typeof item === 'string') {
+        messages.push(item)
+      } else if (item?.message) {
+        messages.push(item.message)
+      }
+    }
+    if (messages.length > 0) return messages.join('；')
+  }
+
+  const detail = data?.detail
+  if (Array.isArray(detail)) {
+    for (const item of detail) {
+      if (typeof item === 'string') {
+        messages.push(item)
+      } else if (item?.msg) {
+        messages.push(item.msg)
+      }
+    }
+    if (messages.length > 0) return messages.join('；')
+  }
+
+  return detail || error.message || '请求失败'
+}
+
 // Response interceptor - handle errors and token refresh
 api.interceptors.response.use(
   (response) => response,
@@ -92,11 +125,9 @@ api.interceptors.response.use(
       }
     }
 
-    const errorMessage = error.response?.data?.detail || error.message || '请求失败'
-
     return Promise.reject({
       status: error.response?.status,
-      message: errorMessage,
+      message: readableApiError(error),
       errors: error.response?.data?.errors,
       original: error,
     })

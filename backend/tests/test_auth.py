@@ -47,6 +47,32 @@ async def test_register_missing_captcha_rejected(client: AsyncClient):
     assert resp.status_code == 422
 
 
+async def test_register_validation_error_returns_specific_reason(client: AsyncClient):
+    """422 errors carry concrete Chinese reasons (field label + limit)."""
+    resp = await client.post("/auth/register", json={
+        "email": "short@example.com",
+        "username": "王",
+        "password": "StrongPass1",
+        "captcha_id": "x",
+        "captcha_code": "y",
+    })
+    assert resp.status_code == 422
+    errors = resp.json()["errors"]
+    assert any("昵称至少需要 2 个字符" in e["message"] for e in errors)
+
+    # 弱密码走 schema 自定义校验器，中文信息须原样透传
+    resp2 = await client.post("/auth/register", json={
+        "email": "short@example.com",
+        "username": "玩家小明",
+        "password": "NoDigitsHere",
+        "captcha_id": "x",
+        "captcha_code": "y",
+    })
+    assert resp2.status_code == 422
+    errors2 = resp2.json()["errors"]
+    assert any("密码须包含至少一个数字" in e["message"] for e in errors2)
+
+
 async def test_register_wrong_captcha_rejected(client: AsyncClient, make_captcha):
     """Register with wrong captcha code -> 400."""
     payload = {
