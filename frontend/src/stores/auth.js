@@ -99,29 +99,37 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  // 并发去重：路由守卫、生命周期、initialize 可能同时请求 /auth/me
+  let meInFlight = null
+
   async function fetchCurrentUser() {
     if (!accessToken.value) {
       return { success: false }
     }
-    
-    loading.value = true
-    error.value = null
-    
-    try {
-      const response = await api.get('/auth/me')
-      setUser(response.data)
-      return { success: true }
-    } catch (err) {
-      // Token might be invalid, clear everything
-      if (err.status === 401) {
-        logout()
-      } else {
-        error.value = err.message
-      }
-      return { success: false, error: err.message }
-    } finally {
-      loading.value = false
+    if (meInFlight) {
+      return meInFlight
     }
+    meInFlight = (async () => {
+      loading.value = true
+      error.value = null
+      try {
+        const response = await api.get('/auth/me')
+        setUser(response.data)
+        return { success: true }
+      } catch (err) {
+        // Token might be invalid, clear everything
+        if (err.status === 401) {
+          logout()
+        } else {
+          error.value = err.message
+        }
+        return { success: false, error: err.message }
+      } finally {
+        loading.value = false
+        meInFlight = null
+      }
+    })()
+    return meInFlight
   }
 
   async function updateProfile(data) {

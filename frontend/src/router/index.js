@@ -181,16 +181,29 @@ const router = createRouter({
 
 router.beforeEach(async (to, from, next) => {
   const siteStore = useSiteStore()
-  await siteStore.fetchSettings()
-  const brand = siteStore.settings.site_name || '游戏服务平台'
-  document.title = to.name === 'support' ? '联系管理员' : `${to.meta.title || brand} - ${brand}`
-
   const authStore = useAuthStore()
+
+  // 站点设置不阻塞导航：先用默认品牌渲染，后台取到后更新标题。
+  // 弱网下串行等待它会推迟整个页面的首个绘制。
+  const setDocTitle = () => {
+    const brand = siteStore.settings.site_name || '游戏服务平台'
+    document.title = to.name === 'support' ? '联系管理员' : `${to.meta.title || brand} - ${brand}`
+  }
+  setDocTitle()
+  siteStore.fetchSettings().then(setDocTitle)
+
   if (authStore.accessToken && !authStore.user) {
-    await authStore.fetchCurrentUser()
+    if (to.meta.adminOnly || to.meta.guest) {
+      // admin 判定 / 已登录访问登录页需要准确身份，保持阻塞等待
+      await authStore.fetchCurrentUser()
+    } else {
+      // 普通页面不阻塞渲染：后台补全用户信息；会话失效由 401 拦截器兜底（刷新令牌或跳登录）
+      authStore.fetchCurrentUser()
+    }
   }
 
-  if (to.meta.requiresAuth && !authStore.isAuthenticated) {
+  // 有 token 就放行，身份由后台请求补全；无 token 才立刻去登录
+  if (to.meta.requiresAuth && !authStore.accessToken) {
     next({ name: 'login', query: { redirect: to.fullPath } })
     return
   }

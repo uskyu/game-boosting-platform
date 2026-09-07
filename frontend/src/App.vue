@@ -40,17 +40,22 @@ let unreadPollingTimer = null
 const NOTIF_POLL_INTERVAL = 10_000
 let notifPollTimer = null
 let knownNotifIds = null
+// 在飞保护：弱网下上一轮没回来就不开新一轮，避免请求堆积
+let notifPolling = false
 
 async function pollOrderNotifications({ baseline = false } = {}) {
-  if (!authStore.isAuthenticated || document.visibilityState !== 'visible') {
+  if (notifPolling || !authStore.isAuthenticated || document.visibilityState !== 'visible') {
     return
   }
+  notifPolling = true
   let items = []
   try {
     const response = await api.get('/notifications', { params: { page: 1, page_size: 10 } })
     items = response.data?.items || []
   } catch {
     return
+  } finally {
+    notifPolling = false
   }
   if (knownNotifIds === null) {
     knownNotifIds = new Set(items.map((n) => Number(n.id)))
@@ -258,10 +263,13 @@ function startUnreadPolling() {
 
 async function syncChatLifecycle(isLoggedIn) {
   if (isLoggedIn) {
-    await restorePushSubscription().catch(() => {})
-    await settingsStore.fetchPreferences()
-    await chatStore.fetchUnreadSummary()
-    await notificationsStore.fetchUnreadCount()
+    // 四个初始化请求互不依赖，并行发出，弱网下省 3 个串行往返
+    await Promise.allSettled([
+      restorePushSubscription(),
+      settingsStore.fetchPreferences(),
+      chatStore.fetchUnreadSummary(),
+      notificationsStore.fetchUnreadCount(),
+    ])
     chatStore.connectWebSocket()
     startUnreadPolling()
     startNotifPolling()
