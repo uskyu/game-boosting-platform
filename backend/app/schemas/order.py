@@ -552,6 +552,10 @@ class OrderClaimItem(BaseModel):
     settled_at: datetime | None = Field(default=None, description="结算时间")
     is_first: bool = Field(default=False, description="是否首抢（该用户即订单当前接单人）")
 
+    @field_serializer("created_at", "delivered_at", "settled_at")
+    def serialize_claim_datetime(self, value: datetime | None) -> str | None:
+        return serialize_datetime_utc(value)
+
     model_config = ConfigDict(from_attributes=True)
 
 

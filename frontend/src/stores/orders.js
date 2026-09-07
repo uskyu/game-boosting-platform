@@ -312,6 +312,7 @@ export const useOrdersStore = defineStore('orders', () => {
       form.append('attachment', file)
       const response = await api.post(`/orders/${orderId}/deliver-attachments`, form, {
         headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 120000,
       })
       if (currentOrder.value?.id === orderId) {
         const existing = Array.isArray(currentOrder.value.delivery_attachments) ? [...currentOrder.value.delivery_attachments] : []

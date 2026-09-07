@@ -43,6 +43,15 @@ const orderLightboxVisible = ref(false)
 const orderLightboxIndex = ref(0)
 const deliveryLightboxVisible = ref(false)
 const deliveryLightboxIndex = ref(0)
+const claimPreview = ref([])
+const claimPreviewIndex = ref(0)
+const claimPreviewVisible = ref(false)
+
+function openClaimPreview(claim, index) {
+  claimPreview.value = claim.delivery_attachments || []
+  claimPreviewIndex.value = index
+  claimPreviewVisible.value = true
+}
 
 const order = computed(() => ordersStore.currentOrder)
 const loading = computed(() => ordersStore.loading)
@@ -614,8 +623,16 @@ onMounted(async () => {
                 {{ claimBoosterName(claim) }}
                 <span v-if="claim.is_first" class="ml-1 text-xs font-semibold text-primary">首抢</span>
               </p>
-              <p class="mt-0.5 text-xs text-ink-3">{{ formatDateTime(claim.created_at) }}</p>
-              <p v-if="claim.status !== 'CLAIMED' && claim.delivery_note" class="mt-1 line-clamp-2 break-words text-xs leading-5 text-ink-2">汇报：{{ claim.delivery_note }}</p>
+              <p class="mt-0.5 text-xs text-ink-3">接单时间：{{ formatDateTime(claim.created_at) }}</p>
+              <p v-if="claim.delivered_at" class="mt-1 text-xs text-ink-3">提交时间：{{ formatDateTime(claim.delivered_at) }}</p>
+              <p v-if="claim.status !== 'CLAIMED'" class="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-ink-2">汇报：{{ claim.delivery_note || '未填写文字汇报' }}</p>
+              <div v-if="claim.status !== 'CLAIMED' && claim.delivery_attachments?.length" class="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <button v-for="(image, index) in claim.delivery_attachments" :key="image.url" type="button" class="overflow-hidden rounded-tile border border-line-1" @click="openClaimPreview(claim, index)">
+                  <img :src="image.url" :alt="image.name || '交付截图'" class="h-28 w-full object-cover" loading="lazy" />
+                  <span class="block px-2 py-1 text-xs text-primary">查看原图 {{ index + 1 }}</span>
+                </button>
+              </div>
+              <p v-else-if="claim.status !== 'CLAIMED'" class="mt-2 text-xs text-ink-3">未提交交付截图</p>
             </div>
             <div class="flex shrink-0 items-center gap-3">
               <span :class="getClaimStatusMeta(claim.status).tagClass">{{ getClaimStatusMeta(claim.status).label }}</span>
@@ -921,6 +938,7 @@ onMounted(async () => {
       </teleport>
 
       <Lightbox :images="orderAttachments" :visible="orderLightboxVisible" :start-index="orderLightboxIndex" @close="orderLightboxVisible = false" />
+      <Lightbox :images="claimPreview" :visible="claimPreviewVisible" :start-index="claimPreviewIndex" @close="claimPreviewVisible = false" />
       <Lightbox :images="deliveryAttachments" :visible="deliveryLightboxVisible" :start-index="deliveryLightboxIndex" @close="deliveryLightboxVisible = false" />
     </template>
   </div>

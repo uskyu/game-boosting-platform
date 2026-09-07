@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { useChatStore } from '@/stores/chat'
+import { useAuthStore } from '@/stores/auth'
 import { useOrdersStore } from '@/stores/orders'
 import { formatCount, formatDateTime, formatOrderPrice, formatPayoutDelay, formatPrice, formatShortDate } from '@/utils/display'
 import { ORDER_STATUS_OPTIONS, getClaimStatusMeta, getOrderStatusBadgeClass, getOrderStatusLabel } from '@/utils/order'
@@ -12,7 +13,7 @@ const chatStore = useChatStore()
 const ordersStore = useOrdersStore()
 
 // 双栏：我的接单（claims/mine）/ 我的派单（自己发布的订单）
-const activeTab = ref('claims')
+const activeTab = ref(useAuthStore().isAdmin ? 'published' : 'claims')
 const searchGame = ref('')
 const searchBossContact = ref('')
 const selectedStatus = ref('')
@@ -172,7 +173,7 @@ watch(claimStatus, () => {
 
 onMounted(async () => {
   fetchOrders()
-  fetchClaims()
+  if (!useAuthStore().isAdmin) fetchClaims()
   // 并行拉取：会话列表与未读数互不依赖
   await Promise.all([
     chatStore.fetchConversations({ pageSize: 100 }),

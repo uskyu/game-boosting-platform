@@ -88,6 +88,7 @@ function onPick(e) {
 }
 
 function removeAt(idx) {
+  if (submitting.value || uploadStates.value[idx] === 'done') return
   try { URL.revokeObjectURL(previews.value[idx]) } catch {}
   files.value.splice(idx, 1)
   previews.value.splice(idx, 1)
@@ -111,10 +112,18 @@ async function uploadOne(idx) {
 }
 
 async function retryOne(idx) {
-  await uploadOne(idx)
+  if (submitting.value) return
+  submitting.value = true
+  try {
+    const result = await uploadOne(idx)
+    generalError.value = result.success ? '' : `第 ${idx + 1} 张上传失败：${result.error || '请稍后重试'}`
+  } finally {
+    submitting.value = false
+  }
 }
 
 async function handleSubmit() {
+  if (submitting.value) return
   generalError.value = ''
   if (noteLen.value > 2000) {
     generalError.value = '汇报说明不能超过 2000 字'
@@ -130,7 +139,7 @@ async function handleSubmit() {
     if (uploadStates.value[i] === 'done') continue
     const r = await uploadOne(i)
     if (!r.success) {
-      generalError.value = `第 ${i + 1} 张上传失败，可重试；失败后订单不会结束`
+      generalError.value = `第 ${i + 1} 张上传失败：${r.error || '请稍后重试'}。已上传的图片会保留，订单尚未结束。`
       submitting.value = false
       return
     }
@@ -205,7 +214,8 @@ async function handleSubmit() {
                 <button
                   type="button"
                   class="absolute right-1 top-1 flex h-7 w-7 items-center justify-center rounded-full bg-black/55 text-xs text-white"
-                  :disabled="submitting && uploadStates[idx] === 'uploading'"
+                  :disabled="submitting || uploadStates[idx] === 'done'"
+                  :title="uploadStates[idx] === 'done' ? '图片已保存' : '移除图片'"
                   aria-label="移除"
                   @click="removeAt(idx)"
                 >×</button>
