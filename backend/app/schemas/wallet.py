@@ -6,10 +6,11 @@ Pydantic models for wallet / withdrawal API request and response validation.
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 from app.models.wallet import WalletTransactionType
 from app.models.withdrawal import WithdrawalChannel, WithdrawalStatus
+from app.schemas.serializers import serialize_datetime_utc
 
 # =============================================================================
 # WALLET SCHEMAS
@@ -39,6 +40,10 @@ class WalletTransactionResponse(BaseModel):
     withdrawal_id: int | None = Field(default=None, description="关联提现ID")
     remark: str | None = Field(default=None, description="备注")
     created_at: datetime = Field(description="创建时间")
+
+    @field_serializer("created_at")
+    def serialize_dt(self, value: datetime | None) -> str | None:
+        return serialize_datetime_utc(value)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -122,6 +127,10 @@ class WithdrawalResponse(BaseModel):
     paid_at: datetime | None = Field(default=None, description="打款时间")
     created_at: datetime = Field(description="申请时间")
     updated_at: datetime = Field(description="更新时间")
+
+    @field_serializer("reviewed_at", "paid_at", "created_at", "updated_at")
+    def serialize_dt(self, value: datetime | None) -> str | None:
+        return serialize_datetime_utc(value)
 
     model_config = ConfigDict(from_attributes=True)
 

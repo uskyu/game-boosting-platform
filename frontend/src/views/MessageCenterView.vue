@@ -5,6 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import ChatConversationList from '@/components/chat/ChatConversationList.vue'
 import { useChatStore } from '@/stores/chat'
 import { useNotificationsStore } from '@/stores/notifications'
+import { parseDate } from '@/utils/display'
 
 const route = useRoute()
 const router = useRouter()
@@ -44,7 +45,7 @@ function typeMeta(type) {
 
 function formatTime(dateStr) {
   if (!dateStr) return ''
-  const d = new Date(dateStr)
+  const d = parseDate(dateStr)
   const now = new Date()
   const diffMs = now - d
   const diffMin = Math.floor(diffMs / 60000)

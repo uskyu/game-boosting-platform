@@ -8,6 +8,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_serializer, field_validator
 
 from app.models.user import UserRole
+from app.schemas.serializers import serialize_datetime_utc
 
 # =============================================================================
 # INPUT SCHEMAS (Request Bodies)
@@ -174,6 +175,10 @@ class UserResponse(BaseModel):
         description="上次修改用户名的时间（普通用户 90 天内仅可自助修改一次）",
     )
 
+    @field_serializer("created_at", "username_changed_at")
+    def serialize_dt(self, value: datetime | None) -> str | None:
+        return serialize_datetime_utc(value)
+
     @field_serializer("role")
     def serialize_role(self, role: UserRole) -> str:
         """Show non-admin accounts as boosters in client-facing responses."""
@@ -219,6 +224,10 @@ class BoosterProfileResponse(BaseModel):
     avg_rating: float = Field(description="平均评分")
     avg_response_minutes: int = Field(description="平均响应时间(分钟)")
     badge_tags: list[str] = Field(default_factory=list, description="标签徽章")
+
+    @field_serializer("created_at")
+    def serialize_dt(self, value: datetime | None) -> str | None:
+        return serialize_datetime_utc(value)
 
     model_config = ConfigDict(from_attributes=True)
 

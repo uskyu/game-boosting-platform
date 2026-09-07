@@ -33,7 +33,7 @@ const dateFormatter = new Intl.DateTimeFormat('zh-CN', {
 
 const countFormatter = new Intl.NumberFormat('zh-CN')
 
-function parseDate(value) {
+export function parseDate(value) {
   if (!value) {
     return null
   }

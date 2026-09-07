@@ -3,9 +3,10 @@
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, field_serializer
 
 from app.models.user import UserRole
+from app.schemas.serializers import serialize_datetime_utc
 
 
 class AdminUserBalanceSummary(BaseModel):
@@ -31,6 +32,10 @@ class AdminUserResponse(BaseModel):
     created_at: datetime
     booster_quota: int
     wallet: AdminUserBalanceSummary
+
+    @field_serializer("created_at")
+    def serialize_dt(self, value: datetime | None) -> str | None:
+        return serialize_datetime_utc(value)
 
     model_config = ConfigDict(from_attributes=True)
 

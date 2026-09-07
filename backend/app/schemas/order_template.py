@@ -2,7 +2,8 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator, field_serializer
+from app.schemas.serializers import serialize_datetime_utc
 
 
 class OrderTemplatePayload(BaseModel):
@@ -66,3 +67,7 @@ class OrderTemplateResponse(BaseModel):
     payload: dict[str, Any]
     created_at: datetime
     updated_at: datetime
+
+    @field_serializer("created_at", "updated_at")
+    def serialize_dt(self, value: datetime | None) -> str | None:
+        return serialize_datetime_utc(value)

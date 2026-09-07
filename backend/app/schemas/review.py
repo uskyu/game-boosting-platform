@@ -2,9 +2,10 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 from app.schemas.order import UserBrief
+from app.schemas.serializers import serialize_datetime_utc
 
 
 class ReviewCreate(BaseModel):
@@ -33,6 +34,10 @@ class ReviewResponse(BaseModel):
     created_at: datetime
     updated_at: datetime | None = None
     reviewer: UserBrief | None = None
+
+    @field_serializer("created_at", "updated_at")
+    def serialize_dt(self, value: datetime | None) -> str | None:
+        return serialize_datetime_utc(value)
 
     model_config = ConfigDict(from_attributes=True)
 

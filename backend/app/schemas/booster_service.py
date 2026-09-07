@@ -7,7 +7,8 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, field_serializer
+from app.schemas.serializers import serialize_datetime_utc
 
 
 def _normalize_optional_text(value: str | None) -> str | None:
@@ -167,6 +168,10 @@ class BoosterServiceResponse(BaseModel):
     order_count: int = Field(description="已完成订单数")
     created_at: datetime = Field(description="创建时间")
     updated_at: datetime = Field(description="更新时间")
+
+    @field_serializer("created_at", "updated_at")
+    def serialize_dt(self, value: datetime | None) -> str | None:
+        return serialize_datetime_utc(value)
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -4,10 +4,11 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, field_serializer
 
 from app.models.order import OrderStatus
 from app.models.user import BoosterApplicationStatus, UserRole
+from app.schemas.serializers import serialize_datetime_utc
 
 
 class BoosterApplicationResponse(BaseModel):
@@ -25,6 +26,10 @@ class BoosterApplicationResponse(BaseModel):
     reviewed_by_admin_id: int | None = None
     reviewed_at: datetime | None = None
     review_note: str | None = None
+
+    @field_serializer("reviewed_at")
+    def serialize_dt(self, value: datetime | None) -> str | None:
+        return serialize_datetime_utc(value)
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -2,7 +2,8 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, field_serializer
+from app.schemas.serializers import serialize_datetime_utc
 
 
 class SiteSettingUpdate(BaseModel):
@@ -34,5 +35,9 @@ class SiteSettingResponse(BaseModel):
     updated_by: int | None
     updated_at: datetime
     logo_recommendation: str = "建议使用 512×512 以上的 PNG、JPEG 或 WebP 图片，文件不超过 10MB。"
+
+    @field_serializer("updated_at")
+    def serialize_dt(self, value: datetime | None) -> str | None:
+        return serialize_datetime_utc(value)
 
     model_config = ConfigDict(from_attributes=True)

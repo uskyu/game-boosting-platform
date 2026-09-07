@@ -4,9 +4,10 @@ Notification and user preference schemas.
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 from app.models.notification import NotificationType
+from app.schemas.serializers import serialize_datetime_utc
 
 # =============================================================================
 # Notification schemas
@@ -25,6 +26,10 @@ class NotificationResponse(BaseModel):
     is_read: bool = Field(description="是否已读")
     created_at: datetime = Field(description="创建时间")
     read_at: datetime | None = Field(default=None, description="阅读时间")
+
+    @field_serializer("created_at", "read_at")
+    def serialize_dt(self, value: datetime | None) -> str | None:
+        return serialize_datetime_utc(value)
 
     model_config = ConfigDict(from_attributes=True)
 

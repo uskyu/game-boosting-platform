@@ -7,11 +7,12 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 from app.models.chat import ConversationType, MessageType
 from app.models.order import OrderStatus
 from app.models.user import UserRole
+from app.schemas.serializers import serialize_datetime_utc
 
 
 class ConversationCreateRequest(BaseModel):
@@ -66,6 +67,10 @@ class ConversationParticipantResponse(BaseModel):
     pinned_at: datetime | None = Field(default=None, description="置顶时间")
     user: ChatUserBrief = Field(description="参与者信息")
 
+    @field_serializer("joined_at", "last_read_at", "pinned_at")
+    def serialize_dt(self, value: datetime | None) -> str | None:
+        return serialize_datetime_utc(value)
+
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -101,6 +106,10 @@ class ConversationResponse(BaseModel):
     other_participants: list[ChatUserBrief] = Field(description="除当前用户之外的参与者")
     order: ConversationOrderBrief | None = Field(default=None, description="关联订单摘要")
 
+    @field_serializer("created_at", "updated_at", "last_message_at", "pinned_at")
+    def serialize_dt(self, value: datetime | None) -> str | None:
+        return serialize_datetime_utc(value)
+
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -126,6 +135,10 @@ class ChatMessageResponse(BaseModel):
     recalled_at: datetime | None = Field(default=None, description="撤回时间")
     meta_json: dict[str, Any] | None = Field(default=None, description="附加元数据")
     sender: ChatUserBrief | None = Field(default=None, description="发送者信息")
+
+    @field_serializer("created_at", "recalled_at")
+    def serialize_dt(self, value: datetime | None) -> str | None:
+        return serialize_datetime_utc(value)
 
     model_config = ConfigDict(from_attributes=True)
 

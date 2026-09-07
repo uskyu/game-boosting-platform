@@ -3,13 +3,14 @@ Order schemas module.
 Pydantic models for order-related API request/response validation.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 
 from app.models.order import PaymentStatus, ClaimStatus
+from app.schemas.serializers import serialize_datetime_utc
 
 
 class OrderAttachment(BaseModel):
@@ -476,10 +477,7 @@ class OrderResponse(BaseModel):
 
     @field_serializer("deadline", "created_at", "updated_at", "locked_at", "delivered_at", "completed_at", "paid_at")
     def serialize_datetime(self, value: datetime | None) -> str | None:
-        if value is None:
-            return None
-        normalized = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
-        return normalized.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        return serialize_datetime_utc(value)
 
     model_config = ConfigDict(
         from_attributes=True,
