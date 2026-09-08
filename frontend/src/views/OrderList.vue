@@ -13,7 +13,15 @@ const chatStore = useChatStore()
 const ordersStore = useOrdersStore()
 
 // 双栏：我的接单（claims/mine）/ 我的派单（自己发布的订单）
-const activeTab = ref(useAuthStore().isAdmin ? 'published' : 'claims')
+// 管理员默认"我的派单"：整页刷新时用户信息可能晚于挂载到达，用 watch 兜底切换
+const activeTab = ref('claims')
+let userTouchedTab = false
+
+watch(() => useAuthStore().isAdmin, (isAdmin) => {
+  if (isAdmin && !userTouchedTab) {
+    activeTab.value = 'published'
+  }
+}, { immediate: true })
 const searchGame = ref('')
 const searchBossContact = ref('')
 const selectedStatus = ref('')
@@ -125,6 +133,7 @@ async function fetchClaims() {
 
 function switchTab(tab) {
   activeTab.value = tab
+  userTouchedTab = true
   if (tab === 'published') {
     ordersStore.setPage(1)
     fetchOrders()
@@ -175,6 +184,7 @@ watch(claimStatus, () => {
 onMounted(async () => {
   fetchOrders()
   if (!useAuthStore().isAdmin) fetchClaims()
+  // 管理员不拉报名列表；若用户信息晚到，watch 会切到"我的派单"
   // 并行拉取：会话列表与未读数互不依赖
   await Promise.all([
     chatStore.fetchConversations({ pageSize: 100 }),
