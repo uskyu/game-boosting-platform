@@ -1,6 +1,6 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 
 import { useChatStore } from '@/stores/chat'
 import { useAuthStore } from '@/stores/auth'
@@ -8,24 +8,29 @@ import { useOrdersStore } from '@/stores/orders'
 import { formatCount, formatDateTime, formatOrderPrice, formatPayoutDelay, formatPrice, formatShortDate } from '@/utils/display'
 import { ORDER_STATUS_OPTIONS, getClaimStatusMeta, getOrderStatusBadgeClass, getOrderStatusLabel } from '@/utils/order'
 
+const route = useRoute()
 const router = useRouter()
 const chatStore = useChatStore()
 const ordersStore = useOrdersStore()
 
 // 双栏：我的接单（claims/mine）/ 我的派单（自己发布的订单）
-// 管理员默认"我的派单"：整页刷新时用户信息可能晚于挂载到达，用 watch 兜底切换
-const activeTab = ref('claims')
+// 搜索与 Tab 状态同步进 URL query：从详情页/其他页面返回、刷新、前进后退都能恢复，
+// 否则组件重建即清空搜索，列表闪回全量（老板反馈的"搜索失效回归大厅"）。
+const activeTab = ref(route.query.tab === 'claims' || route.query.tab === 'published' ? route.query.tab : 'claims')
 let userTouchedTab = false
+const searchGame = ref(String(route.query.game || ''))
+const searchBossContact = ref(String(route.query.boss || ''))
+const selectedStatus = ref(String(route.query.status || ''))
+const claimStatus = ref(String(route.query.claim_status || ''))
 
+// 管理员默认"我的派单"：整页刷新时用户信息可能晚于挂载到达，用 watch 兜底切换。
+// URL 已指定 tab 时以 URL 为准。
 watch(() => useAuthStore().isAdmin, (isAdmin) => {
-  if (isAdmin && !userTouchedTab) {
+  if (isAdmin && !userTouchedTab && !route.query.tab) {
     activeTab.value = 'published'
+    syncQuery()
   }
 }, { immediate: true })
-const searchGame = ref('')
-const searchBossContact = ref('')
-const selectedStatus = ref('')
-const claimStatus = ref('')
 
 const orders = computed(() => ordersStore.orders)
 const myClaims = computed(() => ordersStore.myClaims)
@@ -138,11 +143,52 @@ function switchTab(tab) {
     ordersStore.setPage(1)
     fetchOrders()
   }
+  syncQuery(1)
 }
+
+// 把当前 Tab/搜索/筛选/页码写进 URL（replace 不产生历史噪音）
+function syncQuery(page = ordersStore.pagination.page) {
+  router.replace({
+    query: {
+      tab: activeTab.value,
+      game: searchGame.value || undefined,
+      boss: searchBossContact.value || undefined,
+      status: selectedStatus.value || undefined,
+      claim_status: claimStatus.value || undefined,
+      page: page > 1 ? page : undefined,
+    },
+  })
+}
+
+// 浏览器前进/后退只改 query 不重建组件：从这里恢复状态并重拉列表。
+// 同步写入（syncQuery）产生的 query 变化各字段与 refs 相同，不会触发多余请求。
+let restoringFromQuery = false
+
+watch(() => route.query, (query) => {
+  const qTab = query.tab === 'claims' ? 'claims' : query.tab === 'published' ? 'published' : null
+  const qGame = String(query.game || '')
+  const qBoss = String(query.boss || '')
+  const qStatus = String(query.status || '')
+  const qClaim = String(query.claim_status || '')
+  const qPage = Math.max(1, Number(query.page) || 1)
+
+  restoringFromQuery = true
+  let changed = false
+  if (qTab && activeTab.value !== qTab) { activeTab.value = qTab; changed = true }
+  if (searchGame.value !== qGame) { searchGame.value = qGame; changed = true }
+  if (searchBossContact.value !== qBoss) { searchBossContact.value = qBoss; changed = true }
+  if (selectedStatus.value !== qStatus) { selectedStatus.value = qStatus; changed = true }
+  if (claimStatus.value !== qClaim) { claimStatus.value = qClaim; changed = true }
+  if (ordersStore.pagination.page !== qPage) { ordersStore.setPage(qPage); changed = true }
+  nextTick(() => { restoringFromQuery = false })
+
+  if (changed) fetchOrders()
+})
 
 function handleSearch() {
   ordersStore.setPage(1)
   fetchOrders()
+  syncQuery(1)
 }
 
 function resetFilters() {
@@ -153,6 +199,7 @@ function resetFilters() {
   ordersStore.setPage(1)
   fetchOrders()
   fetchClaims()
+  syncQuery(1)
 }
 
 function goToOrder(orderId) {
@@ -165,15 +212,20 @@ function handlePageChange(page) {
   }
   ordersStore.setPage(page)
   fetchOrders()
+  syncQuery(page)
 }
 
 let searchTimeout = null
 
 watch(searchGame, () => {
   window.clearTimeout(searchTimeout)
+  // URL 恢复触发的变化已由 restore 流程直接拉取，防抖不必再补一枪
+  const fromRestore = restoringFromQuery
   searchTimeout = window.setTimeout(() => {
+    if (fromRestore) return
     ordersStore.setPage(1)
     fetchOrders()
+    syncQuery(1)
   }, 300)
 })
 
@@ -182,6 +234,8 @@ watch(claimStatus, () => {
 })
 
 onMounted(async () => {
+  // 从 URL 恢复页码后再拉首屏，避免返回/刷新时搜索条件在但页码被重置
+  ordersStore.setPage(Math.max(1, Number(route.query.page) || 1))
   fetchOrders()
   if (!useAuthStore().isAdmin) fetchClaims()
   // 管理员不拉报名列表；若用户信息晚到，watch 会切到"我的派单"
