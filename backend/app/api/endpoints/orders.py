@@ -480,7 +480,7 @@ async def list_my_claims(
     db: DatabaseSession,
     status_filter: Annotated[
         ClaimLifecycleStatus | None,
-        Query(alias="status", description="按名额状态筛选：CLAIMED/DELIVERED/SETTLED"),
+        Query(alias="status", description="按名额状态筛选：CLAIMED/DELIVERED/SETTLED/CANCELLED"),
     ] = None,
     page: Annotated[
         int,

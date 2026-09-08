@@ -56,11 +56,12 @@ export const USER_ROLE_META = {
   },
 }
 
-// claim（报名单）状态：CLAIMED=进行中 / DELIVERED=待审核 / SETTLED=已结算
+// claim（报名单）状态：CLAIMED=进行中 / DELIVERED=待审核 / SETTLED=已结算 / CANCELLED=已取消
 export const ORDER_CLAIM_STATUS_META = {
   CLAIMED: { label: '进行中', tagClass: 'tag !bg-info-soft !text-info' },
   DELIVERED: { label: '待审核', tagClass: 'tag !bg-warning-soft !text-warning' },
   SETTLED: { label: '已结算', tagClass: 'tag !bg-success-soft !text-success' },
+  CANCELLED: { label: '已取消', tagClass: 'tag !bg-danger-soft !text-danger' },
 }
 
 export function getClaimStatusMeta(status) {

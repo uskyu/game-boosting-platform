@@ -1049,6 +1049,11 @@ class OrderService:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="只有已报名的打手才能交付",
             )
+        if claim.status == ClaimLifecycleStatus.CANCELLED:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="订单已取消，无法提交交付",
+            )
         if claim.status == ClaimLifecycleStatus.DELIVERED:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -1096,6 +1101,11 @@ class OrderService:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="只有已报名的打手才能上传交付附件",
+            )
+        if claim.status == ClaimLifecycleStatus.CANCELLED:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="订单已取消，不能修改交付附件",
             )
         if claim.status == ClaimLifecycleStatus.SETTLED:
             raise HTTPException(
@@ -1593,6 +1603,18 @@ class OrderService:
                 )
 
         order.status = OrderStatus.CANCELLED
+        # 取消订单：未结算的报名名额一并终止，打手端不再显示"进行中"；
+        # 已结算（SETTLED）名额保留原状，钱已入账不受取消影响。
+        await self._db.execute(
+            update(OrderClaim)
+            .where(
+                OrderClaim.order_id == order.id,
+                OrderClaim.status.in_(
+                    (ClaimLifecycleStatus.CLAIMED, ClaimLifecycleStatus.DELIVERED)
+                ),
+            )
+            .values(status=ClaimLifecycleStatus.CANCELLED)
+        )
         # 取消订单：发布人当前持有的托管全额退回（已接单未结算名额的
         # 打款在其后结算时按剩余冻结尽力扣减——老板兜底）
         released = await self.release_all_escrow(order, reason="订单取消，托管解冻")

@@ -189,7 +189,9 @@ async def intervene_order(
                 .where(
                     OrderClaim.order_id == order.id,
                     OrderClaim.booster_id == order.booster_id,
-                    OrderClaim.status != ClaimLifecycleStatus.SETTLED,
+                    OrderClaim.status.not_in(
+                        (ClaimLifecycleStatus.SETTLED, ClaimLifecycleStatus.CANCELLED)
+                    ),
                 )
                 .values(
                     status=ClaimLifecycleStatus.SETTLED,

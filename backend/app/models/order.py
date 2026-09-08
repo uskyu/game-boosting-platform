@@ -49,6 +49,7 @@ class ClaimLifecycleStatus(str, PyEnum):
     CLAIMED = "CLAIMED"      # Booster registered on the order, work in progress
     DELIVERED = "DELIVERED"  # Booster submitted completion, awaiting review
     SETTLED = "SETTLED"      # Review approved and payout settled
+    CANCELLED = "CANCELLED"  # Order cancelled before settlement; slot terminated
 
 
 class PaymentStatus(str, PyEnum):

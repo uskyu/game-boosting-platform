@@ -46,7 +46,8 @@ const claimStatusOptions = [
   { value: 'CLAIMED', label: '进行中' },
   { value: 'DELIVERED', label: '待审核' },
   { value: 'SETTLED', label: '已结算' },
-  // 后端 GET /orders/claims/mine 的 status 只支持 CLAIMED/DELIVERED/SETTLED，
+  { value: 'CANCELLED', label: '已取消' },
+  // 后端 GET /orders/claims/mine 的 status 支持 CLAIMED/DELIVERED/SETTLED/CANCELLED，
   // DISPUTED 走本地过滤（按 claim.order.status === 'DISPUTED'），不调服务端过滤
   { value: 'DISPUTED', label: '争议中' },
 ]
@@ -247,6 +248,7 @@ onUnmounted(() => {
                 <div class="flex flex-wrap items-center gap-2">
                   <span :class="getClaimStatusMeta(claim.status).tagClass">{{ getClaimStatusMeta(claim.status).label }}</span>
                   <span v-if="claim.order?.status === 'DISPUTED'" class="tag !bg-danger-soft !text-danger">订单争议中</span>
+                  <span v-if="claim.order?.status === 'CANCELLED' && claim.status !== 'CANCELLED'" class="tag !bg-danger-soft !text-danger">订单已取消</span>
                 </div>
                 <p class="mt-2 truncate text-[13px] text-ink-3">
                   {{ claim.order?.game_name || '' }} · {{ formatShortDate(claim.created_at) }} · 接单 #{{ claim.id }} · 订单 #{{ claim.order?.id || claim.order_id }}<template v-if="claim.delivered_at"> · 交付于 {{ formatDateTime(claim.delivered_at) }}</template>
@@ -259,7 +261,7 @@ onUnmounted(() => {
                 </div>
                 <div class="info-tile info-tile--compact">
                   <p class="info-tile__label">接单状态</p>
-                  <p class="info-tile__value text-sm">{{ getClaimStatusMeta(claim.status).label }}</p>
+                  <p class="info-tile__value text-sm">{{ claim.order?.status === 'CANCELLED' ? '已取消' : getClaimStatusMeta(claim.status).label }}</p>
                 </div>
               </div>
             </div>

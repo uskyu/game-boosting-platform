@@ -92,12 +92,17 @@ export const useOrdersStore = defineStore('orders', () => {
   }
 
   // options.silent：静默刷新（大厅 30s 轮询用）——不切换 loading 骨架屏、不清空现有数据、失败不弹错误
+  // 请求序号守卫：慢网络上旧响应后到会覆盖新筛选结果（搜索"闪回"），
+  // 每次发起递增序号，落地的响应若不是最新一次请求则直接丢弃。
+  let ordersRequestSeq = 0
+
   async function fetchOrders(options = {}) {
     const silent = Boolean(options.silent)
     if (!silent) {
       loading.value = true
       error.value = null
     }
+    const requestSeq = ++ordersRequestSeq
 
     const params = {
       page: options.page || pagination.value.page,
@@ -128,6 +133,10 @@ export const useOrdersStore = defineStore('orders', () => {
 
     try {
       const response = await api.get('/orders/', { params })
+
+      if (requestSeq !== ordersRequestSeq) {
+        return { success: true, stale: true }
+      }
 
       orders.value = response.data.items
       pagination.value = {
@@ -207,14 +216,20 @@ export const useOrdersStore = defineStore('orders', () => {
     }
   }
 
-  // 打手自己的接单单：status 可选 'DELIVERED' | 'CLAIMED' | 'SETTLED'
+  // 打手自己的接单单：status 可选 'DELIVERED' | 'CLAIMED' | 'SETTLED' | 'CANCELLED'
+  let myClaimsRequestSeq = 0
+
   async function fetchMyClaims(status, page = 1, pageSize = 20) {
     myClaimsLoading.value = true
     error.value = null
+    const requestSeq = ++myClaimsRequestSeq
     try {
       const params = { page, page_size: pageSize }
       if (status) params.status = status
       const response = await api.get('/orders/claims/mine', { params })
+      if (requestSeq !== myClaimsRequestSeq) {
+        return { success: true, stale: true }
+      }
       const data = response.data || {}
       myClaims.value = data.items ?? []
       myClaimsPagination.value = {

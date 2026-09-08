@@ -542,7 +542,7 @@ class OrderClaimItem(BaseModel):
     booster_id: int = Field(description="报名用户ID")
     booster_nickname: str | None = Field(default=None, description="报名用户昵称")
     booster_email: str | None = Field(default=None, description="报名用户邮箱")
-    status: str = Field(default="CLAIMED", description="名额状态：CLAIMED/DELIVERED/SETTLED")
+    status: str = Field(default="CLAIMED", description="名额状态：CLAIMED/DELIVERED/SETTLED/CANCELLED")
     delivery_note: str | None = Field(default=None, description="交付汇报说明")
     delivery_attachments: DeliveryAttachmentList | None = Field(
         default=None, max_length=5, description="交付附件"
