@@ -3,6 +3,7 @@
 from io import BytesIO
 
 from httpx import AsyncClient
+from PIL import Image
 from tests.conftest import auth_header
 
 from app.models.game import Game
@@ -13,8 +14,10 @@ _GAME = {
     "platform": "PC",
     "service_template": {"service_types": ["上分"], "has_rank_system": False},
 }
-# Minimal valid PNG signature plus IHDR/IEND is sufficient for the upload helper.
-_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+
+_png = BytesIO()
+Image.new("RGB", (2, 2), "red").save(_png, format="PNG")
+_PNG = _png.getvalue()
 
 
 async def _create_game(client: AsyncClient, admin: dict) -> int:
@@ -43,7 +46,7 @@ async def test_admin_can_upload_and_clear_game_logo(
     assert response.status_code == 200
 
 
-async def test_logo_rejects_mismatched_or_oversized_upload(
+async def test_logo_normalizes_mismatched_and_rejects_oversized_upload(
     client: AsyncClient, admin_user: dict, monkeypatch, tmp_path
 ):
     from app.core import config
@@ -55,7 +58,8 @@ async def test_logo_rejects_mismatched_or_oversized_upload(
         files={"logo": ("logo.exe", BytesIO(_PNG), "application/octet-stream")},
         headers=auth_header(admin_user),
     )
-    assert response.status_code == 400
+    assert response.status_code == 200
+    assert response.json()["logo_url"].endswith(".jpg")
     response = await client.put(
         f"/games/{game_id}/logo",
         files={"logo": ("logo.png", BytesIO(b"x" * (10 * 1024 * 1024 + 1)), "image/png")},

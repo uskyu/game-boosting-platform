@@ -3,10 +3,13 @@
 from io import BytesIO
 
 from httpx import AsyncClient
+from PIL import Image
 
 from tests.conftest import auth_header
 
-_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+_png = BytesIO()
+Image.new("RGB", (2, 2), "red").save(_png, format="PNG")
+_PNG = _png.getvalue()
 
 
 async def test_public_settings_are_lazy_created(client: AsyncClient):
@@ -50,7 +53,7 @@ async def test_admin_can_update_settings_and_upload_delete_logo(
     assert (await client.get("/site/settings")).json()["site_logo_url"] is None
 
 
-async def test_site_logo_rejects_unsupported_and_oversized_files(
+async def test_site_logo_normalizes_mismatched_and_rejects_oversized_files(
     client: AsyncClient, admin_user: dict, monkeypatch, tmp_path
 ):
     from app.core import config
@@ -62,7 +65,8 @@ async def test_site_logo_rejects_unsupported_and_oversized_files(
         files={"logo": ("logo.exe", BytesIO(_PNG), "application/octet-stream")},
         headers=headers,
     )
-    assert response.status_code == 400
+    assert response.status_code == 200
+    assert response.json()["site_logo_url"].endswith(".jpg")
     response = await client.put(
         "/admin/site/logo",
         files={"logo": ("logo.png", BytesIO(b"x" * (10 * 1024 * 1024 + 1)), "image/png")},
