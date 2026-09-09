@@ -340,11 +340,10 @@ async def upload_order_attachment(
     attachments = _attachment_items(order)
     if len(attachments) >= 5:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="订单最多上传5张图片")
-    data, suffix = await validate_image_upload(attachment, max_size_bytes=10 * 1024 * 1024)
+    data, suffix, content_type = await validate_image_upload(attachment, max_size_bytes=10 * 1024 * 1024)
     attachment_name = Path(attachment.filename or "attachment").name
     if not attachment_name or len(attachment_name) > 255:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="附件文件名无效")
-    content_type = (attachment.content_type or "").lower()
     url = save_image_bytes(data, suffix, "orders")
     item = OrderAttachment(
         url=url,
@@ -418,11 +417,10 @@ async def upload_deliver_attachment(
     items = _delivery_attachment_items(claim.delivery_attachments)
     if len(items) >= 5:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="每单最多上传5张交付附件")
-    data_bytes, suffix = await validate_image_upload(attachment, max_size_bytes=10 * 1024 * 1024)
+    data_bytes, suffix, content_type = await validate_image_upload(attachment, max_size_bytes=10 * 1024 * 1024)
     attachment_name = Path(attachment.filename or "attachment").name
     if not attachment_name or len(attachment_name) > 255:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="附件文件名无效")
-    content_type = (attachment.content_type or "").lower()
     url = save_image_bytes(data_bytes, suffix, "deliveries")
     item = OrderDeliveryAttachment(
         url=url,

@@ -2,12 +2,21 @@
 from io import BytesIO
 
 from httpx import AsyncClient
+from PIL import Image
 
 from tests.conftest import auth_header
 
 
-PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 32
-JPEG = b"\xff\xd8\xff" + b"x" * 32
+def image_bytes(image_format: str, **kwargs) -> bytes:
+    output = BytesIO()
+    Image.new("RGB", (2, 2), "red").save(output, format=image_format, **kwargs)
+    return output.getvalue()
+
+
+PNG = image_bytes("PNG")
+JPEG = image_bytes("JPEG")
+WEBP = image_bytes("WEBP")
+BMP = image_bytes("BMP")
 
 
 async def create_order(client: AsyncClient, user: dict) -> dict:
@@ -62,9 +71,30 @@ async def test_attachment_rejects_oversized_and_invalid_format(client: AsyncClie
     response = await upload(client, admin_user, order["id"], b"x" * (10 * 1024 * 1024 + 1))
     assert response.status_code == 400
     response = await upload(client, admin_user, order["id"], JPEG, "proof.png", "image/png")
-    assert response.status_code == 400
+    assert response.status_code == 201
+    item = response.json()
+    assert item["content_type"] == "image/jpeg"
+    assert item["url"].endswith(".jpg")
     response = await upload(client, admin_user, order["id"], b"not image", "proof.exe", "application/octet-stream")
     assert response.status_code == 400
+
+
+async def test_attachment_normalizes_decodable_formats_and_unknown_mime(client: AsyncClient, admin_user: dict):
+    order = await create_order(client, admin_user)
+    response = await upload(client, admin_user, order["id"], BMP, "proof.bmp", "image/bmp")
+    assert response.status_code == 201
+    item = response.json()
+    assert item["content_type"] == "image/jpeg"
+    assert item["url"].endswith(".jpg")
+    response = await upload(client, admin_user, order["id"], WEBP, "proof.unknown", "")
+    assert response.status_code == 201
+    assert response.json()["content_type"] == "image/jpeg"
+
+
+async def test_attachment_rejects_empty_and_corrupt_images(client: AsyncClient, admin_user: dict):
+    order = await create_order(client, admin_user)
+    assert (await upload(client, admin_user, order["id"], b"", "empty.png", "image/png")).status_code == 400
+    assert (await upload(client, admin_user, order["id"], PNG[:10], "corrupt.png", "image/png")).status_code == 400
 
 
 async def test_attachment_limit_is_five(client: AsyncClient, admin_user: dict):

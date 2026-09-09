@@ -23,7 +23,6 @@ const canSubmit = computed(() => !submitting.value && noteLen.value <= 2000)
 
 const MAX_FILES = 5
 const MAX_SIZE = 10 * 1024 * 1024
-const ALLOWED_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
 
 function reset() {
   note.value = ''
@@ -53,7 +52,6 @@ function onClose() {
 }
 
 function validateFile(file) {
-  if (!ALLOWED_TYPES.has(file.type)) return '仅支持 png / jpeg / webp'
   if (file.size > MAX_SIZE) return '单张不能超过 10MB'
   if (file.size <= 0) return '文件为空'
   return ''
@@ -187,16 +185,16 @@ async function handleSubmit() {
           </div>
 
           <div>
-            <label class="label">汇报图片（可选，最多 5 张，png/jpeg/webp，单张 ≤10MB）</label>
+            <label class="label">汇报图片（可选，常见图片格式，最多 5 张，单张 ≤10MB）</label>
             <input
               type="file"
-              accept="image/png,image/jpeg,image/webp"
+              accept="image/*,.heic,.heif,.avif,.bmp,.gif"
               multiple
               class="block w-full text-sm text-ink-2 file:mr-3 file:rounded-full file:border-0 file:bg-surface-3 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-ink-1 hover:file:bg-[var(--surface-3-hover)]"
               :disabled="submitting || files.length >= MAX_FILES"
               @change="onPick"
             />
-            <p class="helper-text">图片会先逐张上传，全部成功后才会结束订单；失败可重试。</p>
+            <p class="helper-text">常见图片格式均可选择，无法直接保存的格式会由后端转换；失败可重试。</p>
 
             <div v-if="files.length" class="mt-3 grid grid-cols-3 gap-3 sm:grid-cols-5">
               <div v-for="(url, idx) in previews" :key="idx" class="relative overflow-hidden rounded-tile border border-line-1 bg-surface-2">

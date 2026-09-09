@@ -1,9 +1,12 @@
 """Shared safe image upload validation and storage helpers."""
 
+from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
+import warnings
 
 from fastapi import HTTPException, UploadFile, status
+from PIL import Image, UnidentifiedImageError
 
 from app.core.config import settings
 
@@ -13,36 +16,69 @@ _ALLOWED_TYPES = {
     "image/webp": {".webp"},
 }
 _CANONICAL_SUFFIX = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
-_MAGIC = {
-    ".png": lambda data: data.startswith(b"\x89PNG\r\n\x1a\n"),
-    ".jpg": lambda data: data.startswith(b"\xff\xd8\xff"),
-    ".webp": lambda data: len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP",
+_FORMAT_INFO = {
+    "PNG": (".png", "image/png"),
+    "JPEG": (".jpg", "image/jpeg"),
+    "WEBP": (".webp", "image/webp"),
 }
+_MAX_IMAGE_PIXELS = 100_000_000
 
 
 async def validate_image_upload(
     file: UploadFile,
     *,
     max_size_bytes: int = 10 * 1024 * 1024,
-) -> tuple[bytes, str]:
-    """Validate an image's declared type, extension, signature and size."""
+) -> tuple[bytes, str, str]:
+    """Decode, validate, and normalize an uploaded image."""
     content_type = (file.content_type or "").lower()
     suffix = Path(file.filename or "").suffix.lower()
-    allowed_suffixes = _ALLOWED_TYPES.get(content_type)
-    if allowed_suffixes is None or suffix not in {item for values in _ALLOWED_TYPES.values() for item in values}:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="仅支持 png、jpeg、webp 图片")
-    if suffix and suffix not in allowed_suffixes:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="图片扩展名与 MIME 类型不匹配")
-    expected_suffix = _CANONICAL_SUFFIX[content_type]
-
     data = await file.read(max_size_bytes + 1)
     if not data:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="上传图片不能为空")
     if len(data) > max_size_bytes:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"图片大小不能超过{max_size_bytes // (1024 * 1024)}MB")
-    if not _MAGIC[expected_suffix](data):
+
+    try:
+        with Image.open(BytesIO(data)) as image:
+            if image.width * image.height > _MAX_IMAGE_PIXELS:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="图片像素量过大")
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", Image.DecompressionBombWarning)
+                image.verify()
+            actual_format = image.format
+    except HTTPException:
+        raise
+    except (UnidentifiedImageError, Image.DecompressionBombError, Image.DecompressionBombWarning, OSError, ValueError):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="图片内容无效")
-    return data, expected_suffix
+
+    standard_info = _FORMAT_INFO.get(actual_format)
+    declared_matches = content_type in _ALLOWED_TYPES
+    extension_matches = declared_matches and suffix in _ALLOWED_TYPES[content_type]
+    if standard_info and declared_matches and extension_matches and content_type == standard_info[1]:
+        return data, standard_info[0], standard_info[1]
+
+    try:
+        with Image.open(BytesIO(data)) as image:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", Image.DecompressionBombWarning)
+                image.load()
+            if image.width * image.height > _MAX_IMAGE_PIXELS:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="图片像素量过大")
+            if image.mode not in ("RGB", "L"):
+                if "transparency" in image.info or "A" in image.getbands():
+                    rgba = image.convert("RGBA")
+                    background = Image.new("RGB", rgba.size, "white")
+                    background.paste(rgba, mask=rgba.getchannel("A"))
+                    image = background
+                else:
+                    image = image.convert("RGB")
+            output = BytesIO()
+            image.save(output, format="JPEG", quality=95, optimize=True)
+            return output.getvalue(), ".jpg", "image/jpeg"
+    except HTTPException:
+        raise
+    except (UnidentifiedImageError, Image.DecompressionBombError, Image.DecompressionBombWarning, OSError, ValueError):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="图片内容无效")
 
 
 def save_image_bytes(data: bytes, suffix: str, subdirectory: str = "") -> str:
@@ -65,5 +101,5 @@ async def save_image_upload(
     max_size_bytes: int = 10 * 1024 * 1024,
 ) -> str:
     """Validate and save an image, returning a relative /uploads URL."""
-    data, suffix = await validate_image_upload(file, max_size_bytes=max_size_bytes)
+    data, suffix, _ = await validate_image_upload(file, max_size_bytes=max_size_bytes)
     return save_image_bytes(data, suffix, subdirectory)

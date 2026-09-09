@@ -99,7 +99,7 @@ async def upload_withdrawal_qrcode(
             detail="管理员无需上传提现二维码",
         )
 
-    data, suffix = await validate_image_upload(file)
+    data, suffix, content_type = await validate_image_upload(file)
     name = Path(file.filename or "qrcode").name
     if not name or len(name) > 255:
         raise HTTPException(
@@ -111,7 +111,7 @@ async def upload_withdrawal_qrcode(
         url=url,
         name=name,
         size=len(data),
-        content_type=(file.content_type or "").lower(),
+        content_type=content_type,
     )
 
 
