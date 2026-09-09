@@ -144,6 +144,11 @@ async def reset_admin_user_password(
     current_admin: Annotated[User, Depends(get_current_admin)],
 ) -> AdminUserMessageResponse:
     user = await _load_user(user_id, db)
+    if user.role == UserRole.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="管理员密码不能在用户管理中重置，请本人到设置页验证当前密码后修改",
+        )
     user.hashed_password = hash_password(payload.password)
     await db.flush()
     return AdminUserMessageResponse(message="密码已重置")

@@ -122,7 +122,7 @@ async function saveEdit() {
   }
 }
 
-// ── 重置密码（生成强密码）──
+// ── 重置密码（普通用户；管理员必须本人验证当前密码后修改）──
 
 function strongPassword() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789'
@@ -131,11 +131,33 @@ function strongPassword() {
   return value
 }
 
-async function resetPassword(user) {
-  const password = strongPassword()
-  const result = await store.resetPassword(user.id, password)
-  if (result.success) flash('success', `密码已重置为：${password}`)
-  else flash('error', result.error)
+const resetModal = ref(null)
+
+function openResetPassword(user) {
+  if (user.role === 'ADMIN') return
+  resetModal.value = {
+    user,
+    password: strongPassword(),
+    submitting: false,
+    error: '',
+  }
+}
+
+async function confirmResetPassword() {
+  const state = resetModal.value
+  if (!state || state.submitting) return
+  state.submitting = true
+  state.error = ''
+  const result = await store.resetPassword(state.user.id, state.password)
+  if (resetModal.value !== state) return
+  state.submitting = false
+  if (result.success) {
+    const password = state.password
+    resetModal.value = null
+    flash('success', `密码已重置为：${password}`)
+  } else {
+    state.error = result.error
+  }
 }
 
 // ── 启用 / 禁用 ──
@@ -352,7 +374,7 @@ onMounted(load)
                   <div class="flex flex-wrap justify-end gap-1.5">
                     <button type="button" class="btn-ghost !px-3 !py-1.5" @click="openEdit(user)">编辑</button>
                     <button type="button" class="btn-secondary !px-3 !py-1.5" @click="openTransactions(user)">明细</button>
-                    <button type="button" class="btn-ghost !px-3 !py-1.5" @click="resetPassword(user)">重置密码</button>
+                    <button v-if="user.role !== 'ADMIN'" type="button" class="btn-ghost !px-3 !py-1.5" @click="openResetPassword(user)">重置密码</button>
                     <button type="button" class="btn-ghost !px-3 !py-1.5" @click="toggleStatus(user)">{{ user.is_active ? '禁用' : '启用' }}</button>
                     <button
                       type="button"
@@ -399,7 +421,7 @@ onMounted(load)
             <div class="mt-3 flex flex-wrap gap-2">
               <button type="button" class="btn-secondary min-h-[44px] !px-4 !py-2" @click="openTransactions(user)">明细</button>
               <button type="button" class="btn-ghost min-h-[44px] !px-4 !py-2" @click="openEdit(user)">编辑</button>
-              <button type="button" class="btn-ghost min-h-[44px] !px-4 !py-2" @click="resetPassword(user)">重置密码</button>
+              <button v-if="user.role !== 'ADMIN'" type="button" class="btn-ghost min-h-[44px] !px-4 !py-2" @click="openResetPassword(user)">重置密码</button>
               <button type="button" class="btn-ghost min-h-[44px] !px-4 !py-2" @click="toggleStatus(user)">{{ user.is_active ? '禁用' : '启用' }}</button>
               <button
                 type="button"
@@ -446,6 +468,33 @@ onMounted(load)
         </div>
       </template>
     </template>
+
+    <!-- 重置密码确认弹窗 -->
+    <div v-if="resetModal" class="modal-scrim modal-scrim--sheet">
+      <div class="absolute inset-0" aria-hidden="true" @click="!resetModal.submitting && (resetModal = null)"></div>
+      <div class="modal-card modal-sheet" role="dialog" aria-modal="true" aria-label="确认重置密码">
+        <div class="relative z-10">
+          <h3 class="text-2xl font-semibold text-ink-1">确认重置密码</h3>
+          <p class="mt-2 text-sm text-ink-2">
+            {{ resetModal.user.username }} · {{ resetModal.user.email }}
+          </p>
+          <div class="message-info mt-5">
+            确认后该用户的旧密码立即失效。管理员账号不能在这里重置密码。
+          </div>
+          <div class="mt-4">
+            <label class="label" for="reset-password-value">新密码</label>
+            <input id="reset-password-value" v-model="resetModal.password" type="text" class="input font-mono" minlength="8" maxlength="128" :disabled="resetModal.submitting" />
+          </div>
+          <div v-if="resetModal.error" class="message-error mt-4">{{ resetModal.error }}</div>
+          <div class="mt-5 flex justify-end gap-3">
+            <button type="button" class="btn-ghost !px-4 !py-2" :disabled="resetModal.submitting" @click="resetModal = null">取消</button>
+            <button type="button" class="btn-primary !px-5 !py-2" :disabled="resetModal.submitting || resetModal.password.length < 8" @click="confirmResetPassword">
+              {{ resetModal.submitting ? '重置中...' : '确认重置' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <!-- 编辑用户弹窗 -->
     <div v-if="editModal" class="modal-scrim modal-scrim--sheet">

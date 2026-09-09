@@ -45,6 +45,37 @@ async def test_admin_can_update_and_reset_password(
     assert "password" not in response.json()
 
 
+async def test_admin_passwords_cannot_be_reset_from_user_management(
+    client: AsyncClient, registered_user: dict, admin_user: dict
+):
+    headers = auth_header(admin_user)
+    self_id = admin_user["user"]["id"]
+
+    response = await client.post(
+        f"/admin/users/{self_id}/reset-password",
+        json={"password": "AnotherStrongPass1"},
+        headers=headers,
+    )
+    assert response.status_code == 400
+    assert "管理员密码不能" in response.json()["detail"]
+
+    other_id = registered_user["user"]["id"]
+    response = await client.patch(
+        f"/admin/users/{other_id}",
+        json={"role": "ADMIN"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+
+    response = await client.post(
+        f"/admin/users/{other_id}/reset-password",
+        json={"password": "AnotherStrongPass1"},
+        headers=headers,
+    )
+    assert response.status_code == 400
+    assert "管理员密码不能" in response.json()["detail"]
+
+
 async def test_admin_cannot_disable_self(client: AsyncClient, admin_user: dict):
     user_id = admin_user["user"]["id"]
     response = await client.post(

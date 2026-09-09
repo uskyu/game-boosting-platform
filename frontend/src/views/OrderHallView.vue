@@ -189,6 +189,7 @@ watch(isAuthenticated, (loggedIn) => {
 // 大厅自动刷新：每 8 秒页面可见时静默拉取；订单提醒统一由 App 全站通知处理
 const HALL_REFRESH_INTERVAL = 8_000
 let hallRefreshTimer = null
+let hallUnmounted = false
 // 在飞保护：弱网下一轮没跑完就不开新一轮，避免请求堆积占满浏览器连接
 let hallRefreshing = false
 
@@ -207,25 +208,33 @@ async function silentRefresh() {
 // 登录后的大厅启动：拉订单、拉聊天摘要、开自动刷新。
 // 身份可能在挂载后才由后台 /auth/me 补全（守卫已不阻塞），挂载和补全两条路径都走这里。
 async function startHallLifecycle() {
+  if (hallUnmounted) return
   fetchOrders()
   // 两个聊天请求互不依赖，并行发出，别串行拖慢大厅
   await Promise.allSettled([
     chatStore.fetchConversations({ pageSize: 100 }),
     chatStore.fetchUnreadSummary(),
   ])
-  if (!hallRefreshTimer) {
+  // 页面可能在上面的弱网请求完成前已被卸载；卸载后绝不能复活大厅轮询，
+  // 否则它会在“我的派单”继续拉全量订单并覆盖搜索结果。
+  if (!hallUnmounted && !hallRefreshTimer) {
     hallRefreshTimer = window.setInterval(silentRefresh, HALL_REFRESH_INTERVAL)
   }
 }
 
 onMounted(() => {
+  hallUnmounted = false
   if (isAuthenticated.value) {
     startHallLifecycle()
   }
 })
 
 onUnmounted(() => {
-  window.clearInterval(hallRefreshTimer)
+  hallUnmounted = true
+  if (hallRefreshTimer) {
+    window.clearInterval(hallRefreshTimer)
+    hallRefreshTimer = null
+  }
 })
 </script>
 
