@@ -53,12 +53,12 @@ class PaymentSetting(Base):
         Boolean(), nullable=False, default=True, server_default="1"
     )
 
-    # 单笔最低充值金额（元）
+    # 单笔最低充值金额（元）。默认 1 分钱，方便小额测试。
     min_amount: Mapped[Decimal] = mapped_column(
         Numeric(precision=12, scale=2),
         nullable=False,
-        default=Decimal("1.00"),
-        server_default="1.00",
+        default=Decimal("0.01"),
+        server_default="0.01",
     )
 
     updated_by: Mapped[int | None] = mapped_column(

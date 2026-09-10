@@ -10,7 +10,7 @@ const form = reactive({
   epay_key: '',
   alipay_enabled: true,
   wxpay_enabled: true,
-  min_amount: '1.00',
+  min_amount: '0.01',
 })
 const notice = ref({ type: '', text: '' })
 const saving = ref(false)
@@ -25,7 +25,7 @@ function sync(data) {
   form.epay_key = ''
   form.alipay_enabled = settings.alipay_enabled !== false
   form.wxpay_enabled = settings.wxpay_enabled !== false
-  form.min_amount = settings.min_amount != null ? String(settings.min_amount) : '1.00'
+  form.min_amount = settings.min_amount != null ? String(settings.min_amount) : '0.01'
 }
 
 async function save() {
@@ -114,7 +114,7 @@ onMounted(async () => {
 
       <div>
         <label class="label" for="min-amount">最低充值金额（元）</label>
-        <input id="min-amount" v-model="form.min_amount" type="number" min="0.01" step="0.01" class="input min-h-[44px]" placeholder="1.00" />
+        <input id="min-amount" v-model="form.min_amount" type="number" min="0.01" step="0.01" class="input min-h-[44px]" placeholder="0.01" />
       </div>
 
       <div class="flex flex-wrap items-center gap-3">

@@ -44,7 +44,7 @@ async def get_or_create_payment_setting(db: AsyncSession) -> PaymentSetting:
     if setting is None:
         setting = PaymentSetting(
             id=1,
-            min_amount=Decimal("1.00"),
+            min_amount=Decimal("0.01"),
             alipay_enabled=True,
             wxpay_enabled=True,
         )

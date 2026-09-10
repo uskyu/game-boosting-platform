@@ -103,7 +103,7 @@ class PaymentSettingUpdate(BaseModel):
     epay_key: str | None = Field(default=None, max_length=255, description="易支付商户密钥，留空表示不修改")
     alipay_enabled: bool = Field(default=True, description="启用支付宝")
     wxpay_enabled: bool = Field(default=True, description="启用微信")
-    min_amount: Decimal = Field(default=Decimal("1.00"), gt=0, description="单笔最低充值金额（元）")
+    min_amount: Decimal = Field(default=Decimal("0.01"), gt=0, description="单笔最低充值金额（元），默认 1 分钱")
 
     model_config = ConfigDict(extra="forbid")
 
