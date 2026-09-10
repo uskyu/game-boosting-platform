@@ -41,6 +41,9 @@ class WalletTransactionType(str, PyEnum):
     DEPOSIT_HOLD = "DEPOSIT_HOLD"               # 接单冻结炸单赔偿金，可用扣减 (-)，冻结增加
     DEPOSIT_RELEASE = "DEPOSIT_RELEASE"         # 赔偿金解冻返还，可用回补 (+)，冻结减少
     COMPENSATION_DEDUCT = "COMPENSATION_DEDUCT"  # 炸单赔偿扣除，冻结扣减 (-)，不返还
+    # 自助充值入账（易支付）。新增枚举值一律追加在末尾：
+    # MySQL ENUM 只能靠 ALTER TABLE 修改，追加不会触发表数据重写。
+    RECHARGE = "RECHARGE"                       # 易支付充值到账 (+)，不计入累计收入
 
 
 class Wallet(Base):
@@ -140,9 +143,10 @@ class WalletTransaction(Base):
     __tablename__ = "wallet_transactions"
     __table_args__ = (
         UniqueConstraint("order_id", "booster_id", "type", name="uq_wallet_tx_order_booster_type"),
+        # 充值入账幂等：同一充值订单只允许一条流水（MySQL 唯一索引不把 NULL 视为重复）
+        UniqueConstraint("recharge_order_id", name="uq_wallet_tx_recharge_order"),
         Index("ix_wallet_tx_wallet_created", "wallet_id", "created_at"),
     )
-
     # Primary key
     id: Mapped[int] = mapped_column(
         primary_key=True,
@@ -198,6 +202,12 @@ class WalletTransaction(Base):
         ForeignKey("withdrawal_requests.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
+    )
+
+    # 易支付充值入账来源；NULL 表示非充值流水。配合唯一键保证不重复入账。
+    recharge_order_id: Mapped[int | None] = mapped_column(
+        ForeignKey("recharge_orders.id", ondelete="SET NULL"),
+        nullable=True,
     )
 
     operator_id: Mapped[int | None] = mapped_column(

@@ -4,6 +4,7 @@ Contains all API route handlers organized by resource.
 """
 
 from app.api.endpoints.admin import router as admin_router
+from app.api.endpoints.admin_payment import router as admin_payment_router
 from app.api.endpoints.admin_site import router as admin_site_router
 from app.api.endpoints.admin_users import router as admin_users_router
 from app.api.endpoints.auth import router as auth_router
@@ -13,6 +14,7 @@ from app.api.endpoints.notifications import router as notifications_router
 from app.api.endpoints.push import router as push_router
 from app.api.endpoints.orders import router as orders_router
 from app.api.endpoints.order_templates import router as order_templates_router
+from app.api.endpoints.recharge import router as recharge_router
 from app.api.endpoints.reviews import router as reviews_router
 from app.api.endpoints.search import router as search_router
 from app.api.endpoints.site import router as site_router
@@ -22,6 +24,7 @@ from app.api.endpoints.users import router as users_router
 from app.api.endpoints.wallet import router as wallet_router, withdrawals_router
 
 __all__ = [
+    "admin_payment_router",
     "admin_router",
     "admin_site_router",
     "admin_users_router",
@@ -32,6 +35,7 @@ __all__ = [
     "push_router",
     "orders_router",
     "order_templates_router",
+    "recharge_router",
     "reviews_router",
     "search_router",
     "site_router",

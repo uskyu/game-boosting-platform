@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 
 import { useAuthStore } from '@/stores/auth'
 import { useOrdersStore } from '@/stores/orders'
@@ -25,6 +25,113 @@ const reviewLoading = computed(() => ordersStore.myClaimsLoading)
 async function fetchReviewClaims() {
   if (authStore.isAdmin) return
   await ordersStore.fetchMyClaims('DELIVERED')
+}
+
+// ── 易支付充值 ──
+const rechargeConfig = computed(() => walletStore.rechargeConfig)
+const rechargeForm = ref({ amount: '', paymentMethod: '' })
+const rechargeError = ref('')
+const rechargeMessage = ref({ type: '', text: '' })
+const submittingRecharge = ref(false)
+
+const RECHARGE_STATUS_META = {
+  PENDING: { label: '待支付', tagClass: '!bg-warning-soft !text-warning' },
+  SUCCESS: { label: '已到账', tagClass: '!bg-success-soft !text-success' },
+  CLOSED: { label: '已关闭', tagClass: '!bg-surface-3 !text-ink-2' },
+}
+
+function getRechargeStatusMeta(status) {
+  return RECHARGE_STATUS_META[status] || { label: status || '未知状态', tagClass: '!bg-surface-3 !text-ink-2' }
+}
+
+function getRechargeMethodLabel(type) {
+  return rechargeConfig.value.pay_methods.find((item) => item.type === type)?.name || type || '-'
+}
+
+// 充值方式配置到位后默认选中第一项（避免按钮组空选）
+watch(
+  rechargeConfig,
+  (config) => {
+    const methods = config?.pay_methods || []
+    if (methods.length && !methods.some((item) => item.type === rechargeForm.value.paymentMethod)) {
+      rechargeForm.value.paymentMethod = methods[0].type
+    }
+  },
+  { immediate: true }
+)
+
+// 易支付要求 POST 表单提交，用 params 构造隐藏表单并提交，把浏览器带到支付页
+function submitPayForm(payUrl, params) {
+  if (!payUrl || !params) return
+  const form = document.createElement('form')
+  form.method = 'POST'
+  form.action = payUrl
+  form.style.display = 'none'
+  Object.entries(params).forEach(([key, value]) => {
+    const input = document.createElement('input')
+    input.type = 'hidden'
+    input.name = key
+    input.value = String(value)
+    form.appendChild(input)
+  })
+  document.body.appendChild(form)
+  form.submit()
+  document.body.removeChild(form)
+}
+
+function validateRechargeForm() {
+  const amount = Number(rechargeForm.value.amount)
+  const min = Number(rechargeConfig.value.min_amount)
+  const minText = rechargeConfig.value.min_amount || '1.00'
+
+  if (rechargeForm.value.amount === '' || !Number.isFinite(amount) || amount < min) {
+    rechargeError.value = `充值金额不能低于 ${minText} 元`
+    return false
+  }
+  if (!rechargeForm.value.paymentMethod) {
+    rechargeError.value = '请选择支付方式'
+    return false
+  }
+  rechargeError.value = ''
+  return true
+}
+
+async function submitRecharge() {
+  rechargeMessage.value = { type: '', text: '' }
+  if (!validateRechargeForm()) {
+    return
+  }
+
+  submittingRecharge.value = true
+  const result = await walletStore.createRecharge(
+    Number(rechargeForm.value.amount),
+    rechargeForm.value.paymentMethod
+  )
+  submittingRecharge.value = false
+
+  if (!result.success) {
+    rechargeMessage.value = { type: 'error', text: result.error || '创建充值订单失败' }
+    return
+  }
+
+  rechargeMessage.value = { type: 'success', text: '正在跳转到支付页面…' }
+  submitPayForm(result.data?.pay_url, result.data?.params)
+  await Promise.all([walletStore.fetchMyRecharges({ page: 1 }), walletStore.fetchWallet()])
+}
+
+function handleRechargesPage(page) {
+  if (page < 1 || page > myRechargesPagination.value.pages || page === myRechargesPagination.value.page) {
+    return
+  }
+  walletStore.fetchMyRecharges({ page })
+}
+
+async function fetchRechargeData() {
+  if (authStore.isAdmin) return
+  await Promise.all([
+    walletStore.fetchRechargeConfig(),
+    walletStore.fetchMyRecharges({ page: 1 }),
+  ])
 }
 
 const withdrawForm = ref({ amount: '', channel: 'ALIPAY', account_name: '', account_no: '' })
@@ -86,6 +193,8 @@ const transactions = computed(() => walletStore.transactions)
 const transactionsPagination = computed(() => walletStore.transactionsPagination)
 const myWithdrawals = computed(() => walletStore.myWithdrawals)
 const myWithdrawalsPagination = computed(() => walletStore.myWithdrawalsPagination)
+const myRecharges = computed(() => walletStore.myRecharges)
+const myRechargesPagination = computed(() => walletStore.myRechargesPagination)
 
 function messageClass(type) {
   if (type === 'success') return 'message-success'
@@ -196,7 +305,7 @@ async function refreshAll() {
 
 onMounted(() => {
   // 并行拉取：钱包数据与审核中报名单互不依赖，串行会放大远程库延迟
-  Promise.all([refreshAll(), fetchReviewClaims()])
+  Promise.all([refreshAll(), fetchReviewClaims(), fetchRechargeData()])
 })
 </script>
 
@@ -254,6 +363,107 @@ onMounted(() => {
     </section>
 
     <div class="wallet-grid">
+    <!-- 充值：仅管理员未配置支付时整块不渲染 -->
+    <section v-if="!authStore.isAdmin && rechargeConfig.enabled" class="surface-card p-4 sm:p-6 lg:p-8">
+      <h2 class="text-2xl font-semibold text-ink-1">充值</h2>
+      <p class="mt-2 text-sm text-ink-2">选择支付方式并填写金额，提交后将跳转到支付页面完成付款。</p>
+
+      <div v-if="rechargeMessage.text" class="mt-4" :class="messageClass(rechargeMessage.type)">
+        {{ rechargeMessage.text }}
+      </div>
+
+      <form class="mt-6 grid max-w-2xl gap-5" @submit.prevent="submitRecharge">
+        <div>
+          <label class="label" for="recharge-amount">充值金额（元）</label>
+          <input
+            id="recharge-amount"
+            v-model="rechargeForm.amount"
+            type="number"
+            :min="rechargeConfig.min_amount"
+            step="0.01"
+            class="input min-h-[44px]"
+            :class="{ 'input-error': rechargeError }"
+            :placeholder="`最低 ${rechargeConfig.min_amount} 元`"
+          />
+        </div>
+
+        <div>
+          <label class="label" for="recharge-method">支付方式</label>
+          <select id="recharge-method" v-model="rechargeForm.paymentMethod" class="input min-h-[44px]">
+            <option v-for="method in rechargeConfig.pay_methods" :key="method.type" :value="method.type">
+              {{ method.name }}
+            </option>
+          </select>
+          <p v-if="!rechargeConfig.pay_methods.length" class="mt-2 text-xs text-ink-3">
+            管理员暂未配置可用的支付方式，请稍后再试。
+          </p>
+        </div>
+
+        <div>
+          <p v-if="rechargeError" class="mb-3 text-xs text-danger">{{ rechargeError }}</p>
+          <button
+            class="btn-primary w-full py-3 sm:w-auto sm:!px-10"
+            :disabled="submittingRecharge || walletStore.submitting || !rechargeConfig.pay_methods.length"
+          >
+            {{ submittingRecharge ? '提交中...' : '立即充值' }}
+          </button>
+          <p class="helper-text">提交后请在支付页面完成付款，到账后金额会自动计入余额。</p>
+        </div>
+      </form>
+    </section>
+
+    <section v-if="!authStore.isAdmin" class="surface-card p-4 sm:p-6 lg:p-8">
+      <h2 class="text-2xl font-semibold text-ink-1">我的充值记录</h2>
+
+      <div v-if="walletStore.myRechargesLoading" class="mt-6 space-y-3" aria-busy="true">
+        <div v-for="n in 3" :key="`rc-skeleton-${n}`" class="info-tile flex items-center justify-between gap-4">
+          <div class="skeleton-line h-4 w-40"></div>
+          <div class="skeleton-line h-6 w-20"></div>
+        </div>
+      </div>
+
+      <div v-else-if="!myRecharges.length" class="empty-state mt-6">
+        <div class="empty-state__icon" aria-hidden="true">💳</div>
+        <h3 class="empty-state__title">暂无充值记录</h3>
+        <p class="empty-state__copy">充值订单创建后，支付状态会显示在这里。</p>
+      </div>
+
+      <div v-else class="mt-6 space-y-3">
+        <article
+          v-for="item in myRecharges"
+          :key="item.id"
+          class="info-tile !p-5 transition-colors duration-base hover:bg-surface-3"
+        >
+          <div class="flex flex-wrap items-start justify-between gap-4">
+            <div class="space-y-2">
+              <p class="text-xl font-semibold tabular-nums text-price">{{ formatPrice(item.amount) }}</p>
+              <p class="text-sm text-ink-2">
+                {{ getRechargeMethodLabel(item.payment_method) }} · 单号 {{ item.trade_no || '-' }}
+              </p>
+              <p class="text-xs text-ink-3">创建于 {{ formatDateTime(item.created_at) }}</p>
+            </div>
+
+            <div class="flex flex-col items-end gap-2">
+              <span :class="['tag', getRechargeStatusMeta(item.status).tagClass]">
+                {{ getRechargeStatusMeta(item.status).label }}
+              </span>
+              <p v-if="item.paid_at" class="text-xs text-ink-3">到账于 {{ formatDateTime(item.paid_at) }}</p>
+            </div>
+          </div>
+        </article>
+      </div>
+
+      <div v-if="myRechargesPagination.pages > 1" class="mt-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <p class="text-sm text-ink-2">
+          {{ myRechargesPagination.page }} / {{ myRechargesPagination.pages }} · {{ formatCount(myRechargesPagination.total) }} 条
+        </p>
+        <div class="flex items-center gap-2">
+          <button class="btn-secondary !px-4 !py-2" :disabled="myRechargesPagination.page <= 1" @click="handleRechargesPage(myRechargesPagination.page - 1)">上一页</button>
+          <button class="btn-secondary !px-4 !py-2" :disabled="myRechargesPagination.page >= myRechargesPagination.pages" @click="handleRechargesPage(myRechargesPagination.page + 1)">下一页</button>
+        </div>
+      </div>
+    </section>
+
     <section class="surface-card p-4 sm:p-6 lg:p-8">
       <div class="flex items-center justify-between gap-4">
         <h2 class="text-2xl font-semibold text-ink-1">申请提现</h2>

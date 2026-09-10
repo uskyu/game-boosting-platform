@@ -6,6 +6,7 @@ import { useAuthStore } from '@/stores/auth'
 import AdminDashboard from '@/components/admin/AdminDashboard.vue'
 import AdminUserList from '@/components/admin/AdminUserList.vue'
 import AdminSiteSettings from '@/components/admin/AdminSiteSettings.vue'
+import AdminPaymentSettings from '@/components/admin/AdminPaymentSettings.vue'
 import Lightbox from '@/components/Lightbox.vue'
 import { useOrdersStore } from '@/stores/orders'
 import { useGamesStore } from '@/stores/games'
@@ -38,7 +39,7 @@ const gamesStore = useGamesStore()
 const ordersStore = useOrdersStore()
 const walletStore = useWalletStore()
 
-const TAB_KEYS = ['dashboard', 'orders', 'withdrawals', 'wallet-adjust', 'games', 'users', 'site']
+const TAB_KEYS = ['dashboard', 'orders', 'withdrawals', 'wallet-adjust', 'games', 'users', 'site', 'payment']
 
 function normalizeTab(tab) {
   const value = Array.isArray(tab) ? tab[0] : tab
@@ -810,6 +811,7 @@ onMounted(async () => {
           <button type="button" :class="activeTab === 'games' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'games'">游戏管理</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'users' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'users'">用户管理</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'site' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'site'">站点管理</button>
+          <button v-if="isAdmin" type="button" :class="activeTab === 'payment' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'payment'">支付设置</button>
         </nav>
         <button class="btn-secondary shrink-0 !px-4 !py-2" @click="refreshDashboard">刷新</button>
       </div>
@@ -818,6 +820,7 @@ onMounted(async () => {
     <AdminDashboard v-if="activeTab === 'dashboard'" />
     <AdminUserList v-else-if="activeTab === 'users'" />
     <AdminSiteSettings v-else-if="activeTab === 'site'" />
+    <AdminPaymentSettings v-else-if="activeTab === 'payment'" />
 
     <section v-else-if="activeTab === 'orders'" class="surface-card admin-orders-panel">
       <div class="admin-orders-heading">

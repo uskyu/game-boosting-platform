@@ -15,9 +15,11 @@ from app.models.chat import (
 )
 from app.models.game import Game, GameCategory, GamePlatform
 from app.models.notification import Notification, NotificationType, UserPreference
+from app.models.payment_setting import PaymentSetting
 from app.models.push_subscription import PushSubscription
 from app.models.order import Order, OrderStatus, PaymentStatus
 from app.models.order_template import OrderTemplate
+from app.models.recharge import RechargeOrder, RechargeStatus
 from app.models.review import Review
 from app.models.site_setting import SiteSetting
 from app.models.user import BoosterApplicationStatus, User, UserRole
@@ -42,7 +44,10 @@ __all__ = [
     "Order",
     "OrderStatus",
     "OrderTemplate",
+    "PaymentSetting",
     "PaymentStatus",
+    "RechargeOrder",
+    "RechargeStatus",
     "Review",
     "SiteSetting",
     "TimestampMixin",

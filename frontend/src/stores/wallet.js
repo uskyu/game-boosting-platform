@@ -22,6 +22,7 @@ export const TRANSACTION_TYPE_META = {
   WITHDRAWAL_FREEZE: { label: '提现冻结', direction: 'out' },
   WITHDRAWAL_REFUND: { label: '提现退回', direction: 'in' },
   WITHDRAWAL_PAID: { label: '提现打款', direction: 'out' },
+  RECHARGE: { label: '充值入账', direction: 'in' },
 }
 
 export const WITHDRAWAL_STATUS_META = {
@@ -105,6 +106,13 @@ export const useWalletStore = defineStore('wallet', () => {
   const adminWithdrawals = ref([])
   const adminWithdrawalsLoading = ref(false)
   const adminWithdrawalsPagination = ref({ page: 1, pageSize: 20, total: 0, pages: 1 })
+  const rechargeConfig = ref({ enabled: false, pay_methods: [], min_amount: '1.00' })
+  const rechargeConfigLoading = ref(false)
+  const myRecharges = ref([])
+  const myRechargesLoading = ref(false)
+  const myRechargesPagination = ref({ page: 1, pageSize: 10, total: 0, pages: 1 })
+  const paymentSettings = ref(null)
+  const paymentSettingsLoading = ref(false)
   const submitting = ref(false)
   const error = ref(null)
 
@@ -310,6 +318,104 @@ export const useWalletStore = defineStore('wallet', () => {
     }
   }
 
+  // ── 易支付充值（用户侧）──
+
+  async function fetchRechargeConfig() {
+    rechargeConfigLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.get('/wallet/recharge/config')
+      const data = response.data || {}
+      rechargeConfig.value = {
+        enabled: Boolean(data.enabled),
+        pay_methods: Array.isArray(data.pay_methods) ? data.pay_methods : [],
+        min_amount: data.min_amount != null ? String(data.min_amount) : '1.00',
+      }
+      return { success: true, data: rechargeConfig.value }
+    } catch (err) {
+      error.value = err.message
+      return { success: false, error: err.message }
+    } finally {
+      rechargeConfigLoading.value = false
+    }
+  }
+
+  async function createRecharge(amount, paymentMethod) {
+    submitting.value = true
+    error.value = null
+
+    try {
+      const response = await api.post('/wallet/recharge', {
+        amount: toNumber(amount),
+        payment_method: paymentMethod,
+      })
+      return { success: true, data: response.data }
+    } catch (err) {
+      error.value = err.message
+      return { success: false, error: err.message }
+    } finally {
+      submitting.value = false
+    }
+  }
+
+  async function fetchMyRecharges(options = {}) {
+    myRechargesLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.get('/wallet/recharge/mine', {
+        params: {
+          page: options.page || myRechargesPagination.value.page,
+          page_size: options.pageSize || myRechargesPagination.value.pageSize,
+        },
+      })
+
+      myRecharges.value = response.data?.items || []
+      myRechargesPagination.value = buildPagination(response.data, myRechargesPagination.value.pageSize)
+      return { success: true }
+    } catch (err) {
+      error.value = err.message
+      return { success: false, error: err.message }
+    } finally {
+      myRechargesLoading.value = false
+    }
+  }
+
+  // ── 易支付充值（管理员设置）──
+
+  async function fetchPaymentSettings() {
+    paymentSettingsLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.get('/admin/payment/settings')
+      paymentSettings.value = response.data || null
+      return { success: true, data: paymentSettings.value }
+    } catch (err) {
+      error.value = err.message
+      return { success: false, error: err.message }
+    } finally {
+      paymentSettingsLoading.value = false
+    }
+  }
+
+  async function updatePaymentSettings(payload) {
+    paymentSettingsLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.put('/admin/payment/settings', payload)
+      paymentSettings.value = response.data || paymentSettings.value
+      return { success: true, data: response.data }
+    } catch (err) {
+      error.value = err.message
+      return { success: false, error: err.message }
+    } finally {
+      paymentSettingsLoading.value = false
+    }
+  }
+
   function clearError() {
     error.value = null
   }
@@ -327,6 +433,13 @@ export const useWalletStore = defineStore('wallet', () => {
     adminWithdrawals,
     adminWithdrawalsLoading,
     adminWithdrawalsPagination,
+    rechargeConfig,
+    rechargeConfigLoading,
+    myRecharges,
+    myRechargesLoading,
+    myRechargesPagination,
+    paymentSettings,
+    paymentSettingsLoading,
     submitting,
     error,
     // Actions
@@ -340,6 +453,11 @@ export const useWalletStore = defineStore('wallet', () => {
     markPaid,
     adjustWallet,
     assignOrder,
+    fetchRechargeConfig,
+    createRecharge,
+    fetchMyRecharges,
+    fetchPaymentSettings,
+    updatePaymentSettings,
     clearError,
   }
 })

@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.order import Order
+from app.models.recharge import RechargeOrder, RechargeStatus
 from app.models.user import User
 from app.models.wallet import Wallet, WalletTransaction, WalletTransactionType
 from app.models.withdrawal import WithdrawalRequest, WithdrawalStatus
@@ -114,6 +115,7 @@ class WalletService:
         order_id: int | None = None,
         booster_id: int | None = None,
         withdrawal_id: int | None = None,
+        recharge_order_id: int | None = None,
         operator_id: int | None = None,
         remark: str | None = None,
         income_delta: Decimal = _ZERO,
@@ -133,9 +135,11 @@ class WalletService:
             available_delta: Actual change to available_balance (differs from
                 ``amount`` for WITHDRAWAL_PAID, which deducts frozen balance
                 and leaves available unchanged).
-            order_id / booster_id / withdrawal_id / operator_id / remark:
-                ledger context. booster_id records which booster an order
-                settlement belongs to (multi-claim orders settle per booster).
+            order_id / booster_id / withdrawal_id / recharge_order_id /
+            operator_id / remark: ledger context. booster_id records which
+                booster an order settlement belongs to (multi-claim orders
+                settle per booster); recharge_order_id links a RECHARGE entry
+                back to its recharge order (unique per order).
             income_delta: added to total_income (default 0).
             frozen_delta: added to frozen_balance (default 0).
             withdrawn_delta: added to total_withdrawn (default 0).
@@ -154,6 +158,7 @@ class WalletService:
             order_id=order_id,
             booster_id=booster_id,
             withdrawal_id=withdrawal_id,
+            recharge_order_id=recharge_order_id,
             operator_id=operator_id,
             remark=remark,
         )
@@ -186,6 +191,7 @@ class WalletService:
         tx_type: WalletTransactionType,
         order_id: int | None = None,
         booster_id: int | None = None,
+        recharge_order_id: int | None = None,
         operator_id: int | None = None,
         remark: str | None = None,
     ) -> WalletTransaction:
@@ -206,6 +212,7 @@ class WalletService:
             available_delta=amount,
             order_id=order_id,
             booster_id=booster_id,
+            recharge_order_id=recharge_order_id,
             operator_id=operator_id,
             remark=remark,
             income_delta=amount if tx_type == WalletTransactionType.ORDER_INCOME else _ZERO,
@@ -339,6 +346,108 @@ class WalletService:
             operator_id=operator_id,
             remark=reason,
         )
+
+    # ------------------------------------------------------------------
+    # Self-service recharge (易支付)
+    # ------------------------------------------------------------------
+
+    async def complete_recharge(
+        self,
+        trade_no: str,
+        *,
+        epay_trade_no: str | None = None,
+        notify_payload: str | None = None,
+    ) -> RechargeOrder | None:
+        """把一笔待支付充值订单置为成功并给用户入账。
+
+        幂等设计（三重保障，防止易支付重复回调导致重复入账）：
+
+        1. 回调侧对同一 trade_no 串行化（应用内订单锁）；
+        2. 本方法 ``SELECT ... FOR UPDATE`` 锁定订单行，仅在 ``PENDING``
+           时才流转状态，成功后重复调用直接返回；
+        3. ``wallet_transactions.recharge_order_id`` 唯一键兜底，并发下
+           重复写入会被数据库拒绝。
+
+        Returns:
+            已入账的充值订单；订单不存在或状态不可流转时返回 ``None``。
+        """
+        result = await self._db.execute(
+            select(RechargeOrder)
+            .where(RechargeOrder.trade_no == trade_no)
+            .with_for_update()
+        )
+        order = result.scalar_one_or_none()
+        if order is None:
+            logger.warning("Recharge notify for unknown trade_no=%s", trade_no)
+            return None
+
+        if order.status == RechargeStatus.SUCCESS:
+            # 上游重复回调：已入账，直接确认，不重复加钱
+            return order
+        if order.status != RechargeStatus.PENDING:
+            logger.warning(
+                "Recharge notify for non-pending order trade_no=%s status=%s",
+                trade_no,
+                order.status.value,
+            )
+            return None
+
+        order.status = RechargeStatus.SUCCESS
+        order.paid_at = datetime.now(timezone.utc)
+        if epay_trade_no:
+            order.epay_trade_no = epay_trade_no
+        if notify_payload:
+            order.notify_payload = notify_payload
+
+        wallet = await self.get_or_create_wallet(order.user_id)
+        try:
+            async with self._db.begin_nested():
+                await self.credit(
+                    wallet,
+                    amount=_to_decimal(order.amount),
+                    tx_type=WalletTransactionType.RECHARGE,
+                    recharge_order_id=order.id,
+                    remark=f"充值订单 {order.trade_no}",
+                )
+        except IntegrityError:
+            # 极端并发下唯一键已存在：说明这笔充值已入账，保持幂等返回
+            logger.info(
+                "Recharge %s already credited (unique key hit)", order.trade_no
+            )
+
+        await self._db.flush()
+        await self._db.refresh(order)
+        logger.info(
+            "Recharge %s completed: user=%s amount=%s",
+            order.trade_no,
+            order.user_id,
+            order.amount,
+        )
+        return order
+
+    async def list_recharges(
+        self,
+        *,
+        user_id: int | None = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> tuple[list[RechargeOrder], int]:
+        """Paginated recharge orders, newest first. user_id=None lists all."""
+        query = select(RechargeOrder)
+        count_query = select(func.count(RechargeOrder.id))
+
+        if user_id is not None:
+            query = query.where(RechargeOrder.user_id == user_id)
+            count_query = count_query.where(RechargeOrder.user_id == user_id)
+
+        total = int((await self._db.execute(count_query)).scalar() or 0)
+
+        result = await self._db.execute(
+            query.order_by(RechargeOrder.created_at.desc(), RechargeOrder.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        return list(result.scalars().all()), total
 
     # ------------------------------------------------------------------
     # Order settlement
