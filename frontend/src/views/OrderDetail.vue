@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import Lightbox from '@/components/Lightbox.vue'
@@ -10,7 +10,7 @@ import { useChatStore } from '@/stores/chat'
 import { useOrdersStore } from '@/stores/orders'
 import { getGameImage } from '@/data/gameImages'
 import api from '@/utils/api'
-import { formatDateTime, formatOrderPrice, formatPayoutDelay, formatPrice, formatShortDate } from '@/utils/display'
+import { formatDateTime, formatOrderPrice, formatPayoutDelay, formatPrice, formatShortDate, getAcceptWaitSeconds } from '@/utils/display'
 import { getClaimStatusMeta, getOrderStatusBadgeClass, getOrderStatusLabel, getOrderStatusMeta, getHumanStatusLabel, getHumanStatusSubtitle } from '@/utils/order'
 
 const props = defineProps({
@@ -97,6 +97,16 @@ const humanStatusSubtitle = computed(() => {
   return getHumanStatusSubtitle(order.value?.status, order.value?.service_type, viewRole.value)
 })
 const isPending = computed(() => order.value?.status === 'PENDING')
+
+// ── 抢单倒计时：每秒刷新 now，基于 accept_available_at 求剩余等待秒数 ──
+const now = ref(Date.now())
+let claimCountdownTimer = null
+const acceptWaitSeconds = computed(() => getAcceptWaitSeconds(order.value?.accept_available_at, now.value))
+// 本单要求等待的总秒数（后端按当前用户所在阶梯下发，null=保证金模式关闭）
+const acceptRequiredWait = computed(() => {
+  const value = Number(order.value?.accept_wait_seconds)
+  return Number.isFinite(value) && value > 0 ? value : 0
+})
 // 统计卡只显示已填写的参数：未填服务/区服直接不渲染，节省 UI
 const detailStats = computed(() => {
   const o = order.value || {}
@@ -338,7 +348,7 @@ async function loadClaims() {
 }
 
 function openClaimModal() {
-  if (hasClaimed.value || actionLoading.value) {
+  if (hasClaimed.value || actionLoading.value || acceptWaitSeconds.value > 0) {
     return
   }
   errorMessage.value = ''
@@ -490,10 +500,22 @@ async function submitReview() {
 }
 
 onMounted(async () => {
+  if (!claimCountdownTimer) {
+    claimCountdownTimer = window.setInterval(() => {
+      now.value = Date.now()
+    }, 1000)
+  }
   const result = await ordersStore.fetchOrder(props.id)
   if (result.success) {
     await fetchReviews()
     await loadClaims()
+  }
+})
+
+onUnmounted(() => {
+  if (claimCountdownTimer) {
+    window.clearInterval(claimCountdownTimer)
+    claimCountdownTimer = null
   }
 })
 </script>
@@ -708,13 +730,18 @@ onMounted(async () => {
 
           <!-- 桌面竖排；<xl 压缩为单行操作栏：返回列表 | 联系 | 主操作 -->
           <div class="od-ops__body mt-6 flex flex-col gap-3">
+            <!-- 抢单倒计时说明：等待期内禁用接单按钮，倒计时归零后恢复 -->
+            <div v-if="isBooster && order.status === 'PENDING' && !isOwner && acceptWaitSeconds > 0" class="message-warning text-xs leading-6">
+              接单等待说明：本订单需等待 {{ acceptRequiredWait }} 秒，当前还剩 {{ acceptWaitSeconds }} 秒，倒计时结束后即可接单。
+            </div>
+
             <button
               v-if="isBooster && order.status === 'PENDING' && !isOwner"
               class="od-ops__primary btn-primary w-full py-3"
-              :disabled="actionLoading || hasClaimed"
+              :disabled="actionLoading || hasClaimed || acceptWaitSeconds > 0"
               @click="openClaimModal"
             >
-              {{ hasClaimed ? '已接手订单' : '接手订单' }}
+              {{ hasClaimed ? '已接手订单' : (acceptWaitSeconds > 0 ? `等待 ${acceptWaitSeconds} 秒后可接单` : '接手订单') }}
             </button>
 
             <button

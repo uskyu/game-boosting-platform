@@ -5,7 +5,7 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import { useOrdersStore } from '@/stores/orders'
-import { formatCount, formatPayoutDelay, formatPrice, formatShortDate } from '@/utils/display'
+import { formatCount, formatPayoutDelay, formatPrice, formatShortDate, getAcceptWaitSeconds } from '@/utils/display'
 import { ORDER_STATUS_OPTIONS, getOrderStatusBadgeClass, getOrderStatusLabel } from '@/utils/order'
 
 /**
@@ -28,6 +28,13 @@ const showHistory = ref(false)
 // The hall starts in claimable-only mode so stale dispatch records are not
 // presented as actionable orders before the user changes the filter.
 const openOnly = ref(true)
+
+// 抢单倒计时：每秒刷新 now，与 accept_available_at 求差得到剩余等待秒数
+const now = ref(Date.now())
+
+function getAcceptWaitSecondsFor(order) {
+  return getAcceptWaitSeconds(order?.accept_available_at, now.value)
+}
 
 const orders = computed(() => ordersStore.orders)
 const terminalStatuses = ['COMPLETED', 'CANCELLED', 'EXPIRED', 'ARCHIVED']
@@ -190,6 +197,8 @@ watch(isAuthenticated, (loggedIn) => {
 const HALL_REFRESH_INTERVAL = 8_000
 let hallRefreshTimer = null
 let hallUnmounted = false
+// 抢单倒计时：独立 1 秒计时器，仅驱动 now 变化
+let countdownTimer = null
 // 在飞保护：弱网下一轮没跑完就不开新一轮，避免请求堆积占满浏览器连接
 let hallRefreshing = false
 
@@ -224,6 +233,11 @@ async function startHallLifecycle() {
 
 onMounted(() => {
   hallUnmounted = false
+  if (!countdownTimer) {
+    countdownTimer = window.setInterval(() => {
+      now.value = Date.now()
+    }, 1000)
+  }
   if (isAuthenticated.value) {
     startHallLifecycle()
   }
@@ -231,6 +245,10 @@ onMounted(() => {
 
 onUnmounted(() => {
   hallUnmounted = true
+  if (countdownTimer) {
+    window.clearInterval(countdownTimer)
+    countdownTimer = null
+  }
   if (hallRefreshTimer) {
     window.clearInterval(hallRefreshTimer)
     hallRefreshTimer = null
@@ -312,6 +330,11 @@ onUnmounted(() => {
 
         <!-- 炸单赔偿 / 到账时效 / 当前情况收敛为一行 13px 小字 -->
         <p v-if="getMetaLine(order)" class="mt-1.5 truncate text-[13px] tabular-nums text-ink-2">{{ getMetaLine(order) }}</p>
+
+        <!-- 抢单倒计时：等待期内的订单显示剩余秒数，倒计时归零后自动消失 -->
+        <div v-if="getAcceptWaitSecondsFor(order) > 0" class="mt-2">
+          <span class="tag !bg-warning-soft !text-warning tabular-nums">等待接单 {{ getAcceptWaitSecondsFor(order) }} 秒</span>
+        </div>
 
         <div v-if="getAttachment(order)" class="mt-3 overflow-hidden rounded-tile"><img :src="getAttachment(order)" alt="订单附件" loading="lazy" class="max-h-40 w-full rounded object-cover" /></div>
 

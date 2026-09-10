@@ -441,6 +441,14 @@ class OrderResponse(BaseModel):
     delivered_at: datetime | None = Field(default=None, description="交付时间")
     completed_at: datetime | None = Field(default=None, description="完成时间")
 
+    # 保证金接单闸门（按查看者的保证金档位计算；保证金模式关闭时为 None）
+    accept_wait_seconds: int | None = Field(
+        default=None, description="查看者接该单需等待的秒数（由保证金档位决定）"
+    )
+    accept_available_at: datetime | None = Field(
+        default=None, description="查看者可以接单的时间点（发布后 + 等待秒数）"
+    )
+
     payment_status: str = Field(default=PaymentStatus.UNPAID.value, description="支付状态")
     paid_at: datetime | None = Field(default=None, description="支付时间")
 
@@ -475,7 +483,7 @@ class OrderResponse(BaseModel):
     pending_review_count: int = Field(default=0, description="待审核（DELIVERED）名额数（管理员或订单发布人）")
     settled_count: int = Field(default=0, description="已结算（SETTLED）名额数（管理员或订单发布人）")
 
-    @field_serializer("deadline", "created_at", "updated_at", "locked_at", "delivered_at", "completed_at", "paid_at")
+    @field_serializer("deadline", "created_at", "updated_at", "locked_at", "delivered_at", "completed_at", "paid_at", "accept_available_at")
     def serialize_datetime(self, value: datetime | None) -> str | None:
         return serialize_datetime_utc(value)
 

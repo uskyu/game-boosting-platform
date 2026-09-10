@@ -7,6 +7,7 @@ import AdminDashboard from '@/components/admin/AdminDashboard.vue'
 import AdminUserList from '@/components/admin/AdminUserList.vue'
 import AdminSiteSettings from '@/components/admin/AdminSiteSettings.vue'
 import AdminPaymentSettings from '@/components/admin/AdminPaymentSettings.vue'
+import AdminDepositSettings from '@/components/admin/AdminDepositSettings.vue'
 import Lightbox from '@/components/Lightbox.vue'
 import { useOrdersStore } from '@/stores/orders'
 import { useGamesStore } from '@/stores/games'
@@ -39,7 +40,7 @@ const gamesStore = useGamesStore()
 const ordersStore = useOrdersStore()
 const walletStore = useWalletStore()
 
-const TAB_KEYS = ['dashboard', 'orders', 'withdrawals', 'wallet-adjust', 'games', 'users', 'site', 'payment']
+const TAB_KEYS = ['dashboard', 'orders', 'withdrawals', 'wallet-adjust', 'games', 'users', 'site', 'payment', 'deposit']
 
 function normalizeTab(tab) {
   const value = Array.isArray(tab) ? tab[0] : tab
@@ -812,6 +813,7 @@ onMounted(async () => {
           <button v-if="isAdmin" type="button" :class="activeTab === 'users' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'users'">用户管理</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'site' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'site'">站点管理</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'payment' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'payment'">支付设置</button>
+          <button v-if="isAdmin" type="button" :class="activeTab === 'deposit' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'deposit'">保证金管理</button>
         </nav>
         <button class="btn-secondary shrink-0 !px-4 !py-2" @click="refreshDashboard">刷新</button>
       </div>
@@ -821,6 +823,7 @@ onMounted(async () => {
     <AdminUserList v-else-if="activeTab === 'users'" />
     <AdminSiteSettings v-else-if="activeTab === 'site'" />
     <AdminPaymentSettings v-else-if="activeTab === 'payment'" />
+    <AdminDepositSettings v-else-if="activeTab === 'deposit'" />
 
     <section v-else-if="activeTab === 'orders'" class="surface-card admin-orders-panel">
       <div class="admin-orders-heading">

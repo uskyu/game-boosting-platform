@@ -345,5 +345,8 @@ class OrderClaim(Base):
     delivery_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     delivery_attachments: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
     delivered_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # 老板审核通过时间。保证金模式选择「通过后计时」时，审核通过只记录时间，
+    # 由调度器在 approved_at + 档位结账时效 到期后完成结算。
+    approved_at: Mapped[datetime | None] = mapped_column(nullable=True)
     settled_at: Mapped[datetime | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=func.now(), server_default=func.now(), nullable=False)

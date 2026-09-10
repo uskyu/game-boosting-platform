@@ -6,12 +6,14 @@ Combines all endpoint routers into a single API router.
 from fastapi import APIRouter
 
 from app.api.endpoints import (
+    admin_deposit_router,
     admin_payment_router,
     admin_router,
     admin_site_router,
     admin_users_router,
     auth_router,
     chat_router,
+    deposit_router,
     games_router,
     notifications_router,
     push_router,
@@ -39,8 +41,10 @@ api_router.include_router(users_router)
 api_router.include_router(admin_router)
 api_router.include_router(admin_site_router)
 api_router.include_router(admin_payment_router)
+api_router.include_router(admin_deposit_router)
 api_router.include_router(admin_users_router)
 api_router.include_router(chat_router)
+api_router.include_router(deposit_router)
 api_router.include_router(games_router)
 api_router.include_router(notifications_router)
 api_router.include_router(push_router)

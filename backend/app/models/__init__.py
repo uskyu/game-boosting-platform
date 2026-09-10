@@ -13,6 +13,12 @@ from app.models.chat import (
     MessageDeletion,
     MessageType,
 )
+from app.models.deposit import (
+    DEFAULT_DEPOSIT_RETURN_COOLDOWN_DAYS,
+    DEFAULT_DEPOSIT_TIERS,
+    DepositSetting,
+    DepositTier,
+)
 from app.models.game import Game, GameCategory, GamePlatform
 from app.models.notification import Notification, NotificationType, UserPreference
 from app.models.payment_setting import PaymentSetting
@@ -33,6 +39,10 @@ __all__ = [
     "Conversation",
     "ConversationParticipant",
     "ConversationType",
+    "DEFAULT_DEPOSIT_RETURN_COOLDOWN_DAYS",
+    "DEFAULT_DEPOSIT_TIERS",
+    "DepositSetting",
+    "DepositTier",
     "Game",
     "GameCategory",
     "GamePlatform",

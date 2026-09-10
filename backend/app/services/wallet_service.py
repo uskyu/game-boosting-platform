@@ -121,6 +121,7 @@ class WalletService:
         income_delta: Decimal = _ZERO,
         frozen_delta: Decimal = _ZERO,
         withdrawn_delta: Decimal = _ZERO,
+        deposit_delta: Decimal = _ZERO,
     ) -> WalletTransaction:
         """
         Single mutation primitive.
@@ -143,6 +144,7 @@ class WalletService:
             income_delta: added to total_income (default 0).
             frozen_delta: added to frozen_balance (default 0).
             withdrawn_delta: added to total_withdrawn (default 0).
+            deposit_delta: added to deposit_balance (default 0) — 保证金划转与扣款。
         """
         wallet = await self._lock_wallet(wallet.id)
 
@@ -173,6 +175,8 @@ class WalletService:
             wallet.total_withdrawn = (
                 _to_decimal(wallet.total_withdrawn) + withdrawn_delta
             )
+        if deposit_delta:
+            wallet.deposit_balance = _to_decimal(wallet.deposit_balance) + deposit_delta
         wallet.updated_at = datetime.now(timezone.utc)
 
         await self._db.flush()
@@ -834,6 +838,121 @@ class WalletService:
             booster_id=booster_id,
             remark=remark,
             frozen_delta=-actual,
+        )
+
+    # ------------------------------------------------------------------
+    # 保证金（可用余额 ⇄ 保证金余额）
+    # ------------------------------------------------------------------
+
+    async def transfer_to_deposit(
+        self,
+        wallet: Wallet,
+        *,
+        amount: Decimal,
+        remark: str | None = None,
+    ) -> WalletTransaction:
+        """缴纳保证金：可用余额扣减，保证金余额增加（转入即冻结，不可消费）。"""
+        amount = _to_decimal(amount).quantize(_CENT, rounding=ROUND_HALF_UP)
+        if amount <= _ZERO:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="转入金额必须大于0",
+            )
+        locked = await self._lock_wallet(wallet.id)
+        if _to_decimal(locked.available_balance) < amount:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="可用余额不足以转入该保证金金额",
+            )
+        return await self._apply(
+            wallet,
+            tx_type=WalletTransactionType.DEPOSIT_TRANSFER_IN,
+            amount=-amount,
+            available_delta=-amount,
+            remark=remark or "余额转入保证金",
+            deposit_delta=amount,
+        )
+
+    async def transfer_from_deposit(
+        self,
+        wallet: Wallet,
+        *,
+        amount: Decimal,
+        remark: str | None = None,
+    ) -> WalletTransaction:
+        """转回余额：保证金余额扣减，可用余额回补。
+
+        冷却期（最后一单完成后 7 天）由调用方在业务层校验。
+        """
+        amount = _to_decimal(amount).quantize(_CENT, rounding=ROUND_HALF_UP)
+        if amount <= _ZERO:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="转回金额必须大于0",
+            )
+        locked = await self._lock_wallet(wallet.id)
+        if _to_decimal(locked.deposit_balance) < amount:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="保证金余额不足",
+            )
+        return await self._apply(
+            wallet,
+            tx_type=WalletTransactionType.DEPOSIT_TRANSFER_OUT,
+            amount=amount,
+            available_delta=amount,
+            remark=remark or "保证金转回余额",
+            deposit_delta=-amount,
+        )
+
+    async def deduct_deposit(
+        self,
+        wallet: Wallet,
+        *,
+        amount: Decimal,
+        order_id: int | None = None,
+        booster_id: int | None = None,
+        note: str | None = None,
+    ) -> WalletTransaction | None:
+        """从保证金中扣除炸单赔付（不返还）。
+
+        有保证金的打手接单时不再冻结赔付金，真炸单时直接从保证金扣。
+        按 (order_id, booster_id, type=DEPOSIT_DEDUCT?) 语义幂等由调用方保证；
+        这里按当前保证金尽力扣减，不足时按可扣部分扣除并记 warning。
+        """
+        amount = _to_decimal(amount).quantize(_CENT, rounding=ROUND_HALF_UP)
+        if amount <= _ZERO:
+            return None
+        locked = await self._lock_wallet(wallet.id)
+        deposit = _to_decimal(locked.deposit_balance)
+        actual = min(amount, deposit)
+        if actual <= _ZERO:
+            logger.warning(
+                "Order %s deposit deduction for booster %s skipped: deposit is 0",
+                order_id,
+                booster_id,
+            )
+            return None
+        if actual < amount:
+            logger.warning(
+                "Order %s deposit deduction for booster %s capped: expected %s, deposit %s",
+                order_id,
+                booster_id,
+                amount,
+                deposit,
+            )
+        remark = f"订单 #{order_id} 炸单赔付从保证金扣除"
+        if note:
+            remark = f"{remark}：{note}"
+        return await self._apply(
+            wallet,
+            tx_type=WalletTransactionType.COMPENSATION_DEDUCT,
+            amount=-actual,
+            available_delta=_ZERO,
+            order_id=order_id,
+            booster_id=booster_id,
+            remark=remark,
+            deposit_delta=-actual,
         )
 
     # ------------------------------------------------------------------

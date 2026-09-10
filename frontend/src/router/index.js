@@ -139,6 +139,12 @@ const routes = [
     meta: { title: '我的钱包', requiresAuth: true },
   },
   {
+    path: '/deposit',
+    name: 'deposit',
+    component: () => import('@/views/DepositView.vue'),
+    meta: { title: '我的保证金', requiresAuth: true },
+  },
+  {
     path: '/admin',
     name: 'admin',
     component: () => import('@/views/AdminView.vue'),

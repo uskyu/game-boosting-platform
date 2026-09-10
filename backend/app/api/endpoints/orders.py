@@ -3,6 +3,7 @@ Orders API endpoints.
 Handles order creation, listing, and management operations.
 """
 
+from datetime import timedelta, timezone
 from pathlib import Path
 from typing import Annotated
 
@@ -62,6 +63,31 @@ def _delivery_attachment_items(attachments) -> list[OrderDeliveryAttachment]:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="交付附件数据无效") from exc
 
 
+async def _apply_accept_window(
+    db, responses: list[OrderResponse], viewer: User
+) -> None:
+    """按查看者的保证金档位，为订单补上「还需等待多少秒才能接单」。
+
+    保证金模式关闭或查看者是管理员时不写任何字段，前端按「可立即接单」渲染。
+    """
+    if viewer.role == UserRole.ADMIN:
+        return
+    # 延迟导入避免 service -> api 的循环依赖
+    from app.services import deposit_service
+
+    if not await deposit_service.is_deposit_enabled(db):
+        return
+    tier, _balance = await deposit_service.get_user_tier(db, viewer.id)
+    wait_seconds = int(tier.wait_seconds or 0) if tier else 0
+    for response in responses:
+        response.accept_wait_seconds = wait_seconds
+        if wait_seconds > 0 and response.created_at is not None:
+            created = response.created_at
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            response.accept_available_at = created + timedelta(seconds=wait_seconds)
+
+
 def _serialize_order(order, viewer: User) -> OrderResponse:
     """Serialize an order, redacting game_account from viewers who don't own
     it, weren't assigned to it, and aren't admins.
@@ -104,6 +130,7 @@ async def _enrich_order_response(db, response: OrderResponse, order, viewer: Use
         elif order.user_id != viewer.id:
             # Reset even if the incoming response was not serialized defensively.
             response.boss_contact = None
+    await _apply_accept_window(db, [response], viewer)
     return response
 
 
@@ -145,6 +172,7 @@ async def _enrich_order_responses(
                     response.boss_contact = orders_by_id[response.id].boss_contact
             elif orders_by_id[response.id].user_id != viewer.id:
                 response.boss_contact = None
+    await _apply_accept_window(db, responses, viewer)
     return responses
 
 

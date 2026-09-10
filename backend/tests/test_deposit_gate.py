@@ -1,0 +1,414 @@
+"""保证金玩法测试：接单等待闸门、免炸单赔付金、结账时效两种计时模式。
+
+覆盖重点：
+- 保证金模式关闭时完全不干预接单（无等待、不填充默认赔付金）；
+- 开启后所有订单按档位施加接单等待，顶档可立即接单；
+- 订单列表/详情把等待信息下发给前端；
+- 档位免除赔付金的打手接单不冻结，未达标的仍冻结；
+- AFTER_DELIVERY：交付后到期自动结算；
+- AFTER_APPROVAL：审核通过只记录时间，到期后才自动放款。
+"""
+
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+
+from httpx import AsyncClient
+from sqlalchemy import select
+
+from app.models.order import ClaimLifecycleStatus, Order, OrderClaim
+from app.models.wallet import Wallet
+from app.services.payout_scheduler import scan_due_payouts
+from tests.conftest import auth_header
+
+DEPOSIT_SETTINGS = "/admin/deposit/settings"
+MY_DEPOSIT = "/wallet/deposit"
+
+
+async def _enable_deposit(client: AsyncClient, admin_user: dict, **overrides):
+    payload = (await client.get(DEPOSIT_SETTINGS, headers=auth_header(admin_user))).json()
+    body = {
+        "enabled": True,
+        "return_cooldown_days": payload["return_cooldown_days"],
+        "default_compensation": payload.get("default_compensation", 20),
+        "settlement_mode": payload.get("settlement_mode", "AFTER_DELIVERY"),
+        "tiers": [
+            {
+                "threshold": t["threshold"],
+                "wait_seconds": t["wait_seconds"],
+                "exempt_compensation": t["exempt_compensation"],
+                "settle_hours": t["settle_hours"],
+                "enabled": t["enabled"],
+            }
+            for t in payload["tiers"]
+        ],
+    }
+    body.update(overrides)
+    resp = await client.put(DEPOSIT_SETTINGS, json=body, headers=auth_header(admin_user))
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+async def _fund(client: AsyncClient, admin_user: dict, user: dict, amount: float):
+    resp = await client.post(
+        f"/admin/wallets/{user['user']['id']}/adjust",
+        json={"amount": amount, "reason": "test fund"},
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code in (200, 201), resp.text
+
+
+async def _deposit(client: AsyncClient, user: dict, amount: float):
+    resp = await client.post(
+        f"{MY_DEPOSIT}/in", json={"amount": amount}, headers=auth_header(user)
+    )
+    assert resp.status_code == 201, resp.text
+
+
+async def _make_order(
+    client: AsyncClient, admin_user: dict, *, price: str = "100.00", compensation=None
+) -> dict:
+    body = {
+        "game_name": "王者荣耀",
+        "current_rank": "钻石",
+        "target_rank": "王者",
+        "price": price,
+    }
+    if compensation is not None:
+        body["compensation_amount"] = compensation
+    resp = await client.post("/orders/create", json=body, headers=auth_header(admin_user))
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+async def _accept(client: AsyncClient, user: dict, order_id: int):
+    return await client.put(
+        f"/orders/{order_id}/accept", headers=auth_header(user)
+    )
+
+
+# ---------------------------------------------------------------------------
+# 接单等待闸门
+# ---------------------------------------------------------------------------
+
+
+async def test_accept_has_no_wait_when_deposit_disabled(
+    client: AsyncClient, admin_user: dict, booster_user: dict
+):
+    """保证金模式关闭时，接单不受任何等待限制。"""
+    order = await _make_order(client, admin_user)
+    resp = await _accept(client, booster_user, order["id"])
+    assert resp.status_code == 200, resp.text
+
+    detail = await client.get(
+        f"/orders/{order['id']}", headers=auth_header(booster_user)
+    )
+    assert detail.json()["accept_wait_seconds"] is None
+    assert detail.json()["accept_available_at"] is None
+
+
+async def test_accept_blocked_within_wait_window(
+    client: AsyncClient, admin_user: dict, booster_user: dict
+):
+    """开启后，无保证金打手（30 秒档）立即接单被拒并提示剩余秒数。"""
+    await _enable_deposit(client, admin_user)
+    order = await _make_order(client, admin_user)
+
+    resp = await _accept(client, booster_user, order["id"])
+    assert resp.status_code == 400, resp.text
+    assert "才开放接单" in resp.json()["detail"]
+    assert "30 秒" in resp.json()["detail"]
+
+
+async def test_accept_window_exposed_to_frontend(
+    client: AsyncClient, admin_user: dict, booster_user: dict
+):
+    """订单详情把该用户档位的等待秒数与可接单时间下发给前端。"""
+    await _enable_deposit(client, admin_user)
+    order = await _make_order(client, admin_user)
+
+    detail = (
+        await client.get(f"/orders/{order['id']}", headers=auth_header(booster_user))
+    ).json()
+    assert detail["accept_wait_seconds"] == 30
+    assert detail["accept_available_at"] is not None
+
+
+async def test_top_tier_can_accept_immediately(
+    client: AsyncClient, admin_user: dict, booster_user: dict
+):
+    """保证金 1000 档等待 0 秒，可立即接单。"""
+    await _enable_deposit(client, admin_user)
+    await _fund(client, admin_user, booster_user, 1500)
+    await _deposit(client, booster_user, 1000)
+
+    order = await _make_order(client, admin_user)
+    resp = await _accept(client, booster_user, order["id"])
+    assert resp.status_code == 200, resp.text
+
+    detail = (
+        await client.get(f"/orders/{order['id']}", headers=auth_header(booster_user))
+    ).json()
+    assert detail["accept_wait_seconds"] == 0
+
+
+async def test_mid_tier_shortens_wait(
+    client: AsyncClient, admin_user: dict, booster_user: dict
+):
+    """保证金 300 档等待 20 秒。"""
+    await _enable_deposit(client, admin_user)
+    await _fund(client, admin_user, booster_user, 400)
+    await _deposit(client, booster_user, 300)
+
+    order = await _make_order(client, admin_user)
+    resp = await _accept(client, booster_user, order["id"])
+    assert resp.status_code == 400
+    assert "20 秒" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# 免炸单赔付金
+# ---------------------------------------------------------------------------
+
+
+async def test_tier_exempts_compensation_freeze(
+    client: AsyncClient, admin_user: dict, booster_user: dict, db_session
+):
+    """保证金达到免除档位时，接单不再冻结炸单赔付金。"""
+    await _enable_deposit(client, admin_user)
+    await _fund(client, admin_user, booster_user, 1500)
+    await _deposit(client, booster_user, 1000)
+
+    order = await _make_order(client, admin_user, compensation=20)
+    assert Decimal(str(order["compensation_amount"])) == Decimal("20.00")
+
+    resp = await _accept(client, booster_user, order["id"])
+    assert resp.status_code == 200, resp.text
+
+    wallet = (
+        await db_session.execute(
+            select(Wallet).where(Wallet.user_id == booster_user["user"]["id"])
+        )
+    ).scalar_one()
+    # 保证金 1000：不冻结赔付金（冻结余额为 0）
+    assert Decimal(str(wallet.frozen_balance)) == Decimal("0.00")
+    assert Decimal(str(wallet.deposit_balance)) == Decimal("1000.00")
+
+
+async def test_low_deposit_still_freezes_compensation(
+    client: AsyncClient, admin_user: dict, booster_user: dict, db_session
+):
+    """保证金不足 100 时仍按订单冻结 20 元赔付金。"""
+    await _enable_deposit(client, admin_user)
+    await _fund(client, admin_user, booster_user, 500)
+    await _deposit(client, booster_user, 50)
+
+    # 交 50 属于最低档（等待 30 秒），先用顶档口径把等待绕开：直接调小等待
+    await _enable_deposit(
+        client,
+        admin_user,
+        tiers=[
+            {
+                "threshold": 0,
+                "wait_seconds": 0,
+                "exempt_compensation": False,
+                "settle_hours": 72,
+                "enabled": True,
+            },
+            {
+                "threshold": 100,
+                "wait_seconds": 0,
+                "exempt_compensation": True,
+                "settle_hours": 72,
+                "enabled": True,
+            },
+        ],
+    )
+
+    order = await _make_order(client, admin_user, compensation=20)
+    resp = await _accept(client, booster_user, order["id"])
+    assert resp.status_code == 200, resp.text
+
+    wallet = (
+        await db_session.execute(
+            select(Wallet).where(Wallet.user_id == booster_user["user"]["id"])
+        )
+    ).scalar_one()
+    assert Decimal(str(wallet.frozen_balance)) == Decimal("20.00")
+
+
+async def test_order_gets_default_compensation_when_enabled(
+    client: AsyncClient, admin_user: dict
+):
+    """保证金模式开启后，发单未指定赔付金时按默认 20 元兜底。"""
+    await _enable_deposit(client, admin_user, default_compensation=20)
+    order = await _make_order(client, admin_user)
+    assert Decimal(str(order["compensation_amount"])) == Decimal("20.00")
+
+
+async def test_order_has_no_default_compensation_when_disabled(
+    client: AsyncClient, admin_user: dict
+):
+    """保证金模式关闭时不填充默认赔付金，保持原有行为。"""
+    order = await _make_order(client, admin_user)
+    assert order["compensation_amount"] is None
+
+
+# ---------------------------------------------------------------------------
+# 结账时效两种计时模式
+# ---------------------------------------------------------------------------
+
+
+async def _deliver_and_age(client: AsyncClient, booster_user: dict, order_id: int, *, hours_ago: float):
+    """让打手交付，并把交付时间回拨到指定小时数之前。"""
+    resp = await client.put(
+        f"/orders/{order_id}/deliver", headers=auth_header(booster_user)
+    )
+    assert resp.status_code == 200, resp.text
+
+
+async def test_settlement_mode_after_delivery_auto_settles(
+    client: AsyncClient, admin_user: dict, booster_user: dict, db_session
+):
+    """AFTER_DELIVERY：交付后经过档位时效即自动结算。"""
+    await _enable_deposit(
+        client,
+        admin_user,
+        settlement_mode="AFTER_DELIVERY",
+        tiers=[
+            {
+                "threshold": 0,
+                "wait_seconds": 0,
+                "exempt_compensation": False,
+                "settle_hours": 1,
+                "enabled": True,
+            }
+        ],
+    )
+    await _fund(client, admin_user, booster_user, 500)
+    order = await _make_order(client, admin_user, price="100.00")
+    assert (await _accept(client, booster_user, order["id"])).status_code == 200
+    await _deliver_and_age(client, booster_user, order["id"], hours_ago=2)
+
+    claim = (
+        await db_session.execute(
+            select(OrderClaim).where(OrderClaim.order_id == order["id"])
+        )
+    ).scalar_one()
+    claim.delivered_at = datetime.now(timezone.utc) - timedelta(hours=2)
+    await db_session.commit()
+
+    settled = await scan_due_payouts(db_session)
+    await db_session.commit()
+    assert claim.id in settled
+
+    wallet = (
+        await db_session.execute(
+            select(Wallet).where(Wallet.user_id == booster_user["user"]["id"])
+        )
+    ).scalar_one()
+    # 测试充值 500 + 订单收入 100（赔付金 20 已随结算返还）
+    assert Decimal(str(wallet.available_balance)) == Decimal("600.00")
+
+
+async def test_after_approval_holds_until_due(
+    client: AsyncClient, admin_user: dict, booster_user: dict, db_session
+):
+    """AFTER_APPROVAL：审核通过不立即放款，到期后才自动结算。"""
+    await _enable_deposit(
+        client,
+        admin_user,
+        settlement_mode="AFTER_APPROVAL",
+        tiers=[
+            {
+                "threshold": 0,
+                "wait_seconds": 0,
+                "exempt_compensation": False,
+                "settle_hours": 24,
+                "enabled": True,
+            }
+        ],
+    )
+    await _fund(client, admin_user, booster_user, 500)
+    order = await _make_order(client, admin_user, price="100.00")
+    assert (await _accept(client, booster_user, order["id"])).status_code == 200
+    await _deliver_and_age(client, booster_user, order["id"], hours_ago=0)
+
+    claim = (
+        await db_session.execute(
+            select(OrderClaim).where(OrderClaim.order_id == order["id"])
+        )
+    ).scalar_one()
+
+    # 老板审核通过：只记录时间，不立即入账
+    resp = await client.put(
+        f"/orders/{order['id']}/claims/{claim.id}/review",
+        json={"action": "approve"},
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 200, resp.text
+
+    # 先结束本会话事务，才能看到 API 提交的 approved_at（REPEATABLE READ）
+    await db_session.commit()
+    await db_session.refresh(claim)
+    assert claim.status == ClaimLifecycleStatus.DELIVERED
+    assert claim.approved_at is not None
+
+    wallet = (
+        await db_session.execute(
+            select(Wallet).where(Wallet.user_id == booster_user["user"]["id"])
+        )
+    ).scalar_one()
+    # 500 充值 - 20 冻结赔付金 = 480 可用
+    assert Decimal(str(wallet.available_balance)) == Decimal("480.00")
+    assert Decimal(str(wallet.frozen_balance)) == Decimal("20.00")
+
+    # 未到期不结算
+    assert await scan_due_payouts(db_session) == []
+    await db_session.commit()
+
+    # 把通过时间回拨到 25 小时前 → 到期应自动放款
+    claim.approved_at = datetime.now(timezone.utc) - timedelta(hours=25)
+    await db_session.commit()
+
+    settled = await scan_due_payouts(db_session)
+    await db_session.commit()
+    assert claim.id in settled
+
+    await db_session.refresh(wallet)
+    assert Decimal(str(wallet.available_balance)) == Decimal("600.00")
+
+
+async def test_after_approval_waits_for_approval(
+    client: AsyncClient, admin_user: dict, booster_user: dict, db_session
+):
+    """AFTER_APPROVAL 且老板未审核时，不自动结算。"""
+    await _enable_deposit(
+        client,
+        admin_user,
+        settlement_mode="AFTER_APPROVAL",
+        tiers=[
+            {
+                "threshold": 0,
+                "wait_seconds": 0,
+                "exempt_compensation": False,
+                "settle_hours": 1,
+                "enabled": True,
+            }
+        ],
+    )
+    await _fund(client, admin_user, booster_user, 500)
+    order = await _make_order(client, admin_user, price="100.00")
+    assert (await _accept(client, booster_user, order["id"])).status_code == 200
+    await _deliver_and_age(client, booster_user, order["id"], hours_ago=5)
+
+    claim = (
+        await db_session.execute(
+            select(OrderClaim).where(OrderClaim.order_id == order["id"])
+        )
+    ).scalar_one()
+    claim.delivered_at = datetime.now(timezone.utc) - timedelta(hours=5)
+    await db_session.commit()
+
+    # 未审核 → 不结算
+    assert await scan_due_payouts(db_session) == []
+    await db_session.commit()

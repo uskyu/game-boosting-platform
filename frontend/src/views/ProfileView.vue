@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 
 import { useAuthStore } from '@/stores/auth'
 import { useWalletStore } from '@/stores/wallet'
-import { formatDate, formatPrice } from '@/utils/display'
+import { formatPrice } from '@/utils/display'
 import { getUserRoleMeta } from '@/utils/order'
 
 const router = useRouter()
@@ -15,6 +15,8 @@ const walletStore = useWalletStore()
 const user = computed(() => authStore.user)
 const roleMeta = computed(() => getUserRoleMeta(user.value?.role === 'ADMIN' ? 'ADMIN' : 'BOOSTER'))
 const avatarText = computed(() => user.value?.username?.slice(0, 1)?.toUpperCase() || 'U')
+// 保证金余额：管理员接口返回 403，仅普通用户拉取，失败静默（不阻断个人中心）
+const depositBalance = computed(() => walletStore.depositOverview?.deposit_balance ?? 0)
 function isPasswordStrong(pw) {
   return pw.length >= 8 && /[A-Z]/.test(pw) && /\d/.test(pw)
 }
@@ -98,6 +100,9 @@ onMounted(async () => {
   resetProfileForm()
   // 可用余额仅作展示，获取失败静默跳过
   walletStore.fetchWallet()
+  if (user.value?.role !== 'ADMIN') {
+    walletStore.fetchDepositOverview()
+  }
 })
 </script>
 
@@ -138,7 +143,10 @@ onMounted(async () => {
             <p class="text-xs font-medium uppercase tracking-[0.12em] text-ink-2">可用余额</p>
             <p class="mt-2.5 text-2xl font-semibold tabular-nums text-ink-1">{{ formatPrice(walletStore.wallet?.available_balance ?? 0) }}</p>
           </article>
-          <article class="stat-card"><p class="text-sm text-ink-2">注册</p><p class="mt-2 text-lg font-semibold text-ink-1">{{ formatDate(user?.created_at) }}</p></article>
+          <router-link :to="{ name: 'deposit' }" class="stat-card block transition-colors duration-base hover:border-primary">
+            <p class="text-sm text-ink-2">保证金</p>
+            <p class="mt-2 text-lg font-semibold tabular-nums text-ink-1">{{ formatPrice(depositBalance) }}</p>
+          </router-link>
           <article class="stat-card"><p class="text-sm text-ink-2">账号</p><p class="mt-2 text-lg font-semibold text-ink-1">{{ user?.is_active ? '正常' : '停用' }}</p></article>
         </div>
       </div>

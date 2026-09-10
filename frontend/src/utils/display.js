@@ -84,6 +84,19 @@ export function formatDate(value) {
   return parsed ? dateFormatter.format(parsed) : '未记录'
 }
 
+/**
+ * 接单等待剩余秒数：基于 accept_available_at（ISO 8601 UTC）与当前时间求差。
+ * 返回 0 表示可立即接单（字段为空 / 非法 / 已过期）；否则返回向上取整的剩余秒数。
+ * 倒计时只做相对计算，前端用本机时间即可。
+ */
+export function getAcceptWaitSeconds(availableAt, now = Date.now()) {
+  if (!availableAt) return 0
+  const target = new Date(availableAt)
+  if (Number.isNaN(target.getTime())) return 0
+  const diff = target.getTime() - now
+  return diff > 0 ? Math.ceil(diff / 1000) : 0
+}
+
 export function formatCount(value) {
   const numericValue = Number(value ?? 0)
   return countFormatter.format(Number.isNaN(numericValue) ? 0 : numericValue)

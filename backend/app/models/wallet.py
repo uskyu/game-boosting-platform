@@ -44,6 +44,9 @@ class WalletTransactionType(str, PyEnum):
     # 自助充值入账（易支付）。新增枚举值一律追加在末尾：
     # MySQL ENUM 只能靠 ALTER TABLE 修改，追加不会触发表数据重写。
     RECHARGE = "RECHARGE"                       # 易支付充值到账 (+)，不计入累计收入
+    # 保证金（可用余额 ⇄ 保证金余额 划转，保证金不可消费、不可提现）
+    DEPOSIT_TRANSFER_IN = "DEPOSIT_TRANSFER_IN"    # 余额转入保证金，可用扣减 (-)，保证金增加
+    DEPOSIT_TRANSFER_OUT = "DEPOSIT_TRANSFER_OUT"  # 保证金转回余额，可用回补 (+)，保证金减少
 
 
 class Wallet(Base):
@@ -81,6 +84,16 @@ class Wallet(Base):
     )
 
     frozen_balance: Mapped[Decimal] = mapped_column(
+        Numeric(precision=12, scale=2),
+        default=Decimal("0.00"),
+        server_default="0.00",
+        nullable=False,
+    )
+
+    # 保证金余额：由可用余额转入，转入后冻结不可消费、不可提现，
+    # 仅用于保证金档位权益（优先接单/免炸单赔付金/结账时效）与炸单扣款。
+    # 与 frozen_balance 区分开，避免和提现冻结、发单托管混在一个池子里。
+    deposit_balance: Mapped[Decimal] = mapped_column(
         Numeric(precision=12, scale=2),
         default=Decimal("0.00"),
         server_default="0.00",

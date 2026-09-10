@@ -93,6 +93,47 @@ function buildPagination(data, fallbackPageSize) {
   }
 }
 
+// 保证金阶梯：数值可能以字符串返回，统一转 Number 便于前端比较与高亮
+function normalizeDepositTier(tier) {
+  return {
+    id: tier?.id,
+    threshold: toNumber(tier?.threshold, 0),
+    wait_seconds: toNumber(tier?.wait_seconds, 0),
+    exempt_compensation: Boolean(tier?.exempt_compensation),
+    settle_hours: toNumber(tier?.settle_hours, 0),
+    enabled: tier?.enabled !== false,
+    updated_at: tier?.updated_at,
+  }
+}
+
+function normalizeDepositOverview(data) {
+  const source = data || {}
+  return {
+    enabled: Boolean(source.enabled),
+    deposit_balance: toNumber(source.deposit_balance, 0),
+    available_balance: toNumber(source.available_balance, 0),
+    current_threshold: source.current_threshold != null ? toNumber(source.current_threshold, 0) : null,
+    wait_seconds: toNumber(source.wait_seconds, 0),
+    exempt_compensation: Boolean(source.exempt_compensation),
+    settle_hours: toNumber(source.settle_hours, 0),
+    can_return: Boolean(source.can_return),
+    return_block_reason: source.return_block_reason || '',
+    tiers: Array.isArray(source.tiers) ? source.tiers.map(normalizeDepositTier) : [],
+  }
+}
+
+function normalizeDepositSettings(data) {
+  const source = data || {}
+  return {
+    enabled: Boolean(source.enabled),
+    return_cooldown_days: toNumber(source.return_cooldown_days, 0),
+    default_compensation: toNumber(source.default_compensation, 0),
+    settlement_mode: source.settlement_mode || 'AFTER_DELIVERY',
+    updated_at: source.updated_at,
+    tiers: Array.isArray(source.tiers) ? source.tiers.map(normalizeDepositTier) : [],
+  }
+}
+
 export const useWalletStore = defineStore('wallet', () => {
   // State
   const wallet = ref(null)
@@ -113,6 +154,11 @@ export const useWalletStore = defineStore('wallet', () => {
   const myRechargesPagination = ref({ page: 1, pageSize: 10, total: 0, pages: 1 })
   const paymentSettings = ref(null)
   const paymentSettingsLoading = ref(false)
+  const depositOverview = ref(null)
+  const depositOverviewLoading = ref(false)
+  const depositSubmitting = ref(false)
+  const depositSettings = ref(null)
+  const depositSettingsLoading = ref(false)
   const submitting = ref(false)
   const error = ref(null)
 
@@ -416,6 +462,91 @@ export const useWalletStore = defineStore('wallet', () => {
     }
   }
 
+  // ── 保证金（用户侧）──
+
+  // GET /wallet/deposit：保证金概览 + 阶梯权益（管理员调用返回 403）
+  async function fetchDepositOverview() {
+    depositOverviewLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.get('/wallet/deposit')
+      depositOverview.value = normalizeDepositOverview(response.data)
+      return { success: true, data: depositOverview.value }
+    } catch (err) {
+      error.value = err.message
+      return { success: false, error: err.message }
+    } finally {
+      depositOverviewLoading.value = false
+    }
+  }
+
+  // POST /wallet/deposit/in：从可用余额转入保证金
+  async function transferToDeposit(amount) {
+    depositSubmitting.value = true
+    error.value = null
+
+    try {
+      const response = await api.post('/wallet/deposit/in', { amount: toNumber(amount) })
+      return { success: true, data: response.data }
+    } catch (err) {
+      error.value = err.message
+      return { success: false, error: err.message }
+    } finally {
+      depositSubmitting.value = false
+    }
+  }
+
+  // POST /wallet/deposit/out：保证金转回可用余额
+  async function transferFromDeposit(amount) {
+    depositSubmitting.value = true
+    error.value = null
+
+    try {
+      const response = await api.post('/wallet/deposit/out', { amount: toNumber(amount) })
+      return { success: true, data: response.data }
+    } catch (err) {
+      error.value = err.message
+      return { success: false, error: err.message }
+    } finally {
+      depositSubmitting.value = false
+    }
+  }
+
+  // ── 保证金（管理员设置）──
+
+  async function fetchDepositSettings() {
+    depositSettingsLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.get('/admin/deposit/settings')
+      depositSettings.value = normalizeDepositSettings(response.data)
+      return { success: true, data: depositSettings.value }
+    } catch (err) {
+      error.value = err.message
+      return { success: false, error: err.message }
+    } finally {
+      depositSettingsLoading.value = false
+    }
+  }
+
+  async function updateDepositSettings(payload) {
+    depositSettingsLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.put('/admin/deposit/settings', payload)
+      depositSettings.value = normalizeDepositSettings(response.data)
+      return { success: true, data: depositSettings.value }
+    } catch (err) {
+      error.value = err.message
+      return { success: false, error: err.message }
+    } finally {
+      depositSettingsLoading.value = false
+    }
+  }
+
   function clearError() {
     error.value = null
   }
@@ -440,6 +571,11 @@ export const useWalletStore = defineStore('wallet', () => {
     myRechargesPagination,
     paymentSettings,
     paymentSettingsLoading,
+    depositOverview,
+    depositOverviewLoading,
+    depositSubmitting,
+    depositSettings,
+    depositSettingsLoading,
     submitting,
     error,
     // Actions
@@ -458,6 +594,11 @@ export const useWalletStore = defineStore('wallet', () => {
     fetchMyRecharges,
     fetchPaymentSettings,
     updatePaymentSettings,
+    fetchDepositOverview,
+    transferToDeposit,
+    transferFromDeposit,
+    fetchDepositSettings,
+    updateDepositSettings,
     clearError,
   }
 })

@@ -4,7 +4,8 @@ Business logic for order management operations.
 """
 
 import logging
-from datetime import datetime, timezone
+import math
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -16,6 +17,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.security import encrypt_text, escape_like
 from app.models.booster_service import BoosterService
+from app.models.deposit import SETTLEMENT_MODE_AFTER_APPROVAL
 from app.models.game import Game
 from app.models.order import (
     ClaimLifecycleStatus,
@@ -217,7 +219,7 @@ class OrderService:
             priority=order_data.priority,
             notes=order_data.notes,
             boss_contact=order_data.boss_contact,
-            compensation_amount=order_data.compensation_amount,
+            compensation_amount=await self._resolve_compensation(order_data.compensation_amount),
             payout_delay_days=order_data.payout_delay_days,
             payout_delay_hours=order_data.payout_delay_hours,
             status=OrderStatus.PENDING,
@@ -529,6 +531,49 @@ class OrderService:
 
         return orders, total
 
+    async def _holds_after_approval(self, claim: OrderClaim) -> bool:
+        """保证金模式是否为「老板通过后计时」（审核通过不立即放款）。
+
+        注意：已经记录过审核时间的名额不再重复走此分支，避免二次审核卡住。
+        """
+        from app.services import deposit_service
+
+        if claim.approved_at is not None:
+            return False
+        if not await deposit_service.is_deposit_enabled(self._db):
+            return False
+        setting = await deposit_service.get_or_create_deposit_setting(self._db)
+        return setting.settlement_mode == SETTLEMENT_MODE_AFTER_APPROVAL
+
+    async def _resolve_compensation(self, requested: Decimal | None) -> Decimal | None:
+        """订单炸单赔付金：老板未指定时，按保证金配置的默认值兜底。
+
+        保证金模式关闭时不填充默认值，保持原有行为（未设置即不冻结）。
+        """
+        if requested is not None:
+            return requested
+        from app.services import deposit_service
+
+        if not await deposit_service.is_deposit_enabled(self._db):
+            return None
+        setting = await deposit_service.get_or_create_deposit_setting(self._db)
+        default = _to_decimal(getattr(setting, "default_compensation", None))
+        return default if default > _ZERO else None
+
+    async def _deposit_gate(self, booster_id: int) -> tuple[int, bool]:
+        """返回打手的 (接单等待秒数, 是否免除炸单赔付金)。
+
+        保证金模式未开启时返回 (0, False)，即完全不干预现有接单流程。
+        """
+        from app.services import deposit_service
+
+        if not await deposit_service.is_deposit_enabled(self._db):
+            return 0, False
+        tier, _balance = await deposit_service.get_user_tier(self._db, booster_id)
+        if tier is None:
+            return 0, False
+        return int(tier.wait_seconds or 0), bool(tier.exempt_compensation)
+
     async def accept_order(
         self,
         order_id: int,
@@ -624,6 +669,25 @@ class OrderService:
         existing = await self._db.execute(select(OrderClaim).where(OrderClaim.order_id == order.id, OrderClaim.booster_id == booster.id))
         if existing.scalar_one_or_none() is not None:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="您已报名过该订单，无需重复报名")
+
+        # 保证金接单闸门：订单发布后需等待 N 秒（按打手保证金档位减免秒数）。
+        # 保证金模式未开启时不施加任何等待，保持原有体验。
+        wait_seconds, exempt_compensation = await self._deposit_gate(booster.id)
+        if wait_seconds > 0:
+            published_at = order.created_at
+            if published_at.tzinfo is None:
+                published_at = published_at.replace(tzinfo=timezone.utc)
+            opens_at = published_at + timedelta(seconds=wait_seconds)
+            if now < opens_at:
+                remaining = int(math.ceil((opens_at - now).total_seconds()))
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        f"该订单还需等待 {remaining} 秒才开放接单"
+                        f"（当前保证金档位需等待 {wait_seconds} 秒）"
+                    ),
+                )
+
         self._db.add(OrderClaim(order_id=order.id, booster_id=booster.id))
         # 行锁串行化配额检查，唯一约束兜底并发重复报名转409
         order.claimed_count += 1
@@ -636,8 +700,9 @@ class OrderService:
 
         # 炸单赔偿金：接单即从打手可用余额冻结（同一事务，行锁保护）。
         # 余额不足时 hold_deposit 抛 400，整个接单（含名额）一并回滚。
+        # 保证金档位免除赔付金的打手不冻结，真炸单时改从保证金中扣除。
         compensation = _to_decimal(order.compensation_amount)
-        if compensation > _ZERO:
+        if compensation > _ZERO and not exempt_compensation:
             wallet_service = get_wallet_service(self._db)
             booster_wallet = await wallet_service.get_or_create_wallet(booster.id)
             await wallet_service.hold_deposit(
@@ -1237,14 +1302,23 @@ class OrderService:
         # 才能读到 SETTLED，否则订单永远停在 LOCKED。
         await self._db.flush()
 
-    async def auto_settle_due_claim(self, order: Order, claim: OrderClaim) -> bool:
+    async def auto_settle_due_claim(
+        self, order: Order, claim: OrderClaim, *, delay_from_tier: bool = False
+    ) -> bool:
         """到账时效自动结算一个名额：全额入账、赔偿金全额返还（无扣除）。
 
         调用方需已锁定 order 行；返回是否执行了结算。
+
+        ``delay_from_tier=True`` 表示到期判定来自保证金档位（订单本身可能没有
+        配置到账时效），此时不再要求订单存在 payout_delay_*。
         """
         if claim.status != ClaimLifecycleStatus.DELIVERED:
             return False
-        if order.payout_delay_days is None and order.payout_delay_hours is None:
+        if (
+            not delay_from_tier
+            and order.payout_delay_days is None
+            and order.payout_delay_hours is None
+        ):
             return False
         await self._settle_booster_funds(
             order,
@@ -1452,6 +1526,20 @@ class OrderService:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"炸单赔偿扣除金额需在 0 ~ {compensation} 之间",
                 )
+
+        # 保证金模式选择「老板通过后计时」时，审核通过只记录时间不立即放款，
+        # 由 payout_scheduler 在 approved_at + 档位结账时效 到期后结算。
+        if await self._holds_after_approval(claim):
+            claim.approved_at = datetime.now(timezone.utc)
+            await self._db.flush()
+            await self._db.refresh(claim)
+            logger.info(
+                "Order %s claim %s approved by user %s, payout held by deposit mode",
+                order_id,
+                claim_id,
+                reviewer.id,
+            )
+            return await self._claim_view_with_user(claim, order)
 
         await self._settle_claim(
             order,
