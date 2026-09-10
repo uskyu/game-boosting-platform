@@ -13,7 +13,6 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import PlainTextResponse
 
 from app.api.deps import CurrentUser, DatabaseSession
-from app.models.user import UserRole
 from app.schemas.recharge import (
     PayMethodOption,
     RechargeConfigResponse,
@@ -41,7 +40,7 @@ async def get_recharge_config(
 ) -> RechargeConfigResponse:
     setting = await recharge_service.get_or_create_payment_setting(db)
     enabled = recharge_service.is_recharge_enabled(setting)
-    methods = recharge_service.parse_pay_methods(setting.pay_methods) if enabled else []
+    methods = recharge_service.enabled_pay_methods(setting) if enabled else []
     return RechargeConfigResponse(
         enabled=enabled,
         pay_methods=[PayMethodOption(**m) for m in methods],
@@ -62,12 +61,7 @@ async def create_recharge(
     current_user: CurrentUser,
     db: DatabaseSession,
 ) -> RechargeCreateResponse:
-    if current_user.role == UserRole.ADMIN:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="管理员账户无需充值",
-        )
-
+    # 管理员同样可以充值（便于联调与测试），不做角色限制
     order, pay_url, params = await recharge_service.create_recharge_order(
         db,
         user=current_user,

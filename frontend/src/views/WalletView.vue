@@ -33,6 +33,18 @@ const rechargeForm = ref({ amount: '', paymentMethod: '' })
 const rechargeError = ref('')
 const rechargeMessage = ref({ type: '', text: '' })
 const submittingRecharge = ref(false)
+const showRechargeModal = ref(false)
+
+function openRecharge() {
+  rechargeError.value = ''
+  rechargeMessage.value = { type: '', text: '' }
+  showRechargeModal.value = true
+}
+
+function closeRecharge() {
+  if (submittingRecharge.value) return
+  showRechargeModal.value = false
+}
 
 const RECHARGE_STATUS_META = {
   PENDING: { label: '待支付', tagClass: '!bg-warning-soft !text-warning' },
@@ -115,6 +127,7 @@ async function submitRecharge() {
   }
 
   rechargeMessage.value = { type: 'success', text: '正在跳转到支付页面…' }
+  showRechargeModal.value = false
   submitPayForm(result.data?.pay_url, result.data?.params)
   await Promise.all([walletStore.fetchMyRecharges({ page: 1 }), walletStore.fetchWallet()])
 }
@@ -127,7 +140,7 @@ function handleRechargesPage(page) {
 }
 
 async function fetchRechargeData() {
-  if (authStore.isAdmin) return
+  // 管理员同样可以充值（便于联调），因此不做角色区分
   await Promise.all([
     walletStore.fetchRechargeConfig(),
     walletStore.fetchMyRecharges({ page: 1 }),
@@ -316,6 +329,14 @@ onMounted(() => {
         <div class="space-y-3">
           <p class="eyebrow">资金中心</p>
           <h1 class="section-title">我的钱包</h1>
+          <button
+            v-if="rechargeConfig.enabled"
+            type="button"
+            class="btn-primary min-h-[44px] !px-6"
+            @click="openRecharge"
+          >
+            充值
+          </button>
         </div>
 
         <!-- 手机 2×2 统计卡，桌面端一行四张 -->
@@ -363,56 +384,7 @@ onMounted(() => {
     </section>
 
     <div class="wallet-grid">
-    <!-- 充值：仅管理员未配置支付时整块不渲染 -->
-    <section v-if="!authStore.isAdmin && rechargeConfig.enabled" class="surface-card p-4 sm:p-6 lg:p-8">
-      <h2 class="text-2xl font-semibold text-ink-1">充值</h2>
-      <p class="mt-2 text-sm text-ink-2">选择支付方式并填写金额，提交后将跳转到支付页面完成付款。</p>
-
-      <div v-if="rechargeMessage.text" class="mt-4" :class="messageClass(rechargeMessage.type)">
-        {{ rechargeMessage.text }}
-      </div>
-
-      <form class="mt-6 grid max-w-2xl gap-5" @submit.prevent="submitRecharge">
-        <div>
-          <label class="label" for="recharge-amount">充值金额（元）</label>
-          <input
-            id="recharge-amount"
-            v-model="rechargeForm.amount"
-            type="number"
-            :min="rechargeConfig.min_amount"
-            step="0.01"
-            class="input min-h-[44px]"
-            :class="{ 'input-error': rechargeError }"
-            :placeholder="`最低 ${rechargeConfig.min_amount} 元`"
-          />
-        </div>
-
-        <div>
-          <label class="label" for="recharge-method">支付方式</label>
-          <select id="recharge-method" v-model="rechargeForm.paymentMethod" class="input min-h-[44px]">
-            <option v-for="method in rechargeConfig.pay_methods" :key="method.type" :value="method.type">
-              {{ method.name }}
-            </option>
-          </select>
-          <p v-if="!rechargeConfig.pay_methods.length" class="mt-2 text-xs text-ink-3">
-            管理员暂未配置可用的支付方式，请稍后再试。
-          </p>
-        </div>
-
-        <div>
-          <p v-if="rechargeError" class="mb-3 text-xs text-danger">{{ rechargeError }}</p>
-          <button
-            class="btn-primary w-full py-3 sm:w-auto sm:!px-10"
-            :disabled="submittingRecharge || walletStore.submitting || !rechargeConfig.pay_methods.length"
-          >
-            {{ submittingRecharge ? '提交中...' : '立即充值' }}
-          </button>
-          <p class="helper-text">提交后请在支付页面完成付款，到账后金额会自动计入余额。</p>
-        </div>
-      </form>
-    </section>
-
-    <section v-if="!authStore.isAdmin" class="surface-card p-4 sm:p-6 lg:p-8">
+    <section v-if="rechargeConfig.enabled || myRecharges.length" class="surface-card p-4 sm:p-6 lg:p-8">
       <h2 class="text-2xl font-semibold text-ink-1">我的充值记录</h2>
 
       <div v-if="walletStore.myRechargesLoading" class="mt-6 space-y-3" aria-busy="true">
@@ -685,6 +657,62 @@ onMounted(() => {
       </div>
     </section>
     </div>
+
+    <!-- 充值弹窗：点「充值」按钮后在这里填写金额与支付方式 -->
+    <teleport to="body">
+      <div v-if="showRechargeModal" class="modal-scrim modal-scrim--sheet" @click.self="closeRecharge">
+        <div class="modal-card modal-sheet !max-w-[440px]" role="dialog" aria-modal="true" aria-label="充值">
+          <div class="flex items-center justify-between gap-3">
+            <h3 class="text-lg font-semibold text-ink-1">充值</h3>
+            <button type="button" class="btn-ghost !min-h-[44px] !px-3" :disabled="submittingRecharge" @click="closeRecharge">关闭</button>
+          </div>
+
+          <p class="mt-1 text-sm text-ink-3">
+            当前余额 {{ formatPrice(walletInfo.available_balance) }}，充值后自动计入可用余额。
+          </p>
+
+          <div v-if="rechargeMessage.text" class="mt-4" :class="messageClass(rechargeMessage.type)">
+            {{ rechargeMessage.text }}
+          </div>
+
+          <form class="mt-5 grid gap-5" @submit.prevent="submitRecharge">
+            <div>
+              <label class="label" for="recharge-amount">充值金额（元）</label>
+              <input
+                id="recharge-amount"
+                v-model="rechargeForm.amount"
+                type="number"
+                :min="rechargeConfig.min_amount"
+                step="0.01"
+                class="input min-h-[44px]"
+                :class="{ 'input-error': rechargeError }"
+                :placeholder="`最低 ${rechargeConfig.min_amount} 元`"
+              />
+            </div>
+
+            <div>
+              <label class="label" for="recharge-method">支付方式</label>
+              <select id="recharge-method" v-model="rechargeForm.paymentMethod" class="input min-h-[44px]">
+                <option v-for="method in rechargeConfig.pay_methods" :key="method.type" :value="method.type">
+                  {{ method.name }}
+                </option>
+              </select>
+            </div>
+
+            <div>
+              <p v-if="rechargeError" class="mb-3 text-xs text-danger">{{ rechargeError }}</p>
+              <button
+                class="btn-primary w-full py-3"
+                :disabled="submittingRecharge || walletStore.submitting || !rechargeConfig.pay_methods.length"
+              >
+                {{ submittingRecharge ? '提交中...' : '立即充值' }}
+              </button>
+              <p class="helper-text">提交后跳转到支付页面完成付款，到账后金额自动计入余额。</p>
+            </div>
+          </form>
+        </div>
+      </div>
+    </teleport>
   </div>
 </template>
 

@@ -2,8 +2,12 @@
 
 职责：
 - 读写易支付网关配置（单行表 ``payment_settings``）；
-- 为登录用户创建充值订单并生成支付表单参数；
+- 为登录用户（含管理员，便于测试）创建充值订单并生成支付表单参数；
 - 为回调方提供幂等入账入口（真正的余额变动仍在 ``WalletService``）。
+
+回调地址不再由管理员配置：直接按本次充值请求的来源推导
+（浏览器 ``Origin`` → 反向代理 ``X-Forwarded-*`` → ``Referer`` → ``Host``），
+「用户在哪个地址上点的充值，回调就回到哪个地址」。
 
 商户密钥只在此模块与管理员配置接口之间流转，绝不下发到用户侧接口。
 """
@@ -11,13 +15,14 @@
 import json
 import logging
 from decimal import ROUND_HALF_UP, Decimal
+from urllib.parse import urlparse
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings as app_settings
-from app.models.payment_setting import DEFAULT_PAY_METHODS_JSON, PaymentSetting
+from app.models.payment_setting import PAY_METHOD_NAMES, PaymentSetting
 from app.models.recharge import RechargeOrder, RechargeStatus
 from app.models.user import User
 from app.services import epay_service
@@ -27,9 +32,6 @@ logger = logging.getLogger(__name__)
 
 _CENT = Decimal("0.01")
 
-# 仅接受字母数字下划线的支付方式，避免把任意字符串透传给上游
-_MAX_PAY_METHOD_LEN = 32
-
 
 def _pages(total: int, page_size: int) -> int:
     return (total + page_size - 1) // page_size if total > 0 else 0
@@ -37,77 +39,65 @@ def _pages(total: int, page_size: int) -> int:
 
 async def get_or_create_payment_setting(db: AsyncSession) -> PaymentSetting:
     """读取易支付配置，缺失时创建默认行（未配置凭据 → 充值不可用）。"""
-    result = await db.execute(
-        select(PaymentSetting).where(PaymentSetting.id == 1)
-    )
+    result = await db.execute(select(PaymentSetting).where(PaymentSetting.id == 1))
     setting = result.scalar_one_or_none()
     if setting is None:
-        setting = PaymentSetting(id=1, min_amount=Decimal("1.00"))
+        setting = PaymentSetting(
+            id=1,
+            min_amount=Decimal("1.00"),
+            alipay_enabled=True,
+            wxpay_enabled=True,
+        )
         db.add(setting)
         await db.flush()
         await db.refresh(setting)
     return setting
 
 
-def parse_pay_methods(raw: str | None) -> list[dict[str, str]]:
-    """解析支付方式 JSON；非法或为空时回退到默认支付方式。"""
-    text = (raw or "").strip()
-    if not text:
-        text = DEFAULT_PAY_METHODS_JSON
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError:
-        logger.warning("Invalid pay_methods JSON, falling back to defaults")
-        parsed = json.loads(DEFAULT_PAY_METHODS_JSON)
-
-    if not isinstance(parsed, list):
-        parsed = json.loads(DEFAULT_PAY_METHODS_JSON)
-
-    methods: list[dict[str, str]] = []
-    for item in parsed:
-        if not isinstance(item, dict):
-            continue
-        method_type = str(item.get("type") or "").strip()
-        if not method_type or len(method_type) > _MAX_PAY_METHOD_LEN:
-            continue
-        methods.append(
-            {
-                "name": str(item.get("name") or method_type).strip(),
-                "type": method_type,
-            }
-        )
-    return methods
+def enabled_pay_methods(setting: PaymentSetting) -> list[dict[str, str]]:
+    """已勾选的支付方式，供前端展示。"""
+    return [
+        {"name": PAY_METHOD_NAMES[method_type], "type": method_type}
+        for method_type in setting.enabled_method_types
+    ]
 
 
 def is_recharge_enabled(setting: PaymentSetting) -> bool:
-    """三项凭据齐备且总开关打开时，用户侧才开放充值。"""
-    return bool(
-        setting.enabled
-        and setting.pay_address
-        and setting.epay_id
-        and setting.epay_key
-    )
+    """凭据齐备、总开关打开、且至少勾选一种支付方式时，用户侧才开放充值。"""
+    return setting.is_configured
 
 
-def _resolve_base_url(request, setting: PaymentSetting) -> str:
-    """回调基础地址：优先后台配置，未配置时回退到当前请求来源。
+def _origin_from_request(request) -> str:
+    """推导本站对外地址（scheme://host），用于拼接回调与跳回地址。
 
-    生产环境务必显式配置 ``notify_base_url`` —— 反向代理下
-    ``request.base_url`` 往往是内网地址，易支付服务器无法访问。
+    优先用浏览器自带的 ``Origin``（充值 POST 一定带），它天然就是用户实际
+    访问的站点地址；其次用反向代理透传头，最后才退回请求自身的 host。
     """
-    configured = (setting.notify_base_url or "").strip()
-    if configured:
-        return configured.rstrip("/")
+    origin = (request.headers.get("origin") or "").strip()
+    if origin and origin != "null":
+        parsed = urlparse(origin)
+        if parsed.scheme in ("http", "https") and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}"
+
+    proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip()
+    host = (request.headers.get("x-forwarded-host") or "").split(",")[0].strip()
+    if host:
+        return f"{proto or request.url.scheme}://{host}"
+
+    referer = (request.headers.get("referer") or "").strip()
+    if referer:
+        parsed = urlparse(referer)
+        if parsed.scheme in ("http", "https") and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}"
+
     return str(request.base_url).rstrip("/")
 
 
-def build_notify_urls(request, setting: PaymentSetting) -> tuple[str, str]:
-    """返回 (notify_url, return_url)。"""
-    base = _resolve_base_url(request, setting)
+def build_notify_urls(request) -> tuple[str, str]:
+    """返回 (notify_url, return_url)，均基于本次请求推导出的站点地址。"""
+    origin = _origin_from_request(request)
     prefix = app_settings.API_V1_PREFIX.rstrip("/")
-    notify_url = f"{base}{prefix}/wallet/recharge/notify"
-    return_url = f"{base}/wallet"
-    return notify_url, return_url
+    return f"{origin}{prefix}/wallet/recharge/notify", f"{origin}/wallet"
 
 
 async def create_recharge_order(
@@ -126,8 +116,7 @@ async def create_recharge_order(
             detail="管理员暂未开启充值功能",
         )
 
-    methods = parse_pay_methods(setting.pay_methods)
-    if payment_method not in {m["type"] for m in methods}:
+    if payment_method not in setting.enabled_method_types:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="支付方式不存在",
@@ -146,7 +135,7 @@ async def create_recharge_order(
             detail="充值金额必须大于 0",
         )
 
-    notify_url, return_url = build_notify_urls(request, setting)
+    notify_url, return_url = build_notify_urls(request)
     trade_no = epay_service.generate_trade_no(user.id)
 
     # 先构造支付参数：配置有问题时立刻失败，不留下无法支付的僵尸订单
@@ -174,11 +163,12 @@ async def create_recharge_order(
     await db.refresh(order)
 
     logger.info(
-        "Recharge order %s created: user=%s amount=%s method=%s",
+        "Recharge order %s created: user=%s amount=%s method=%s notify=%s",
         trade_no,
         user.id,
         amount,
         payment_method,
+        notify_url,
     )
     return order, pay_url, params
 
@@ -229,7 +219,9 @@ async def handle_notify(
     if existing is None:
         logger.warning("Recharge notify for unknown order: %s", trade_no)
         return False
-    if notified_money != Decimal(str(existing.amount)).quantize(_CENT, rounding=ROUND_HALF_UP):
+    if notified_money != Decimal(str(existing.amount)).quantize(
+        _CENT, rounding=ROUND_HALF_UP
+    ):
         logger.error(
             "Recharge notify amount mismatch for %s: notified=%s expected=%s",
             trade_no,
@@ -263,10 +255,10 @@ async def list_user_recharges(
 __all__ = [
     "build_notify_urls",
     "create_recharge_order",
+    "enabled_pay_methods",
     "get_or_create_payment_setting",
     "handle_notify",
     "is_recharge_enabled",
     "list_user_recharges",
-    "parse_pay_methods",
     "_pages",
 ]

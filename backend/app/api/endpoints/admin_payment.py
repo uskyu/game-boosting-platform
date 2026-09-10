@@ -23,8 +23,8 @@ def _to_response(setting: PaymentSetting) -> PaymentSettingResponse:
         pay_address=setting.pay_address,
         epay_id=setting.epay_id,
         has_key=bool(setting.epay_key),
-        notify_base_url=setting.notify_base_url,
-        pay_methods=setting.pay_methods,
+        alipay_enabled=setting.alipay_enabled,
+        wxpay_enabled=setting.wxpay_enabled,
         min_amount=setting.min_amount,
         updated_at=setting.updated_at,
     )
@@ -48,7 +48,7 @@ async def get_payment_settings(
     "/settings",
     response_model=PaymentSettingResponse,
     summary="保存支付配置",
-    description="保存易支付接口地址、商户ID、商户密钥、回调地址、支付方式与最低充值金额。epay_key 留空表示不修改。",
+    description="保存易支付接口地址、商户ID、商户密钥、启用的支付方式与最低充值金额。epay_key 留空表示不修改。回调地址无需配置，按充值请求来源自动推导。",
 )
 async def update_payment_settings(
     payload: PaymentSettingUpdate,
@@ -60,11 +60,11 @@ async def update_payment_settings(
     setting.enabled = payload.enabled
     setting.pay_address = payload.pay_address
     setting.epay_id = payload.epay_id
-    setting.notify_base_url = payload.notify_base_url
-    setting.pay_methods = payload.pay_methods
+    setting.alipay_enabled = payload.alipay_enabled
+    setting.wxpay_enabled = payload.wxpay_enabled
     setting.min_amount = Decimal(str(payload.min_amount)).quantize(
-            Decimal("0.01"), rounding=ROUND_HALF_UP
-        )
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
 
     # 密钥留空 = 保持原值；只有明确传了新值才覆盖
     if payload.epay_key is not None:

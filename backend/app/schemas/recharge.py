@@ -1,6 +1,5 @@
 """充值（易支付）与支付配置的请求/响应模型。"""
 
-import json
 from datetime import datetime
 from decimal import Decimal
 
@@ -95,46 +94,26 @@ class PaymentSettingUpdate(BaseModel):
     """管理员保存易支付配置。
 
     ``epay_key`` 传空（None 或空串）表示保留现有密钥不变。
+    回调地址不需要配置：按充值请求来源自动推导。
     """
 
     enabled: bool = Field(default=True, description="是否开启充值")
     pay_address: str | None = Field(default=None, max_length=500, description="支付接口地址")
     epay_id: str | None = Field(default=None, max_length=64, description="易支付商户ID")
     epay_key: str | None = Field(default=None, max_length=255, description="易支付商户密钥，留空表示不修改")
-    notify_base_url: str | None = Field(default=None, max_length=500, description="回调基础地址")
-    pay_methods: str | None = Field(default=None, description="支付方式 JSON 数组文本")
+    alipay_enabled: bool = Field(default=True, description="启用支付宝")
+    wxpay_enabled: bool = Field(default=True, description="启用微信")
     min_amount: Decimal = Field(default=Decimal("1.00"), gt=0, description="单笔最低充值金额（元）")
 
     model_config = ConfigDict(extra="forbid")
 
-    @field_validator("pay_address", "epay_id", "epay_key", "notify_base_url", mode="before")
+    @field_validator("pay_address", "epay_id", "epay_key", mode="before")
     @classmethod
     def normalize_text(cls, value):
         if value is None:
             return None
         text = str(value).strip()
         return text or None
-
-    @field_validator("pay_methods")
-    @classmethod
-    def normalize_methods(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        text = value.strip()
-        if not text:
-            return None
-        import json
-
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError as err:
-            raise ValueError("支付方式必须是合法的 JSON 数组") from err
-        if not isinstance(parsed, list):
-            raise ValueError("支付方式必须是 JSON 数组")
-        for item in parsed:
-            if not isinstance(item, dict) or not str(item.get("type") or "").strip():
-                raise ValueError('支付方式每一项都必须包含 "type" 字段')
-        return json.dumps(parsed, ensure_ascii=False)
 
 
 class PaymentSettingResponse(BaseModel):
@@ -144,8 +123,8 @@ class PaymentSettingResponse(BaseModel):
     pay_address: str | None
     epay_id: str | None
     has_key: bool = Field(description="是否已配置商户密钥")
-    notify_base_url: str | None
-    pay_methods: str | None
+    alipay_enabled: bool = Field(description="是否启用支付宝")
+    wxpay_enabled: bool = Field(description="是否启用微信")
     min_amount: Decimal
     updated_at: datetime
 

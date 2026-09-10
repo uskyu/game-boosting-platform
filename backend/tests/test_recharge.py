@@ -2,8 +2,11 @@
 
 覆盖重点：
 - 管理员配置接口绝不回传商户密钥；
+- 回调地址按充值请求来源自动推导（Origin 优先）；
+- 支付方式由两个开关控制，未勾选的方式下单被拒；
 - 充值回调重复投递只入账一次（幂等）；
 - 签名错误、金额被篡改、未知订单一律拒绝；
+- 管理员也能充值（便于联调）；
 - 充值只进可用余额，不影响累计收入，也不改变既有托管/提现语义。
 """
 
@@ -21,7 +24,6 @@ from tests.conftest import auth_header
 PAY_ADDRESS = "https://pay.example.com"
 EPAY_ID = "1001"
 EPAY_KEY = "unit-test-secret"
-NOTIFY_BASE = "https://platform.example.com"
 NOTIFY_PATH = "/wallet/recharge/notify"
 
 
@@ -31,8 +33,8 @@ def _settings_payload(**overrides) -> dict:
         "pay_address": PAY_ADDRESS,
         "epay_id": EPAY_ID,
         "epay_key": EPAY_KEY,
-        "notify_base_url": NOTIFY_BASE,
-        "pay_methods": '[{"name": "支付宝", "type": "alipay"}]',
+        "alipay_enabled": True,
+        "wxpay_enabled": True,
         "min_amount": 1,
     }
     payload.update(overrides)
@@ -73,12 +75,20 @@ def _notify_params(
 
 
 async def _create_order(
-    client: AsyncClient, user: dict, amount: float = 100, method: str = "alipay"
+    client: AsyncClient,
+    user: dict,
+    amount: float = 100,
+    method: str = "alipay",
+    *,
+    origin: str | None = None,
 ):
+    headers = auth_header(user)
+    if origin:
+        headers["Origin"] = origin
     resp = await client.post(
         "/wallet/recharge",
         json={"amount": amount, "payment_method": method},
-        headers=auth_header(user),
+        headers=headers,
     )
     assert resp.status_code == 201, resp.text
     return resp.json()
@@ -125,16 +135,23 @@ async def test_admin_settings_keeps_key_when_omitted(
     assert resp.json()["has_key"] is True
 
 
-async def test_admin_settings_rejects_invalid_pay_methods_json(
+async def test_admin_settings_has_no_callback_address_field(
     client: AsyncClient, admin_user: dict
 ):
-    resp = await client.put(
-        "/admin/payment/settings",
-        json=_settings_payload(pay_methods="not-json"),
-        headers=auth_header(admin_user),
-    )
-    assert resp.status_code == 422
-    assert "JSON" in resp.text
+    """回调地址不再由管理员配置。"""
+    data = await _configure(client, admin_user)
+    assert "notify_base_url" not in data
+    assert "pay_methods" not in data
+    assert data["alipay_enabled"] is True
+    assert data["wxpay_enabled"] is True
+
+
+async def test_admin_settings_pay_method_toggles_persist(
+    client: AsyncClient, admin_user: dict
+):
+    data = await _configure(client, admin_user, alipay_enabled=True, wxpay_enabled=False)
+    assert data["alipay_enabled"] is True
+    assert data["wxpay_enabled"] is False
 
 
 async def test_admin_settings_requires_admin(
@@ -165,20 +182,30 @@ async def test_recharge_config_disabled_before_credentials(
     assert data["pay_methods"] == []
 
 
-async def test_recharge_config_enabled_after_credentials(
+async def test_recharge_config_lists_only_enabled_methods(
     client: AsyncClient, admin_user: dict, registered_user: dict
 ):
-    await _configure(client, admin_user)
+    await _configure(client, admin_user, alipay_enabled=True, wxpay_enabled=False)
     resp = await client.get(
         "/wallet/recharge/config", headers=auth_header(registered_user)
     )
-    assert resp.status_code == 200
     data = resp.json()
     assert data["enabled"] is True
     assert data["pay_methods"] == [{"name": "支付宝", "type": "alipay"}]
     assert Decimal(str(data["min_amount"])) == Decimal("1.00")
-    # 配置接口同样不得泄漏密钥
+    # 配置接口不得泄漏密钥
     assert "epay_key" not in data
+
+
+async def test_recharge_config_disabled_when_no_method_ticked(
+    client: AsyncClient, admin_user: dict, registered_user: dict
+):
+    """两个支付方式都不勾选时等同于未开启充值。"""
+    await _configure(client, admin_user, alipay_enabled=False, wxpay_enabled=False)
+    resp = await client.get(
+        "/wallet/recharge/config", headers=auth_header(registered_user)
+    )
+    assert resp.json()["enabled"] is False
 
 
 async def test_recharge_config_requires_login(client: AsyncClient):
@@ -208,11 +235,31 @@ async def test_create_recharge_returns_signed_form(
     assert params["money"] == "100.00"
     assert params["device"] == "pc"
     assert params["sign_type"] == "MD5"
-    # 回调地址取自管理员配置的回调基础地址
-    assert params["notify_url"] == f"{NOTIFY_BASE}/api/v1{NOTIFY_PATH}"
-    assert params["return_url"] == f"{NOTIFY_BASE}/wallet"
     # 签名可被独立校验
     assert epay_service.verify_params(params, EPAY_KEY)["verify_status"] is True
+
+
+async def test_notify_url_follows_request_origin(
+    client: AsyncClient, admin_user: dict, registered_user: dict
+):
+    """回调地址 = 用户下单时访问的站点地址（Origin 优先）。"""
+    await _configure(client, admin_user)
+    data = await _create_order(
+        client, registered_user, amount=10, origin="https://shop.example.com"
+    )
+    params = data["params"]
+    assert params["notify_url"] == "https://shop.example.com/api/v1/wallet/recharge/notify"
+    assert params["return_url"] == "https://shop.example.com/wallet"
+
+
+async def test_notify_url_falls_back_to_request_host(
+    client: AsyncClient, admin_user: dict, registered_user: dict
+):
+    """没有 Origin 时退回请求自身地址（测试客户端为 http://test）。"""
+    await _configure(client, admin_user)
+    data = await _create_order(client, registered_user, amount=10)
+    params = data["params"]
+    assert params["notify_url"] == "http://test/api/v1/wallet/recharge/notify"
 
 
 async def test_create_recharge_persists_pending_order(
@@ -234,6 +281,7 @@ async def test_create_recharge_persists_pending_order(
     "amount,method,expected",
     [
         (100, "unionpay", "支付方式不存在"),
+        (100, "wxpay", "支付方式不存在"),
         (0.5, "alipay", "充值金额不能低于"),
     ],
 )
@@ -245,7 +293,8 @@ async def test_create_recharge_rejects_invalid_input(
     method,
     expected,
 ):
-    await _configure(client, admin_user)
+    # 只勾选支付宝，wxpay 属于未启用方式
+    await _configure(client, admin_user, alipay_enabled=True, wxpay_enabled=False)
     resp = await client.post(
         "/wallet/recharge",
         json={"amount": amount, "payment_method": method},
@@ -268,16 +317,24 @@ async def test_create_recharge_rejected_when_disabled(
     assert "未开启" in resp.json()["detail"]
 
 
-async def test_admin_cannot_recharge(
-    client: AsyncClient, admin_user: dict
-):
+async def test_admin_can_recharge(client: AsyncClient, admin_user: dict):
+    """管理员也可以充值，方便联调测试。"""
     await _configure(client, admin_user)
     resp = await client.post(
         "/wallet/recharge",
         json={"amount": 100, "payment_method": "alipay"},
         headers=auth_header(admin_user),
     )
-    assert resp.status_code == 403
+    assert resp.status_code == 201, resp.text
+    trade_no = resp.json()["trade_no"]
+
+    notify = await client.post(
+        NOTIFY_PATH, data=_notify_params(trade_no, "100.00")
+    )
+    assert notify.text == "success"
+
+    wallet = await client.get("/wallet", headers=auth_header(admin_user))
+    assert Decimal(str(wallet.json()["available_balance"])) == Decimal("100.00")
 
 
 # ---------------------------------------------------------------------------
