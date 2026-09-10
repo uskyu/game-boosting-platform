@@ -147,6 +147,102 @@ async function fetchRechargeData() {
   ])
 }
 
+// ── 保证金：可用余额转入保证金，按门槛匹配阶梯权益 ──
+const depositOverview = computed(() => walletStore.depositOverview)
+const depositForm = ref({ amount: '' })
+const depositError = ref('')
+const depositMessage = ref({ type: '', text: '' })
+const submittingDeposit = ref(false)
+
+// 保证金模式未开启但有余额时也要展示卡片，保证用户能把钱转回去
+const showDepositCard = computed(
+  () => Boolean(depositOverview.value?.enabled) || Number(depositOverview.value?.deposit_balance || 0) > 0
+)
+
+const depositWaitText = computed(() => {
+  const seconds = depositOverview.value?.wait_seconds
+  if (seconds == null) return '—'
+  return Number(seconds) === 0 ? '立即可接' : `${seconds} 秒`
+})
+
+const depositSettleText = computed(() => {
+  const hours = Number(depositOverview.value?.settle_hours)
+  if (!Number.isFinite(hours) || hours < 0) return '—'
+  if (hours === 0) return '立即结算'
+  if (hours < 24) return `${hours} 小时`
+  if (hours % 24 === 0) return `${hours / 24} 天`
+  return `${hours} 小时`
+})
+
+const depositTierText = computed(() => {
+  const threshold = depositOverview.value?.current_threshold
+  return threshold == null ? '—' : `≥ ${formatPrice(threshold)}`
+})
+
+async function submitDepositTransfer() {
+  depositMessage.value = { type: '', text: '' }
+  const amount = Number(depositForm.value.amount)
+  if (!depositForm.value.amount || !Number.isFinite(amount) || amount <= 0) {
+    depositError.value = '请输入要转入的保证金金额'
+    return
+  }
+  if (depositOverview.value && amount > Number(depositOverview.value.available_balance)) {
+    depositError.value = '转入金额不能超过可用余额'
+    return
+  }
+  depositError.value = ''
+  submittingDeposit.value = true
+  const result = await walletStore.transferToDeposit(amount)
+  submittingDeposit.value = false
+  if (!result.success) {
+    depositMessage.value = { type: 'error', text: result.error || '转入保证金失败' }
+    return
+  }
+  depositMessage.value = { type: 'success', text: '保证金已转入并冻结' }
+  depositForm.value.amount = ''
+  await Promise.all([walletStore.fetchDepositOverview(), walletStore.fetchWallet()])
+}
+
+async function fetchDepositData() {
+  // 保证金只对打手开放，管理员接口返回 403
+  if (authStore.isAdmin) return
+  await walletStore.fetchDepositOverview()
+}
+
+const depositReturnForm = ref({ amount: '' })
+const depositReturnError = ref('')
+const submittingDepositReturn = ref(false)
+
+const hasDepositBalance = computed(() => Number(depositOverview.value?.deposit_balance || 0) > 0)
+
+async function submitDepositReturn() {
+  depositMessage.value = { type: '', text: '' }
+  const amount = Number(depositReturnForm.value.amount)
+  if (!depositReturnForm.value.amount || !Number.isFinite(amount) || amount <= 0) {
+    depositReturnError.value = '请输入要转回的保证金金额'
+    return
+  }
+  if (amount > Number(depositOverview.value?.deposit_balance || 0)) {
+    depositReturnError.value = '转回金额不能超过保证金余额'
+    return
+  }
+  if (!depositOverview.value?.can_return) {
+    depositReturnError.value = depositOverview.value?.return_block_reason || '当前不能转回余额'
+    return
+  }
+  depositReturnError.value = ''
+  submittingDepositReturn.value = true
+  const result = await walletStore.transferFromDeposit(amount)
+  submittingDepositReturn.value = false
+  if (!result.success) {
+    depositReturnError.value = result.error || '转回余额失败'
+    return
+  }
+  depositMessage.value = { type: 'success', text: '保证金已转回可用余额' }
+  depositReturnForm.value.amount = ''
+  await Promise.all([walletStore.fetchDepositOverview(), walletStore.fetchWallet()])
+}
+
 const withdrawForm = ref({ amount: '', channel: 'ALIPAY', account_name: '', account_no: '' })
 const formErrors = ref({})
 const withdrawMessage = ref({ type: '', text: '' })
@@ -318,7 +414,7 @@ async function refreshAll() {
 
 onMounted(() => {
   // 并行拉取：钱包数据与审核中报名单互不依赖，串行会放大远程库延迟
-  Promise.all([refreshAll(), fetchReviewClaims(), fetchRechargeData()])
+  Promise.all([refreshAll(), fetchReviewClaims(), fetchRechargeData(), fetchDepositData()])
 })
 </script>
 
@@ -384,6 +480,94 @@ onMounted(() => {
     </section>
 
     <div class="wallet-grid">
+    <!-- 保证金：可用余额转入保证金，按门槛匹配阶梯权益 -->
+    <section v-if="!authStore.isAdmin && showDepositCard" class="surface-card p-4 sm:p-6 lg:p-8">
+      <div class="flex items-center justify-between gap-4">
+        <h2 class="text-2xl font-semibold text-ink-1">保证金</h2>
+        <router-link :to="{ name: 'deposit' }" class="btn-ghost !px-4 !py-2 text-sm">查看权益阶梯</router-link>
+      </div>
+
+      <div class="mt-6 grid gap-4 sm:grid-cols-3">
+        <article class="info-tile !p-4">
+          <p class="text-xs uppercase tracking-[0.16em] text-ink-2">保证金余额</p>
+          <p class="mt-2 text-xl font-semibold tabular-nums text-ink-1">{{ formatPrice(depositOverview?.deposit_balance) }}</p>
+        </article>
+        <article class="info-tile !p-4">
+          <p class="text-xs uppercase tracking-[0.16em] text-ink-2">当前档位</p>
+          <p class="mt-2 text-xl font-semibold tabular-nums text-ink-1">{{ depositTierText }}</p>
+        </article>
+        <article class="info-tile !p-4">
+          <p class="text-xs uppercase tracking-[0.16em] text-ink-2">可用余额</p>
+          <p class="mt-2 text-xl font-semibold tabular-nums text-ink-1">{{ formatPrice(depositOverview?.available_balance) }}</p>
+        </article>
+      </div>
+
+      <p class="mt-4 text-sm text-ink-2">
+        当前档位权益：接单等待 <span class="font-semibold text-ink-1">{{ depositWaitText }}</span>
+        · 接单免冻结赔付金 <span class="font-semibold text-ink-1">{{ depositOverview?.exempt_compensation ? '是' : '否' }}</span>
+        · 结账时效 <span class="font-semibold text-ink-1">{{ depositSettleText }}</span>
+      </p>
+
+      <div v-if="depositMessage.text" class="mt-4" :class="messageClass(depositMessage.type)">
+        {{ depositMessage.text }}
+      </div>
+
+      <div class="mt-6 grid max-w-3xl gap-6 sm:grid-cols-2">
+        <form v-if="depositOverview?.enabled" class="grid content-start gap-3" @submit.prevent="submitDepositTransfer">
+          <div>
+            <label class="label" for="deposit-amount">转入保证金（元）</label>
+            <input
+              id="deposit-amount"
+              v-model="depositForm.amount"
+              type="number"
+              min="0.01"
+              step="0.01"
+              class="input min-h-[44px]"
+              :class="{ 'input-error': depositError }"
+              placeholder="例如 100"
+            />
+            <p v-if="depositError" class="mt-2 text-xs text-danger">{{ depositError }}</p>
+            <p class="helper-text">从可用余额转入，转入后即冻结。</p>
+          </div>
+          <button
+            class="btn-primary min-h-[44px]"
+            :disabled="submittingDeposit || walletStore.depositSubmitting"
+          >
+            {{ submittingDeposit ? '转入中...' : '转入保证金' }}
+          </button>
+        </form>
+        <p v-else class="text-sm text-ink-3">保证金功能未开启，暂时不能缴纳。</p>
+
+        <form v-if="hasDepositBalance" class="grid content-start gap-3" @submit.prevent="submitDepositReturn">
+          <div>
+            <label class="label" for="deposit-return-amount">转回余额（元）</label>
+            <input
+              id="deposit-return-amount"
+              v-model="depositReturnForm.amount"
+              type="number"
+              min="0.01"
+              step="0.01"
+              class="input min-h-[44px]"
+              :class="{ 'input-error': depositReturnError }"
+              :disabled="!depositOverview?.can_return"
+              placeholder="例如 100"
+            />
+            <p v-if="depositReturnError" class="mt-2 text-xs text-danger">{{ depositReturnError }}</p>
+            <p v-if="!depositOverview?.can_return && depositOverview?.return_block_reason" class="mt-2 text-xs text-warning">
+              {{ depositOverview.return_block_reason }}
+            </p>
+            <p v-else class="helper-text">转回后保证金减少，档位权益会随之变化。</p>
+          </div>
+          <button
+            class="btn-secondary min-h-[44px]"
+            :disabled="!depositOverview?.can_return || submittingDepositReturn || walletStore.depositSubmitting"
+          >
+            {{ submittingDepositReturn ? '转回中...' : '转回余额' }}
+          </button>
+        </form>
+      </div>
+    </section>
+
     <section v-if="rechargeConfig.enabled || myRecharges.length" class="surface-card p-4 sm:p-6 lg:p-8">
       <h2 class="text-2xl font-semibold text-ink-1">我的充值记录</h2>
 

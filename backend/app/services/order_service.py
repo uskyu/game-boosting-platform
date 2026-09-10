@@ -1225,13 +1225,28 @@ class OrderService:
             deduct = min(max(deduct, _ZERO), compensation)
             booster_wallet = await wallet_service.get_or_create_wallet(booster_id)
             if deduct > _ZERO:
-                await wallet_service.deduct_compensation(
-                    booster_wallet,
-                    amount=deduct,
-                    order_id=order.id,
-                    booster_id=booster_id,
-                    note=note,
-                )
+                # 先扣接单时冻结的赔付金；保证金档位免除预冻结的打手冻结为 0，
+                # 差额改从保证金里扣。注意「免」的是**接单时的预冻结**，
+                # 不是赔付责任本身 —— 真炸单一样要赔。
+                frozen = _to_decimal(booster_wallet.frozen_balance)
+                from_frozen = min(deduct, frozen)
+                if from_frozen > _ZERO:
+                    await wallet_service.deduct_compensation(
+                        booster_wallet,
+                        amount=from_frozen,
+                        order_id=order.id,
+                        booster_id=booster_id,
+                        note=note,
+                    )
+                shortfall = deduct - from_frozen
+                if shortfall > _ZERO:
+                    await wallet_service.deduct_deposit(
+                        booster_wallet,
+                        amount=shortfall,
+                        order_id=order.id,
+                        booster_id=booster_id,
+                        note=note,
+                    )
             remainder = compensation - deduct
             if remainder > _ZERO:
                 await wallet_service.release_deposit(

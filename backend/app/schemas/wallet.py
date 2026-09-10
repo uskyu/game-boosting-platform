@@ -22,6 +22,10 @@ class WalletResponse(BaseModel):
 
     available_balance: Decimal = Field(description="可用余额")
     frozen_balance: Decimal = Field(description="冻结余额")
+    deposit_balance: Decimal = Field(
+        default=Decimal("0.00"),
+        description="保证金余额（由可用余额转入并冻结，不可消费/提现）",
+    )
     total_income: Decimal = Field(description="累计收入")
     total_withdrawn: Decimal = Field(description="累计已提现")
 

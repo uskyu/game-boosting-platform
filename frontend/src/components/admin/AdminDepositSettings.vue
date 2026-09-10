@@ -191,6 +191,10 @@ onMounted(async () => {
           <button type="button" class="btn-secondary min-h-[40px] !px-4 !py-2" @click="addTier">添加一行</button>
         </div>
         <p class="mt-1.5 text-xs text-ink-3">门槛不能重复；保存时以当前表格整表替换后台配置。</p>
+        <p class="mt-1.5 text-xs text-ink-3">
+          「接单免冻结」只影响<strong>接单时是否预冻结</strong>赔付金：勾选后该档位打手接单不再预冻结，
+          真正炸单时赔付金<strong>直接从保证金里扣</strong>，并不是免除赔付责任。
+        </p>
 
         <div v-if="!form.tiers.length" class="empty-state mt-4">
           <div class="empty-state__icon" aria-hidden="true">🪜</div>
@@ -204,7 +208,7 @@ onMounted(async () => {
               <tr class="text-xs uppercase tracking-[0.08em] text-ink-3">
                 <th class="px-2 py-2 font-medium">保证金门槛（元）</th>
                 <th class="px-2 py-2 font-medium">接单等待（秒）</th>
-                <th class="px-2 py-2 font-medium">免炸单赔付金</th>
+                <th class="px-2 py-2 font-medium">接单免冻结赔付金</th>
                 <th class="px-2 py-2 font-medium">结账时效（小时）</th>
                 <th class="px-2 py-2 font-medium">启用</th>
                 <th class="px-2 py-2 font-medium">操作</th>
@@ -221,7 +225,7 @@ onMounted(async () => {
                 <td class="px-2 py-2">
                   <label class="flex min-h-[40px] items-center gap-2 text-sm text-ink-2">
                     <input v-model="tier.exempt_compensation" type="checkbox" />
-                    {{ tier.exempt_compensation ? '免' : '不免' }}
+                    {{ tier.exempt_compensation ? '免冻结' : '需冻结' }}
                   </label>
                 </td>
                 <td class="px-2 py-2">

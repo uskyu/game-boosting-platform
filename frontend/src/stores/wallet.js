@@ -174,6 +174,7 @@ export const useWalletStore = defineStore('wallet', () => {
       wallet.value = {
         available_balance: toNumber(data.available_balance),
         frozen_balance: toNumber(data.frozen_balance),
+        deposit_balance: toNumber(data.deposit_balance),
         total_income: toNumber(data.total_income),
         total_withdrawn: toNumber(data.total_withdrawn),
       }

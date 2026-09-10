@@ -412,3 +412,146 @@ async def test_after_approval_waits_for_approval(
     # 未审核 → 不结算
     assert await scan_due_payouts(db_session) == []
     await db_session.commit()
+
+
+# ---------------------------------------------------------------------------
+# 炸单赔付：免的是接单预冻结，不是赔付责任
+# ---------------------------------------------------------------------------
+
+
+async def _accept_deliver_review(
+    client: AsyncClient, admin_user: dict, booster_user: dict, *,
+    compensation: float, deduction: float, settle_hours: int = 72,
+):
+    """走完 接单 → 交付 → 老板审核扣除 的全流程，返回 (order, claim)。"""
+    await _enable_deposit(
+        client,
+        admin_user,
+        tiers=[
+            {
+                "threshold": 0,
+                "wait_seconds": 0,
+                "exempt_compensation": True,
+                "settle_hours": settle_hours,
+                "enabled": True,
+            }
+        ],
+    )
+    order = await _make_order(client, admin_user, compensation=compensation)
+    assert (await _accept(client, booster_user, order["id"])).status_code == 200
+    assert (
+        await client.put(f"/orders/{order['id']}/deliver", headers=auth_header(booster_user))
+    ).status_code == 200
+    return order
+
+
+async def test_exempt_booster_still_pays_compensation_from_deposit(
+    client: AsyncClient, admin_user: dict, booster_user: dict, db_session
+):
+    """有保证金（免预冻结）的打手炸单时，赔付从保证金里扣，不是免赔。"""
+    await _enable_deposit(
+        client,
+        admin_user,
+        tiers=[
+            {
+                "threshold": 0,
+                "wait_seconds": 0,
+                "exempt_compensation": True,
+                "settle_hours": 72,
+                "enabled": True,
+            }
+        ],
+    )
+    await _fund(client, admin_user, booster_user, 1000)
+    await _deposit(client, booster_user, 500)
+
+    order = await _make_order(client, admin_user, compensation=20)
+    assert (await _accept(client, booster_user, order["id"])).status_code == 200
+
+    wallet = (
+        await db_session.execute(
+            select(Wallet).where(Wallet.user_id == booster_user["user"]["id"])
+        )
+    ).scalar_one()
+    # 免预冻结：接单时冻结余额保持 0
+    assert Decimal(str(wallet.frozen_balance)) == Decimal("0.00")
+    assert Decimal(str(wallet.deposit_balance)) == Decimal("500.00")
+
+    await db_session.commit()
+    assert (
+        await client.put(f"/orders/{order['id']}/deliver", headers=auth_header(booster_user))
+    ).status_code == 200
+
+    claim_id = (
+        await db_session.execute(
+            select(OrderClaim.id).where(OrderClaim.order_id == order["id"])
+        )
+    ).scalar_one()
+
+    resp = await client.put(
+        f"/orders/{order['id']}/claims/{claim_id}/review",
+        json={"action": "approve", "deduction": 20},
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 200, resp.text
+
+    await db_session.commit()
+    await db_session.refresh(wallet)
+    # 关键断言：真炸单要从保证金里扣 20，而不是免掉
+    assert Decimal(str(wallet.deposit_balance)) == Decimal("480.00")
+    assert Decimal(str(wallet.frozen_balance)) == Decimal("0.00")
+
+
+async def test_non_exempt_booster_pays_from_frozen(
+    client: AsyncClient, admin_user: dict, booster_user: dict, db_session
+):
+    """无保证金打手仍走原有路径：接单冻结 20，炸单从冻结里扣。"""
+    await _enable_deposit(
+        client,
+        admin_user,
+        tiers=[
+            {
+                "threshold": 0,
+                "wait_seconds": 0,
+                "exempt_compensation": False,
+                "settle_hours": 72,
+                "enabled": True,
+            }
+        ],
+    )
+    await _fund(client, admin_user, booster_user, 500)
+
+    order = await _make_order(client, admin_user, compensation=20)
+    assert (await _accept(client, booster_user, order["id"])).status_code == 200
+
+    wallet = (
+        await db_session.execute(
+            select(Wallet).where(Wallet.user_id == booster_user["user"]["id"])
+        )
+    ).scalar_one()
+    assert Decimal(str(wallet.frozen_balance)) == Decimal("20.00")
+    assert Decimal(str(wallet.deposit_balance)) == Decimal("0.00")
+
+    await db_session.commit()
+    assert (
+        await client.put(f"/orders/{order['id']}/deliver", headers=auth_header(booster_user))
+    ).status_code == 200
+
+    claim_id = (
+        await db_session.execute(
+            select(OrderClaim.id).where(OrderClaim.order_id == order["id"])
+        )
+    ).scalar_one()
+
+    resp = await client.put(
+        f"/orders/{order['id']}/claims/{claim_id}/review",
+        json={"action": "approve", "deduction": 20},
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 200, resp.text
+
+    await db_session.commit()
+    await db_session.refresh(wallet)
+    # 冻结的 20 被扣掉，保证金不受影响
+    assert Decimal(str(wallet.frozen_balance)) == Decimal("0.00")
+    assert Decimal(str(wallet.deposit_balance)) == Decimal("0.00")

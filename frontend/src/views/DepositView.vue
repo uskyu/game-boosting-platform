@@ -123,7 +123,7 @@ onMounted(async () => {
     <section class="hero-panel p-6 sm:p-8">
       <p class="eyebrow">资金中心</p>
       <h1 class="section-title">我的保证金</h1>
-      <p class="mt-2 text-sm text-ink-2">保证金余额越充足，接单权益越高：优先接单、免炸单赔付金、更快的结账时效。</p>
+      <p class="mt-2 text-sm text-ink-2">保证金余额越充足，接单权益越高：优先接单（免等待）、接单不预冻结炸单赔付金、更快的结账时效。</p>
 
       <div v-if="overview" class="mt-6 grid gap-3 sm:gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <article class="stat-card">
@@ -139,7 +139,7 @@ onMounted(async () => {
           <p class="mt-2.5 text-sm text-ink-1">
             接单等待 {{ formatWaitSeconds(overview.wait_seconds) }}
             <span class="mx-2 text-ink-3">·</span>
-            免炸单赔付金 {{ overview.exempt_compensation ? '是' : '否' }}
+            接单免冻结赔付金 {{ overview.exempt_compensation ? '是' : '否' }}
             <span class="mx-2 text-ink-3">·</span>
             结账时效 {{ formatSettleHours(overview.settle_hours) }}
           </p>
@@ -235,7 +235,7 @@ onMounted(async () => {
               <tr class="text-xs uppercase tracking-[0.08em] text-ink-3">
                 <th class="px-3 py-3 font-medium">保证金门槛</th>
                 <th class="px-3 py-3 font-medium">优先接单</th>
-                <th class="px-3 py-3 font-medium">免炸单赔付金</th>
+                <th class="px-3 py-3 font-medium">接单免冻结赔付金</th>
                 <th class="px-3 py-3 font-medium">结账时效</th>
                 <th class="px-3 py-3 font-medium">档位</th>
               </tr>
@@ -249,7 +249,7 @@ onMounted(async () => {
               >
                 <td class="px-3 py-3 font-semibold tabular-nums text-ink-1">{{ formatPrice(tier.threshold) }}</td>
                 <td class="px-3 py-3 text-ink-2">{{ formatWaitSeconds(tier.wait_seconds) }}</td>
-                <td class="px-3 py-3 text-ink-2">{{ tier.exempt_compensation ? '✅' : '❌' }}</td>
+                <td class="px-3 py-3 text-ink-2">{{ tier.exempt_compensation ? '✅ 免冻结' : '❌ 需冻结' }}</td>
                 <td class="px-3 py-3 text-ink-2">{{ formatSettleHours(tier.settle_hours) }}</td>
                 <td class="px-3 py-3">
                   <span v-if="isCurrentTier(tier)" class="tag !bg-primary-soft !text-primary">当前档位</span>
