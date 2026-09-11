@@ -38,6 +38,7 @@ async def _settings_response(db, setting: DepositSetting) -> DepositSettingsAdmi
         return_cooldown_days=setting.return_cooldown_days,
         default_compensation=setting.default_compensation,
         settlement_mode=setting.settlement_mode,
+        global_booster_quota=setting.global_booster_quota,
         updated_at=setting.updated_at,
         tiers=[_tier_response(t) for t in tiers],
     )
