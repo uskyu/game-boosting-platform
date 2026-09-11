@@ -129,6 +129,7 @@ function normalizeDepositSettings(data) {
     return_cooldown_days: toNumber(source.return_cooldown_days, 0),
     default_compensation: toNumber(source.default_compensation, 0),
     settlement_mode: source.settlement_mode || 'AFTER_DELIVERY',
+    global_booster_quota: toNumber(source.global_booster_quota, 5),
     updated_at: source.updated_at,
     tiers: Array.isArray(source.tiers) ? source.tiers.map(normalizeDepositTier) : [],
   }
