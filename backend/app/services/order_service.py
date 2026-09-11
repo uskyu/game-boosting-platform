@@ -555,7 +555,7 @@ class OrderService:
         from app.services import deposit_service
         
         setting = await deposit_service.get_or_create_deposit_setting(self._db)
-        return int(setting.global_booster_quota or 5)
+        return int(setting.global_booster_quota)
 
     async def _snapshot_claim_settlement(
         self,

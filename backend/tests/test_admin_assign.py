@@ -3,6 +3,7 @@
 from httpx import AsyncClient
 from sqlalchemy import select
 
+from app.models.deposit import DepositSetting
 from app.models.order import OrderClaim
 from app.models.user import User, UserRole
 from tests.conftest import auth_header
@@ -136,6 +137,18 @@ async def test_assign_rejects_quota_full(
     """A booster with no free quota cannot take more orders."""
     order = await _create_order(client, admin_user)
 
+    # Global quota is 0, so no user can take any order
+    setting_result = await db_session.execute(
+        select(DepositSetting).where(DepositSetting.id == 1)
+    )
+    setting = setting_result.scalar_one_or_none()
+    if setting is None:
+        setting = DepositSetting(id=1, enabled=False, global_booster_quota=0)
+        db_session.add(setting)
+    else:
+        setting.global_booster_quota = 0
+    await db_session.commit()
+
     # Create a booster with zero quota
     resp = await client.post("/auth/register", json={
         "email": "zeroboost@example.com",
@@ -149,7 +162,6 @@ async def test_assign_rejects_quota_full(
     )
     zero_user = result.scalar_one()
     zero_user.role = UserRole.BOOSTER
-    zero_user.booster_quota = 0
     await db_session.commit()
 
     resp = await client.put(

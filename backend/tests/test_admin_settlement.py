@@ -5,6 +5,7 @@ from decimal import Decimal
 from httpx import AsyncClient
 from sqlalchemy import select
 
+from app.models.deposit import DepositSetting
 from app.models.order import ClaimLifecycleStatus, OrderClaim
 from app.models.wallet import WalletTransaction, WalletTransactionType
 from app.models.user import User, UserRole
@@ -203,7 +204,19 @@ async def test_admin_intervention_cancellation_cleans_active_claims_and_escrow(
     )
     booster_two_record = booster_two_result.scalar_one()
     booster_two_record.role = UserRole.BOOSTER
-    booster_two_record.booster_quota = 2
+    await db_session.commit()
+    # Global quota of 2: booster_two already holds 2 active orders after the
+    # two accepts below, so the third accept must be rejected, and after the
+    # intervention-cancelled claim releases a slot the accept succeeds again.
+    setting_result = await db_session.execute(
+        select(DepositSetting).where(DepositSetting.id == 1)
+    )
+    setting = setting_result.scalar_one_or_none()
+    if setting is None:
+        setting = DepositSetting(id=1, enabled=False, global_booster_quota=2)
+        db_session.add(setting)
+    else:
+        setting.global_booster_quota = 2
     await db_session.commit()
     await _adjust_balance_for_cancellation(client, admin_user, booster_two, "125.00")
     response = await client.post(
