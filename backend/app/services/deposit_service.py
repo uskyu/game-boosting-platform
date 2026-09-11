@@ -53,6 +53,7 @@ async def get_or_create_deposit_setting(db: AsyncSession) -> DepositSetting:
             return_cooldown_days=DEFAULT_DEPOSIT_RETURN_COOLDOWN_DAYS,
             default_compensation=Decimal("20.00"),
             settlement_mode=SETTLEMENT_MODE_AFTER_DELIVERY,
+            global_booster_quota=5,
         )
         db.add(setting)
         await db.flush()
