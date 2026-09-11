@@ -271,7 +271,9 @@ class OrderService:
                 detail="该服务已下架",
             )
 
-        # Lock booster row and check quota to prevent concurrent overselling
+        # Lock booster row and check quota to prevent concurrent overselling.
+        # Quota caps only apply to reviewed BOOSTER accounts, matching the
+        # accept_order/assign_order rule: any registered USER may be assigned.
         booster_result = await self._db.execute(
             select(User).where(User.id == service.booster_id).with_for_update()
         )
@@ -283,10 +285,11 @@ class OrderService:
             )
 
         active_count = await self._active_claim_count(booster.id)
-        if booster.booster_quota <= active_count:
+        limit = await self._global_quota_limit()
+        if limit <= active_count:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="该代练当前接单额度已满，请稍后再试",
+                detail=f"当前同时接单数已达上限（{active_count}/{limit}），请先完成现有订单",
             )
 
         current_rank = (
@@ -530,16 +533,29 @@ class OrderService:
         return orders, total
 
     async def _active_claim_count(self, booster_id: int) -> int:
-        """Count quota-consuming claims for one booster."""
+        """Count quota-consuming claims for one booster.
+        
+        A claim consumes quota only when it is CLAIMED or DELIVERED AND not yet
+        settled (settled_at IS NULL). Once settled_at is set, the claim no longer
+        blocks new orders even if the lifecycle status update lags behind.
+        """
         result = await self._db.execute(
             select(func.count(OrderClaim.id)).where(
                 OrderClaim.booster_id == booster_id,
                 OrderClaim.status.in_(
                     (ClaimLifecycleStatus.CLAIMED, ClaimLifecycleStatus.DELIVERED)
                 ),
+                OrderClaim.settled_at.is_(None),
             )
         )
         return int(result.scalar() or 0)
+
+    async def _global_quota_limit(self) -> int:
+        """读取全局接单配额（内部模式所有用户统一上限）。"""
+        from app.services import deposit_service
+        
+        setting = await deposit_service.get_or_create_deposit_setting(self._db)
+        return int(setting.global_booster_quota or 5)
 
     async def _snapshot_claim_settlement(
         self,
@@ -651,10 +667,11 @@ class OrderService:
             )
 
         active_orders_count = await self._active_claim_count(booster.id)
-        if locked_booster.role == UserRole.BOOSTER and locked_booster.booster_quota <= active_orders_count:
+        limit = await self._global_quota_limit()
+        if limit <= active_orders_count:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="当前接单额度已满，请先完成现有订单",
+                detail=f"当前同时接单数已达上限（{active_orders_count}/{limit}），请先完成现有订单",
             )
 
         result = await self._db.execute(
@@ -1050,12 +1067,11 @@ class OrderService:
             )
 
         active_orders_count = await self._active_claim_count(locked_booster.id)
-        # Quota caps only apply to reviewed BOOSTER accounts; any registered
-        # USER may be assigned, mirroring accept_order's open-claiming rule.
-        if locked_booster.role == UserRole.BOOSTER and locked_booster.booster_quota <= active_orders_count:
+        limit = await self._global_quota_limit()
+        if limit <= active_orders_count:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="该代练当前接单额度已满，请先完成现有订单",
+                detail=f"当前同时接单数已达上限（{active_orders_count}/{limit}），请先完成现有订单",
             )
 
         result = await self._db.execute(

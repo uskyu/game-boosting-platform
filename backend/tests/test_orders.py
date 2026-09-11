@@ -390,11 +390,15 @@ async def test_accept_quota_counts_claim_lifecycle_and_releases_slots(
     db_session,
 ):
     """Only CLAIMED/DELIVERED claims consume quota; SETTLED/CANCELLED release it."""
-    result = await db_session.execute(
-        select(User).where(User.id == booster_user["user"]["id"])
-    )
-    booster = result.scalar_one()
-    booster.booster_quota = 1
+    # Set global quota to 1 for this test
+    from app.models.deposit import DepositSetting
+    setting_result = await db_session.execute(select(DepositSetting).where(DepositSetting.id == 1))
+    setting = setting_result.scalar_one_or_none()
+    if setting is None:
+        setting = DepositSetting(id=1, enabled=False, global_booster_quota=1)
+        db_session.add(setting)
+    else:
+        setting.global_booster_quota = 1
     await db_session.commit()
 
     # Keep one slot open so settlement leaves the parent order LOCKED. The old

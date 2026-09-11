@@ -19,6 +19,7 @@ const form = reactive({
   return_cooldown_days: 7,
   default_compensation: 20,
   settlement_mode: 'AFTER_DELIVERY',
+  global_booster_quota: 5,
   tiers: [],
 })
 const notice = ref({ type: '', text: '' })
@@ -40,6 +41,7 @@ function sync(data) {
   form.return_cooldown_days = settings.return_cooldown_days != null ? Number(settings.return_cooldown_days) : 7
   form.default_compensation = settings.default_compensation != null ? Number(settings.default_compensation) : 20
   form.settlement_mode = settings.settlement_mode || 'AFTER_DELIVERY'
+  form.global_booster_quota = settings.global_booster_quota != null ? Number(settings.global_booster_quota) : 5
   form.tiers = cloneTiers(settings.tiers)
 }
 
@@ -78,6 +80,12 @@ async function save() {
     return
   }
 
+  const quota = Number(form.global_booster_quota)
+  if (!Number.isInteger(quota) || quota < 1 || quota > 1000) {
+    notice.value = { type: 'error', text: '全局接单配额需为 1-1000 的整数' }
+    return
+  }
+
   for (const tier of form.tiers) {
     if (!Number.isFinite(Number(tier.threshold)) || Number(tier.threshold) < 0) {
       notice.value = { type: 'error', text: '保证金门槛需为不小于 0 的金额' }
@@ -106,6 +114,7 @@ async function save() {
     return_cooldown_days: cooldown,
     default_compensation: compensation,
     settlement_mode: form.settlement_mode,
+    global_booster_quota: quota,
     tiers: form.tiers.map((tier) => ({
       threshold: Number(tier.threshold),
       wait_seconds: Number(tier.wait_seconds),
@@ -181,6 +190,21 @@ onMounted(async () => {
             class="input min-h-[44px]"
             placeholder="例如 20"
           />
+        </div>
+
+        <div>
+          <label class="label" for="global-quota">全局同时接单上限</label>
+          <input
+            id="global-quota"
+            v-model.number="form.global_booster_quota"
+            type="number"
+            min="1"
+            max="1000"
+            step="1"
+            class="input min-h-[44px]"
+            placeholder="例如 5"
+          />
+          <p class="mt-1.5 text-xs text-ink-3">所有用户最多同时处理 N 个未完成订单。</p>
         </div>
       </div>
 

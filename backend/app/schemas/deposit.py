@@ -101,6 +101,7 @@ class DepositSettingsAdminResponse(BaseModel):
     return_cooldown_days: int = Field(description="保证金转回余额的冷却天数")
     default_compensation: Decimal = Field(description="订单默认炸单赔付金（元）")
     settlement_mode: str = Field(description="结账时效计时起点：AFTER_DELIVERY / AFTER_APPROVAL")
+    global_booster_quota: int = Field(description="全局接单配额：所有用户同时处理订单上限")
     updated_at: datetime
 
     tiers: list[DepositTierAdminResponse] = Field(default_factory=list)
@@ -121,7 +122,10 @@ class DepositSettingsAdminUpdate(BaseModel):
         default=Decimal("20.00"), ge=0, le=100000, description="订单默认炸单赔付金（元）"
     )
     settlement_mode: str = Field(
-        default="AFTER_DELIVERY", description="结账时效计时起点：AFTER_DELIVERY / AFTER_APPROVAL"
+        default="AFTER_DELIVERY", description="结账时效起点：AFTER_DELIVERY / AFTER_APPROVAL"
+    )
+    global_booster_quota: int = Field(
+        default=5, ge=1, le=1000, description="全局接单配额：所有用户同时处理订单上限"
     )
 
     @field_validator("settlement_mode")

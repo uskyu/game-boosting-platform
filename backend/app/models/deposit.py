@@ -64,6 +64,11 @@ class DepositSetting(Base):
         server_default="AFTER_DELIVERY",
     )
 
+    # 全局接单配额：所有用户同时处理的未完成订单上限（默认 5）
+    global_booster_quota: Mapped[int] = mapped_column(
+        Integer(), nullable=False, default=5, server_default="5"
+    )
+
     alias: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
     updated_by: Mapped[int | None] = mapped_column(

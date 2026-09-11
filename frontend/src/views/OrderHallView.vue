@@ -25,6 +25,7 @@ const notificationsStore = useNotificationsStore()
 const ordersStore = useOrdersStore()
 
 const searchGame = ref('')
+const searchOrderId = ref('')
 const selectedStatus = ref('')
 const showHistory = ref(false)
 // The hall starts in claimable-only mode so stale dispatch records are not
@@ -168,6 +169,7 @@ async function fetchOrders() {
   ordersStore.setFilters({
     gameName: searchGame.value,
     status: selectedStatus.value,
+    orderId: searchOrderId.value.trim() ? Number(searchOrderId.value.trim()) || undefined : undefined,
   })
   await ordersStore.fetchOrders()
 }
@@ -179,6 +181,7 @@ function handleSearch() {
 
 function resetFilters() {
   searchGame.value = ''
+  searchOrderId.value = ''
   selectedStatus.value = ''
   openOnly.value = true
   showHistory.value = false
@@ -203,8 +206,8 @@ watch(isAuthenticated, (loggedIn) => {
   }
 })
 
-// 大厅自动刷新：每 8 秒页面可见时静默拉取；订单提醒统一由 App 全站通知处理
-const HALL_REFRESH_INTERVAL = 8_000
+// 大厅自动刷新：每 2 秒页面可见时静默拉取；新订单通知同时立即触发刷新（watch newOrderNotificationVersion）
+const HALL_REFRESH_INTERVAL = 2_000
 let hallRefreshTimer = null
 let hallUnmounted = false
 // 抢单倒计时：独立 1 秒计时器，仅驱动 now 变化
@@ -294,6 +297,11 @@ onUnmounted(() => {
 
     <section class="surface-card p-4 sm:p-5">
       <form class="hall-filters flex min-w-0 flex-col gap-3 lg:flex-row lg:flex-wrap lg:items-end" @submit.prevent="handleSearch">
+        <div class="min-w-0 w-full lg:w-48">
+          <label class="label" for="hall-order-id">订单号</label>
+          <input id="hall-order-id" v-model="searchOrderId" type="text" class="input h-11" placeholder="搜索订单号" />
+        </div>
+
         <div class="min-w-0 w-full lg:w-64">
           <label class="label" for="hall-game">游戏</label>
           <input id="hall-game" v-model="searchGame" list="hall-games" type="text" class="input h-11" placeholder="搜索游戏" />
