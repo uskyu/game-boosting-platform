@@ -291,6 +291,10 @@ async def list_orders(
         str | None,
         Query(description="按老板ID模糊筛选", max_length=64),
     ] = None,
+    q: Annotated[
+        str | None,
+        Query(max_length=100, description="综合搜索：订单号精确命中优先，其次标题/游戏/需求内容"),
+    ] = None,
 ) -> OrderListResponse:
     """
     List orders with filtering and pagination.
@@ -326,6 +330,7 @@ async def list_orders(
         page_size=page_size,
         mine_published=mine_published,
         boss_contact=effective_boss_contact,
+        q=q,
     )
 
     # Calculate total pages

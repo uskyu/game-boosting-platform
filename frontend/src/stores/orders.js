@@ -25,6 +25,7 @@ export const useOrdersStore = defineStore('orders', () => {
     gameName: '',
     status: '',
     bossContact: '',
+    q: '',
   })
   const claims = ref([])
   const claimsOrderId = ref(null)
@@ -116,6 +117,11 @@ export const useOrdersStore = defineStore('orders', () => {
 
     if (filters.value.gameName) {
       params.game_name = filters.value.gameName
+    }
+
+    // 综合搜索：订单号精确命中优先，其次标题/游戏/需求内容（后端按相关度排序）
+    if (filters.value.q) {
+      params.q = filters.value.q
     }
 
     if (filters.value.status) {

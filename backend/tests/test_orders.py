@@ -472,3 +472,62 @@ async def test_accept_quota_counts_claim_lifecycle_and_releases_slots(
         f"/orders/{third_id}/accept", headers=auth_header(booster_user)
     )
     assert response.status_code == 200
+
+
+async def test_list_orders_comprehensive_search_ranking(
+    client: AsyncClient, admin_user: dict
+):
+    """综合搜索：订单号精确命中最优先，其次标题命中，再次需求内容命中。"""
+    first = await _create_order(client, admin_user)
+    resp = await client.post(
+        "/orders/create",
+        json={
+            "game_name": "王者荣耀",
+            "current_rank": "钻石",
+            "target_rank": "王者",
+            "title": "代练-巅峰赛冲分",
+            "price": "100.00",
+            "description_raw": "随便一句不带关键词的内容",
+        },
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 201
+    title_match = resp.json()
+
+    resp = await client.post(
+        "/orders/create",
+        json={
+            "game_name": "三角洲行动",
+            "current_rank": "黄金",
+            "target_rank": "铂金",
+            "price": "50.00",
+            "description_raw": "需求里提到巅峰赛让人帮忙冲分",
+        },
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 201
+    content_match = resp.json()
+
+    # 订单号精确命中（含 "#" 前缀）只返回一条且排最前
+    resp = await client.get(
+        "/orders/", params={"q": f"#{first['id']}"}, headers=auth_header(admin_user)
+    )
+    assert resp.status_code == 200
+    assert [o["id"] for o in resp.json()["items"]][:1] == [first["id"]]
+
+    # 标题命中排在需求内容命中前：q=巅峰赛冲分
+    resp = await client.get(
+        "/orders/", params={"q": "巅峰赛 冲分"}, headers=auth_header(admin_user)
+    )
+    assert resp.status_code == 200
+    ids = [o["id"] for o in resp.json()["items"]]
+    assert title_match["id"] in ids and content_match["id"] in ids
+    assert ids.index(title_match["id"]) < ids.index(content_match["id"])
+
+    # 内容命中也能搜出来
+    resp = await client.get(
+        "/orders/", params={"q": "帮忙冲分"}, headers=auth_header(admin_user)
+    )
+    assert resp.status_code == 200
+    ids = [o["id"] for o in resp.json()["items"]]
+    assert content_match["id"] in ids

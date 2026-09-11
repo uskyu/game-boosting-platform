@@ -24,8 +24,7 @@ const chatStore = useChatStore()
 const notificationsStore = useNotificationsStore()
 const ordersStore = useOrdersStore()
 
-const searchGame = ref('')
-const searchOrderId = ref('')
+const searchKeyword = ref('')
 const selectedStatus = ref('')
 const showHistory = ref(false)
 // The hall starts in claimable-only mode so stale dispatch records are not
@@ -86,7 +85,6 @@ const pagination = computed(() => ordersStore.pagination)
 const error = computed(() => ordersStore.error)
 const isAuthenticated = computed(() => authStore.isAuthenticated)
 const isAdmin = computed(() => authStore.isAdmin)
-const gameOptions = computed(() => [...new Set(orders.value.map((order) => order.game_name).filter(Boolean))])
 
 const unreadMap = computed(() => {
   return chatStore.conversations.reduce((result, conversation) => {
@@ -168,9 +166,8 @@ function buildSummary(order) {
 
 async function fetchOrders() {
   ordersStore.setFilters({
-    gameName: searchGame.value,
     status: selectedStatus.value,
-    orderId: searchOrderId.value.trim() ? Number(searchOrderId.value.trim()) || undefined : undefined,
+    q: searchKeyword.value.trim() || undefined,
   })
   await ordersStore.fetchOrders()
 }
@@ -181,8 +178,7 @@ function handleSearch() {
 }
 
 function resetFilters() {
-  searchGame.value = ''
-  searchOrderId.value = ''
+  searchKeyword.value = ''
   selectedStatus.value = ''
   openOnly.value = true
   showHistory.value = false
@@ -298,15 +294,9 @@ onUnmounted(() => {
 
     <section class="surface-card p-4 sm:p-5">
       <form class="hall-filters flex min-w-0 flex-col gap-3 lg:flex-row lg:flex-wrap lg:items-end" @submit.prevent="handleSearch">
-        <div class="min-w-0 w-full lg:w-48">
-          <label class="label" for="hall-order-id">订单号</label>
-          <input id="hall-order-id" v-model="searchOrderId" type="text" class="input h-11" placeholder="搜索订单号" />
-        </div>
-
-        <div class="min-w-0 w-full lg:w-64">
-          <label class="label" for="hall-game">游戏</label>
-          <input id="hall-game" v-model="searchGame" list="hall-games" type="text" class="input h-11" placeholder="搜索游戏" />
-          <datalist id="hall-games"><option v-for="game in gameOptions" :key="game" :value="game" /></datalist>
+        <div class="min-w-0 w-full lg:w-72">
+          <label class="label" for="hall-search">综合搜索</label>
+          <input id="hall-search" v-model="searchKeyword" type="text" class="input h-11" placeholder="订单号 / 标题 / 需求内容" />
         </div>
 
         <div class="min-w-0 w-full lg:w-44">

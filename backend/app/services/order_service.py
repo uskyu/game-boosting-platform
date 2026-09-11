@@ -10,7 +10,7 @@ from decimal import Decimal
 from typing import Any
 
 from fastapi import HTTPException, status
-from sqlalchemy import exists, func, or_, select, update
+from sqlalchemy import case, exists, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -440,6 +440,7 @@ class OrderService:
         page_size: int = 20,
         mine_published: bool = False,
         boss_contact: str | None = None,
+        q: str | None = None,
     ) -> tuple[list[Order], int]:
         """
         List orders with filtering and pagination.
@@ -518,13 +519,52 @@ class OrderService:
             query = query.where(Order.boss_contact.ilike(pattern))
             count_query = count_query.where(Order.boss_contact.ilike(pattern))
 
+        # 综合搜索：空格分词后逐词 AND 匹配（订单号支持精确命中，含 "#36" 形式）。
+        # 相关度排序：精确订单号 > 标题命中词数 > 其余字段（游戏/简介/需求内容），
+        # 同分按发布时间倒序。每个词命中任一字段即视为命中该词。
+        rank_clauses = None
+        if q:
+            tokens = q.strip().split()
+            id_values = [int(t.lstrip("#")) for t in tokens if t.lstrip("#").isdigit()]
+            id_values = list(dict.fromkeys(id_values))
+            conditions = []
+            title_score = None
+            for token in tokens:
+                tid = token.lstrip("#")
+                pattern = f"%{escape_like(token)}%"
+                cond = [
+                    Order.title.ilike(pattern),
+                    Order.intro.ilike(pattern),
+                    Order.description.ilike(pattern),
+                    Order.description_raw.ilike(pattern),
+                    Order.description_ai.ilike(pattern),
+                    Order.game_name.ilike(pattern),
+                ]
+                if tid.isdigit():
+                    cond.append(Order.id == int(tid))
+                conditions.append(or_(*cond))
+                token_title = case((Order.title.ilike(pattern), 1), else_=0)
+                title_score = token_title if title_score is None else title_score + token_title
+            for c in conditions:
+                query = query.where(c)
+                count_query = count_query.where(c)
+            rank_clauses = []
+            if id_values:
+                rank_clauses.append(case((Order.id.in_(id_values), 0), else_=1).asc())
+            if title_score is not None:
+                rank_clauses.append(title_score.desc())
+
         # Get total count
         total_result = await self._db.execute(count_query)
         total = total_result.scalar() or 0
 
-        # Apply pagination and ordering
+        # Apply pagination and ordering (综合搜索时按相关度排序，否则按发布时间倒序)
         offset = (page - 1) * page_size
-        query = query.order_by(Order.created_at.desc()).offset(offset).limit(page_size)
+        if rank_clauses:
+            query = query.order_by(*rank_clauses, Order.created_at.desc())
+        else:
+            query = query.order_by(Order.created_at.desc())
+        query = query.offset(offset).limit(page_size)
 
         # Execute query
         result = await self._db.execute(query)
