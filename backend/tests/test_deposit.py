@@ -32,6 +32,9 @@ async def _enable_deposit(client: AsyncClient, admin_user: dict, **overrides):
     body = {
         "enabled": True,
         "return_cooldown_days": payload["return_cooldown_days"],
+        "default_compensation": payload.get("default_compensation", 20),
+        "settlement_mode": payload.get("settlement_mode", "AFTER_DELIVERY"),
+        "global_booster_quota": payload.get("global_booster_quota", 5),
         "tiers": [
             {
                 "threshold": t["threshold"],
