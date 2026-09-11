@@ -6,7 +6,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import { useNotificationsStore } from '@/stores/notifications'
 import { useOrdersStore } from '@/stores/orders'
-import { formatCount, formatPayoutDelay, formatPrice, formatShortDate, getAcceptWaitMeta } from '@/utils/display'
+import { formatCount, formatPayoutDelay, formatPrice, formatShortDate, getAcceptWaitMeta, serverNow } from '@/utils/display'
 import { ORDER_STATUS_OPTIONS, getOrderStatusBadgeClass, getOrderStatusLabel } from '@/utils/order'
 
 /**
@@ -33,7 +33,8 @@ const showHistory = ref(false)
 const openOnly = ref(true)
 
 // 抢单倒计时：每秒刷新 now，与 accept_available_at 求差得到剩余等待秒数
-const now = ref(Date.now())
+// now 必须用服务器校准时间（serverNow），设备本地时钟偏差会误导显示
+const now = ref(serverNow())
 
 function getAcceptWaitMetaFor(order) {
   return getAcceptWaitMeta(order, now.value)
@@ -55,7 +56,7 @@ function isOrderClaimable(order) {
   if (Number(order.claimed_count ?? 0) >= Number(order.max_claims ?? 0)) return false
   if (!order.deadline) return true
   const deadline = new Date(order.deadline)
-  return !Number.isNaN(deadline.getTime()) && deadline.getTime() > Date.now()
+  return !Number.isNaN(deadline.getTime()) && deadline.getTime() > serverNow()
 }
 
 const visibleOrders = computed(() => orders.value.filter((order) => {
@@ -71,12 +72,12 @@ function getOrderDisplayStatus(order) {
   if (order.claim_status === 'PAUSED') return '暂停接单'
   if (order.claim_status === 'FULL' || Number(order.claimed_count ?? 0) >= Number(order.max_claims ?? 0)) return '已满员'
   if (order.claim_status === 'CLOSED') return '已截止'
-  if (order.deadline && new Date(order.deadline).getTime() <= Date.now()) return '已截止'
+  if (order.deadline && new Date(order.deadline).getTime() <= serverNow()) return '已截止'
   return getOrderStatusLabel(order.status)
 }
 
 function getOrderDisplayBadgeClass(order) {
-  if (order.is_archived || order.claim_status === 'CLOSED' || (order.deadline && new Date(order.deadline).getTime() <= Date.now())) return 'badge-cancelled'
+  if (order.is_archived || order.claim_status === 'CLOSED' || (order.deadline && new Date(order.deadline).getTime() <= serverNow())) return 'badge-cancelled'
   if (order.claim_status === 'PAUSED' || order.claim_status === 'FULL') return 'badge-review'
   return getOrderStatusBadgeClass(order.status)
 }
@@ -262,7 +263,7 @@ onMounted(() => {
   hallUnmounted = false
   if (!countdownTimer) {
     countdownTimer = window.setInterval(() => {
-      now.value = Date.now()
+      now.value = serverNow()
     }, 1000)
   }
   if (isAuthenticated.value) {

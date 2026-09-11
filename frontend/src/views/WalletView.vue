@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import { useAuthStore } from '@/stores/auth'
 import { useOrdersStore } from '@/stores/orders'
@@ -13,16 +13,20 @@ import {
   getWithdrawalStatusTagClass,
 } from '@/stores/wallet'
 import { getClaimSettlementMeta } from '@/utils/order'
-import { formatCount, formatDateTime, formatOrderPrice, formatPrice } from '@/utils/display'
+import { formatCount, formatDateTime, formatOrderPrice, formatPrice, serverNow } from '@/utils/display'
 
 const walletStore = useWalletStore()
 const authStore = useAuthStore()
 const ordersStore = useOrdersStore()
 
+// 到账倒计时按秒跳动：now 用服务器校准时间（设备本地时钟可能偏差数秒）
+const now = ref(serverNow())
+let countdownTimer = null
+
 // 交付后的订单按审核与自动结算拆分，避免把已审核记录继续显示为待审核。
 const reviewClaims = computed(() => ordersStore.myClaims)
-const pendingReviewClaims = computed(() => reviewClaims.value.filter((claim) => getClaimSettlementMeta(claim).isPendingReview))
-const pendingSettlementClaims = computed(() => reviewClaims.value.filter((claim) => getClaimSettlementMeta(claim).isPendingSettlement))
+const pendingReviewClaims = computed(() => reviewClaims.value.filter((claim) => getClaimSettlementMeta(claim, now.value).isPendingReview))
+const pendingSettlementClaims = computed(() => reviewClaims.value.filter((claim) => getClaimSettlementMeta(claim, now.value).isPendingSettlement))
 const reviewLoading = computed(() => ordersStore.myClaimsLoading)
 
 async function fetchReviewClaims() {
@@ -418,6 +422,13 @@ async function refreshAll() {
 onMounted(() => {
   // 并行拉取：钱包数据与审核中报名单互不依赖，串行会放大远程库延迟
   Promise.all([refreshAll(), fetchReviewClaims(), fetchRechargeData(), fetchDepositData()])
+  countdownTimer = window.setInterval(() => {
+    now.value = serverNow()
+  }, 1000)
+})
+
+onUnmounted(() => {
+  if (countdownTimer) window.clearInterval(countdownTimer)
 })
 </script>
 
@@ -478,9 +489,12 @@ onMounted(() => {
             </div>
             <div class="shrink-0 text-right">
               <p class="text-sm font-semibold tabular-nums text-price">{{ claim.order ? formatOrderPrice(claim.order) : formatPrice(0) }}</p>
-              <p :class="['mt-0.5 text-xs', getClaimSettlementMeta(claim).tagClass]">{{ getClaimSettlementMeta(claim).label }}</p>
-              <p v-if="getClaimSettlementMeta(claim).isPendingSettlement && claim.settlement_due_at" class="mt-1 text-xs text-ink-3">
+              <p :class="['mt-0.5 text-xs', getClaimSettlementMeta(claim, now.value).tagClass]">{{ getClaimSettlementMeta(claim, now.value).label }}</p>
+              <p v-if="getClaimSettlementMeta(claim, now.value).isPendingSettlement && claim.settlement_due_at" class="mt-1 text-xs text-ink-3">
                 预计 {{ formatDateTime(claim.settlement_due_at) }} 自动结算
+              </p>
+              <p v-if="getClaimSettlementMeta(claim, now.value).countdown" class="mt-1 text-xs text-ink-3">
+                {{ formatDateTime(claim.settlement_due_at) }} 自动入账
               </p>
             </div>
           </router-link>

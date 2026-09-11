@@ -6,6 +6,7 @@
 import axios from 'axios'
 import { useAuthStore } from '@/stores/auth'
 import router from '@/router'
+import { syncServerTime } from '@/utils/display'
 
 const rawApiBaseURL = import.meta.env.VITE_API_BASE_URL || '/api/v1'
 const apiBaseURL = rawApiBaseURL.endsWith('/')
@@ -100,7 +101,11 @@ function readableApiError(error) {
 
 // Response interceptor - handle errors and token refresh
 api.interceptors.response.use(
-  (response) => response,
+  // 每个响应的 Date 头用于校准服务器时钟（倒计时锚点），见 display.js
+  (response) => {
+    syncServerTime(response.headers?.date)
+    return response
+  },
   async (error) => {
     const originalRequest = error.config
     const authStore = useAuthStore()

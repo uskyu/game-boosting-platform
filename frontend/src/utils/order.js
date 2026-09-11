@@ -72,15 +72,22 @@ export function getClaimStatusMeta(status) {
  * DELIVERED covers both an unreviewed delivery and an approved claim waiting
  * for its scheduled settlement. Keep those states separate in user-facing UI.
  */
-export function getClaimSettlementMeta(claim, now = Date.now()) {
+import { formatDueCountdown, serverNow } from '@/utils/display'
+
+export function getClaimSettlementMeta(claim, now = serverNow()) {
   const status = claim?.status
   if (status === 'DELIVERED' && !claim?.approved_at) {
+    // 已有固定结算时间的名额（AFTER_DELIVERY 快照）改显示「到账倒计时」，
+    // 替换单纯的「待发布人审核」；AFTER_APPROVAL 尚未审核时到账时间未定，
+    // 此时结算时间只在审核通过那一刻才生成，仍然显示等待审核。
+    const countdown = formatDueCountdown(claim?.settlement_due_at, now)
     return {
       key: 'PENDING_REVIEW',
-      label: '待发布人审核',
-      tagClass: 'tag !bg-warning-soft !text-warning',
+      label: countdown ? `还需 ${countdown} 自动入账钱包` : '待发布人审核',
+      tagClass: countdown ? 'tag !bg-info-soft !text-info' : 'tag !bg-warning-soft !text-warning',
       isPendingReview: true,
       isPendingSettlement: false,
+      countdown,
     }
   }
 

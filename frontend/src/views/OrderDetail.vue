@@ -10,7 +10,7 @@ import { useChatStore } from '@/stores/chat'
 import { useOrdersStore } from '@/stores/orders'
 import { getGameImage } from '@/data/gameImages'
 import api from '@/utils/api'
-import { formatDateTime, formatOrderPrice, formatPayoutDelay, formatPrice, formatSettlementDelay, formatShortDate, getAcceptWaitMeta } from '@/utils/display'
+import { formatDateTime, formatDueCountdown, formatOrderPrice, formatPayoutDelay, formatPrice, formatSettlementDelay, formatShortDate, getAcceptWaitMeta, serverNow } from '@/utils/display'
 import { getClaimSettlementMeta, getOrderStatusBadgeClass, getOrderStatusLabel, getOrderStatusMeta, getHumanStatusLabel, getHumanStatusSubtitle } from '@/utils/order'
 
 const props = defineProps({
@@ -93,7 +93,9 @@ const humanStatusSubtitle = computed(() => {
       CLAIMED: '完成后点击「结束订单」提交汇报',
       DELIVERED: myClaim.value.approved_at
         ? `审核已通过，${myClaim.value.settlement_due_at ? `预计 ${formatDateTime(myClaim.value.settlement_due_at)} 自动入账` : '等待自动入账'}`
-        : '已提交汇报，等待订单发布人审核打款',
+        : (formatDueCountdown(myClaim.value.settlement_due_at, now.value)
+          ? `已提交汇报，还需 ${formatDueCountdown(myClaim.value.settlement_due_at, now.value)} 自动入账钱包`
+          : '已提交汇报，等待订单发布人审核打款'),
       SETTLED: '报酬已结算，已计入钱包余额',
     }
     return map[myClaim.value.status] ?? ''
@@ -111,11 +113,11 @@ const canAcceptOrder = computed(() => {
   if (o.status === 'LOCKED' && Number(o.max_claims) <= 1) return false
   if (!o.deadline) return true
   const deadline = new Date(o.deadline)
-  return !Number.isNaN(deadline.getTime()) && deadline.getTime() > Date.now()
+  return !Number.isNaN(deadline.getTime()) && deadline.getTime() > serverNow()
 })
 
 // ── 抢单倒计时：每秒刷新 now，基于 accept_available_at 求剩余等待秒数 ──
-const now = ref(Date.now())
+const now = ref(serverNow())
 let claimCountdownTimer = null
 const acceptWaitMeta = computed(() => getAcceptWaitMeta(order.value, now.value))
 const acceptWaitSeconds = computed(() => acceptWaitMeta.value.remaining)
@@ -221,14 +223,14 @@ async function copyBossContact() {
 // 打手自己的状态标签按 my_claim.status 显示
 const heroStatusClass = computed(() => {
   if (myClaim.value && viewRole.value === 'booster' && !isOwner.value) {
-    return getClaimSettlementMeta(myClaim.value).tagClass
+    return getClaimSettlementMeta(myClaim.value, now.value).tagClass
   }
   return getOrderStatusBadgeClass(order.value?.status)
 })
 
 const heroStatusLabel = computed(() => {
   if (myClaim.value && viewRole.value === 'booster' && !isOwner.value) {
-    return getClaimSettlementMeta(myClaim.value).label
+    return getClaimSettlementMeta(myClaim.value, now.value).label
   }
   return humanStatusLabel.value
 })
@@ -568,7 +570,7 @@ watch(
 onMounted(() => {
   if (!claimCountdownTimer) {
     claimCountdownTimer = window.setInterval(() => {
-      now.value = Date.now()
+      now.value = serverNow()
     }, 1000)
   }
 })
@@ -725,8 +727,8 @@ onUnmounted(() => {
             </div>
             <div class="flex shrink-0 items-center gap-3">
               <div class="text-right">
-                <span :class="getClaimSettlementMeta(claim).tagClass">
-                  {{ getClaimSettlementMeta(claim).label }}
+                <span :class="getClaimSettlementMeta(claim, now.value).tagClass">
+                  {{ getClaimSettlementMeta(claim, now.value).label }}
                 </span>
                 <p v-if="claim.approved_at && claim.settlement_due_at" class="mt-1 text-xs text-ink-3">
                   {{ formatDateTime(claim.settlement_due_at) }} 入账
@@ -859,7 +861,7 @@ onUnmounted(() => {
               class="od-ops__chip btn-secondary w-full py-3"
               disabled
             >
-              {{ getClaimSettlementMeta(myClaim).label }}
+              {{ getClaimSettlementMeta(myClaim, now.value).label }}
             </button>
 
             <button

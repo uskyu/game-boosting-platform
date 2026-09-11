@@ -87,9 +87,9 @@ export function formatDate(value) {
 /**
  * 接单等待剩余秒数：基于 accept_available_at（ISO 8601 UTC）与当前时间求差。
  * 返回 0 表示可立即接单（字段为空 / 非法 / 已过期）；否则返回向上取整的剩余秒数。
- * 倒计时只做相对计算，前端用本机时间即可。
+ * 必须用服务器时间，接单闸门以服务端时钟为准，设备时钟偏差会误导用户。
  */
-export function getAcceptWaitSeconds(availableAt, now = Date.now()) {
+export function getAcceptWaitSeconds(availableAt, now = serverNow()) {
   if (!availableAt) return 0
   const target = new Date(availableAt)
   if (Number.isNaN(target.getTime())) return 0
@@ -101,12 +101,68 @@ export function getAcceptWaitSeconds(availableAt, now = Date.now()) {
  * 订单接单等待展示状态：等待中、等待已结束，或无需等待。
  * 该状态只用于前端文案，接单权限仍由服务端校验。
  */
-export function getAcceptWaitMeta(order, now = Date.now()) {
+export function getAcceptWaitMeta(order, now = serverNow()) {
   const configuredWait = Number(order?.accept_wait_seconds)
   const total = Number.isFinite(configuredWait) && configuredWait > 0 ? Math.floor(configuredWait) : 0
   const remaining = getAcceptWaitSeconds(order?.accept_available_at, now)
   const state = remaining > 0 ? 'waiting' : total > 0 ? 'ready' : 'available'
   return { remaining, total, state }
+}
+
+// ── 服务器时钟校准 ──
+// 设备本地时钟可能偏差数秒（老板反馈配置 25 秒却显示 20 秒即此原因）。
+// 每个响应的 HTTP Date 头是服务器当前时间（仅到秒），用它与本机时间求偏移，
+// 倒计时统一以 serverNow() 为准。Date 头按半秒取中，误差 ≤0.5 秒。
+let serverClockOffsetMs = 0
+let lastServerSyncAt = 0
+
+export function syncServerTime(dateHeader) {
+  if (!dateHeader) return false
+  const serverMs = Date.parse(dateHeader)
+  if (!Number.isFinite(serverMs)) return false
+  const localMs = Date.now()
+  if (localMs - lastServerSyncAt < 1000) return false
+  lastServerSyncAt = localMs
+  serverClockOffsetMs = serverMs + 500 - localMs
+  return true
+}
+
+export function serverNow() {
+  return Date.now() + serverClockOffsetMs
+}
+
+// 仅供单测复位时钟偏移
+export function resetServerClock() {
+  serverClockOffsetMs = 0
+  lastServerSyncAt = 0
+}
+
+/**
+ * 距离目标时间的倒计时分解（小时/分/秒），供「x 自动入账」倒计时展示。
+ * 返回 null 表示已到点或时间无效，调用方回落到普通文案。
+ */
+export function getDueCountdownParts(dueAt, now = serverNow()) {
+  if (!dueAt) return null
+  const target = new Date(dueAt)
+  if (Number.isNaN(target.getTime())) return null
+  const diffMs = target.getTime() - now
+  if (diffMs <= 0) return null
+  const totalSeconds = Math.ceil(diffMs / 1000)
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  return { hours, minutes, seconds }
+}
+
+/**
+ * 格式化「距离自动结算还剩多久」：1小时03分 / 5分08秒 / 45秒；到点返回 null。
+ */
+export function formatDueCountdown(dueAt, now = serverNow()) {
+  const parts = getDueCountdownParts(dueAt, now)
+  if (!parts) return null
+  if (parts.hours > 0) return `${parts.hours}小时${String(parts.minutes).padStart(2, '0')}分`
+  if (parts.minutes > 0) return `${parts.minutes}分${String(parts.seconds).padStart(2, '0')}秒`
+  return `${parts.seconds}秒`
 }
 
 export function formatCount(value) {
