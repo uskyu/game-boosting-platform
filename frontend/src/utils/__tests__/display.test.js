@@ -31,7 +31,8 @@ describe('serverNow / syncServerTime', () => {
 
   it('非法 Date 头不改变偏移', () => {
     expect(syncServerTime('not a date')).toBe(false)
-    expect(serverNow()).toBe(Date.now())
+    // 两次取时允许毫秒级差值
+    expect(Math.abs(serverNow() - Date.now())).toBeLessThanOrEqual(2)
   })
 })
 
