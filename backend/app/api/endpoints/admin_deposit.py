@@ -80,6 +80,7 @@ async def update_deposit_settings(
     setting.enabled = payload.enabled
     setting.return_cooldown_days = payload.return_cooldown_days
     setting.settlement_mode = payload.settlement_mode
+    setting.global_booster_quota = payload.global_booster_quota
     setting.default_compensation = Decimal(str(payload.default_compensation)).quantize(
         Decimal("0.01"), rounding=ROUND_HALF_UP
     )

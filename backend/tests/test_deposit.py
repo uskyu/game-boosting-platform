@@ -446,3 +446,26 @@ async def test_tiers_table_seeded_with_defaults(
     assert len(tiers) == 5
     stored = (await db_session.execute(select(DepositTier))).scalars().all()
     assert len(stored) == 5
+
+
+async def test_admin_can_update_global_booster_quota(
+    client: AsyncClient, admin_user: dict
+):
+    """全局接单配额保存后必须真实落库（回归：PUT 曾漏写该字段）。"""
+    resp = await _enable_deposit(
+        client, admin_user, enabled=False, global_booster_quota=99
+    )
+    assert resp["global_booster_quota"] == 99
+
+    resp = await client.get(DEPOSIT_SETTINGS, headers=auth_header(admin_user))
+    assert resp.status_code == 200
+    assert resp.json()["global_booster_quota"] == 99
+
+    # 边界：0 与 1001 拒绝
+    for bad in (0, 1001):
+        resp = await client.put(
+            DEPOSIT_SETTINGS,
+            json={"global_booster_quota": bad},
+            headers=auth_header(admin_user),
+        )
+        assert resp.status_code == 422, (bad, resp.text)
