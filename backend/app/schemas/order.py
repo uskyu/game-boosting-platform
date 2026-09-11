@@ -557,10 +557,26 @@ class OrderClaimItem(BaseModel):
     )
     created_at: datetime = Field(description="报名时间")
     delivered_at: datetime | None = Field(default=None, description="交付时间")
+    approved_at: datetime | None = Field(default=None, description="审核通过时间")
+    approved_payout_amount: Decimal | None = Field(default=None, description="审核确定的打款金额")
+    approved_deduction: Decimal | None = Field(default=None, description="审核确定的炸单赔偿扣除")
+    approved_note: str | None = Field(default=None, description="审核确定的打款备注")
+    settlement_mode_snapshot: str | None = Field(
+        default=None,
+        description="结算计时模式：AFTER_DELIVERY/AFTER_APPROVAL/ORDER_DELAY；NULL 仅兼容 033 前记录",
+    )
+    settle_hours_snapshot: int | None = Field(default=None, description="审核时锁定的结算小时数")
+    settlement_due_at: datetime | None = Field(default=None, description="固定结算时间")
     settled_at: datetime | None = Field(default=None, description="结算时间")
     is_first: bool = Field(default=False, description="是否首抢（该用户即订单当前接单人）")
 
-    @field_serializer("created_at", "delivered_at", "settled_at")
+    @field_serializer(
+        "created_at",
+        "delivered_at",
+        "approved_at",
+        "settlement_due_at",
+        "settled_at",
+    )
     def serialize_claim_datetime(self, value: datetime | None) -> str | None:
         return serialize_datetime_utc(value)
 

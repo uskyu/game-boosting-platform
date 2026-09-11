@@ -1,6 +1,9 @@
 """Order lifecycle and payment tests."""
 
 from httpx import AsyncClient
+from sqlalchemy import select
+
+from app.models.user import User
 from tests.conftest import auth_header
 
 
@@ -378,3 +381,90 @@ async def test_admin_create_order_notifies_boosters(
     assert len(notifications) >= 1
     assert any(n.ref_id == order["id"] for n in notifications)
     assert any("新订单" in n.title for n in notifications)
+
+
+async def test_accept_quota_counts_claim_lifecycle_and_releases_slots(
+    client: AsyncClient,
+    admin_user: dict,
+    booster_user: dict,
+    db_session,
+):
+    """Only CLAIMED/DELIVERED claims consume quota; SETTLED/CANCELLED release it."""
+    result = await db_session.execute(
+        select(User).where(User.id == booster_user["user"]["id"])
+    )
+    booster = result.scalar_one()
+    booster.booster_quota = 1
+    await db_session.commit()
+
+    # Keep one slot open so settlement leaves the parent order LOCKED. The old
+    # order-row count incorrectly kept this settled booster at quota.
+    first = await client.post(
+        "/orders/create",
+        json={
+            "game_name": "王者荣耀",
+            "current_rank": "钻石",
+            "target_rank": "王者",
+            "price": "100.00",
+            "max_claims": 2,
+        },
+        headers=auth_header(admin_user),
+    )
+    assert first.status_code == 201
+    first_id = first.json()["id"]
+
+    response = await client.put(
+        f"/orders/{first_id}/accept", headers=auth_header(booster_user)
+    )
+    assert response.status_code == 200
+
+    second = await _create_order(client, admin_user)
+    second_id = second["id"]
+    response = await client.put(
+        f"/orders/{second_id}/accept", headers=auth_header(booster_user)
+    )
+    assert response.status_code == 400
+
+    response = await client.put(
+        f"/orders/{first_id}/deliver", headers=auth_header(booster_user)
+    )
+    assert response.status_code == 200
+    response = await client.put(
+        f"/orders/{second_id}/accept", headers=auth_header(booster_user)
+    )
+    assert response.status_code == 400
+
+    claims = await client.get(
+        f"/orders/{first_id}/claims", headers=auth_header(admin_user)
+    )
+    assert claims.status_code == 200
+    claim_id = claims.json()["items"][0]["id"]
+    response = await client.put(
+        f"/orders/{first_id}/claims/{claim_id}/review",
+        json={"action": "approve"},
+        headers=auth_header(admin_user),
+    )
+    assert response.status_code == 200
+
+    # SETTLED no longer consumes quota, even though first remains LOCKED.
+    response = await client.put(
+        f"/orders/{second_id}/accept", headers=auth_header(booster_user)
+    )
+    assert response.status_code == 200
+
+    third = await _create_order(client, admin_user)
+    third_id = third["id"]
+    response = await client.put(
+        f"/orders/{third_id}/accept", headers=auth_header(booster_user)
+    )
+    assert response.status_code == 400
+
+    # Admin cancellation turns the active claim into CANCELLED and releases it.
+    response = await client.put(
+        f"/orders/{second_id}/cancel", headers=auth_header(admin_user)
+    )
+    assert response.status_code == 200
+    response = await client.put(
+        f"/orders/{third_id}/accept", headers=auth_header(booster_user)
+    )
+    assert response.status_code == 200

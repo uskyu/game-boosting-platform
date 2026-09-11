@@ -4,8 +4,9 @@ import { useRouter } from 'vue-router'
 
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
+import { useNotificationsStore } from '@/stores/notifications'
 import { useOrdersStore } from '@/stores/orders'
-import { formatCount, formatPayoutDelay, formatPrice, formatShortDate, getAcceptWaitSeconds } from '@/utils/display'
+import { formatCount, formatPayoutDelay, formatPrice, formatShortDate, getAcceptWaitMeta } from '@/utils/display'
 import { ORDER_STATUS_OPTIONS, getOrderStatusBadgeClass, getOrderStatusLabel } from '@/utils/order'
 
 /**
@@ -20,6 +21,7 @@ import { ORDER_STATUS_OPTIONS, getOrderStatusBadgeClass, getOrderStatusLabel } f
 const router = useRouter()
 const authStore = useAuthStore()
 const chatStore = useChatStore()
+const notificationsStore = useNotificationsStore()
 const ordersStore = useOrdersStore()
 
 const searchGame = ref('')
@@ -32,8 +34,16 @@ const openOnly = ref(true)
 // 抢单倒计时：每秒刷新 now，与 accept_available_at 求差得到剩余等待秒数
 const now = ref(Date.now())
 
-function getAcceptWaitSecondsFor(order) {
-  return getAcceptWaitSeconds(order?.accept_available_at, now.value)
+function getAcceptWaitMetaFor(order) {
+  return getAcceptWaitMeta(order, now.value)
+}
+
+function getAcceptWaitLabel(order) {
+  const { remaining, total } = getAcceptWaitMetaFor(order)
+  if (remaining <= 0) return ''
+  return total > 0
+    ? `接单等待：剩余 ${remaining} 秒（配置等待 ${total} 秒）`
+    : `接单等待：剩余 ${remaining} 秒`
 }
 
 const orders = computed(() => ordersStore.orders)
@@ -201,9 +211,14 @@ let hallUnmounted = false
 let countdownTimer = null
 // 在飞保护：弱网下一轮没跑完就不开新一轮，避免请求堆积占满浏览器连接
 let hallRefreshing = false
+let hallRefreshQueued = false
 
 async function silentRefresh() {
-  if (hallRefreshing || document.visibilityState !== 'visible' || !isAuthenticated.value) return
+  if (hallUnmounted || !isAuthenticated.value || document.visibilityState !== 'visible') return
+  if (hallRefreshing) {
+    hallRefreshQueued = true
+    return
+  }
   hallRefreshing = true
   try {
     await ordersStore.fetchOrders({ silent: true })
@@ -211,8 +226,17 @@ async function silentRefresh() {
     // 静默失败等下一轮
   } finally {
     hallRefreshing = false
+    if (hallRefreshQueued) {
+      hallRefreshQueued = false
+      silentRefresh().catch(() => {})
+    }
   }
 }
+
+// 新订单通知到达时立即更新可见大厅；若已有刷新在飞，排队补一次。
+watch(() => notificationsStore.newOrderNotificationVersion, () => {
+  silentRefresh().catch(() => {})
+})
 
 // 登录后的大厅启动：拉订单、拉聊天摘要、开自动刷新。
 // 身份可能在挂载后才由后台 /auth/me 补全（守卫已不阻塞），挂载和补全两条路径都走这里。
@@ -331,9 +355,9 @@ onUnmounted(() => {
         <!-- 炸单赔偿 / 到账时效 / 当前情况收敛为一行 13px 小字 -->
         <p v-if="getMetaLine(order)" class="mt-1.5 truncate text-[13px] tabular-nums text-ink-2">{{ getMetaLine(order) }}</p>
 
-        <!-- 抢单倒计时：等待期内的订单显示剩余秒数，倒计时归零后自动消失 -->
-        <div v-if="getAcceptWaitSecondsFor(order) > 0" class="mt-2">
-          <span class="tag !bg-warning-soft !text-warning tabular-nums">等待接单 {{ getAcceptWaitSecondsFor(order) }} 秒</span>
+        <!-- 抢单倒计时：明确区分当前剩余等待与配置的总等待时长 -->
+        <div v-if="getAcceptWaitMetaFor(order).remaining > 0" class="mt-2">
+          <span class="tag !bg-warning-soft !text-warning tabular-nums">{{ getAcceptWaitLabel(order) }}</span>
         </div>
 
         <div v-if="getAttachment(order)" class="mt-3 overflow-hidden rounded-tile"><img :src="getAttachment(order)" alt="订单附件" loading="lazy" class="max-h-40 w-full rounded object-cover" /></div>

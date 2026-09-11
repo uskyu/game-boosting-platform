@@ -35,9 +35,14 @@ export async function subscribeToPush() {
   return subscription
 }
 
-export async function restorePushSubscription() {
+export async function restorePushSubscription(options = {}) {
+  const isCurrent = typeof options.isCurrent === 'function' ? options.isCurrent : () => true
   const status = await getPushStatus()
-  if (status.subscribed) await api.post('/push/subscribe', { subscription: status.subscription.toJSON() })
+  if (!isCurrent()) return { ...status, stale: true }
+  if (status.subscribed) {
+    await api.post('/push/subscribe', { subscription: status.subscription.toJSON() })
+    if (!isCurrent()) return { ...status, stale: true }
+  }
   return status
 }
 

@@ -97,9 +97,32 @@ export function getAcceptWaitSeconds(availableAt, now = Date.now()) {
   return diff > 0 ? Math.ceil(diff / 1000) : 0
 }
 
+/**
+ * 订单接单等待展示状态：等待中、等待已结束，或无需等待。
+ * 该状态只用于前端文案，接单权限仍由服务端校验。
+ */
+export function getAcceptWaitMeta(order, now = Date.now()) {
+  const configuredWait = Number(order?.accept_wait_seconds)
+  const total = Number.isFinite(configuredWait) && configuredWait > 0 ? Math.floor(configuredWait) : 0
+  const remaining = getAcceptWaitSeconds(order?.accept_available_at, now)
+  const state = remaining > 0 ? 'waiting' : total > 0 ? 'ready' : 'available'
+  return { remaining, total, state }
+}
+
 export function formatCount(value) {
   const numericValue = Number(value ?? 0)
   return countFormatter.format(Number.isNaN(numericValue) ? 0 : numericValue)
+}
+
+export function formatSettlementDelay(hoursRaw) {
+  const hours = Number(hoursRaw)
+  if (!Number.isFinite(hours) || hours < 0) return ''
+  if (hours === 0) return '立即结算'
+  const days = Math.floor(hours / 24)
+  const remainingHours = hours % 24
+  if (days > 0 && remainingHours > 0) return `${days}天${remainingHours}小时`
+  if (days > 0) return `${days}天`
+  return `${hours}小时`
 }
 
 /**

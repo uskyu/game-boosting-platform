@@ -19,11 +19,13 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.deposit import (
     SETTLEMENT_MODE_AFTER_APPROVAL,
+    SETTLEMENT_MODE_AFTER_DELIVERY,
+    SETTLEMENT_MODE_ORDER_DELAY,
     DepositTier,
 )
 from app.models.notification import NotificationType
@@ -41,18 +43,6 @@ def _as_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
-async def _deposit_balances(db: AsyncSession, user_ids: set[int]) -> dict[int, Decimal]:
-    """批量取打手的保证金余额，用于解析档位。"""
-    if not user_ids:
-        return {}
-    result = await db.execute(
-        select(Wallet.user_id, Wallet.deposit_balance).where(
-            Wallet.user_id.in_(user_ids)
-        )
-    )
-    return {user_id: Decimal(str(balance or 0)) for user_id, balance in result.all()}
-
-
 def _order_delay_due(claim: OrderClaim, order: Order) -> datetime | None:
     """保证金模式关闭时的原有规则：交付时间 + 订单自身的到账时效。"""
     days = order.payout_delay_days
@@ -64,23 +54,70 @@ def _order_delay_due(claim: OrderClaim, order: Order) -> datetime | None:
     )
 
 
-def _tier_settle_due(
+def _snapshot_settle_due(claim: OrderClaim) -> datetime | None:
+    """Return the immutable due time captured on a post-migration claim."""
+    if claim.settlement_mode_snapshot is None or claim.settlement_due_at is None:
+        return None
+    return _as_utc(claim.settlement_due_at)
+
+
+def _legacy_deposit_due(
     claim: OrderClaim,
     tier: DepositTier | None,
     settlement_mode: str,
 ) -> datetime | None:
-    """保证金模式下的到期时间：按命中档位的结账时效计算。"""
+    """Recover the pre-033 deposit due time without guessing.
+
+    Before the snapshot migration, deposit-enabled claims used the active tier
+    at scan time. Reproduce that old rule only when the required source time is
+    present: delivered_at for AFTER_DELIVERY, or approved_at for
+    AFTER_APPROVAL. A missing approval timestamp is intentionally not treated
+    as immediately due.
+    """
     if tier is None:
         return None
-    hours = int(tier.settle_hours or 0)
     if settlement_mode == SETTLEMENT_MODE_AFTER_APPROVAL:
-        # 老板审核通过后才开始计时
         if claim.approved_at is None:
             return None
-        return _as_utc(claim.approved_at) + timedelta(hours=hours)
-    if claim.delivered_at is None:
-        return None
-    return _as_utc(claim.delivered_at) + timedelta(hours=hours)
+        started_at = claim.approved_at
+    else:
+        if claim.delivered_at is None:
+            return None
+        started_at = claim.delivered_at
+    return _as_utc(started_at) + timedelta(hours=max(int(tier.settle_hours or 0), 0))
+
+
+def _legacy_due(
+    claim: OrderClaim,
+    order: Order,
+    *,
+    deposit_enabled: bool,
+    tier: DepositTier | None,
+    settlement_mode: str,
+) -> datetime | None:
+    """Resolve a pre-033 claim using the old scheduler contract.
+
+    Legacy deposit-enabled claims used tier timing first.  The old order-delay
+    rule applies only when deposit mode was disabled, preserving both the old
+    AFTER_APPROVAL ``approved_at`` origin and the proper tier gate.
+    """
+    if deposit_enabled:
+        return _legacy_deposit_due(claim, tier, settlement_mode)
+    return _order_delay_due(claim, order)
+
+
+def _marker_due(claim: OrderClaim, order: Order) -> datetime | None:
+    """Resolve a post-033 claim from its explicit settlement marker."""
+    if claim.settlement_mode_snapshot == SETTLEMENT_MODE_ORDER_DELAY:
+        return _order_delay_due(claim, order)
+    return _snapshot_settle_due(claim)
+
+
+def _uses_legacy_tier(
+    claim: OrderClaim, *, deposit_enabled: bool, tier: DepositTier | None
+) -> bool:
+    """Whether an old claim's due time was supplied by the active tier."""
+    return claim.settlement_mode_snapshot is None and deposit_enabled and tier is not None
 
 
 async def scan_due_payouts(
@@ -93,7 +130,6 @@ async def scan_due_payouts(
     """
     now = _as_utc(now or datetime.now(timezone.utc))
 
-    # 延迟导入避免 service -> service 的循环依赖
     from app.services import deposit_service
 
     deposit_on = await deposit_service.is_deposit_enabled(db)
@@ -109,54 +145,105 @@ async def scan_due_payouts(
         .join(Order, OrderClaim.order_id == Order.id)
         .where(OrderClaim.status == ClaimLifecycleStatus.DELIVERED)
     )
-    if not deposit_on:
-        # 原有行为：只有设置了到账时效的订单才参与自动结算
-        query = query.where(
-            or_(
-                Order.payout_delay_days.isnot(None),
-                Order.payout_delay_hours.isnot(None),
+    candidates = await db.execute(query.order_by(OrderClaim.id.asc()))
+    rows = candidates.all()
+    balances = {}
+    if deposit_on and rows:
+        balance_result = await db.execute(
+            select(Wallet.user_id, Wallet.deposit_balance).where(
+                Wallet.user_id.in_({claim.booster_id for claim, _ in rows})
             )
         )
-    candidates = await db.execute(query.order_by(OrderClaim.id.asc()))
-
-    rows = candidates.all()
-    balances = (
-        await _deposit_balances(db, {claim.booster_id for claim, _ in rows})
-        if deposit_on
-        else {}
-    )
+        balances = {
+            user_id: Decimal(str(balance or 0))
+            for user_id, balance in balance_result.all()
+        }
 
     settled_claim_ids: list[int] = []
     for claim, order in rows:
-        if deposit_on:
-            tier = deposit_service.resolve_tier(
+        candidate_tier = (
+            deposit_service.resolve_tier(
                 tiers, balances.get(claim.booster_id, Decimal("0"))
             )
-            due_at = _tier_settle_due(claim, tier, settlement_mode)
-        else:
-            due_at = _order_delay_due(claim, order)
-
-        if due_at is None or due_at > now:
+            if deposit_on
+            else None
+        )
+        candidate_due = (
+            _marker_due(claim, order)
+            if claim.settlement_mode_snapshot is not None
+            else _legacy_due(
+                claim,
+                order,
+                deposit_enabled=deposit_on,
+                tier=candidate_tier,
+                settlement_mode=settlement_mode,
+            )
+        )
+        if candidate_due is None:
+            if claim.settlement_mode_snapshot is None:
+                logger.info(
+                    "Skipping legacy claim %s: no safe settlement due time",
+                    claim.id,
+                )
+            continue
+        if candidate_due > now:
             continue
 
         try:
             async with db.begin_nested():
-                # 锁定订单与名额行后再结算，避免与人工审核并发
+                # Candidate rows can become delivered/settled or have their
+                # immutable due time changed after the initial scan. Lock both
+                # rows, then recompute the legacy mode/tier and due time from
+                # current database state before settling.
                 locked_order = (
                     await db.execute(
                         select(Order).where(Order.id == order.id).with_for_update()
                     )
-                ).scalar_one()
+                ).scalar_one_or_none()
                 locked_claim = (
                     await db.execute(
                         select(OrderClaim)
                         .where(OrderClaim.id == claim.id)
                         .with_for_update()
                     )
-                ).scalar_one()
+                ).scalar_one_or_none()
+                if locked_order is None or locked_claim is None:
+                    continue
+                if locked_claim.status != ClaimLifecycleStatus.DELIVERED:
+                    continue
+
+                locked_deposit_on = await deposit_service.is_deposit_enabled(db)
+                locked_mode = SETTLEMENT_MODE_AFTER_DELIVERY
+                locked_tier = None
+                if locked_deposit_on:
+                    locked_setting = await deposit_service.get_or_create_deposit_setting(db)
+                    locked_mode = locked_setting.settlement_mode
+                    locked_tier, _ = await deposit_service.get_user_tier(
+                        db, locked_claim.booster_id
+                    )
+                locked_due = (
+                    _marker_due(locked_claim, locked_order)
+                    if locked_claim.settlement_mode_snapshot is not None
+                    else _legacy_due(
+                        locked_claim,
+                        locked_order,
+                        deposit_enabled=locked_deposit_on,
+                        tier=locked_tier,
+                        settlement_mode=locked_mode,
+                    )
+                )
+                if locked_due is None or locked_due > now:
+                    continue
+
                 order_service = get_order_service(db)
                 done = await order_service.auto_settle_due_claim(
-                    locked_order, locked_claim, delay_from_tier=deposit_on
+                    locked_order,
+                    locked_claim,
+                    delay_from_tier=(
+                        locked_claim.settlement_mode_snapshot is None
+                        and locked_deposit_on
+                        and locked_tier is not None
+                    ),
                 )
             if done:
                 settled_claim_ids.append(claim.id)

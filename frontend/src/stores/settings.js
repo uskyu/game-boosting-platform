@@ -96,19 +96,30 @@ export const useSettingsStore = defineStore('settings', () => {
     mediaListener = null
   }
 
-  async function fetchPreferences() {
+  let preferencesRequestSeq = 0
+
+  async function fetchPreferences(options = {}) {
+    const authStore = options.authStore
+    const authContext = authStore?.getSessionContext?.()
+    const requestSeq = ++preferencesRequestSeq
     loading.value = true
     error.value = null
 
     try {
       const response = await api.get('/notifications/settings')
+      const isCurrent = !authStore
+        || (requestSeq === preferencesRequestSeq && authStore.isCurrentSession(authContext))
+      if (!isCurrent) return { success: true, stale: true }
       preferences.value = response.data
       return { success: true, data: response.data }
     } catch (err) {
+      const isCurrent = !authStore
+        || (requestSeq === preferencesRequestSeq && authStore.isCurrentSession(authContext))
+      if (!isCurrent) return { success: false, stale: true, error: err.message }
       error.value = err.message
       return { success: false, error: err.message }
     } finally {
-      loading.value = false
+      if (requestSeq === preferencesRequestSeq) loading.value = false
     }
   }
 

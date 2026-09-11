@@ -115,9 +115,7 @@ async def _enrich_order_response(db, response: OrderResponse, order, viewer: Use
     if viewer.role == UserRole.ADMIN or order.user_id == viewer.id:
         counts = await order_service.claim_status_counts([order.id])
         status_counts = counts.get(order.id, {})
-        response.pending_review_count = status_counts.get(
-            ClaimLifecycleStatus.DELIVERED.value, 0
-        )
+        response.pending_review_count = status_counts.get("PENDING_REVIEW", 0)
         response.settled_count = status_counts.get(ClaimLifecycleStatus.SETTLED.value, 0)
 
     if viewer.role != UserRole.ADMIN:
@@ -154,9 +152,7 @@ async def _enrich_order_responses(
         counts = await order_service.claim_status_counts(count_order_ids)
         for response in responses:
             status_counts = counts.get(response.id, {})
-            response.pending_review_count = status_counts.get(
-                ClaimLifecycleStatus.DELIVERED.value, 0
-            )
+            response.pending_review_count = status_counts.get("PENDING_REVIEW", 0)
             response.settled_count = status_counts.get(
                 ClaimLifecycleStatus.SETTLED.value, 0
             )

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import Lightbox from '@/components/Lightbox.vue'
@@ -10,8 +10,8 @@ import { useChatStore } from '@/stores/chat'
 import { useOrdersStore } from '@/stores/orders'
 import { getGameImage } from '@/data/gameImages'
 import api from '@/utils/api'
-import { formatDateTime, formatOrderPrice, formatPayoutDelay, formatPrice, formatShortDate, getAcceptWaitSeconds } from '@/utils/display'
-import { getClaimStatusMeta, getOrderStatusBadgeClass, getOrderStatusLabel, getOrderStatusMeta, getHumanStatusLabel, getHumanStatusSubtitle } from '@/utils/order'
+import { formatDateTime, formatOrderPrice, formatPayoutDelay, formatPrice, formatSettlementDelay, formatShortDate, getAcceptWaitMeta } from '@/utils/display'
+import { getClaimSettlementMeta, getOrderStatusBadgeClass, getOrderStatusLabel, getOrderStatusMeta, getHumanStatusLabel, getHumanStatusSubtitle } from '@/utils/order'
 
 const props = defineProps({
   id: {
@@ -30,6 +30,8 @@ const successMessage = ref('')
 const actionLoading = ref(false)
 const chatLoading = ref(false)
 const reviews = ref([])
+let detailLoadSeq = 0
+let reviewsLoadSeq = 0
 const reviewForm = ref({ rating: 5, content: '' })
 const editingReview = ref(false)
 const confirmSuccess = ref(false)
@@ -89,7 +91,9 @@ const humanStatusSubtitle = computed(() => {
   if (myClaim.value && viewRole.value === 'booster' && !isOwner.value) {
     const map = {
       CLAIMED: '完成后点击「结束订单」提交汇报',
-      DELIVERED: '已提交汇报，等待订单发布人审核打款',
+      DELIVERED: myClaim.value.approved_at
+        ? `审核已通过，${myClaim.value.settlement_due_at ? `预计 ${formatDateTime(myClaim.value.settlement_due_at)} 自动入账` : '等待自动入账'}`
+        : '已提交汇报，等待订单发布人审核打款',
       SETTLED: '报酬已结算，已计入钱包余额',
     }
     return map[myClaim.value.status] ?? ''
@@ -98,15 +102,26 @@ const humanStatusSubtitle = computed(() => {
 })
 const isPending = computed(() => order.value?.status === 'PENDING')
 
+// 与订单大厅保持一致：LOCKED 多人订单只要仍有空余名额即可继续接单。
+const canAcceptOrder = computed(() => {
+  const o = order.value
+  if (!o || isOwner.value || hasClaimed.value) return false
+  if (!['PENDING', 'LOCKED'].includes(o.status) || o.claim_status !== 'OPEN') return false
+  if (o.is_archived || Number(o.claimed_count) >= Number(o.max_claims)) return false
+  if (o.status === 'LOCKED' && Number(o.max_claims) <= 1) return false
+  if (!o.deadline) return true
+  const deadline = new Date(o.deadline)
+  return !Number.isNaN(deadline.getTime()) && deadline.getTime() > Date.now()
+})
+
 // ── 抢单倒计时：每秒刷新 now，基于 accept_available_at 求剩余等待秒数 ──
 const now = ref(Date.now())
 let claimCountdownTimer = null
-const acceptWaitSeconds = computed(() => getAcceptWaitSeconds(order.value?.accept_available_at, now.value))
+const acceptWaitMeta = computed(() => getAcceptWaitMeta(order.value, now.value))
+const acceptWaitSeconds = computed(() => acceptWaitMeta.value.remaining)
 // 本单要求等待的总秒数（后端按当前用户所在阶梯下发，null=保证金模式关闭）
-const acceptRequiredWait = computed(() => {
-  const value = Number(order.value?.accept_wait_seconds)
-  return Number.isFinite(value) && value > 0 ? value : 0
-})
+const acceptRequiredWait = computed(() => acceptWaitMeta.value.total)
+const acceptWaitState = computed(() => acceptWaitMeta.value.state)
 // 统计卡只显示已填写的参数：未填服务/区服直接不渲染，节省 UI
 const detailStats = computed(() => {
   const o = order.value || {}
@@ -137,7 +152,7 @@ const deadlineRemaining = computed(() => {
   if (!d) return ''
   const t = new Date(d)
   if (Number.isNaN(t.getTime())) return formatDateTime(d)
-  const diff = t.getTime() - Date.now()
+  const diff = t.getTime() - now.value
   if (diff <= 0) return `已截止 ${formatDateTime(d)}`
   const h = Math.floor(diff / 3600000)
   const days = Math.floor(h / 24)
@@ -151,7 +166,7 @@ const isDeadlineOverdue = computed(() => {
   const d = order.value?.deadline
   if (!d) return false
   const t = new Date(d)
-  return !Number.isNaN(t.getTime()) && t.getTime() <= Date.now()
+  return !Number.isNaN(t.getTime()) && t.getTime() <= now.value
 })
 
 const deliveryAttachments = computed(() => {
@@ -206,14 +221,14 @@ async function copyBossContact() {
 // 打手自己的状态标签按 my_claim.status 显示
 const heroStatusClass = computed(() => {
   if (myClaim.value && viewRole.value === 'booster' && !isOwner.value) {
-    return getClaimStatusMeta(myClaim.value.status).tagClass
+    return getClaimSettlementMeta(myClaim.value).tagClass
   }
   return getOrderStatusBadgeClass(order.value?.status)
 })
 
 const heroStatusLabel = computed(() => {
   if (myClaim.value && viewRole.value === 'booster' && !isOwner.value) {
-    return getClaimStatusMeta(myClaim.value.status).label
+    return getClaimSettlementMeta(myClaim.value).label
   }
   return humanStatusLabel.value
 })
@@ -291,7 +306,8 @@ function openDeliveryLightbox(index) {
 // ── 发布人审核（人人可发单模式：交付由发单用户自己审核打款，管理员兜底）──
 // 命名避开既有「订单评价」的 reviewForm/submitReview
 const ownerClaims = computed(() => ordersStore.claims)
-const pendingReviewCount = computed(() => ownerClaims.value.filter((claim) => claim.status === 'DELIVERED').length)
+const pendingReviewCount = computed(() => ownerClaims.value.filter((claim) => getClaimSettlementMeta(claim).isPendingReview).length)
+const pendingSettlementCount = computed(() => ownerClaims.value.filter((claim) => getClaimSettlementMeta(claim).isPendingSettlement).length)
 const showPayoutModal = ref(false)
 const payoutForm = ref({ claimId: null, amount: '', deduction: '', note: '' })
 const payoutSubmitting = ref(false)
@@ -332,7 +348,14 @@ async function submitPayout() {
   payoutSubmitting.value = false
   if (result.success) {
     showPayoutModal.value = false
-    successMessage.value = '已通过审核，报酬已入账对方钱包'
+    const approvedClaim = result.data
+    if (approvedClaim?.status === 'DELIVERED' && approvedClaim.approved_at) {
+      successMessage.value = approvedClaim.settlement_due_at
+        ? `已审核通过，预计 ${formatDateTime(approvedClaim.settlement_due_at)} 自动结算`
+        : '已审核通过，报酬将自动结算'
+    } else {
+      successMessage.value = '已审核通过，报酬已结算并计入对方钱包'
+    }
     await Promise.all([ordersStore.fetchOrder(order.value.id), ordersStore.fetchClaims(order.value.id)])
   } else {
     errorMessage.value = result.error || '审核失败，请稍后重试'
@@ -340,11 +363,15 @@ async function submitPayout() {
 }
 
 // 报名名单：打手侧用于「已接单」按钮态；发布人侧用于审核面板（人人可发单模式自审）
-async function loadClaims() {
-  if (!order.value || !currentUser.value || (!isOwner.value && !isBooster.value)) {
-    return
+async function loadClaims(orderId = order.value?.id, loadSeq = detailLoadSeq) {
+  if (!orderId || !currentUser.value || (!isOwner.value && !isBooster.value)) {
+    return { success: true, skipped: true }
   }
-  await ordersStore.fetchClaims(order.value.id)
+  const result = await ordersStore.fetchClaims(orderId)
+  if (loadSeq !== detailLoadSeq || String(props.id) !== String(orderId)) {
+    return { ...result, stale: true }
+  }
+  return result
 }
 
 function openClaimModal() {
@@ -460,17 +487,28 @@ async function handleStartConversation() {
   chatLoading.value = false
 }
 
-async function fetchReviews() {
-  if (!order.value || order.value.status !== 'COMPLETED') {
-    reviews.value = []
-    return
+async function fetchReviews(orderId = order.value?.id, loadSeq = detailLoadSeq) {
+  if (!orderId || order.value?.status !== 'COMPLETED') {
+    if (loadSeq === detailLoadSeq && String(props.id) === String(orderId)) {
+      reviews.value = []
+    }
+    return { success: true, skipped: true }
   }
 
+  const requestSeq = ++reviewsLoadSeq
   try {
-    const resp = await api.get(`/orders/${order.value.id}/reviews`)
+    const resp = await api.get(`/orders/${orderId}/reviews`)
+    if (requestSeq !== reviewsLoadSeq || loadSeq !== detailLoadSeq || String(props.id) !== String(orderId)) {
+      return { success: true, stale: true }
+    }
     reviews.value = resp.data.items || []
+    return { success: true }
   } catch {
+    if (requestSeq !== reviewsLoadSeq || loadSeq !== detailLoadSeq || String(props.id) !== String(orderId)) {
+      return { success: false, stale: true }
+    }
     reviews.value = []
+    return { success: false }
   }
 }
 
@@ -499,20 +537,46 @@ async function submitReview() {
   }
 }
 
-onMounted(async () => {
+async function loadDetail(orderId) {
+  const loadSeq = ++detailLoadSeq
+  reviewsLoadSeq += 1
+  reviews.value = []
+  errorMessage.value = ''
+  successMessage.value = ''
+  showPayoutModal.value = false
+  ordersStore.clearCurrentOrder()
+
+  const result = await ordersStore.fetchOrder(orderId)
+  if (!result.success || result.stale || loadSeq !== detailLoadSeq || String(props.id) !== String(orderId)) {
+    return
+  }
+
+  await Promise.all([
+    fetchReviews(orderId, loadSeq),
+    loadClaims(orderId, loadSeq),
+  ])
+}
+
+watch(
+  () => props.id,
+  (orderId) => {
+    loadDetail(orderId).catch(() => {})
+  },
+  { immediate: true }
+)
+
+onMounted(() => {
   if (!claimCountdownTimer) {
     claimCountdownTimer = window.setInterval(() => {
       now.value = Date.now()
     }, 1000)
   }
-  const result = await ordersStore.fetchOrder(props.id)
-  if (result.success) {
-    await fetchReviews()
-    await loadClaims()
-  }
 })
 
 onUnmounted(() => {
+  detailLoadSeq += 1
+  reviewsLoadSeq += 1
+  ordersStore.clearCurrentOrder()
   if (claimCountdownTimer) {
     window.clearInterval(claimCountdownTimer)
     claimCountdownTimer = null
@@ -635,9 +699,12 @@ onUnmounted(() => {
       <section v-if="isOwner && ownerClaims.length" class="surface-card p-6 sm:p-8">
         <div class="flex flex-wrap items-center justify-between gap-2">
           <h2 class="text-lg font-semibold text-ink-1">接单名单</h2>
-          <span v-if="pendingReviewCount" class="rounded-full bg-warning/15 px-3 py-1 text-xs font-semibold text-warning">{{ pendingReviewCount }} 条待审核</span>
+          <div class="flex flex-wrap items-center justify-end gap-2 text-xs font-semibold">
+            <span v-if="pendingReviewCount" class="rounded-full bg-warning/15 px-3 py-1 text-warning">{{ pendingReviewCount }} 条待审核</span>
+            <span v-if="pendingSettlementCount" class="rounded-full bg-info/15 px-3 py-1 text-info">{{ pendingSettlementCount }} 条待自动结算</span>
+          </div>
         </div>
-        <p class="mt-1 text-xs text-ink-3">对方完成并提交汇报后，点「审核打款」确认入账</p>
+        <p class="mt-1 text-xs text-ink-3">未审核的汇报可点「审核打款」；审核通过后按结算时间自动结算。</p>
         <div class="mt-4 space-y-3">
           <div v-for="claim in ownerClaims" :key="claim.id" class="info-tile flex flex-wrap items-center justify-between gap-3">
             <div class="min-w-0">
@@ -657,8 +724,16 @@ onUnmounted(() => {
               <p v-else-if="claim.status !== 'CLAIMED'" class="mt-2 text-xs text-ink-3">未提交交付截图</p>
             </div>
             <div class="flex shrink-0 items-center gap-3">
-              <span :class="getClaimStatusMeta(claim.status).tagClass">{{ getClaimStatusMeta(claim.status).label }}</span>
-              <button v-if="claim.status === 'DELIVERED'" type="button" class="btn-primary !min-h-[36px] !px-4" @click="openPayoutModal(claim)">审核打款</button>
+              <div class="text-right">
+                <span :class="getClaimSettlementMeta(claim).tagClass">
+                  {{ getClaimSettlementMeta(claim).label }}
+                </span>
+                <p v-if="claim.approved_at && claim.settlement_due_at" class="mt-1 text-xs text-ink-3">
+                  {{ formatDateTime(claim.settlement_due_at) }} 入账
+                  <span v-if="claim.settle_hours_snapshot != null">（{{ formatSettlementDelay(claim.settle_hours_snapshot) }}）</span>
+                </p>
+              </div>
+              <button v-if="claim.status === 'DELIVERED' && !claim.approved_at" type="button" class="btn-primary !min-h-[36px] !px-4" @click="openPayoutModal(claim)">审核打款</button>
             </div>
           </div>
         </div>
@@ -696,7 +771,12 @@ onUnmounted(() => {
           </button>
         </div>
         <p v-if="myClaim?.status === 'DELIVERED' && !isOwner" class="message-info mt-4 text-xs leading-6">
-          已提交结束汇报，等待订单发布人审核打款，通过后报酬会计入余额。
+          <template v-if="myClaim.approved_at">
+            订单发布人已审核通过。<span v-if="myClaim.settlement_due_at">预计 {{ formatDateTime(myClaim.settlement_due_at) }} 自动入账<span v-if="myClaim.settle_hours_snapshot === 0">（立即）</span>。</span>
+          </template>
+          <template v-else>
+            已提交结束汇报，等待订单发布人审核打款，通过后报酬会计入余额。
+          </template>
         </p>
         <p v-if="isDelivered && isOwner" class="message-warning mt-4 text-xs leading-6">
           打手已结束订单，请核实汇报与结果。如有问题可发起争议。
@@ -730,13 +810,24 @@ onUnmounted(() => {
 
           <!-- 桌面竖排；<xl 压缩为单行操作栏：返回列表 | 联系 | 主操作 -->
           <div class="od-ops__body mt-6 flex flex-col gap-3">
-            <!-- 抢单倒计时说明：等待期内禁用接单按钮，倒计时归零后恢复 -->
-            <div v-if="isBooster && order.status === 'PENDING' && !isOwner && acceptWaitSeconds > 0" class="message-warning text-xs leading-6">
-              接单等待说明：本订单需等待 {{ acceptRequiredWait }} 秒，当前还剩 {{ acceptWaitSeconds }} 秒，倒计时结束后即可接单。
+            <!-- 抢单等待状态仅影响展示，按钮禁用条件仍由剩余秒数和服务端共同决定。 -->
+            <div
+              v-if="isBooster && canAcceptOrder"
+              :class="[acceptWaitState === 'waiting' ? 'message-warning' : 'message-info', 'text-xs leading-6']"
+            >
+              <template v-if="acceptWaitState === 'waiting'">
+                接单等待中：配置等待 {{ acceptRequiredWait }} 秒，当前还剩 {{ acceptWaitSeconds }} 秒，倒计时结束后即可接单。
+              </template>
+              <template v-else-if="acceptWaitState === 'ready'">
+                接单等待已结束：配置等待 {{ acceptRequiredWait }} 秒，当前可立即接单。
+              </template>
+              <template v-else>
+                接单无需等待：当前可立即接单。
+              </template>
             </div>
 
             <button
-              v-if="isBooster && order.status === 'PENDING' && !isOwner"
+              v-if="isBooster && (canAcceptOrder || (order.status === 'PENDING' && !isOwner && hasClaimed))"
               class="od-ops__primary btn-primary w-full py-3"
               :disabled="actionLoading || hasClaimed || acceptWaitSeconds > 0"
               @click="openClaimModal"
@@ -768,7 +859,7 @@ onUnmounted(() => {
               class="od-ops__chip btn-secondary w-full py-3"
               disabled
             >
-              已提交汇报 · 待审核
+              {{ getClaimSettlementMeta(myClaim).label }}
             </button>
 
             <button

@@ -158,6 +158,9 @@ class DepositTier(Base):
 # 结账时效计时起点
 SETTLEMENT_MODE_AFTER_DELIVERY = "AFTER_DELIVERY"   # 交付后计时，到期自动通过
 SETTLEMENT_MODE_AFTER_APPROVAL = "AFTER_APPROVAL"   # 老板通过后计时，再压一段时间
+# Post-033 claims use this explicit marker when deposit rules cannot provide a
+# tier snapshot. NULL remains reserved for pre-033 legacy claims.
+SETTLEMENT_MODE_ORDER_DELAY = "ORDER_DELAY"
 SETTLEMENT_MODES = (SETTLEMENT_MODE_AFTER_DELIVERY, SETTLEMENT_MODE_AFTER_APPROVAL)
 
 # 默认阶梯（与老板给定的权益表一致）

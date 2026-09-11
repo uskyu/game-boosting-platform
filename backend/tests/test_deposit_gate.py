@@ -295,6 +295,7 @@ async def test_settlement_mode_after_delivery_auto_settles(
         )
     ).scalar_one()
     claim.delivered_at = datetime.now(timezone.utc) - timedelta(hours=2)
+    claim.settlement_due_at = claim.delivered_at + timedelta(hours=1)
     await db_session.commit()
 
     settled = await scan_due_payouts(db_session)
@@ -368,6 +369,7 @@ async def test_after_approval_holds_until_due(
 
     # 把通过时间回拨到 25 小时前 → 到期应自动放款
     claim.approved_at = datetime.now(timezone.utc) - timedelta(hours=25)
+    claim.settlement_due_at = claim.approved_at + timedelta(hours=24)
     await db_session.commit()
 
     settled = await scan_due_payouts(db_session)
@@ -412,6 +414,180 @@ async def test_after_approval_waits_for_approval(
     # 未审核 → 不结算
     assert await scan_due_payouts(db_session) == []
     await db_session.commit()
+
+
+async def test_after_approval_snapshots_review_terms_and_due_time(
+    client: AsyncClient, admin_user: dict, booster_user: dict, db_session
+):
+    """审核金额、扣款、备注和档位时效 remain fixed after approval."""
+    await _enable_deposit(
+        client,
+        admin_user,
+        settlement_mode="AFTER_APPROVAL",
+        tiers=[
+            {
+                "threshold": 0,
+                "wait_seconds": 0,
+                "exempt_compensation": False,
+                "settle_hours": 24,
+                "enabled": True,
+            }
+        ],
+    )
+    await _fund(client, admin_user, booster_user, 500)
+    order = await _make_order(
+        client, admin_user, price="100.00", compensation=20
+    )
+    assert (await _accept(client, booster_user, order["id"])).status_code == 200
+    assert (
+        await client.put(
+            f"/orders/{order['id']}/deliver",
+            headers=auth_header(booster_user),
+        )
+    ).status_code == 200
+
+    claim = (
+        await db_session.execute(
+            select(OrderClaim).where(OrderClaim.order_id == order["id"])
+        )
+    ).scalar_one()
+    # The timing snapshot is taken at delivery, before approval.
+    assert claim.settlement_mode_snapshot == "AFTER_APPROVAL"
+    assert claim.settle_hours_snapshot == 24
+    await _enable_deposit(
+        client,
+        admin_user,
+        settlement_mode="AFTER_APPROVAL",
+        tiers=[
+            {
+                "threshold": 0,
+                "wait_seconds": 0,
+                "exempt_compensation": False,
+                "settle_hours": 1,
+                "enabled": True,
+            }
+        ],
+    )
+    await db_session.commit()
+    await db_session.refresh(claim)
+    assert claim.settle_hours_snapshot == 24
+
+    review = await client.put(
+        f"/orders/{order['id']}/claims/{claim.id}/review",
+        json={
+            "action": "approve",
+            "amount": "55.00",
+            "deduction": "7.00",
+            "note": "partial approval",
+        },
+        headers=auth_header(admin_user),
+    )
+    assert review.status_code == 200, review.text
+    payload = review.json()
+    assert payload["status"] == "DELIVERED"
+    assert payload["approved_payout_amount"] == "55.00"
+    assert payload["approved_deduction"] == "7.00"
+    assert payload["approved_note"] == "partial approval"
+    assert payload["settlement_mode_snapshot"] == "AFTER_APPROVAL"
+    assert payload["settle_hours_snapshot"] == 24
+    assert payload["settlement_due_at"] is not None
+
+    await db_session.commit()
+    await db_session.refresh(claim)
+    approved_at = claim.approved_at
+    due_at = claim.settlement_due_at
+    assert approved_at is not None and due_at is not None
+    assert due_at == approved_at + timedelta(hours=24)
+
+    # Changing the active tier after review must not move this claim's due time.
+    await _enable_deposit(
+        client,
+        admin_user,
+        settlement_mode="AFTER_APPROVAL",
+        tiers=[
+            {
+                "threshold": 0,
+                "wait_seconds": 0,
+                "exempt_compensation": False,
+                "settle_hours": 1,
+                "enabled": True,
+            }
+        ],
+    )
+    await _deposit(client, booster_user, 100)
+    await db_session.commit()
+    await db_session.refresh(claim)
+    assert claim.settlement_due_at == due_at
+
+    duplicate = await client.put(
+        f"/orders/{order['id']}/claims/{claim.id}/review",
+        json={"action": "approve", "amount": "99.00"},
+        headers=auth_header(admin_user),
+    )
+    assert duplicate.status_code == 400
+    assert duplicate.json()["detail"] == "该记录已审核通过，等待自动结算"
+
+    assert await scan_due_payouts(
+        db_session, now=approved_at + timedelta(hours=2)
+    ) == []
+
+    settled = await scan_due_payouts(
+        db_session, now=due_at + timedelta(seconds=1)
+    )
+    await db_session.commit()
+    assert claim.id in settled
+
+    wallet = (
+        await db_session.execute(
+            select(Wallet).where(Wallet.user_id == booster_user["user"]["id"])
+        )
+    ).scalar_one()
+    # 500 - 20 hold - 100 deposit transfer + 55 payout + 13 returned compensation = 448.
+    assert Decimal(str(wallet.available_balance)) == Decimal("448.00")
+
+
+
+async def test_legacy_claim_falls_back_to_order_payout_delay(
+    client: AsyncClient, admin_user: dict, booster_user: dict, db_session
+):
+    """Claims without snapshots retain the pre-033 order delay behavior."""
+    await _fund(client, admin_user, booster_user, 500)
+    response = await client.post(
+        "/orders/create",
+        json={
+            "game_name": "王者荣耀",
+            "current_rank": "钻石",
+            "target_rank": "王者",
+            "price": "100.00",
+            "payout_delay_hours": 1,
+        },
+        headers=auth_header(admin_user),
+    )
+    assert response.status_code == 201, response.text
+    order = response.json()
+    assert (await _accept(client, booster_user, order["id"])).status_code == 200
+    assert (
+        await client.put(
+            f"/orders/{order['id']}/deliver",
+            headers=auth_header(booster_user),
+        )
+    ).status_code == 200
+
+    claim = (
+        await db_session.execute(
+            select(OrderClaim).where(OrderClaim.order_id == order["id"])
+        )
+    ).scalar_one()
+    # Clear the post-033 fields to model a pre-033 legacy claim.
+    claim.settlement_mode_snapshot = None
+    claim.settle_hours_snapshot = None
+    claim.settlement_due_at = None
+    claim.delivered_at = datetime.now(timezone.utc) - timedelta(hours=2)
+    await db_session.commit()
+
+    settled = await scan_due_payouts(db_session)
+    await db_session.commit()
+    assert claim.id in settled
 
 
 # ---------------------------------------------------------------------------

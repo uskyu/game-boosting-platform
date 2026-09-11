@@ -17,7 +17,11 @@ from sqlalchemy.orm import selectinload
 
 from app.core.security import encrypt_text, escape_like
 from app.models.booster_service import BoosterService
-from app.models.deposit import SETTLEMENT_MODE_AFTER_APPROVAL
+from app.models.deposit import (
+    SETTLEMENT_MODE_AFTER_APPROVAL,
+    SETTLEMENT_MODE_AFTER_DELIVERY,
+    SETTLEMENT_MODE_ORDER_DELAY,
+)
 from app.models.game import Game
 from app.models.order import (
     ClaimLifecycleStatus,
@@ -32,7 +36,7 @@ from app.models.wallet import WalletTransaction, WalletTransactionType
 from app.schemas.booster_service import BoosterServiceOrderCreate
 from app.schemas.order import OrderCreate, OrderUpdate
 from app.services.ai_service import LLMService
-from app.services.wallet_service import get_wallet_service
+from app.services.wallet_service import calculate_order_income, get_wallet_service
 
 logger = logging.getLogger(__name__)
 
@@ -278,13 +282,7 @@ class OrderService:
                 detail="该服务的代练已不可用",
             )
 
-        active_count_result = await self._db.execute(
-            select(func.count(Order.id)).where(
-                Order.booster_id == booster.id,
-                Order.status == OrderStatus.LOCKED,
-            )
-        )
-        active_count = int(active_count_result.scalar() or 0)
+        active_count = await self._active_claim_count(booster.id)
         if booster.booster_quota <= active_count:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -531,19 +529,62 @@ class OrderService:
 
         return orders, total
 
-    async def _holds_after_approval(self, claim: OrderClaim) -> bool:
-        """保证金模式是否为「老板通过后计时」（审核通过不立即放款）。
+    async def _active_claim_count(self, booster_id: int) -> int:
+        """Count quota-consuming claims for one booster."""
+        result = await self._db.execute(
+            select(func.count(OrderClaim.id)).where(
+                OrderClaim.booster_id == booster_id,
+                OrderClaim.status.in_(
+                    (ClaimLifecycleStatus.CLAIMED, ClaimLifecycleStatus.DELIVERED)
+                ),
+            )
+        )
+        return int(result.scalar() or 0)
 
-        注意：已经记录过审核时间的名额不再重复走此分支，避免二次审核卡住。
+    async def _snapshot_claim_settlement(
+        self,
+        claim: OrderClaim,
+        order: Order,
+        delivered_at: datetime,
+    ) -> None:
+        """Freeze settlement timing when a post-033 claim is delivered.
+
+        NULL is reserved for claims created before migration 033.  New claims
+        use ORDER_DELAY when deposit mode is disabled or no enabled tier is
+        available, so the scheduler can distinguish an explicit fallback from
+        legacy data.
         """
         from app.services import deposit_service
 
-        if claim.approved_at is not None:
-            return False
-        if not await deposit_service.is_deposit_enabled(self._db):
-            return False
         setting = await deposit_service.get_or_create_deposit_setting(self._db)
-        return setting.settlement_mode == SETTLEMENT_MODE_AFTER_APPROVAL
+        if not setting.enabled:
+            claim.settlement_mode_snapshot = SETTLEMENT_MODE_ORDER_DELAY
+            return
+        tier, _balance = await deposit_service.get_user_tier(self._db, claim.booster_id)
+        if tier is None:
+            claim.settlement_mode_snapshot = SETTLEMENT_MODE_ORDER_DELAY
+            return
+
+        hours = max(int(tier.settle_hours or 0), 0)
+        mode = setting.settlement_mode
+        if mode not in (SETTLEMENT_MODE_AFTER_DELIVERY, SETTLEMENT_MODE_AFTER_APPROVAL):
+            claim.settlement_mode_snapshot = SETTLEMENT_MODE_ORDER_DELAY
+            return
+        claim.settlement_mode_snapshot = mode
+        claim.settle_hours_snapshot = hours
+        if mode == SETTLEMENT_MODE_AFTER_DELIVERY:
+            claim.settlement_due_at = delivered_at + timedelta(hours=hours)
+        else:
+            # AFTER_APPROVAL gets its fixed due time only at review.
+            claim.settlement_due_at = None
+
+    async def _holds_after_approval(self, claim: OrderClaim) -> bool:
+        """Whether this claim was snapped to AFTER_APPROVAL timing."""
+        return (
+            claim.approved_at is None
+            and claim.settlement_mode_snapshot == SETTLEMENT_MODE_AFTER_APPROVAL
+            and claim.settle_hours_snapshot is not None
+        )
 
     async def _resolve_compensation(self, requested: Decimal | None) -> Decimal | None:
         """订单炸单赔付金：老板未指定时，按保证金配置的默认值兜底。
@@ -609,13 +650,7 @@ class OrderService:
                 detail="您已被禁止接单",
             )
 
-        active_orders_count_result = await self._db.execute(
-            select(func.count(Order.id)).where(
-                Order.booster_id == booster.id,
-                Order.status == OrderStatus.LOCKED,
-            )
-        )
-        active_orders_count = int(active_orders_count_result.scalar() or 0)
+        active_orders_count = await self._active_claim_count(booster.id)
         if locked_booster.role == UserRole.BOOSTER and locked_booster.booster_quota <= active_orders_count:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -755,6 +790,13 @@ class OrderService:
             "delivery_attachments": claim.delivery_attachments or None,
             "created_at": claim.created_at,
             "delivered_at": claim.delivered_at,
+            "approved_at": claim.approved_at,
+            "approved_payout_amount": claim.approved_payout_amount,
+            "approved_deduction": claim.approved_deduction,
+            "approved_note": claim.approved_note,
+            "settlement_mode_snapshot": claim.settlement_mode_snapshot,
+            "settle_hours_snapshot": claim.settle_hours_snapshot,
+            "settlement_due_at": claim.settlement_due_at,
             "settled_at": claim.settled_at,
             "is_first": order_booster_id == claim.booster_id,
         }
@@ -825,7 +867,12 @@ class OrderService:
     async def claim_status_counts(
         self, order_ids: list[int]
     ) -> dict[int, dict[str, int]]:
-        """Map order_id -> {'DELIVERED': n, 'SETTLED': m, 'CLAIMED': k}."""
+        """Map order IDs to raw lifecycle counts and derived review counts.
+
+        ``DELIVERED`` remains the raw lifecycle total. ``PENDING_REVIEW`` is a
+        separate derived count and excludes DELIVERED claims already approved
+        for AFTER_APPROVAL settlement (those remain DELIVERED until payout).
+        """
         if not order_ids:
             return {}
         result = await self._db.execute(
@@ -838,6 +885,22 @@ class OrderService:
             counts.setdefault(order_id, {})[self._enum_value(status_value)] = int(
                 count or 0
             )
+
+        # Keep the derived key stable even when no claim is pending review.
+        for order_id in order_ids:
+            counts.setdefault(order_id, {})["PENDING_REVIEW"] = 0
+
+        pending_result = await self._db.execute(
+            select(OrderClaim.order_id, func.count(OrderClaim.id))
+            .where(
+                OrderClaim.order_id.in_(order_ids),
+                OrderClaim.status == ClaimLifecycleStatus.DELIVERED,
+                OrderClaim.approved_at.is_(None),
+            )
+            .group_by(OrderClaim.order_id)
+        )
+        for order_id, count in pending_result.all():
+            counts.setdefault(order_id, {})["PENDING_REVIEW"] = int(count or 0)
         return counts
 
     async def list_order_claims(self, order_id: int) -> list[dict[str, Any]]:
@@ -986,13 +1049,7 @@ class OrderService:
                 detail="该用户已被禁止接单",
             )
 
-        active_orders_count_result = await self._db.execute(
-            select(func.count(Order.id)).where(
-                Order.booster_id == locked_booster.id,
-                Order.status == OrderStatus.LOCKED,
-            )
-        )
-        active_orders_count = int(active_orders_count_result.scalar() or 0)
+        active_orders_count = await self._active_claim_count(locked_booster.id)
         # Quota caps only apply to reviewed BOOSTER accounts; any registered
         # USER may be assigned, mirroring accept_order's open-claiming rule.
         if locked_booster.role == UserRole.BOOSTER and locked_booster.booster_quota <= active_orders_count:
@@ -1032,6 +1089,14 @@ class OrderService:
                 detail="不能派单给下单用户本人",
             )
 
+        # Administrative assignment remains immediate, so the accept-window
+        # wait is deliberately not enforced here. The same tier resolution is
+        # still required to decide whether this booster needs a compensation
+        # hold, matching accept_order's balance behavior.
+        _wait_seconds, exempt_compensation = await self._deposit_gate(
+            locked_booster.id
+        )
+
         order.booster_id = locked_booster.id
         order.status = OrderStatus.LOCKED
         order.locked_at = datetime.now(timezone.utc)
@@ -1044,7 +1109,8 @@ class OrderService:
                 OrderClaim.booster_id == locked_booster.id,
             )
         )
-        if existing_claim.scalar_one_or_none() is None:
+        claim_created = existing_claim.scalar_one_or_none() is None
+        if claim_created:
             self._db.add(
                 OrderClaim(
                     order_id=order.id,
@@ -1055,6 +1121,22 @@ class OrderService:
             order.claimed_count += 1
         if order.claimed_count >= order.max_claims:
             order.claim_status = ClaimStatus.FULL
+
+        # Keep assignment, claim creation, and compensation hold in one
+        # transaction. An insufficient balance raises and the request-level
+        # rollback removes the assignment and claim together.
+        compensation = _to_decimal(order.compensation_amount)
+        if claim_created and compensation > _ZERO and not exempt_compensation:
+            wallet_service = get_wallet_service(self._db)
+            booster_wallet = await wallet_service.get_or_create_wallet(
+                locked_booster.id
+            )
+            await wallet_service.hold_deposit(
+                booster_wallet,
+                amount=compensation,
+                order_id=order.id,
+                booster_id=locked_booster.id,
+            )
 
         await self._db.flush()
         await self._db.refresh(order)
@@ -1134,6 +1216,7 @@ class OrderService:
         claim.delivered_at = datetime.now(timezone.utc)
         if delivery_note is not None:
             claim.delivery_note = delivery_note.strip() or None
+        await self._snapshot_claim_settlement(claim, order, claim.delivered_at)
 
         await self._db.flush()
         await self._db.refresh(order)
@@ -1225,28 +1308,16 @@ class OrderService:
             deduct = min(max(deduct, _ZERO), compensation)
             booster_wallet = await wallet_service.get_or_create_wallet(booster_id)
             if deduct > _ZERO:
-                # 先扣接单时冻结的赔付金；保证金档位免除预冻结的打手冻结为 0，
-                # 差额改从保证金里扣。注意「免」的是**接单时的预冻结**，
-                # 不是赔付责任本身 —— 真炸单一样要赔。
-                frozen = _to_decimal(booster_wallet.frozen_balance)
-                from_frozen = min(deduct, frozen)
-                if from_frozen > _ZERO:
-                    await wallet_service.deduct_compensation(
-                        booster_wallet,
-                        amount=from_frozen,
-                        order_id=order.id,
-                        booster_id=booster_id,
-                        note=note,
-                    )
-                shortfall = deduct - from_frozen
-                if shortfall > _ZERO:
-                    await wallet_service.deduct_deposit(
-                        booster_wallet,
-                        amount=shortfall,
-                        order_id=order.id,
-                        booster_id=booster_id,
-                        note=note,
-                    )
+                # 先扣该订单/打手名额自己的赔付冻结；保证金档位免除
+                # 预冻结时，差额再从保证金扣。WalletService 按流水范围
+                # 计算两部分，绝不消费提现、托管或其他订单的冻结余额。
+                await wallet_service.deduct_compensation(
+                    booster_wallet,
+                    amount=deduct,
+                    order_id=order.id,
+                    booster_id=booster_id,
+                    note=note,
+                )
             remainder = compensation - deduct
             if remainder > _ZERO:
                 await wallet_service.release_deposit(
@@ -1320,27 +1391,33 @@ class OrderService:
     async def auto_settle_due_claim(
         self, order: Order, claim: OrderClaim, *, delay_from_tier: bool = False
     ) -> bool:
-        """到账时效自动结算一个名额：全额入账、赔偿金全额返还（无扣除）。
-
-        调用方需已锁定 order 行；返回是否执行了结算。
-
-        ``delay_from_tier=True`` 表示到期判定来自保证金档位（订单本身可能没有
-        配置到账时效），此时不再要求订单存在 payout_delay_*。
-        """
+        """Auto-settle a due claim using its immutable approval terms."""
         if claim.status != ClaimLifecycleStatus.DELIVERED:
             return False
         if (
-            not delay_from_tier
+            claim.settlement_mode_snapshot in (None, SETTLEMENT_MODE_ORDER_DELAY)
+            and not delay_from_tier
             and order.payout_delay_days is None
             and order.payout_delay_hours is None
         ):
             return False
+        # A held AFTER_APPROVAL claim must have a concrete review snapshot.
+        # Older partial snapshot data is left untouched for manual recovery;
+        # never recalculate an arbitrary payout at scheduler time.
+        if (
+            claim.settlement_mode_snapshot == SETTLEMENT_MODE_AFTER_APPROVAL
+            and claim.approved_payout_amount is None
+        ):
+            return False
+        payout_amount = claim.approved_payout_amount
+        deduction = claim.approved_deduction if claim.approved_deduction is not None else _ZERO
+        note = claim.approved_note or "到账时效自动结算"
         await self._settle_booster_funds(
             order,
             claim.booster_id,
-            payout_amount=None,
-            note="到账时效自动结算",
-            deduction=_ZERO,
+            payout_amount=payout_amount,
+            note=note,
+            deduction=deduction,
         )
         claim.status = ClaimLifecycleStatus.SETTLED
         claim.settled_at = datetime.now(timezone.utc)
@@ -1518,6 +1595,11 @@ class OrderService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="该记录不在待审核状态",
             )
+        if claim.approved_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="该记录已审核通过，等待自动结算",
+            )
 
         if payout_amount is not None:
             cap = await self._payout_cap(order)
@@ -1542,17 +1624,29 @@ class OrderService:
                     detail=f"炸单赔偿扣除金额需在 0 ~ {compensation} 之间",
                 )
 
-        # 保证金模式选择「老板通过后计时」时，审核通过只记录时间不立即放款，
-        # 由 payout_scheduler 在 approved_at + 档位结账时效 到期后结算。
+        # AFTER_APPROVAL stores the review terms and fixed due time. The
+        # scheduler later settles using these values even if tier/balance/config
+        # changes in the meantime. Store the concrete net payout even when the
+        # reviewer omitted amount, using the exact wallet settlement formula.
         if await self._holds_after_approval(claim):
-            claim.approved_at = datetime.now(timezone.utc)
+            approved_at = datetime.now(timezone.utc)
+            claim.approved_at = approved_at
+            claim.approved_payout_amount = calculate_order_income(
+                order, payout_amount
+            )
+            claim.approved_deduction = _to_decimal(deduction) if deduction is not None else _ZERO
+            claim.approved_note = note.strip() if note and note.strip() else None
+            claim.settlement_due_at = approved_at + timedelta(
+                hours=max(int(claim.settle_hours_snapshot or 0), 0)
+            )
             await self._db.flush()
             await self._db.refresh(claim)
             logger.info(
-                "Order %s claim %s approved by user %s, payout held by deposit mode",
+                "Order %s claim %s approved by user %s, payout held until %s",
                 order_id,
                 claim_id,
                 reviewer.id,
+                claim.settlement_due_at,
             )
             return await self._claim_view_with_user(claim, order)
 
@@ -1638,22 +1732,97 @@ class OrderService:
                 detail="该订单没有待审核的交付记录",
             )
 
+        # A claim snapped to AFTER_APPROVAL must first go through the review
+        # path. The compatibility endpoint must never turn an unapproved hold
+        # into an immediate payout.
+        if any(
+            claim.settlement_mode_snapshot == SETTLEMENT_MODE_AFTER_APPROVAL
+            and claim.approved_at is None
+            for claim in delivered_claims
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="该订单存在待审核的通过后结算记录，请先逐个审核",
+            )
+        # Claims approved by an older snapshot implementation may have an
+        # approved_at but no concrete approved amount. Reject compatibility
+        # confirmation rather than silently recalculating a different payout.
+        if any(
+            claim.settlement_mode_snapshot == SETTLEMENT_MODE_AFTER_APPROVAL
+            and claim.approved_at is not None
+            and claim.approved_payout_amount is None
+            for claim in delivered_claims
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="该记录缺少已审核的到账金额，请逐个重新审核",
+            )
+
+        # An approved AFTER_APPROVAL claim has immutable review terms and a
+        # fixed due time.  /confirm is a compatibility endpoint, not a way to
+        # bypass that hold; reject early confirmations rather than settling it.
+        now = datetime.now(timezone.utc)
+        approved_claims = [
+            claim
+            for claim in delivered_claims
+            if (
+                claim.settlement_mode_snapshot == SETTLEMENT_MODE_AFTER_APPROVAL
+                and claim.approved_at is not None
+            )
+        ]
+        for claim in approved_claims:
+            if claim.settlement_due_at is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="该记录缺少固定结算时间，请逐个重新审核",
+                )
+            due_at = claim.settlement_due_at
+            if due_at.tzinfo is None:
+                due_at = due_at.replace(tzinfo=timezone.utc)
+            else:
+                due_at = due_at.astimezone(timezone.utc)
+            if now < due_at:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="该记录尚未到固定结算时间，请等待自动结算",
+                )
+
         if payout_amount is not None:
-            if len(delivered_claims) > 1:
+            # Stored AFTER_APPROVAL claims ignore compatibility payload
+            # overrides; only non-snapshot claims may use the old argument.
+            if len(delivered_claims) - len(approved_claims) > 1:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="存在多个待审核记录，请逐个审核",
                 )
             cap = await self._payout_cap(order)
-            if payout_amount > cap:
+            if delivered_claims and len(delivered_claims) > len(approved_claims) and payout_amount > cap:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"到账金额不能超过订单报酬 {cap}",
                 )
 
         for claim in delivered_claims:
+            # An already approved AFTER_APPROVAL claim has immutable review
+            # terms. Ignore compatibility payload overrides for that claim and
+            # settle with the stored amount, deduction, and note.
+            if (
+                claim.settlement_mode_snapshot == SETTLEMENT_MODE_AFTER_APPROVAL
+                and claim.approved_at is not None
+            ):
+                claim_payout = claim.approved_payout_amount
+                claim_deduction = claim.approved_deduction
+                claim_note = claim.approved_note
+            else:
+                claim_payout = payout_amount
+                claim_deduction = None
+                claim_note = note
             await self._settle_claim(
-                order, claim, payout_amount=payout_amount, note=note
+                order,
+                claim,
+                payout_amount=claim_payout,
+                note=claim_note,
+                deduction=claim_deduction,
             )
 
         await self._auto_complete_if_done(order)
@@ -1683,7 +1852,21 @@ class OrderService:
         Raises:
             HTTPException: If order cannot be cancelled.
         """
-        order = await self.get_order_by_id(order_id)
+        result = await self._db.execute(
+            select(Order)
+            .options(
+                selectinload(Order.user),
+                selectinload(Order.booster),
+            )
+            .where(Order.id == order_id)
+            .with_for_update()
+        )
+        order = result.scalar_one_or_none()
+        if order is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="订单不存在",
+            )
 
         # Only pending orders can be cancelled by users
         if order.status not in (OrderStatus.PENDING, OrderStatus.LOCKED):
@@ -1705,22 +1888,87 @@ class OrderService:
                     detail="订单已被接取，请联系客服处理",
                 )
 
-        order.status = OrderStatus.CANCELLED
-        # 取消订单：未结算的报名名额一并终止，打手端不再显示"进行中"；
-        # 已结算（SETTLED）名额保留原状，钱已入账不受取消影响。
-        await self._db.execute(
-            update(OrderClaim)
+        return await self._cancel_order_locked(order, reason="订单取消，托管解冻")
+
+    async def cancel_order_by_admin(
+        self,
+        order_id: int,
+        reason: str | None = None,
+    ) -> Order:
+        """Cancel an order through the admin intervention workflow.
+
+        Intervention cancellation is allowed regardless of the current order
+        status, but uses the same claim and wallet cleanup as normal
+        cancellation. The cleanup is deliberately idempotent so retrying an
+        intervention cannot release a hold or escrow balance twice.
+        """
+        result = await self._db.execute(
+            select(Order)
+            .options(
+                selectinload(Order.user),
+                selectinload(Order.booster),
+            )
+            .where(Order.id == order_id)
+            .with_for_update()
+        )
+        order = result.scalar_one_or_none()
+        if order is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="订单不存在",
+            )
+
+        if reason and order.status != OrderStatus.CANCELLED:
+            order.notes = f"[ADMIN] {reason}" + (
+                f"\n{order.notes}" if order.notes else ""
+            )
+        return await self._cancel_order_locked(order, reason="订单取消，托管解冻")
+
+    async def _cancel_order_locked(self, order: Order, *, reason: str) -> Order:
+        """Apply cancellation cleanup to an order already locked by caller."""
+        # Lock active claims plus CANCELLED claims.  The latter is important
+        # for repairing rows left by older cancellation code: their scoped
+        # DEPOSIT_HOLD can remain even though the lifecycle is already closed.
+        claims_result = await self._db.execute(
+            select(OrderClaim)
             .where(
                 OrderClaim.order_id == order.id,
                 OrderClaim.status.in_(
-                    (ClaimLifecycleStatus.CLAIMED, ClaimLifecycleStatus.DELIVERED)
+                    (
+                        ClaimLifecycleStatus.CLAIMED,
+                        ClaimLifecycleStatus.DELIVERED,
+                        ClaimLifecycleStatus.CANCELLED,
+                    )
                 ),
             )
-            .values(status=ClaimLifecycleStatus.CANCELLED)
+            .with_for_update()
         )
+        claims_needing_cleanup = list(claims_result.scalars().all())
+        wallet_service = get_wallet_service(self._db)
+        for claim in claims_needing_cleanup:
+            booster_wallet = await wallet_service.get_or_create_wallet(claim.booster_id)
+            # Compute from scoped ledger rows rather than order compensation;
+            # this repairs old rows and never releases another order's hold.
+            await wallet_service.release_all_compensation_hold(
+                booster_wallet,
+                order_id=order.id,
+                booster_id=claim.booster_id,
+                note="订单取消，炸单赔偿金解冻",
+            )
+
+        order.status = OrderStatus.CANCELLED
+        # 取消订单：未结算的报名名额一并终止，打手端不再显示"进行中"；
+        # 已结算（SETTLED）名额保留原状，钱已入账不受取消影响。
+        for claim in claims_needing_cleanup:
+            if claim.status in (
+                ClaimLifecycleStatus.CLAIMED,
+                ClaimLifecycleStatus.DELIVERED,
+            ):
+                claim.status = ClaimLifecycleStatus.CANCELLED
+
         # 取消订单：发布人当前持有的托管全额退回（已接单未结算名额的
         # 打款在其后结算时按剩余冻结尽力扣减——老板兜底）
-        released = await self.release_all_escrow(order, reason="订单取消，托管解冻")
+        released = await self.release_all_escrow(order, reason=reason)
         if released > _ZERO:
             logger.info(
                 "Order %s cancelled, released escrow %s back to publisher %s",
@@ -1730,7 +1978,7 @@ class OrderService:
         await self._db.flush()
         await self._db.refresh(order)
 
-        logger.info(f"Order {order_id} cancelled by user {user.id}")
+        logger.info("Order %s cancelled", order.id)
 
         return order
 

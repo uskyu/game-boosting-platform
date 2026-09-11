@@ -8,7 +8,12 @@ from app.models.user import User, UserRole
 from tests.conftest import auth_header
 
 
-async def _create_order(client: AsyncClient, user_data: dict, price: str = "500.00") -> dict:
+async def _create_order(
+    client: AsyncClient,
+    user_data: dict,
+    price: str = "500.00",
+    max_claims: int = 1,
+) -> dict:
     resp = await client.post(
         "/orders/create",
         json={
@@ -16,6 +21,7 @@ async def _create_order(client: AsyncClient, user_data: dict, price: str = "500.
             "current_rank": "钻石",
             "target_rank": "王者",
             "price": price,
+            "max_claims": max_claims,
         },
         headers=auth_header(user_data),
     )
@@ -152,6 +158,54 @@ async def test_assign_rejects_quota_full(
         headers=auth_header(admin_user),
     )
     assert resp.status_code == 400
+
+
+async def test_assign_quota_releases_after_settled_multi_claim(
+    client: AsyncClient,
+    admin_user: dict,
+    booster_user: dict,
+    db_session,
+):
+    """Admin assignment quota follows active claims, not LOCKED orders."""
+    result = await db_session.execute(
+        select(User).where(User.id == booster_user["user"]["id"])
+    )
+    booster = result.scalar_one()
+    booster.booster_quota = 1
+    await db_session.commit()
+
+    first = await _create_order(client, admin_user, max_claims=2)
+    response = await client.put(
+        f"/admin/orders/{first['id']}/assign",
+        json={"booster_id": booster.id},
+        headers=auth_header(admin_user),
+    )
+    assert response.status_code == 200
+
+    response = await client.put(
+        f"/orders/{first['id']}/deliver", headers=auth_header(booster_user)
+    )
+    assert response.status_code == 200
+    claims_response = await client.get(
+        f"/orders/{first['id']}/claims", headers=auth_header(admin_user)
+    )
+    claim_id = claims_response.json()["items"][0]["id"]
+    response = await client.put(
+        f"/orders/{first['id']}/claims/{claim_id}/review",
+        json={"action": "approve"},
+        headers=auth_header(admin_user),
+    )
+    assert response.status_code == 200
+
+    # The multi-claim parent remains LOCKED with an open slot, but the settled
+    # claim must no longer consume the booster's quota.
+    second = await _create_order(client, admin_user)
+    response = await client.put(
+        f"/admin/orders/{second['id']}/assign",
+        json={"booster_id": booster.id},
+        headers=auth_header(admin_user),
+    )
+    assert response.status_code == 200
 
 
 async def test_assign_rejects_inactive_booster(

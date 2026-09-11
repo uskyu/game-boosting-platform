@@ -27,6 +27,7 @@ export const useOrdersStore = defineStore('orders', () => {
     bossContact: '',
   })
   const claims = ref([])
+  const claimsOrderId = ref(null)
   const claimsLoading = ref(false)
   // 打手自己的接单单（GET /orders/claims/mine）
   const myClaims = ref([])
@@ -47,6 +48,10 @@ export const useOrdersStore = defineStore('orders', () => {
   const completedOrders = computed(() =>
     orders.value.filter(o => o.status === 'COMPLETED')
   )
+
+  // 详情/报名请求序号：组件复用或快速切换页面时，旧响应不得覆盖当前数据。
+  let orderDetailRequestSeq = 0
+  let claimsRequestSeq = 0
 
   // Actions
   async function analyzeRequirement(description) {
@@ -160,18 +165,27 @@ export const useOrdersStore = defineStore('orders', () => {
   }
 
   async function fetchOrder(orderId) {
+    const requestSeq = ++orderDetailRequestSeq
     loading.value = true
     error.value = null
     
     try {
       const response = await api.get(`/orders/${orderId}`)
+      if (requestSeq !== orderDetailRequestSeq) {
+        return { success: true, stale: true, data: response.data }
+      }
       currentOrder.value = response.data
       return { success: true, data: response.data }
     } catch (err) {
+      if (requestSeq !== orderDetailRequestSeq) {
+        return { success: false, stale: true, error: err.message }
+      }
       error.value = err.message
       return { success: false, error: err.message }
     } finally {
-      loading.value = false
+      if (requestSeq === orderDetailRequestSeq) {
+        loading.value = false
+      }
     }
   }
 
@@ -202,17 +216,27 @@ export const useOrdersStore = defineStore('orders', () => {
   }
 
   async function fetchClaims(orderId) {
+    const requestSeq = ++claimsRequestSeq
     claimsLoading.value = true
     error.value = null
     try {
       const response = await api.get(`/orders/${orderId}/claims`)
+      if (requestSeq !== claimsRequestSeq) {
+        return { success: true, stale: true, data: response.data?.items ?? [] }
+      }
       claims.value = response.data?.items ?? []
+      claimsOrderId.value = Number(orderId)
       return { success: true, data: claims.value }
     } catch (err) {
+      if (requestSeq !== claimsRequestSeq) {
+        return { success: false, stale: true, error: err.message }
+      }
       error.value = err.message
       return { success: false, error: err.message }
     } finally {
-      claimsLoading.value = false
+      if (requestSeq === claimsRequestSeq) {
+        claimsLoading.value = false
+      }
     }
   }
 
@@ -491,6 +515,15 @@ export const useOrdersStore = defineStore('orders', () => {
     analysisResult.value = null
   }
 
+  function clearCurrentOrder() {
+    orderDetailRequestSeq += 1
+    currentOrder.value = null
+    claimsRequestSeq += 1
+    claims.value = []
+    claimsOrderId.value = null
+    claimsLoading.value = false
+  }
+
   function clearError() {
     error.value = null
   }
@@ -506,6 +539,7 @@ export const useOrdersStore = defineStore('orders', () => {
     pagination,
     filters,
     claims,
+    claimsOrderId,
     claimsLoading,
     myClaims,
     myClaimsLoading,
@@ -537,6 +571,7 @@ export const useOrdersStore = defineStore('orders', () => {
     setFilters,
     setPage,
     clearAnalysisResult,
+    clearCurrentOrder,
     clearError,
   }
 })

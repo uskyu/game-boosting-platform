@@ -7,7 +7,7 @@ import { useChatStore } from '@/stores/chat'
 import { useOrdersStore } from '@/stores/orders'
 import api from '@/utils/api'
 import { formatDateTime, formatOrderPrice, formatPayoutDelay, formatPrice, parsePayoutDelay } from '@/utils/display'
-import { getClaimStatusMeta, getOrderStatusBadgeClass, getOrderStatusLabel } from '@/utils/order'
+import { getClaimSettlementMeta, getOrderStatusBadgeClass, getOrderStatusLabel } from '@/utils/order'
 
 const props = defineProps({
   id: {
@@ -65,7 +65,7 @@ function claimStatusLabel(o) {
 
 // claim 状态：CLAIMED=进行中 / DELIVERED=待审核 / SETTLED=已结算（共享语义色）
 function claimStatusMeta(claim) {
-  return getClaimStatusMeta(claim?.status)
+  return getClaimSettlementMeta(claim)
 }
 
 function claimBoosterName(claim) {
@@ -306,9 +306,9 @@ async function submitEdit() {
 
 // ── 审核列表 + 审核弹窗（claims 维度：DELIVERED=待审核 / SETTLED=已结算）──
 
-// 待审核：已交付汇报的 claim；已通过：已结算的 claim
-const pendingReviewClaims = computed(() => claims.value.filter((claim) => claim.status === 'DELIVERED'))
-const settledClaims = computed(() => claims.value.filter((claim) => claim.status === 'SETTLED'))
+// 待审核：已交付且尚未通过的 claim；已通过：已审核但可能仍在等待自动结算的 claim
+const pendingReviewClaims = computed(() => claims.value.filter((claim) => getClaimSettlementMeta(claim).isPendingReview))
+const settledClaims = computed(() => claims.value.filter((claim) => getClaimSettlementMeta(claim).isPendingSettlement || claim.status === 'SETTLED'))
 const pendingReviewCount = computed(() => pendingReviewClaims.value.length)
 const approvedCount = computed(() => settledClaims.value.length)
 
@@ -800,7 +800,7 @@ onMounted(async () => {
                 <div class="flex items-start justify-between gap-2">
                   <div class="flex min-w-0 flex-wrap items-center gap-2">
                     <p class="truncate text-sm font-semibold text-ink-1">{{ claimBoosterName(claim) }}</p>
-                    <span class="tag !bg-warning-soft !text-warning">待审核</span>
+                    <span :class="claimStatusMeta(claim).tagClass">{{ claimStatusMeta(claim).label }}</span>
                   </div>
                   <p class="shrink-0 text-xs tabular-nums text-ink-3">单号 #{{ claim.id }}</p>
                 </div>
@@ -823,7 +823,7 @@ onMounted(async () => {
                   <div class="flex items-start justify-between gap-2">
                     <div class="flex min-w-0 flex-wrap items-center gap-2">
                       <p class="truncate text-sm font-semibold text-ink-1">{{ claimBoosterName(claim) }}</p>
-                      <span class="tag !bg-success-soft !text-success">已结算</span>
+                      <span :class="claimStatusMeta(claim).tagClass">{{ claimStatusMeta(claim).label }}</span>
                     </div>
                     <p class="shrink-0 text-xs tabular-nums text-ink-3">单号 #{{ claim.id }}</p>
                   </div>
@@ -921,6 +921,7 @@ onMounted(async () => {
               <p class="mt-2 text-sm text-ink-2">
                 单号 #{{ reviewModal.claim.id }} · 报酬 <span class="font-semibold tabular-nums text-price">{{ priceLabel(order) }}</span>
                 <template v-if="reviewModal.claim.status === 'SETTLED'"> · 已结算</template>
+                <template v-if="reviewModal.claim.approved_at && reviewModal.claim.status !== 'SETTLED'"> · {{ claimStatusMeta(reviewModal.claim).label }}</template>
               </p>
             </div>
             <button type="button" class="btn-ghost shrink-0 !px-4 !py-2" @click="closeReviewModal">关闭</button>
@@ -947,7 +948,7 @@ onMounted(async () => {
           </div>
 
           <!-- 打款区：仅待审核时显示 -->
-          <div v-if="reviewModal.claim.status === 'DELIVERED'" class="mt-5 space-y-3">
+          <div v-if="reviewModal.claim.status === 'DELIVERED' && !reviewModal.claim.approved_at" class="mt-5 space-y-3">
             <label class="flex cursor-pointer items-start gap-3 rounded-tile border border-line-1 p-4" :class="reviewModal.payout.mode === 'full' ? 'border-primary bg-primary-soft' : ''">
               <input v-model="reviewModal.payout.mode" type="radio" value="full" class="mt-1" />
               <div>
@@ -996,7 +997,7 @@ onMounted(async () => {
 
           <div class="mt-6 flex justify-end gap-3">
             <button type="button" class="btn-secondary !px-5 !py-2" @click="closeReviewModal">关闭</button>
-            <button v-if="reviewModal.claim.status === 'DELIVERED'" type="button" class="btn-success !px-5 !py-2" :disabled="reviewModal.submitting" @click="submitPayout">
+            <button v-if="reviewModal.claim.status === 'DELIVERED' && !reviewModal.claim.approved_at" type="button" class="btn-success !px-5 !py-2" :disabled="reviewModal.submitting" @click="submitPayout">
               {{ reviewModal.submitting ? '确认中…' : (reviewModal.payout.mode === 'full' ? '审核通过（全额到账）' : '确认部分到账') }}
             </button>
           </div>

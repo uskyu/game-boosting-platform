@@ -68,6 +68,55 @@ export function getClaimStatusMeta(status) {
   return ORDER_CLAIM_STATUS_META[status] || { label: status || '-', tagClass: 'tag' }
 }
 
+/**
+ * DELIVERED covers both an unreviewed delivery and an approved claim waiting
+ * for its scheduled settlement. Keep those states separate in user-facing UI.
+ */
+export function getClaimSettlementMeta(claim, now = Date.now()) {
+  const status = claim?.status
+  if (status === 'DELIVERED' && !claim?.approved_at) {
+    return {
+      key: 'PENDING_REVIEW',
+      label: '待发布人审核',
+      tagClass: 'tag !bg-warning-soft !text-warning',
+      isPendingReview: true,
+      isPendingSettlement: false,
+    }
+  }
+
+  if (status === 'DELIVERED' && claim?.approved_at) {
+    const dueAt = claim.settlement_due_at ? new Date(claim.settlement_due_at) : null
+    const hasFutureDueAt = dueAt && !Number.isNaN(dueAt.getTime()) && dueAt.getTime() > now
+    return {
+      key: hasFutureDueAt ? 'APPROVED_PENDING_SETTLEMENT' : 'APPROVED_PENDING_SETTLEMENT',
+      label: hasFutureDueAt ? '审核通过 · 待自动结算' : '审核通过 · 待结算',
+      tagClass: 'tag !bg-info-soft !text-info',
+      isPendingReview: false,
+      isPendingSettlement: true,
+      hasFutureDueAt,
+    }
+  }
+
+  if (status === 'SETTLED') {
+    return {
+      key: 'SETTLED',
+      label: '已结算',
+      tagClass: 'tag !bg-success-soft !text-success',
+      isPendingReview: false,
+      isPendingSettlement: false,
+    }
+  }
+
+  const fallback = getClaimStatusMeta(status)
+  return {
+    key: status || 'UNKNOWN',
+    label: fallback.label,
+    tagClass: fallback.tagClass,
+    isPendingReview: false,
+    isPendingSettlement: false,
+  }
+}
+
 export const APPLICATION_STATUS_META = {
   NONE: {
     label: '未提交',

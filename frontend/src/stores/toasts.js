@@ -19,6 +19,13 @@ export const useToastsStore = defineStore('toasts', () => {
     toasts.value = toasts.value.filter((item) => item.id !== id)
   }
 
+  function resetState() {
+    timers.forEach((timer) => window.clearTimeout(timer))
+    timers.clear()
+    toasts.value = []
+    announcedKeys.clear()
+  }
+
   // sound: 'new-order'（来单一声）| 'claimed'（被接手两声）| null（静默）
   // dedupKey: 可选去重键，重复传入直接 return -1，不重复弹、不重复响
   function pushToast({ title, body = '', duration = 4500, to = null, sound = null, dedupKey = null }) {
@@ -53,5 +60,5 @@ export const useToastsStore = defineStore('toasts', () => {
     return id
   }
 
-  return { toasts, pushToast, dismissToast }
+  return { toasts, pushToast, dismissToast, resetState }
 })

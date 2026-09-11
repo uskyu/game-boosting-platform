@@ -12,14 +12,17 @@ import {
   getWithdrawalStatusLabel,
   getWithdrawalStatusTagClass,
 } from '@/stores/wallet'
+import { getClaimSettlementMeta } from '@/utils/order'
 import { formatCount, formatDateTime, formatOrderPrice, formatPrice } from '@/utils/display'
 
 const walletStore = useWalletStore()
 const authStore = useAuthStore()
 const ordersStore = useOrdersStore()
 
-// 审核中订单：打手已交付汇报、等待管理员审核打款的报名单（claims/mine?status=DELIVERED）
+// 交付后的订单按审核与自动结算拆分，避免把已审核记录继续显示为待审核。
 const reviewClaims = computed(() => ordersStore.myClaims)
+const pendingReviewClaims = computed(() => reviewClaims.value.filter((claim) => getClaimSettlementMeta(claim).isPendingReview))
+const pendingSettlementClaims = computed(() => reviewClaims.value.filter((claim) => getClaimSettlementMeta(claim).isPendingSettlement))
 const reviewLoading = computed(() => ordersStore.myClaimsLoading)
 
 async function fetchReviewClaims() {
@@ -447,19 +450,22 @@ onMounted(() => {
 
     <!-- 审核中订单：已交付汇报、等待订单发布人审核打款的接单记录 -->
     <section v-if="!authStore.isAdmin" class="surface-card p-4 sm:p-6 lg:p-8">
-      <div class="flex items-center justify-between gap-4">
-        <h2 class="text-lg font-semibold text-ink-1">审核中的订单</h2>
-        <span v-if="reviewClaims.length" class="tag !bg-warning-soft !text-warning tabular-nums">{{ reviewClaims.length }} 单待审核</span>
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <h2 class="text-lg font-semibold text-ink-1">交付结算中的订单</h2>
+        <div class="flex flex-wrap justify-end gap-2 text-xs font-semibold tabular-nums">
+          <span v-if="pendingReviewClaims.length" class="tag !bg-warning-soft !text-warning">{{ pendingReviewClaims.length }} 单待审核</span>
+          <span v-if="pendingSettlementClaims.length" class="tag !bg-info-soft !text-info">{{ pendingSettlementClaims.length }} 单待自动结算</span>
+        </div>
       </div>
-      <p class="mt-1 text-sm text-ink-3">你已提交结束汇报，订单发布人确认打款后报酬会计入余额。</p>
+      <p class="mt-1 text-sm text-ink-3">已提交结束汇报的记录会在这里显示；审核通过后按结算时间自动入账。</p>
 
       <div v-if="reviewLoading" class="mt-4 space-y-2" aria-busy="true">
         <div v-for="n in 2" :key="`review-skeleton-${n}`" class="skeleton h-14 !rounded-tile"></div>
       </div>
       <div v-else-if="!reviewClaims.length" class="empty-state mt-4">
         <div class="empty-state__icon" aria-hidden="true">📭</div>
-        <h4 class="empty-state__title">暂无审核中的订单</h4>
-        <p class="empty-state__copy">完成订单并提交汇报后，会在这里等待订单发布人审核。</p>
+        <h4 class="empty-state__title">暂无交付结算中的订单</h4>
+        <p class="empty-state__copy">完成订单并提交汇报后，会在这里查看审核和自动结算进度。</p>
       </div>
       <ul v-else class="mt-4 space-y-2">
         <li v-for="claim in reviewClaims" :key="claim.id" class="claims-item">
@@ -472,7 +478,10 @@ onMounted(() => {
             </div>
             <div class="shrink-0 text-right">
               <p class="text-sm font-semibold tabular-nums text-price">{{ claim.order ? formatOrderPrice(claim.order) : formatPrice(0) }}</p>
-              <p class="mt-0.5 text-xs text-warning">待发布人审核</p>
+              <p :class="['mt-0.5 text-xs', getClaimSettlementMeta(claim).tagClass]">{{ getClaimSettlementMeta(claim).label }}</p>
+              <p v-if="getClaimSettlementMeta(claim).isPendingSettlement && claim.settlement_due_at" class="mt-1 text-xs text-ink-3">
+                预计 {{ formatDateTime(claim.settlement_due_at) }} 自动结算
+              </p>
             </div>
           </router-link>
         </li>

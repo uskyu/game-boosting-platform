@@ -10,10 +10,12 @@ from app.api.chat_utils import send_order_system_message
 from app.api.deps import DatabaseSession, get_current_admin
 from app.api.notification_utils import notify_user
 from app.models.booster_service import BoosterService
+from app.models.deposit import SETTLEMENT_MODE_AFTER_APPROVAL
 from app.models.game import Game, GameCategory, GamePlatform
 from app.models.notification import NotificationType
 from app.models.order import ClaimLifecycleStatus, Order, OrderClaim, OrderStatus
 from app.models.user import BoosterApplicationStatus, User
+from app.models.wallet import Wallet
 from app.models.withdrawal import WithdrawalStatus
 from app.schemas.admin import (
     AdminOrderAssignRequest,
@@ -119,7 +121,7 @@ async def list_all_orders_for_admin(
     status_counts = await order_service.claim_status_counts([order.id for order in orders])
     for response in responses:
         counts = status_counts.get(response.id, {})
-        response.pending_review_count = counts.get("DELIVERED", 0)
+        response.pending_review_count = counts.get("PENDING_REVIEW", 0)
         response.settled_count = counts.get("SETTLED", 0)
 
     return OrderListResponse(
@@ -158,9 +160,66 @@ async def intervene_order(
         )
 
     previous_status = order.status
-    order.status = payload.action
-    if payload.reason:
-        order.notes = f"[ADMIN] {payload.reason}" + (f"\n{order.notes}" if order.notes else "")
+    if payload.action == OrderStatus.COMPLETED:
+        # Force completion must not strand other multi-claim work or bypass an
+        # AFTER_APPROVAL hold.  The order row is already locked; lock claims
+        # too, then reject while any claim still owns active work or a held
+        # approved payout.
+        active_claims_result = await db.execute(
+            select(OrderClaim)
+            .where(
+                OrderClaim.order_id == order.id,
+                OrderClaim.status.in_(
+                    (ClaimLifecycleStatus.CLAIMED, ClaimLifecycleStatus.DELIVERED)
+                ),
+            )
+            .with_for_update()
+        )
+        active_claims = list(active_claims_result.scalars().all())
+        held_approval = any(
+            claim.settlement_mode_snapshot == SETTLEMENT_MODE_AFTER_APPROVAL
+            and claim.approved_at is not None
+            for claim in active_claims
+        )
+        if active_claims:
+            detail = (
+                "存在尚未到固定结算时间的通过后结算记录，不能强制完结订单"
+                if held_approval
+                else "存在未完成的报名记录，不能强制完结订单"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=detail,
+            )
+
+        # Also refuse completion if a legacy cancellation left a positive
+        # compensation hold.  Releasing it here would silently change the
+        # intervention's semantics; cancellation repair is the safe owner of
+        # that cleanup.
+        all_claims_result = await db.execute(
+            select(OrderClaim)
+            .where(OrderClaim.order_id == order.id)
+            .with_for_update()
+        )
+        wallet_service = get_wallet_service(db)
+        for claim in all_claims_result.scalars().all():
+            wallet = await wallet_service.get_or_create_wallet(claim.booster_id)
+            if await wallet_service.outstanding_compensation_hold(
+                wallet, order_id=order.id, booster_id=claim.booster_id
+            ) > 0:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="订单仍有未清理的赔偿金冻结，不能强制完结订单",
+                )
+    if payload.action == OrderStatus.CANCELLED:
+        order = await get_order_service(db).cancel_order_by_admin(
+            order_id,
+            reason=payload.reason,
+        )
+    else:
+        order.status = payload.action
+        if payload.reason:
+            order.notes = f"[ADMIN] {payload.reason}" + (f"\n{order.notes}" if order.notes else "")
 
     if payload.action == OrderStatus.DELIVERED and previous_status != OrderStatus.DELIVERED:
         order.delivered_at = datetime.now(timezone.utc)
@@ -177,27 +236,23 @@ async def intervene_order(
     await db.flush()
 
     # Admin completion follows the same in-transaction, idempotent settlement
-    # path as customer confirmation. It is a no-op when no booster is assigned.
-    if payload.action == OrderStatus.COMPLETED:
-        await get_order_service(db).settle_order_income(order)
-        # Keep the settled booster's claim in sync (CLAIMED/DELIVERED ->
-        # SETTLED) so claim-level views match the wallet ledger. Other
-        # boosters' delivered claims stay reviewable via the claim endpoint.
-        if order.booster_id is not None:
-            await db.execute(
-                update(OrderClaim)
-                .where(
-                    OrderClaim.order_id == order.id,
-                    OrderClaim.booster_id == order.booster_id,
-                    OrderClaim.status.not_in(
-                        (ClaimLifecycleStatus.SETTLED, ClaimLifecycleStatus.CANCELLED)
-                    ),
-                )
-                .values(
-                    status=ClaimLifecycleStatus.SETTLED,
-                    settled_at=datetime.now(timezone.utc),
-                )
+    # path as customer confirmation. Only a still-active claim may be paid:
+    # order.booster_id can point at a cancelled booster after admin
+    # cancellation, and generic settlement by booster_id would pay that stale
+    # user. No active claim means nothing left to settle.
+    if payload.action == OrderStatus.COMPLETED and order.booster_id is not None:
+        active_claim_result = await db.execute(
+            select(OrderClaim).where(
+                OrderClaim.order_id == order.id,
+                OrderClaim.booster_id == order.booster_id,
+                OrderClaim.status.not_in(
+                    (ClaimLifecycleStatus.SETTLED, ClaimLifecycleStatus.CANCELLED)
+                ),
             )
+        )
+        active_claim = active_claim_result.scalar_one_or_none()
+        if active_claim is not None:
+            await get_order_service(db)._settle_claim(order, active_claim)
     await db.refresh(order)
     await send_order_system_message(
         db=db,

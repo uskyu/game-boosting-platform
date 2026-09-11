@@ -42,20 +42,44 @@ let notifPollTimer = null
 let knownNotifIds = null
 // 在飞保护：弱网下上一轮没回来就不开新一轮，避免请求堆积
 let notifPolling = false
+// 认证代次和请求序号共同阻止旧账号的轮询响应落到新账号状态上。
+let authGeneration = 0
+let notifRequestSeq = 0
 
-async function pollOrderNotifications({ baseline = false } = {}) {
-  if (notifPolling || !authStore.isAuthenticated || document.visibilityState !== 'visible') {
+function isCurrentNotifRequest(generation, requestToken, authContext) {
+  return authStore.isCurrentSession(authContext)
+    && generation === authGeneration
+    && requestToken === notifRequestSeq
+}
+
+async function pollOrderNotifications({ baseline = false, generation = authGeneration } = {}) {
+  const authContext = authStore.getSessionContext()
+  if (
+    notifPolling
+    || !authStore.isCurrentSession(authContext)
+    || generation !== authGeneration
+    || document.visibilityState !== 'visible'
+  ) {
     return
   }
+  const requestToken = ++notifRequestSeq
   notifPolling = true
   let items = []
   try {
     const response = await api.get('/notifications', { params: { page: 1, page_size: 10 } })
+    if (!isCurrentNotifRequest(generation, requestToken, authContext)) {
+      return
+    }
     items = response.data?.items || []
   } catch {
     return
   } finally {
-    notifPolling = false
+    if (requestToken === notifRequestSeq) {
+      notifPolling = false
+    }
+  }
+  if (!isCurrentNotifRequest(generation, requestToken, authContext)) {
+    return
   }
   if (knownNotifIds === null) {
     knownNotifIds = new Set(items.map((n) => Number(n.id)))
@@ -68,12 +92,20 @@ async function pollOrderNotifications({ baseline = false } = {}) {
     const ids = [...knownNotifIds].slice(-200)
     knownNotifIds = new Set(ids)
   }
-  if (baseline || newItems.length === 0) {
+  if (baseline || newItems.length === 0 || !isCurrentNotifRequest(generation, requestToken, authContext)) {
     return
   }
-  newItems.forEach((notification) => notificationsStore.announceOrderNotification(notification))
+  newItems.forEach((notification) => {
+    if (!isCurrentNotifRequest(generation, requestToken, authContext)) return
+    notificationsStore.handleRealtimeNotification(notification)
+    notificationsStore.announceOrderNotification(notification, {
+      isCurrent: () => isCurrentNotifRequest(generation, requestToken, authContext),
+    })
+  })
   try {
-    await notificationsStore.fetchUnreadCount()
+    await notificationsStore.fetchUnreadCount({
+      isCurrent: () => isCurrentNotifRequest(generation, requestToken, authContext),
+    })
   } catch {
     // 角标刷新失败不影响列表
   }
@@ -84,13 +116,16 @@ function stopNotifPolling() {
     window.clearInterval(notifPollTimer)
     notifPollTimer = null
   }
+  notifRequestSeq += 1
+  notifPolling = false
 }
 
-async function startNotifPolling() {
+async function startNotifPolling(generation = authGeneration) {
   stopNotifPolling()
-  await pollOrderNotifications({ baseline: true })
+  await pollOrderNotifications({ baseline: true, generation })
+  if (!authStore.isAuthenticated || generation !== authGeneration) return
   notifPollTimer = window.setInterval(() => {
-    pollOrderNotifications().catch(() => {})
+    pollOrderNotifications({ generation }).catch(() => {})
   }, NOTIF_POLL_INTERVAL)
 }
 
@@ -262,28 +297,35 @@ function startUnreadPolling() {
 }
 
 async function syncChatLifecycle(isLoggedIn) {
-  if (isLoggedIn) {
-    // 四个初始化请求互不依赖，并行发出，弱网下省 3 个串行往返
-    await Promise.allSettled([
-      restorePushSubscription(),
-      settingsStore.fetchPreferences(),
-      chatStore.fetchUnreadSummary(),
-      notificationsStore.fetchUnreadCount(),
-    ])
-    chatStore.connectWebSocket()
-    startUnreadPolling()
-    startNotifPolling()
-    return
-  }
-
+  const generation = ++authGeneration
   stopUnreadPolling()
   stopNotifPolling()
   knownNotifIds = null
   chatStore.disconnectWebSocket({ clearState: true })
   notificationsStore.resetState()
+  toastsStore.resetState()
+  if (isLoggedIn) {
+    const authContext = authStore.getSessionContext()
+    // 四个初始化请求互不依赖，并行发出，弱网下省 3 个串行往返
+    await Promise.allSettled([
+      restorePushSubscription({ isCurrent: () => authStore.isCurrentSession(authContext) && generation === authGeneration }),
+      settingsStore.fetchPreferences({ authStore }),
+      chatStore.fetchUnreadSummary(),
+      notificationsStore.fetchUnreadCount({
+        isCurrent: () => authStore.isAuthenticated && generation === authGeneration,
+      }),
+    ])
+    if (!authStore.isAuthenticated || generation !== authGeneration) return
+    chatStore.connectWebSocket()
+    startUnreadPolling()
+    startNotifPolling(generation)
+    return
+  }
 }
 
 async function handleLogout() {
+  authGeneration += 1
+  notifRequestSeq += 1
   stopUnreadPolling()
   stopNotifPolling()
   knownNotifIds = null
@@ -294,8 +336,8 @@ async function handleLogout() {
 }
 
 watch(
-  isAuthenticated,
-  async (isLoggedIn) => {
+  [isAuthenticated, () => authStore.sessionGeneration],
+  async ([isLoggedIn]) => {
     await syncChatLifecycle(isLoggedIn)
   },
   { immediate: true }
@@ -311,6 +353,8 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  authGeneration += 1
+  notifRequestSeq += 1
   stopUnreadPolling()
   stopNotifPolling()
   chatStore.disconnectWebSocket()

@@ -47,6 +47,23 @@ def _to_decimal(value: Decimal | int | str) -> Decimal:
     return Decimal(str(value))
 
 
+def calculate_order_income(order: Order, payout_amount: Decimal | None = None) -> Decimal:
+    """Return the concrete booster income used by order settlement.
+
+    An explicit payout is already the net amount agreed by the reviewer and
+    therefore bypasses commission. An omitted payout follows the existing
+    order-price minus commission rule. Keeping this calculation in one place
+    lets AFTER_APPROVAL review snapshots and the scheduler use identical
+    rounding semantics.
+    """
+    if payout_amount is not None:
+        return _to_decimal(payout_amount).quantize(_CENT, rounding=ROUND_HALF_UP)
+    commission_rate = Decimal(str(settings.COMMISSION_RATE))
+    return (
+        _to_decimal(order.price) * (Decimal("1") - commission_rate)
+    ).quantize(_CENT, rounding=ROUND_HALF_UP)
+
+
 class WalletService:
     """
     Service class for wallet and withdrawal business logic.
@@ -495,15 +512,12 @@ class WalletService:
             return None
 
         if payout_amount is not None:
-            income = Decimal(str(payout_amount)).quantize(_CENT, rounding=ROUND_HALF_UP)
+            income = calculate_order_income(order, payout_amount)
             remark = f"订单 #{order.id} 部分到账"
             if note:
                 remark = f"{remark}：{note}"
         else:
-            commission_rate = Decimal(str(settings.COMMISSION_RATE))
-            income = (
-                _to_decimal(order.price) * (Decimal("1") - commission_rate)
-            ).quantize(_CENT, rounding=ROUND_HALF_UP)
+            income = calculate_order_income(order)
             remark = f"订单 #{order.id} 结算收入"
             if note:
                 remark = f"{remark}：{note}"
@@ -734,6 +748,16 @@ class WalletService:
                 detail="赔偿金额必须大于0",
             )
         locked = await self._lock_wallet(wallet.id)
+        existing = await self._db.execute(
+            select(WalletTransaction).where(
+                WalletTransaction.order_id == order_id,
+                WalletTransaction.booster_id == booster_id,
+                WalletTransaction.type == WalletTransactionType.DEPOSIT_HOLD,
+            )
+        )
+        existing_transaction = existing.scalar_one_or_none()
+        if existing_transaction is not None:
+            return existing_transaction
         if _to_decimal(locked.available_balance) < amount:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -750,6 +774,62 @@ class WalletService:
             frozen_delta=amount,
         )
 
+    async def _outstanding_compensation_hold(
+        self,
+        wallet_id: int,
+        *,
+        order_id: int,
+        booster_id: int,
+    ) -> Decimal:
+        """Return the compensation hold still owned by one claim.
+
+        ``Wallet.frozen_balance`` is shared by withdrawals, escrow, and all
+        compensation holds. The scoped ledger rows identify the portion that
+        belongs to this order/booster pair.
+        """
+        result = await self._db.execute(
+            select(
+                WalletTransaction.type,
+                func.coalesce(func.sum(WalletTransaction.amount), 0),
+            )
+            .where(
+                WalletTransaction.wallet_id == wallet_id,
+                WalletTransaction.order_id == order_id,
+                WalletTransaction.booster_id == booster_id,
+                WalletTransaction.type.in_(
+                    (
+                        WalletTransactionType.DEPOSIT_HOLD,
+                        WalletTransactionType.DEPOSIT_RELEASE,
+                        WalletTransactionType.COMPENSATION_DEDUCT,
+                    )
+                ),
+            )
+            .group_by(WalletTransaction.type)
+        )
+        hold = _ZERO
+        deductions = _ZERO
+        for tx_type, total in result.all():
+            total = _to_decimal(total)
+            if tx_type == WalletTransactionType.DEPOSIT_HOLD:
+                hold += max(-total, _ZERO)
+            elif tx_type == WalletTransactionType.DEPOSIT_RELEASE:
+                hold -= max(total, _ZERO)
+            elif tx_type == WalletTransactionType.COMPENSATION_DEDUCT:
+                deductions += max(-total, _ZERO)
+        return max(hold - deductions, _ZERO)
+
+    async def outstanding_compensation_hold(
+        self,
+        wallet: Wallet,
+        *,
+        order_id: int,
+        booster_id: int,
+    ) -> Decimal:
+        """Return the remaining scoped compensation hold without mutating it."""
+        return await self._outstanding_compensation_hold(
+            wallet.id, order_id=order_id, booster_id=booster_id
+        )
+
     async def release_deposit(
         self,
         wallet: Wallet,
@@ -764,22 +844,26 @@ class WalletService:
         if amount <= _ZERO:
             return None
         locked = await self._lock_wallet(wallet.id)
-        frozen = _to_decimal(locked.frozen_balance)
-        actual = min(amount, frozen)
+        outstanding = await self._outstanding_compensation_hold(
+            locked.id,
+            order_id=order_id,
+            booster_id=booster_id,
+        )
+        actual = min(amount, outstanding)
         if actual <= _ZERO:
             logger.warning(
-                "Order %s deposit release for booster %s skipped: frozen is 0",
+                "Order %s deposit release for booster %s skipped: scoped hold is 0",
                 order_id,
                 booster_id,
             )
             return None
         if actual < amount:
             logger.warning(
-                "Order %s deposit release for booster %s capped: requested %s, frozen %s",
+                "Order %s deposit release for booster %s capped: requested %s, scoped hold %s",
                 order_id,
                 booster_id,
                 amount,
-                frozen,
+                outstanding,
             )
         remark = f"订单 #{order_id} 炸单赔偿金解冻返还"
         if note:
@@ -795,6 +879,35 @@ class WalletService:
             frozen_delta=-actual,
         )
 
+    async def release_all_compensation_hold(
+        self,
+        wallet: Wallet,
+        *,
+        order_id: int,
+        booster_id: int,
+        note: str | None = None,
+    ) -> WalletTransaction | None:
+        """Release all positive hold remaining for one scoped claim.
+
+        This is used by cancellation repair because old CANCELLED claims may
+        still own a hold even when the current order compensation field is
+        null or has since changed.  The outstanding-ledger calculation and the
+        release primitive are both scoped and idempotent.
+        """
+        locked = await self._lock_wallet(wallet.id)
+        outstanding = await self._outstanding_compensation_hold(
+            locked.id, order_id=order_id, booster_id=booster_id
+        )
+        if outstanding <= _ZERO:
+            return None
+        return await self.release_deposit(
+            locked,
+            amount=outstanding,
+            order_id=order_id,
+            booster_id=booster_id,
+            note=note,
+        )
+
     async def deduct_compensation(
         self,
         wallet: Wallet,
@@ -804,27 +917,51 @@ class WalletService:
         booster_id: int,
         note: str | None = None,
     ) -> WalletTransaction | None:
-        """炸单赔偿扣除（打手）：从冻结余额中扣除，不返还。"""
+        """Deduct compensation from this claim's hold, then deposit shortfall.
+
+        A single ``COMPENSATION_DEDUCT`` row records the combined amount so
+        the existing (order_id, booster_id, type) idempotency key remains
+        effective when both sources are used.
+        """
         amount = _to_decimal(amount).quantize(_CENT, rounding=ROUND_HALF_UP)
         if amount <= _ZERO:
             return None
         locked = await self._lock_wallet(wallet.id)
-        frozen = _to_decimal(locked.frozen_balance)
-        actual = min(amount, frozen)
+        existing = await self._db.execute(
+            select(WalletTransaction.id).where(
+                WalletTransaction.order_id == order_id,
+                WalletTransaction.booster_id == booster_id,
+                WalletTransaction.type == WalletTransactionType.COMPENSATION_DEDUCT,
+            )
+        )
+        if existing.scalar_one_or_none() is not None:
+            return None
+
+        outstanding = await self._outstanding_compensation_hold(
+            locked.id,
+            order_id=order_id,
+            booster_id=booster_id,
+        )
+        from_frozen = min(amount, outstanding)
+        shortfall = amount - from_frozen
+        deposit = _to_decimal(locked.deposit_balance)
+        from_deposit = min(shortfall, deposit)
+        actual = from_frozen + from_deposit
         if actual <= _ZERO:
             logger.warning(
-                "Order %s compensation deduction for booster %s skipped: frozen is 0",
+                "Order %s compensation deduction for booster %s skipped: no scoped hold or deposit",
                 order_id,
                 booster_id,
             )
             return None
         if actual < amount:
             logger.warning(
-                "Order %s compensation deduction for booster %s capped: requested %s, frozen %s",
+                "Order %s compensation deduction for booster %s capped: requested %s, scoped hold %s, deposit %s",
                 order_id,
                 booster_id,
                 amount,
-                frozen,
+                outstanding,
+                deposit,
             )
         remark = f"订单 #{order_id} 炸单赔偿扣除"
         if note:
@@ -837,7 +974,8 @@ class WalletService:
             order_id=order_id,
             booster_id=booster_id,
             remark=remark,
-            frozen_delta=-actual,
+            frozen_delta=-from_frozen,
+            deposit_delta=-from_deposit,
         )
 
     # ------------------------------------------------------------------
@@ -914,45 +1052,22 @@ class WalletService:
         booster_id: int | None = None,
         note: str | None = None,
     ) -> WalletTransaction | None:
-        """从保证金中扣除炸单赔付（不返还）。
+        """Compatibility wrapper for scoped compensation deduction.
 
-        有保证金的打手接单时不再冻结赔付金，真炸单时直接从保证金扣。
-        按 (order_id, booster_id, type=DEPOSIT_DEDUCT?) 语义幂等由调用方保证；
-        这里按当前保证金尽力扣减，不足时按可扣部分扣除并记 warning。
+        The legacy method could write an unscoped COMPENSATION_DEDUCT row.
+        Require both claim scope keys and delegate to the idempotent primitive.
         """
-        amount = _to_decimal(amount).quantize(_CENT, rounding=ROUND_HALF_UP)
-        if amount <= _ZERO:
-            return None
-        locked = await self._lock_wallet(wallet.id)
-        deposit = _to_decimal(locked.deposit_balance)
-        actual = min(amount, deposit)
-        if actual <= _ZERO:
-            logger.warning(
-                "Order %s deposit deduction for booster %s skipped: deposit is 0",
-                order_id,
-                booster_id,
+        if order_id is None or booster_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="炸单赔付扣除必须关联订单和打手名额",
             )
-            return None
-        if actual < amount:
-            logger.warning(
-                "Order %s deposit deduction for booster %s capped: expected %s, deposit %s",
-                order_id,
-                booster_id,
-                amount,
-                deposit,
-            )
-        remark = f"订单 #{order_id} 炸单赔付从保证金扣除"
-        if note:
-            remark = f"{remark}：{note}"
-        return await self._apply(
+        return await self.deduct_compensation(
             wallet,
-            tx_type=WalletTransactionType.COMPENSATION_DEDUCT,
-            amount=-actual,
-            available_delta=_ZERO,
+            amount=amount,
             order_id=order_id,
             booster_id=booster_id,
-            remark=remark,
-            deposit_delta=-actual,
+            note=note,
         )
 
     # ------------------------------------------------------------------

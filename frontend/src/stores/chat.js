@@ -65,6 +65,15 @@ export const useChatStore = defineStore('chat', () => {
   let shouldReconnect = true
   const typingHideTimers = {}
   const lastTypingSentAt = {}
+  const authStore = useAuthStore()
+
+  function captureAuthContext() {
+    return authStore.getSessionContext()
+  }
+
+  function isCurrentAuthContext(context) {
+    return authStore.isCurrentSession(context)
+  }
 
   const activeConversation = computed(() => (
     conversations.value.find((item) => item.id === activeConversationId.value) || null
@@ -364,6 +373,8 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function fetchConversations(options = {}) {
+    const authContext = captureAuthContext()
+    if (!isCurrentAuthContext(authContext)) return { success: false, stale: true }
     loading.value = true
     error.value = null
 
@@ -374,6 +385,7 @@ export const useChatStore = defineStore('chat', () => {
 
     try {
       const response = await api.get('/chat/conversations', { params })
+      if (!isCurrentAuthContext(authContext)) return { success: true, stale: true }
       conversations.value = sortConversations(response.data.items || [])
 
       const nextUnreadMap = {}
@@ -385,10 +397,11 @@ export const useChatStore = defineStore('chat', () => {
 
       return { success: true, data: response.data }
     } catch (err) {
+      if (!isCurrentAuthContext(authContext)) return { success: false, stale: true, error: err.message }
       error.value = err.message
       return { success: false, error: err.message }
     } finally {
-      loading.value = false
+      if (isCurrentAuthContext(authContext)) loading.value = false
     }
   }
 
@@ -396,12 +409,16 @@ export const useChatStore = defineStore('chat', () => {
     if (!conversationId) {
       return { success: false, error: '无效的会话 ID' }
     }
+    const authContext = captureAuthContext()
+    if (!isCurrentAuthContext(authContext)) return { success: false, stale: true }
 
     try {
       const response = await api.get(`/chat/conversations/${conversationId}`)
+      if (!isCurrentAuthContext(authContext)) return { success: true, stale: true }
       const conversation = replaceConversation(response.data)
       return { success: true, data: conversation }
     } catch (err) {
+      if (!isCurrentAuthContext(authContext)) return { success: false, stale: true, error: err.message }
       error.value = err.message
       return { success: false, error: err.message }
     }
@@ -411,6 +428,8 @@ export const useChatStore = defineStore('chat', () => {
     if (!conversationId) {
       return { success: false, error: '无效的会话 ID' }
     }
+    const authContext = captureAuthContext()
+    if (!isCurrentAuthContext(authContext)) return { success: false, stale: true }
 
     ensureMessageBucket(conversationId)
 
@@ -422,6 +441,7 @@ export const useChatStore = defineStore('chat', () => {
         },
       })
 
+      if (!isCurrentAuthContext(authContext)) return { success: true, stale: true }
       const messages = Array.isArray(response.data) ? response.data : []
       if (beforeId) {
         mergeMessages(conversationId, messages)
@@ -444,6 +464,7 @@ export const useChatStore = defineStore('chat', () => {
 
       return { success: true, data: messages }
     } catch (err) {
+      if (!isCurrentAuthContext(authContext)) return { success: false, stale: true, error: err.message }
       error.value = err.message
       return { success: false, error: err.message }
     }
@@ -454,6 +475,8 @@ export const useChatStore = defineStore('chat', () => {
     if (!keyword) {
       return { success: true, data: [] }
     }
+    const authContext = captureAuthContext()
+    if (!isCurrentAuthContext(authContext)) return { success: false, stale: true }
 
     try {
       const response = await api.get(`/chat/conversations/${conversationId}/messages/search`, {
@@ -462,8 +485,10 @@ export const useChatStore = defineStore('chat', () => {
           limit,
         },
       })
+      if (!isCurrentAuthContext(authContext)) return { success: true, stale: true }
       return { success: true, data: response.data || [] }
     } catch (err) {
+      if (!isCurrentAuthContext(authContext)) return { success: false, stale: true, error: err.message }
       error.value = err.message
       return { success: false, error: err.message }
     }
@@ -474,15 +499,19 @@ export const useChatStore = defineStore('chat', () => {
     if (!messageContent) {
       return { success: false, error: '消息内容不能为空' }
     }
+    const authContext = captureAuthContext()
+    if (!isCurrentAuthContext(authContext)) return { success: false, stale: true }
 
     try {
       const response = await api.post(`/chat/conversations/${conversationId}/messages`, {
         content: messageContent,
       })
+      if (!isCurrentAuthContext(authContext)) return { success: true, stale: true }
       appendMessage(conversationId, response.data)
       markConversationLocallyRead(conversationId, response.data.id)
       return { success: true, data: response.data }
     } catch (err) {
+      if (!isCurrentAuthContext(authContext)) return { success: false, stale: true, error: err.message }
       error.value = err.message
       return { success: false, error: err.message }
     }
@@ -493,6 +522,8 @@ export const useChatStore = defineStore('chat', () => {
       return { success: false, error: '请选择图片' }
     }
 
+    const authContext = captureAuthContext()
+    if (!isCurrentAuthContext(authContext)) return { success: false, stale: true }
     const formData = new FormData()
     formData.append('file', file)
 
@@ -506,47 +537,60 @@ export const useChatStore = defineStore('chat', () => {
           },
         }
       )
+      if (!isCurrentAuthContext(authContext)) return { success: true, stale: true }
       appendMessage(conversationId, response.data)
       markConversationLocallyRead(conversationId, response.data.id)
       return { success: true, data: response.data }
     } catch (err) {
+      if (!isCurrentAuthContext(authContext)) return { success: false, stale: true, error: err.message }
       error.value = err.message
       return { success: false, error: err.message }
     }
   }
 
   async function startConversation(targetUserId, orderId = null) {
+    const authContext = captureAuthContext()
+    if (!isCurrentAuthContext(authContext)) return { success: false, stale: true }
     try {
       const response = await api.post('/chat/conversations', {
         target_user_id: targetUserId,
         order_id: orderId,
       })
+      if (!isCurrentAuthContext(authContext)) return { success: true, stale: true }
       const conversation = replaceConversation(response.data)
       return { success: true, data: conversation }
     } catch (err) {
+      if (!isCurrentAuthContext(authContext)) return { success: false, stale: true, error: err.message }
       error.value = err.message
       return { success: false, error: err.message }
     }
   }
 
   async function markRead(conversationId, messageId = null) {
+    const authContext = captureAuthContext()
+    if (!isCurrentAuthContext(authContext)) return { success: false, stale: true }
     try {
       await api.post(`/chat/conversations/${conversationId}/read`, {
         last_read_message_id: messageId,
       })
+      if (!isCurrentAuthContext(authContext)) return { success: true, stale: true }
       markConversationLocallyRead(conversationId, messageId)
       return { success: true }
     } catch (err) {
+      if (!isCurrentAuthContext(authContext)) return { success: false, stale: true, error: err.message }
       error.value = err.message
       return { success: false, error: err.message }
     }
   }
 
   async function recallMessage(messageId) {
+    const authContext = captureAuthContext()
+    if (!isCurrentAuthContext(authContext)) return { success: false, stale: true }
     const conversationId = findMessageConversation(messageId)
 
     try {
       await api.post(`/chat/messages/${messageId}/recall`)
+      if (!isCurrentAuthContext(authContext)) return { success: true, stale: true }
 
       if (conversationId) {
         const nextMessages = (messagesByConversation.value[conversationId] || []).map((message) => (
@@ -568,16 +612,20 @@ export const useChatStore = defineStore('chat', () => {
 
       return { success: true }
     } catch (err) {
+      if (!isCurrentAuthContext(authContext)) return { success: false, stale: true, error: err.message }
       error.value = err.message
       return { success: false, error: err.message }
     }
   }
 
   async function deleteMessage(messageId) {
+    const authContext = captureAuthContext()
+    if (!isCurrentAuthContext(authContext)) return { success: false, stale: true }
     const conversationId = findMessageConversation(messageId)
 
     try {
       await api.delete(`/chat/messages/${messageId}`)
+      if (!isCurrentAuthContext(authContext)) return { success: true, stale: true }
 
       if (conversationId) {
         const nextMessages = (messagesByConversation.value[conversationId] || [])
@@ -592,18 +640,23 @@ export const useChatStore = defineStore('chat', () => {
 
       return { success: true }
     } catch (err) {
+      if (!isCurrentAuthContext(authContext)) return { success: false, stale: true, error: err.message }
       error.value = err.message
       return { success: false, error: err.message }
     }
   }
 
   async function setConversationPinned(conversationId, isPinned) {
+    const authContext = captureAuthContext()
+    if (!isCurrentAuthContext(authContext)) return { success: false, stale: true }
     try {
       const method = isPinned ? 'put' : 'delete'
       const response = await api[method](`/chat/conversations/${conversationId}/pin`)
+      if (!isCurrentAuthContext(authContext)) return { success: true, stale: true }
       replaceConversation(response.data)
       return { success: true, data: response.data }
     } catch (err) {
+      if (!isCurrentAuthContext(authContext)) return { success: false, stale: true, error: err.message }
       error.value = err.message
       return { success: false, error: err.message }
     }
@@ -614,22 +667,30 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function inviteAdmin(conversationId) {
+    const authContext = captureAuthContext()
+    if (!isCurrentAuthContext(authContext)) return { success: false, stale: true }
     try {
       const response = await api.post(`/chat/conversations/${conversationId}/invite-admin`)
+      if (!isCurrentAuthContext(authContext)) return { success: true, stale: true }
       addAdminParticipant(conversationId, response.data.admin)
       return { success: true, data: response.data }
     } catch (err) {
+      if (!isCurrentAuthContext(authContext)) return { success: false, stale: true, error: err.message }
       error.value = err.message
       return { success: false, error: err.message }
     }
   }
 
   async function fetchUnreadSummary() {
+    const authContext = captureAuthContext()
+    if (!isCurrentAuthContext(authContext)) return { success: false, stale: true }
     try {
       const response = await api.get('/chat/unread-summary')
+      if (!isCurrentAuthContext(authContext)) return { success: true, stale: true }
       unreadTotal.value = Number(response.data.total_unread || 0)
       return { success: true, data: response.data }
     } catch (err) {
+      if (!isCurrentAuthContext(authContext)) return { success: false, stale: true, error: err.message }
       error.value = err.message
       return { success: false, error: err.message }
     }
@@ -662,8 +723,9 @@ export const useChatStore = defineStore('chat', () => {
   function connectWebSocket() {
     const authStore = useAuthStore()
     const token = authStore.accessToken
+    const authContext = captureAuthContext()
 
-    if (!token) {
+    if (!token || !isCurrentAuthContext(authContext)) {
       return
     }
 
@@ -679,7 +741,8 @@ export const useChatStore = defineStore('chat', () => {
     socket.value = nextSocket
 
     nextSocket.onopen = () => {
-      if (socket.value !== nextSocket) {
+      if (socket.value !== nextSocket || !isCurrentAuthContext(authContext)) {
+        nextSocket.close()
         return
       }
 
@@ -691,6 +754,10 @@ export const useChatStore = defineStore('chat', () => {
     }
 
     nextSocket.onmessage = (event) => {
+      if (socket.value !== nextSocket || !isCurrentAuthContext(authContext)) {
+        nextSocket.close()
+        return
+      }
       let parsed
       try {
         parsed = JSON.parse(event.data)
@@ -719,7 +786,7 @@ export const useChatStore = defineStore('chat', () => {
         return
       }
 
-      handleWsMessage(event).catch((err) => {
+      handleWsMessage(event, authContext).catch((err) => {
         // eslint-disable-next-line no-console
         console.error('[chat] ws message handler error:', err)
       })
@@ -730,14 +797,23 @@ export const useChatStore = defineStore('chat', () => {
     }
 
     nextSocket.onclose = () => {
-      if (socket.value === nextSocket) {
+      const isCurrentSocket = socket.value === nextSocket
+      if (isCurrentSocket) {
         socket.value = null
+      }
+
+      if (!isCurrentSocket) {
+        return
       }
 
       clearHeartbeat()
       socketStatus.value = 'disconnected'
 
-      if (shouldReconnect && useAuthStore().accessToken) {
+      if (
+        shouldReconnect
+        && useAuthStore().accessToken
+        && isCurrentAuthContext(authContext)
+      ) {
         scheduleReconnect()
       }
     }
@@ -761,7 +837,8 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  async function handleWsMessage(event) {
+  async function handleWsMessage(event, authContext = captureAuthContext()) {
+    if (!isCurrentAuthContext(authContext)) return
     let payload = null
 
     try {
@@ -792,6 +869,7 @@ export const useChatStore = defineStore('chat', () => {
 
         if (!conversations.value.some((item) => item.id === conversationId)) {
           await fetchConversation(conversationId)
+          if (!isCurrentAuthContext(authContext)) return
         }
 
         appendMessage(conversationId, message)
@@ -802,7 +880,7 @@ export const useChatStore = defineStore('chat', () => {
           } else {
             incrementConversationUnread(conversationId)
             // 网页内弹窗推送：仅真人发来的新消息（sender_id 为空的是订单系统推送，不弹）
-            if (message.sender_id != null) {
+            if (message.sender_id != null && isCurrentAuthContext(authContext)) {
               const conversation = conversations.value.find((item) => item.id === conversationId)
               const senderName = message.sender?.username
                 || conversation?.other_participants?.map((item) => item.username).filter(Boolean).join(' / ')
@@ -861,6 +939,7 @@ export const useChatStore = defineStore('chat', () => {
 
         if (!conversations.value.some((item) => item.id === conversationId)) {
           await fetchConversation(conversationId)
+          if (!isCurrentAuthContext(authContext)) return
         } else {
           addAdminParticipant(conversationId, data.admin)
         }
@@ -881,11 +960,13 @@ export const useChatStore = defineStore('chat', () => {
 
       case 'notification': {
         // 与全站轮询共用通知偏好和 toast 去重；真人聊天仍走 new_message。
+        if (!isCurrentAuthContext(authContext)) return
         try {
           const { useNotificationsStore } = await import('@/stores/notifications')
+          if (!isCurrentAuthContext(authContext)) return
           const notificationsStore = useNotificationsStore()
           notificationsStore.handleRealtimeNotification(data)
-          notificationsStore.announceOrderNotification(data)
+          notificationsStore.announceOrderNotification(data, { isCurrent: () => isCurrentAuthContext(authContext) })
         } catch {
           // notifications store may not be loaded yet – ignore
         }

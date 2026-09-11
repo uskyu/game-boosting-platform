@@ -6,7 +6,7 @@ import { useChatStore } from '@/stores/chat'
 import { useAuthStore } from '@/stores/auth'
 import { useOrdersStore } from '@/stores/orders'
 import { formatCount, formatDateTime, formatOrderPrice, formatPayoutDelay, formatPrice, formatShortDate } from '@/utils/display'
-import { ORDER_STATUS_OPTIONS, getClaimStatusMeta, getOrderStatusBadgeClass, getOrderStatusLabel } from '@/utils/order'
+import { ORDER_STATUS_OPTIONS, getClaimSettlementMeta, getOrderStatusBadgeClass, getOrderStatusLabel } from '@/utils/order'
 
 const route = useRoute()
 const router = useRouter()
@@ -42,6 +42,7 @@ const error = computed(() => ordersStore.error)
 // 我的派单列表由服务端 mine_published=true 保证仅包含当前用户发布的订单
 const publishedOrders = computed(() => orders.value)
 const pendingReviewTotal = computed(() => publishedOrders.value.reduce((sum, order) => sum + Number(order.pending_review_count || 0), 0))
+const pendingSettlementTotal = computed(() => publishedOrders.value.reduce((sum, order) => sum + Number(order.settled_count || 0), 0))
 
 const unreadMap = computed(() => {
   return chatStore.conversations.reduce((result, conversation) => {
@@ -310,7 +311,7 @@ onUnmounted(() => {
             <div class="flex flex-wrap items-end justify-between gap-3">
               <div class="min-w-0">
                 <div class="flex flex-wrap items-center gap-2">
-                  <span :class="getClaimStatusMeta(claim.status).tagClass">{{ getClaimStatusMeta(claim.status).label }}</span>
+                  <span :class="getClaimSettlementMeta(claim).tagClass">{{ getClaimSettlementMeta(claim).label }}</span>
                   <span v-if="claim.order?.status === 'DISPUTED'" class="tag !bg-danger-soft !text-danger">订单争议中</span>
                   <span v-if="claim.order?.status === 'CANCELLED' && claim.status !== 'CANCELLED'" class="tag !bg-danger-soft !text-danger">订单已取消</span>
                 </div>
@@ -325,7 +326,7 @@ onUnmounted(() => {
                 </div>
                 <div class="info-tile info-tile--compact">
                   <p class="info-tile__label">接单状态</p>
-                  <p class="info-tile__value text-sm">{{ claim.order?.status === 'CANCELLED' ? '已取消' : getClaimStatusMeta(claim.status).label }}</p>
+                  <p class="info-tile__value text-sm">{{ claim.order?.status === 'CANCELLED' ? '已取消' : getClaimSettlementMeta(claim).label }}</p>
                 </div>
               </div>
             </div>

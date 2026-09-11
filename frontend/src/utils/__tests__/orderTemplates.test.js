@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { cleanTemplatePayload, resetOrderForm } from '../orderTemplates'
-import { formatShortDate } from '../display'
+import { formatSettlementDelay, formatShortDate, getAcceptWaitMeta } from '../display'
 
 describe('order template contract', () => {
   it('trims strings, omits blanks, preserves zero, and excludes unknown fields', () => {
@@ -18,5 +18,26 @@ describe('order template contract', () => {
 
   it('interprets API DATETIME without offset as Shanghai wall-clock time', () => {
     expect(formatShortDate('2026-09-06T20:22:27')).toContain('20:22')
+  })
+
+  it('renders a zero-hour settlement snapshot as immediate', () => {
+    expect(formatSettlementDelay(0)).toBe('立即结算')
+    expect(formatSettlementDelay(24)).toBe('1天')
+    expect(formatSettlementDelay(25)).toBe('1天1小时')
+  })
+
+  it('distinguishes remaining wait from configured total wait', () => {
+    const now = Date.parse('2026-09-10T12:00:00Z')
+    const order = {
+      accept_wait_seconds: 30,
+      accept_available_at: new Date(now + 5000).toISOString(),
+    }
+    expect(getAcceptWaitMeta(order, now)).toEqual({ remaining: 5, total: 30, state: 'waiting' })
+    expect(getAcceptWaitMeta({ ...order, accept_available_at: new Date(now - 1000).toISOString() }, now)).toEqual({
+      remaining: 0,
+      total: 30,
+      state: 'ready',
+    })
+    expect(getAcceptWaitMeta({}, now)).toEqual({ remaining: 0, total: 0, state: 'available' })
   })
 })

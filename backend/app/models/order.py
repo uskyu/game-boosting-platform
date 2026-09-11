@@ -348,5 +348,16 @@ class OrderClaim(Base):
     # 老板审核通过时间。保证金模式选择「通过后计时」时，审核通过只记录时间，
     # 由调度器在 approved_at + 档位结账时效 到期后完成结算。
     approved_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # AFTER_APPROVAL 审核时固定的结算条款；为空表示迁移前的 legacy claim。
+    approved_payout_amount: Mapped[Decimal | None] = mapped_column(
+        Numeric(precision=12, scale=2), nullable=True
+    )
+    approved_deduction: Mapped[Decimal | None] = mapped_column(
+        Numeric(precision=12, scale=2), nullable=True
+    )
+    approved_note: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    settlement_mode_snapshot: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    settle_hours_snapshot: Mapped[int | None] = mapped_column(nullable=True)
+    settlement_due_at: Mapped[datetime | None] = mapped_column(nullable=True)
     settled_at: Mapped[datetime | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=func.now(), server_default=func.now(), nullable=False)
