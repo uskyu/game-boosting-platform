@@ -28,10 +28,17 @@ const reviewClaims = computed(() => ordersStore.myClaims)
 const pendingReviewClaims = computed(() => reviewClaims.value.filter((claim) => getClaimSettlementMeta(claim, now.value).isPendingReview))
 const pendingSettlementClaims = computed(() => reviewClaims.value.filter((claim) => getClaimSettlementMeta(claim, now.value).isPendingSettlement))
 const reviewLoading = computed(() => ordersStore.myClaimsLoading)
+const reviewPagination = computed(() => ordersStore.myClaimsPagination)
 
-async function fetchReviewClaims() {
+async function fetchReviewClaims(page = 1) {
   if (authStore.isAdmin) return
-  await ordersStore.fetchMyClaims('DELIVERED')
+  // 待审核/待结算共用 DELIVERED 列表；服务端分页，翻页展示全部而不是只看到前 20 条
+  await ordersStore.fetchMyClaims('DELIVERED', page, 20)
+}
+
+function handleReviewPage(page) {
+  if (page < 1 || page > reviewPagination.value.pages || page === reviewPagination.value.page) return
+  fetchReviewClaims(page)
 }
 
 // ── 易支付充值 ──
@@ -500,6 +507,15 @@ onUnmounted(() => {
           </router-link>
         </li>
       </ul>
+      <div v-if="!reviewLoading && reviewPagination.pages > 1" class="mt-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <p class="text-sm text-ink-2">
+          {{ reviewPagination.page }} / {{ reviewPagination.pages }} · {{ formatCount(reviewPagination.total) }} 单
+        </p>
+        <div class="flex items-center gap-2">
+          <button class="btn-secondary !px-4 !py-2" :disabled="reviewPagination.page <= 1" @click="handleReviewPage(reviewPagination.page - 1)">上一页</button>
+          <button class="btn-secondary !px-4 !py-2" :disabled="reviewPagination.page >= reviewPagination.pages" @click="handleReviewPage(reviewPagination.page + 1)">下一页</button>
+        </div>
+      </div>
     </section>
 
     <div class="wallet-grid">
