@@ -1,7 +1,10 @@
 """Administrator user management API tests."""
 
+from decimal import Decimal
+
 from httpx import AsyncClient
 
+from app.models.wallet import Wallet
 from tests.conftest import auth_header
 
 
@@ -17,6 +20,27 @@ async def test_admin_can_list_and_view_users(client: AsyncClient, registered_use
     assert response.status_code == 200
     assert response.json()["id"] == user_id
     assert "hashed_password" not in response.json()
+
+
+async def test_admin_user_views_include_current_deposit_balance(
+    client: AsyncClient,
+    registered_user: dict,
+    admin_user: dict,
+    db_session,
+):
+    user_id = registered_user["user"]["id"]
+    wallet = Wallet(user_id=user_id, deposit_balance=Decimal("88.50"))
+    db_session.add(wallet)
+    await db_session.commit()
+
+    response = await client.get("/admin/users", headers=auth_header(admin_user))
+    assert response.status_code == 200
+    item = next(item for item in response.json()["items"] if item["id"] == user_id)
+    assert item["wallet"]["deposit_balance"] == "88.50"
+
+    response = await client.get(f"/admin/users/{user_id}", headers=auth_header(admin_user))
+    assert response.status_code == 200
+    assert response.json()["wallet"]["deposit_balance"] == "88.50"
 
 
 async def test_non_admin_cannot_manage_users(client: AsyncClient, registered_user: dict):

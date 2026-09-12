@@ -334,7 +334,7 @@ onMounted(load)
       <template v-else>
         <!-- 桌面（sm+）：数据表 -->
         <div class="mt-5 hidden overflow-x-auto sm:block">
-          <table class="data-table hidden !min-w-[920px] sm:table">
+          <table class="data-table hidden !min-w-[1020px] sm:table">
             <thead>
               <tr>
                 <th>#ID</th>
@@ -342,6 +342,7 @@ onMounted(load)
                 <th>角色</th>
                 <th>状态</th>
                 <th class="text-right">可用余额</th>
+                <th class="text-right">当前保证金</th>
                 <th class="text-right">累计收入</th>
                 <th class="text-right">累计提现</th>
                 <th>注册时间</th>
@@ -367,6 +368,7 @@ onMounted(load)
                 <td><span :class="roleTagClass(user.role)">{{ roleLabel(user.role) }}</span></td>
                 <td><span :class="user.is_active ? 'badge-approved' : 'badge-cancelled'">{{ user.is_active ? '启用' : '禁用' }}</span></td>
                 <td class="text-right"><span class="font-semibold tabular-nums text-price">{{ formatPrice(user.wallet?.available) }}</span></td>
+                <td class="text-right"><span class="font-semibold tabular-nums text-warning">{{ formatPrice(user.wallet?.deposit_balance) }}</span></td>
                 <td class="text-right tabular-nums text-ink-2">{{ formatPrice(user.wallet?.total_income) }}</td>
                 <td class="text-right tabular-nums text-ink-2">{{ formatPrice(user.wallet?.total_withdrawn) }}</td>
                 <td class="whitespace-nowrap text-ink-3">{{ formatDateTime(user.created_at) }}</td>
@@ -415,6 +417,7 @@ onMounted(load)
               </div>
             </div>
             <p class="mt-3 text-xl font-semibold tabular-nums text-price">{{ formatPrice(user.wallet?.available) }}</p>
+            <p class="mt-1 text-sm font-semibold tabular-nums text-warning">当前保证金 {{ formatPrice(user.wallet?.deposit_balance) }}</p>
             <p class="mt-1 text-xs tabular-nums text-ink-3">
               收入 {{ formatPrice(user.wallet?.total_income) }} · 提现 {{ formatPrice(user.wallet?.total_withdrawn) }} · 注册于 {{ formatDateTime(user.created_at) }}
             </p>
@@ -596,7 +599,7 @@ onMounted(load)
           </div>
 
           <!-- 钱包汇总 -->
-          <div class="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div class="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-5">
             <div class="info-tile">
               <p class="info-tile__label">可用余额</p>
               <p class="info-tile__value text-base font-semibold tabular-nums text-price">{{ formatPrice(transactionsModal.wallet?.available) }}</p>
@@ -604,6 +607,10 @@ onMounted(load)
             <div class="info-tile">
               <p class="info-tile__label">冻结</p>
               <p class="info-tile__value text-base tabular-nums">{{ formatPrice(transactionsModal.wallet?.frozen) }}</p>
+            </div>
+            <div class="info-tile">
+              <p class="info-tile__label">当前保证金</p>
+              <p class="info-tile__value text-base font-semibold tabular-nums text-warning">{{ formatPrice(transactionsModal.wallet?.deposit_balance) }}</p>
             </div>
             <div class="info-tile">
               <p class="info-tile__label">累计收入</p>

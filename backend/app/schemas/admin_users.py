@@ -14,6 +14,7 @@ class AdminUserBalanceSummary(BaseModel):
 
     available: Decimal
     frozen: Decimal
+    deposit_balance: Decimal
     total_income: Decimal
     total_withdrawn: Decimal
 

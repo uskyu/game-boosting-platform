@@ -34,6 +34,7 @@ def _summary(wallet: Wallet | None) -> AdminUserBalanceSummary:
     return AdminUserBalanceSummary(
         available=wallet.available_balance if wallet else 0,
         frozen=wallet.frozen_balance if wallet else 0,
+        deposit_balance=wallet.deposit_balance if wallet else 0,
         total_income=wallet.total_income if wallet else 0,
         total_withdrawn=wallet.total_withdrawn if wallet else 0,
     )
@@ -209,6 +210,7 @@ async def adjust_admin_user_balance(
     return AdminUserBalanceResponse(
         available=wallet.available_balance,
         frozen=wallet.frozen_balance,
+        deposit_balance=wallet.deposit_balance,
         total_income=wallet.total_income,
         total_withdrawn=wallet.total_withdrawn,
         transaction_id=transaction.id,
