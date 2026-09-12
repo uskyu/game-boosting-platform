@@ -1313,6 +1313,20 @@ class OrderService:
             claim.delivery_note = delivery_note.strip() or None
         await self._snapshot_claim_settlement(claim, order, claim.delivered_at)
 
+        # 老板规则：打手提交结单申请即解冻该名额的炸单赔付金，让钱包
+        # 立刻可用于接下一单；单款仍按结算时效到账，之后真炸单时扣除
+        # 改走该打手的保证金/可用余额。按 (order, booster) 名额幂等，
+        # 免赔档位等无冻结场景是空操作。
+        if _to_decimal(order.compensation_amount) > _ZERO:
+            wallet_service = get_wallet_service(self._db)
+            booster_wallet = await wallet_service.get_or_create_wallet(claim.booster_id)
+            await wallet_service.release_all_compensation_hold(
+                booster_wallet,
+                order_id=order.id,
+                booster_id=claim.booster_id,
+                note="交付即解冻",
+            )
+
         await self._db.flush()
         await self._db.refresh(order)
 

@@ -359,9 +359,9 @@ async def test_after_approval_holds_until_due(
             select(Wallet).where(Wallet.user_id == booster_user["user"]["id"])
         )
     ).scalar_one()
-    # 500 充值 - 20 冻结赔付金 = 480 可用
-    assert Decimal(str(wallet.available_balance)) == Decimal("480.00")
-    assert Decimal(str(wallet.frozen_balance)) == Decimal("20.00")
+    # 500 充值；赔付金 20 已在交付时解冻（老板规则），押住的是单款到账时效
+    assert Decimal(str(wallet.available_balance)) == Decimal("500.00")
+    assert Decimal(str(wallet.frozen_balance)) == Decimal("0.00")
 
     # 未到期不结算
     assert await scan_due_payouts(db_session) == []
@@ -542,8 +542,11 @@ async def test_after_approval_snapshots_review_terms_and_due_time(
             select(Wallet).where(Wallet.user_id == booster_user["user"]["id"])
         )
     ).scalar_one()
-    # 500 - 20 hold - 100 deposit transfer + 55 payout + 13 returned compensation = 448.
-    assert Decimal(str(wallet.available_balance)) == Decimal("448.00")
+    # 500 - 100 deposit transfer + 20 交付解冻 + 55 payout = 455；
+    # 炸单扣除 7 改从保证金扣（100→93），解冻返还已在交付时完成。
+    assert Decimal(str(wallet.available_balance)) == Decimal("455.00")
+    assert Decimal(str(wallet.deposit_balance)) == Decimal("93.00")
+    assert Decimal(str(wallet.frozen_balance)) == Decimal("0.00")
 
 
 
@@ -678,10 +681,10 @@ async def test_exempt_booster_still_pays_compensation_from_deposit(
     assert Decimal(str(wallet.frozen_balance)) == Decimal("0.00")
 
 
-async def test_non_exempt_booster_pays_from_frozen(
+async def test_delivery_releases_compensation_hold_immediately(
     client: AsyncClient, admin_user: dict, booster_user: dict, db_session
 ):
-    """无保证金打手仍走原有路径：接单冻结 20，炸单从冻结里扣。"""
+    """老板规则：打手提交结单申请后，冻结的赔付金立即解冻回可用余额。"""
     await _enable_deposit(
         client,
         admin_user,
@@ -706,8 +709,42 @@ async def test_non_exempt_booster_pays_from_frozen(
         )
     ).scalar_one()
     assert Decimal(str(wallet.frozen_balance)) == Decimal("20.00")
+    assert Decimal(str(wallet.available_balance)) == Decimal("480.00")
+
+    await db_session.commit()
+    assert (
+        await client.put(f"/orders/{order['id']}/deliver", headers=auth_header(booster_user))
+    ).status_code == 200
+
+    await db_session.commit()
+    await db_session.refresh(wallet)
+    # 交付即解冻：20 立刻回到可用余额，不用等 72 小时结算
+    assert Decimal(str(wallet.frozen_balance)) == Decimal("0.00")
+    assert Decimal(str(wallet.available_balance)) == Decimal("500.00")
     assert Decimal(str(wallet.deposit_balance)) == Decimal("0.00")
 
+
+async def test_deduction_after_delivery_draws_from_balance(
+    client: AsyncClient, admin_user: dict, booster_user: dict, db_session
+):
+    """交付即解冻后真炸单：赔付直接从打手余额里扣，不是扣不到。"""
+    await _enable_deposit(
+        client,
+        admin_user,
+        tiers=[
+            {
+                "threshold": 0,
+                "wait_seconds": 0,
+                "exempt_compensation": False,
+                "settle_hours": 72,
+                "enabled": True,
+            }
+        ],
+    )
+    await _fund(client, admin_user, booster_user, 500)
+
+    order = await _make_order(client, admin_user, compensation=20)
+    assert (await _accept(client, booster_user, order["id"])).status_code == 200
     await db_session.commit()
     assert (
         await client.put(f"/orders/{order['id']}/deliver", headers=auth_header(booster_user))
@@ -727,7 +764,76 @@ async def test_non_exempt_booster_pays_from_frozen(
     assert resp.status_code == 200, resp.text
 
     await db_session.commit()
+    wallet = (
+        await db_session.execute(
+            select(Wallet).where(Wallet.user_id == booster_user["user"]["id"])
+        )
+    ).scalar_one()
     await db_session.refresh(wallet)
-    # 冻结的 20 被扣掉，保证金不受影响
+    # 解冻回 500 后炸单扣 20（直接落在可用余额），单款 100 同时入账
+    assert Decimal(str(wallet.available_balance)) == Decimal("580.00")
     assert Decimal(str(wallet.frozen_balance)) == Decimal("0.00")
     assert Decimal(str(wallet.deposit_balance)) == Decimal("0.00")
+
+
+async def test_deduction_prefers_deposit_over_available(
+    client: AsyncClient, admin_user: dict, booster_user: dict, db_session
+):
+    """扣除顺序：名额冻结 → 保证金 → 可用余额，保证金仍是第一担保。"""
+    await _enable_deposit(
+        client,
+        admin_user,
+        tiers=[
+            {
+                "threshold": 0,
+                "wait_seconds": 0,
+                "exempt_compensation": False,
+                "settle_hours": 72,
+                "enabled": True,
+            },
+            {
+                "threshold": 200,
+                "wait_seconds": 0,
+                "exempt_compensation": True,
+                "settle_hours": 72,
+                "enabled": True,
+            },
+        ],
+    )
+    await _fund(client, admin_user, booster_user, 550)
+    # 保证金 50：仍落在 0 档（未豁免预冻结），但炸单时先扣保证金
+    await _deposit(client, booster_user, 50)
+
+    order = await _make_order(client, admin_user, compensation=20)
+    assert (await _accept(client, booster_user, order["id"])).status_code == 200
+
+    wallet = (
+        await db_session.execute(
+            select(Wallet).where(Wallet.user_id == booster_user["user"]["id"])
+        )
+    ).scalar_one()
+    assert Decimal(str(wallet.frozen_balance)) == Decimal("20.00")
+
+    await db_session.commit()
+    assert (
+        await client.put(f"/orders/{order['id']}/deliver", headers=auth_header(booster_user))
+    ).status_code == 200
+
+    claim_id = (
+        await db_session.execute(
+            select(OrderClaim.id).where(OrderClaim.order_id == order["id"])
+        )
+    ).scalar_one()
+    resp = await client.put(
+        f"/orders/{order['id']}/claims/{claim_id}/review",
+        json={"action": "approve", "deduction": 20},
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 200, resp.text
+
+    await db_session.commit()
+    await db_session.refresh(wallet)
+    # 扣除走保证金（50→30），交付解冻回来的可用余额只被单款入账 +100
+    assert Decimal(str(wallet.deposit_balance)) == Decimal("30.00")
+    assert Decimal(str(wallet.available_balance)) == Decimal("600.00")
+    assert Decimal(str(wallet.frozen_balance)) == Decimal("0.00")

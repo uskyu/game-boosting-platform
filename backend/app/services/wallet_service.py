@@ -917,11 +917,14 @@ class WalletService:
         booster_id: int,
         note: str | None = None,
     ) -> WalletTransaction | None:
-        """Deduct compensation from this claim's hold, then deposit shortfall.
+        """Deduct compensation from this claim's hold, then deposit, then balance.
 
         A single ``COMPENSATION_DEDUCT`` row records the combined amount so
         the existing (order_id, booster_id, type) idempotency key remains
-        effective when both sources are used.
+        effective when all sources are used.
+
+        可用余额是最后一道兜底：交付即解冻后该名额的冻结已退还，真炸单
+        时按老板规则直接从打手余额里扣（先保证金、后可用余额）。
         """
         amount = _to_decimal(amount).quantize(_CENT, rounding=ROUND_HALF_UP)
         if amount <= _ZERO:
@@ -946,22 +949,26 @@ class WalletService:
         shortfall = amount - from_frozen
         deposit = _to_decimal(locked.deposit_balance)
         from_deposit = min(shortfall, deposit)
-        actual = from_frozen + from_deposit
+        from_available = min(
+            shortfall - from_deposit, _to_decimal(locked.available_balance)
+        )
+        actual = from_frozen + from_deposit + from_available
         if actual <= _ZERO:
             logger.warning(
-                "Order %s compensation deduction for booster %s skipped: no scoped hold or deposit",
+                "Order %s compensation deduction for booster %s skipped: no scoped hold, deposit or balance",
                 order_id,
                 booster_id,
             )
             return None
         if actual < amount:
             logger.warning(
-                "Order %s compensation deduction for booster %s capped: requested %s, scoped hold %s, deposit %s",
+                "Order %s compensation deduction for booster %s capped: requested %s, scoped hold %s, deposit %s, available %s",
                 order_id,
                 booster_id,
                 amount,
                 outstanding,
                 deposit,
+                _to_decimal(locked.available_balance),
             )
         remark = f"订单 #{order_id} 炸单赔偿扣除"
         if note:
@@ -970,7 +977,7 @@ class WalletService:
             wallet,
             tx_type=WalletTransactionType.COMPENSATION_DEDUCT,
             amount=-actual,
-            available_delta=_ZERO,
+            available_delta=-from_available,
             order_id=order_id,
             booster_id=booster_id,
             remark=remark,
