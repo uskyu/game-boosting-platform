@@ -517,6 +517,10 @@ async def list_my_claims(
         int,
         Query(ge=1, le=100, description="每页数量"),
     ] = 20,
+    q: Annotated[
+        str | None,
+        Query(max_length=100, description="搜索订单号、接单记录号、标题、游戏或需求内容"),
+    ] = None,
 ) -> MyOrderClaimListResponse:
     """
     List the current user's claims (我的报名) with the parent order summary.
@@ -524,6 +528,8 @@ async def list_my_claims(
     - Non-admin accounts only (admins do not claim orders)
     - Ordered by claim id descending (newest first)
     - Each item carries the claim lifecycle fields plus an ``order`` summary
+    - ``q`` accepts the parent order ID as the canonical number and also the
+      claim record ID as a compatibility alias
     """
     if current_user.role == UserRole.ADMIN:
         raise HTTPException(
@@ -537,6 +543,7 @@ async def list_my_claims(
         status_filter=status_filter,
         page=page,
         page_size=page_size,
+        q=q,
     )
     pages = (total + page_size - 1) // page_size if total > 0 else 0
     return MyOrderClaimListResponse(

@@ -22,6 +22,7 @@ const searchGame = ref(String(route.query.game || ''))
 const searchBossContact = ref(String(route.query.boss || ''))
 const selectedStatus = ref(String(route.query.status || ''))
 const claimStatus = ref(String(route.query.claim_status || ''))
+const claimSearch = ref(String(route.query.claim_q || ''))
 
 // 管理员默认"我的派单"：整页刷新时用户信息可能晚于挂载到达，用 watch 兜底切换。
 // URL 已指定 tab 时以 URL 为准。
@@ -124,17 +125,19 @@ function buildSummary(order) {
 
 async function fetchOrders() {
   ordersStore.setFilters({
-    gameName: searchGame.value,
+    // 订单号、游戏、标题、需求统一走 q，保证老板侧也能按订单主编号查到同一条记录。
+    gameName: '',
+    q: searchGame.value.trim(),
     status: selectedStatus.value,
     bossContact: searchBossContact.value.trim(),
   })
   await ordersStore.fetchOrders({ minePublished: true })
 }
 
-async function fetchClaims() {
+async function fetchClaims(page = 1) {
   // DISPUTED 本地过滤：服务端不支持该值，拉全量再过滤
   const serverStatus = claimStatus.value === 'DISPUTED' ? undefined : (claimStatus.value || undefined)
-  await ordersStore.fetchMyClaims(serverStatus)
+  await ordersStore.fetchMyClaims(serverStatus, page, 20, claimSearch.value.trim())
 }
 
 function switchTab(tab) {
@@ -143,6 +146,8 @@ function switchTab(tab) {
   if (tab === 'published') {
     ordersStore.setPage(1)
     fetchOrders()
+  } else if (!useAuthStore().isAdmin) {
+    fetchClaims(1)
   }
   syncQuery(1)
 }
@@ -156,6 +161,7 @@ function syncQuery(page = ordersStore.pagination.page) {
       boss: searchBossContact.value || undefined,
       status: selectedStatus.value || undefined,
       claim_status: claimStatus.value || undefined,
+      claim_q: claimSearch.value.trim() || undefined,
       page: page > 1 ? page : undefined,
     },
   })
@@ -171,6 +177,7 @@ watch(() => route.query, (query) => {
   const qBoss = String(query.boss || '')
   const qStatus = String(query.status || '')
   const qClaim = String(query.claim_status || '')
+  const qClaimSearch = String(query.claim_q || '')
   const qPage = Math.max(1, Number(query.page) || 1)
 
   restoringFromQuery = true
@@ -180,10 +187,17 @@ watch(() => route.query, (query) => {
   if (searchBossContact.value !== qBoss) { searchBossContact.value = qBoss; changed = true }
   if (selectedStatus.value !== qStatus) { selectedStatus.value = qStatus; changed = true }
   if (claimStatus.value !== qClaim) { claimStatus.value = qClaim; changed = true }
+  if (claimSearch.value !== qClaimSearch) { claimSearch.value = qClaimSearch; changed = true }
   if (ordersStore.pagination.page !== qPage) { ordersStore.setPage(qPage); changed = true }
   nextTick(() => { restoringFromQuery = false })
 
-  if (changed) fetchOrders()
+  if (changed) {
+    if (activeTab.value === 'claims') {
+      fetchClaims(qPage)
+    } else {
+      fetchOrders()
+    }
+  }
 })
 
 function handleSearch() {
@@ -197,9 +211,15 @@ function resetFilters() {
   searchBossContact.value = ''
   selectedStatus.value = ''
   claimStatus.value = ''
+  claimSearch.value = ''
   ordersStore.setPage(1)
   fetchOrders()
   fetchClaims()
+  syncQuery(1)
+}
+
+function handleClaimSearch() {
+  fetchClaims(1)
   syncQuery(1)
 }
 
@@ -276,15 +296,30 @@ onUnmounted(() => {
     <!-- ── 我的接单：打手自己接的活（进行中 / 待审核 / 已结算） ── -->
     <template v-if="activeTab === 'claims'">
       <section class="surface-card p-4 sm:p-5">
-        <div class="flex flex-wrap items-end justify-between gap-3">
+        <div class="grid gap-4 lg:grid-cols-[1.4fr_220px_auto] lg:items-end">
+          <div>
+            <label class="label" for="claim-search">搜索订单 / 接单记录</label>
+            <input
+              id="claim-search"
+              v-model="claimSearch"
+              type="search"
+              class="input"
+              placeholder="订单号、接单记录号、标题或需求"
+              @keyup.enter="handleClaimSearch"
+            />
+          </div>
           <div>
             <label class="label" for="claim-status">接单状态</label>
             <select id="claim-status" v-model="claimStatus" class="input">
               <option v-for="option in claimStatusOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
             </select>
           </div>
-          <p class="text-xs text-ink-3">完成后提交汇报，等发布人审核打款</p>
+          <div class="flex gap-3 lg:self-end">
+            <button type="button" class="btn-secondary !px-4 !py-2.5" @click="handleClaimSearch">搜索</button>
+            <button type="button" class="btn-ghost !px-4 !py-2.5" @click="claimSearch = ''; handleClaimSearch()">重置</button>
+          </div>
         </div>
+        <p class="mt-3 text-xs text-ink-3">订单号是老板和打手共用的主编号；接单记录号仅用于定位个人接单记录。</p>
       </section>
 
       <section v-if="claimsLoading" class="space-y-3" aria-busy="true">
@@ -344,8 +379,8 @@ onUnmounted(() => {
         <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <p class="text-sm text-ink-2">{{ claimsPagination.page }} / {{ claimsPagination.pages }} · {{ formatCount(claimsPagination.total) }}</p>
           <div class="flex items-center gap-2">
-            <button class="btn-secondary !px-4 !py-2" :disabled="claimsPagination.page <= 1" @click="ordersStore.fetchMyClaims(claimStatus || undefined, claimsPagination.page - 1)">上一页</button>
-            <button class="btn-secondary !px-4 !py-2" :disabled="claimsPagination.page >= claimsPagination.pages" @click="ordersStore.fetchMyClaims(claimStatus || undefined, claimsPagination.page + 1)">下一页</button>
+            <button class="btn-secondary !px-4 !py-2" :disabled="claimsPagination.page <= 1" @click="fetchClaims(claimsPagination.page - 1)">上一页</button>
+            <button class="btn-secondary !px-4 !py-2" :disabled="claimsPagination.page >= claimsPagination.pages" @click="fetchClaims(claimsPagination.page + 1)">下一页</button>
           </div>
         </div>
       </section>
@@ -356,8 +391,8 @@ onUnmounted(() => {
       <section class="surface-card p-4 sm:p-5">
         <div class="grid gap-4 lg:grid-cols-[1.2fr_1fr_240px_auto] lg:items-end">
           <div>
-            <label class="label" for="order-search">游戏</label>
-            <input id="order-search" v-model="searchGame" type="text" class="input" placeholder="搜索游戏" />
+            <label class="label" for="order-search">订单号 / 游戏 / 需求</label>
+            <input id="order-search" v-model="searchGame" type="search" class="input" placeholder="订单号、游戏名或需求内容" />
           </div>
           <div>
             <label class="label" for="order-boss-contact">老板ID</label>

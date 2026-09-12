@@ -10,7 +10,7 @@ from decimal import Decimal
 from typing import Any
 
 from fastapi import HTTPException, status
-from sqlalchemy import case, exists, func, or_, select, update
+from sqlalchemy import Text, case, cast, exists, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -1011,18 +1011,46 @@ class OrderService:
         status_filter: ClaimLifecycleStatus | None = None,
         page: int = 1,
         page_size: int = 20,
+        q: str | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
         """
         Paginated claims of one booster (我的报名), newest first.
 
         Each item is the claim contract dict plus an ``order`` summary.
+        Search accepts the parent order ID as the canonical identifier and the
+        claim record ID as a compatibility alias, so both sides can locate the
+        same order from either number shown in older UI versions.
         """
         conditions = [OrderClaim.booster_id == booster_id]
         if status_filter is not None:
             conditions.append(OrderClaim.status == status_filter)
 
+        if q and q.strip():
+            for token in q.strip().split():
+                normalized = token.lstrip("#")
+                pattern = f"%{escape_like(token)}%"
+                token_conditions = [
+                    Order.title.ilike(pattern),
+                    Order.intro.ilike(pattern),
+                    Order.description.ilike(pattern),
+                    Order.description_raw.ilike(pattern),
+                    Order.description_ai.ilike(pattern),
+                    Order.game_name.ilike(pattern),
+                    Order.service_type.ilike(pattern),
+                    Order.server.ilike(pattern),
+                    cast(Order.ai_tags, Text).ilike(pattern),
+                ]
+                if normalized.isdigit():
+                    number = int(normalized)
+                    token_conditions.extend(
+                        [Order.id == number, OrderClaim.id == number]
+                    )
+                conditions.append(or_(*token_conditions))
+
         total_result = await self._db.execute(
-            select(func.count(OrderClaim.id)).where(*conditions)
+            select(func.count(OrderClaim.id))
+            .join(Order, OrderClaim.order_id == Order.id)
+            .where(*conditions)
         )
         total = int(total_result.scalar() or 0)
 
@@ -1044,14 +1072,25 @@ class OrderService:
                 "id": order.id,
                 "title": order.title,
                 "intro": order.intro,
+                "description": order.description,
+                "description_raw": order.description_raw,
+                "description_ai": order.description_ai,
+                "ai_tags": order.ai_tags,
                 "game_name": order.game_name,
+                "current_rank": order.current_rank,
+                "target_rank": order.target_rank,
+                "service_type": order.service_type,
+                "server": order.server,
                 "price": order.price,
                 "price_min": order.price_min,
                 "price_max": order.price_max,
+                "attachments": order.attachments,
                 "status": self._enum_value(order.status),
                 "claim_status": self._enum_value(order.claim_status),
                 "claimed_count": order.claimed_count,
                 "max_claims": order.max_claims,
+                "deadline": order.deadline,
+                "created_at": order.created_at,
                 # 我的报名必然已接单：老板联系方式对本人可见
                 "boss_contact": order.boss_contact,
                 "compensation_amount": order.compensation_amount,

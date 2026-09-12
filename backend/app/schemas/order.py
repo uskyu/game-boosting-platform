@@ -596,14 +596,25 @@ class ClaimOrderSummary(BaseModel):
     id: int = Field(description="订单ID")
     title: str | None = Field(default=None, description="订单标题")
     intro: str | None = Field(default=None, description="订单简介")
+    description: str | None = Field(default=None, description="订单描述")
+    description_raw: str | None = Field(default=None, description="订单原始需求")
+    description_ai: str | None = Field(default=None, description="AI结构化需求")
+    ai_tags: dict[str, Any] | None = Field(default=None, description="AI标签")
     game_name: str = Field(description="游戏名称")
+    current_rank: str = Field(description="当前段位")
+    target_rank: str = Field(description="目标段位")
+    service_type: str | None = Field(default=None, description="服务类型")
+    server: str | None = Field(default=None, description="游戏区服")
     price: Decimal = Field(description="订单价格")
     price_min: Decimal | None = Field(default=None, description="价格区间下限")
     price_max: Decimal | None = Field(default=None, description="价格区间上限")
+    attachments: AttachmentList | None = Field(default=None, description="订单附件")
     status: str = Field(description="订单状态")
     claim_status: str = Field(description="抢单状态：OPEN/PAUSED/FULL/CLOSED")
     claimed_count: int = Field(description="已报名人数")
     max_claims: int = Field(description="名额总数")
+    deadline: datetime | None = Field(default=None, description="订单截止时间")
+    created_at: datetime = Field(description="订单创建时间")
     boss_contact: str | None = Field(
         default=None,
         description="老板联系 ID（我的报名必然已接单，可见）",
@@ -620,6 +631,10 @@ class ClaimOrderSummary(BaseModel):
         default=None,
         description="到账时效小时部分",
     )
+
+    @field_serializer("deadline", "created_at")
+    def serialize_order_datetime(self, value: datetime | None) -> str | None:
+        return serialize_datetime_utc(value)
 
 
 class MyOrderClaimItem(OrderClaimItem):

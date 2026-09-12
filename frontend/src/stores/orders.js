@@ -249,13 +249,14 @@ export const useOrdersStore = defineStore('orders', () => {
   // 打手自己的接单单：status 可选 'DELIVERED' | 'CLAIMED' | 'SETTLED' | 'CANCELLED'
   let myClaimsRequestSeq = 0
 
-  async function fetchMyClaims(status, page = 1, pageSize = 20) {
+  async function fetchMyClaims(status, page = 1, pageSize = 20, q = '') {
     myClaimsLoading.value = true
     error.value = null
     const requestSeq = ++myClaimsRequestSeq
     try {
       const params = { page, page_size: pageSize }
       if (status) params.status = status
+      if (q && q.trim()) params.q = q.trim()
       const response = await api.get('/orders/claims/mine', { params })
       if (requestSeq !== myClaimsRequestSeq) {
         return { success: true, stale: true }

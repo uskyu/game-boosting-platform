@@ -484,7 +484,7 @@ onUnmounted(() => {
             <div class="min-w-0">
               <p class="truncate text-sm font-semibold text-ink-1">{{ claim.order?.title || claim.order?.game_name || '代练订单' }}</p>
               <p class="mt-1 text-xs text-ink-3">
-                单号 #{{ claim.id }} · {{ claim.order?.game_name || '' }}<template v-if="claim.delivered_at"> · 交付于 {{ formatDateTime(claim.delivered_at) }}</template>
+                订单 #{{ claim.order?.id || claim.order_id }} · 接单记录 #{{ claim.id }} · {{ claim.order?.game_name || '' }}<template v-if="claim.delivered_at"> · 交付于 {{ formatDateTime(claim.delivered_at) }}</template>
               </p>
             </div>
             <div class="shrink-0 text-right">

@@ -166,6 +166,9 @@ function buildSummary(order) {
 
 async function fetchOrders() {
   ordersStore.setFilters({
+    // 大厅与“我的派单”共用 Pinia 筛选状态，切换页面时必须清掉另一页的游戏/老板筛选。
+    gameName: '',
+    bossContact: '',
     status: selectedStatus.value,
     q: searchKeyword.value.trim() || undefined,
   })

@@ -126,6 +126,62 @@ async def test_deliver_order(
     assert mine["items"][0]["order"]["status"] == "LOCKED"
 
 
+async def test_claim_search_uses_shared_order_number(
+    client: AsyncClient, admin_user: dict, booster_user: dict
+):
+    """Booster claim search resolves both the parent order and claim IDs."""
+    resp = await client.post(
+        "/orders/create",
+        json={
+            "game_name": "三角洲行动",
+            "current_rank": "黄金",
+            "target_rank": "钻石",
+            "title": "跨角色统一编号测试单",
+            "intro": "老板和打手应看到同一条订单信息",
+            "price": "58.00",
+            "description_raw": "统一搜索内容",
+        },
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 201
+    order = resp.json()
+
+    await client.put(
+        f"/orders/{order['id']}/accept",
+        headers=auth_header(booster_user),
+    )
+    await client.put(
+        f"/orders/{order['id']}/deliver",
+        headers=auth_header(booster_user),
+    )
+
+    claims = await client.get(
+        f"/orders/{order['id']}/claims",
+        headers=auth_header(admin_user),
+    )
+    assert claims.status_code == 200
+    claim_id = claims.json()["items"][0]["id"]
+
+    for query in (
+        str(order["id"]),
+        f"#{order['id']}",
+        str(claim_id),
+        f"#{claim_id}",
+        "统一搜索内容",
+    ):
+        mine = await client.get(
+            "/orders/claims/mine",
+            params={"q": query},
+            headers=auth_header(booster_user),
+        )
+        assert mine.status_code == 200
+        data = mine.json()
+        assert data["total"] == 1
+        item = data["items"][0]
+        assert item["order"]["id"] == order["id"]
+        assert item["order"]["description_raw"] == "统一搜索内容"
+
+
 async def test_deliver_requires_claimed_user(
     client: AsyncClient, admin_user: dict, registered_user: dict
 ):
