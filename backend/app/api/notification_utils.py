@@ -4,11 +4,14 @@ Keeps the endpoint code concise while ensuring every state change
 triggers both a DB notification record and a real-time WebSocket push.
 """
 
+import asyncio
 import logging
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.post_commit import run_after_commit
 from app.models.notification import Notification, NotificationType, UserPreference
 from app.models.order import Order
 from app.models.user import User, UserRole
@@ -46,13 +49,17 @@ async def notify_user(
         ref_id=ref_id,
     )
 
-    # Real-time push
+    # Real-time push：登记到事务提交之后执行，WebSocket 扇出不占业务事务
     cm = get_connection_manager()
-    try:
-        payload = NotificationResponse.model_validate(notification).model_dump(mode="json")
-        await cm.send_notification(user_id, payload)
-    except Exception:
-        logger.debug("WebSocket push failed for user %s, notification saved to DB", user_id)
+    payload = NotificationResponse.model_validate(notification).model_dump(mode="json")
+
+    async def _push_ws() -> None:
+        try:
+            await cm.send_notification(user_id, payload)
+        except Exception:
+            logger.debug("WebSocket push failed for user %s, notification saved to DB", user_id)
+
+    await run_after_commit(_push_ws)
 
     should_push = (type == NotificationType.SYSTEM_ANNOUNCEMENT and "新订单" in title) or type in (NotificationType.ORDER_ACCEPTED, NotificationType.NEW_MESSAGE)
     if should_push:
@@ -117,6 +124,8 @@ async def notify_boosters_new_order(
             content=content,
             link=link,
             ref_id=order.id,
+            # 同 notification_service.create：避免 flush 后懒加载 IO
+            created_at=datetime.now(timezone.utc),
         ))
     if not notifications:
         return 0
@@ -124,14 +133,25 @@ async def notify_boosters_new_order(
     db.add_all(notifications)
     await db.flush()
 
-    # 在线打手实时推送（尽力而为，失败不影响已落库的通知）
+    # 在线打手实时推送：登记到事务提交之后并发执行（尽力而为，失败不影响
+    # 已落库的通知）。100 人在线时这里是全站扇出的大头，绝不能留在业务
+    # 事务里拖住订单行锁和连接池。
     cm = get_connection_manager()
-    for notification in notifications:
-        try:
-            payload = NotificationResponse.model_validate(notification).model_dump(mode="json")
-            await cm.send_notification(notification.user_id, payload)
-        except Exception:
-            logger.debug("WebSocket push failed for booster %s", notification.user_id)
+    payloads = [
+        (notification.user_id, NotificationResponse.model_validate(notification).model_dump(mode="json"))
+        for notification in notifications
+    ]
+
+    async def _broadcast() -> None:
+        results = await asyncio.gather(
+            *(cm.send_notification(uid, payload) for uid, payload in payloads),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, Exception):
+                logger.debug("WebSocket push failed during new-order broadcast: %r", result)
+
+    await run_after_commit(_broadcast)
 
     logger.info(
         "Broadcast new-order notification for order %s to %s boosters",

@@ -32,7 +32,9 @@ class Settings(BaseSettings):
     SECRET_KEY: str
 
     # JWT Configuration
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    # 120 分钟：打手挂大厅页为主，短令牌会让 WS 重连频繁撞上过期窗口
+    # （401 刷新竞态在弱网手机上表现就是「老掉线」）；刷新令牌仍是 7 天。
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 120
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     ALGORITHM: str = "HS256"
 

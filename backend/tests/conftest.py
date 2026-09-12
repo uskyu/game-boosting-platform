@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
+from app.core.post_commit import drain_registry, start_registry, stop_registry
 from app.db.session import get_async_session
 from app.main import app
 from app.models.base import Base
@@ -83,17 +84,24 @@ async def reset_database() -> AsyncGenerator[None, None]:
 
 @pytest.fixture(autouse=True)
 def override_db_session() -> AsyncGenerator[None, None]:
-    """Override app DB dependency with a fresh session per request."""
+    """Override app DB dependency with a fresh session per request.
+
+    Must mirror the real ``get_async_session``: post-commit hooks（通知/广播）
+    在 commit 之后、连接关闭之前执行，保证测试能断言到与线上一致的时序。
+    """
 
     async def _override_get_async_session() -> AsyncGenerator[AsyncSession, None]:
         async with _session_factory() as session:
+            token = start_registry()
             try:
                 yield session
                 await session.commit()
+                await drain_registry()
             except Exception:
                 await session.rollback()
                 raise
             finally:
+                stop_registry(token)
                 await session.close()
 
     app.dependency_overrides[get_async_session] = _override_get_async_session

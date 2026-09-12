@@ -172,7 +172,7 @@ async function fetchOrders() {
     status: selectedStatus.value,
     q: searchKeyword.value.trim() || undefined,
   })
-  await ordersStore.fetchOrders()
+  await ordersStore.fetchOrders({ slim: true })
 }
 
 function handleSearch() {
@@ -224,7 +224,7 @@ async function silentRefresh() {
   }
   hallRefreshing = true
   try {
-    await ordersStore.fetchOrders({ silent: true })
+    await ordersStore.fetchOrders({ silent: true, slim: true })
   } catch {
     // 静默失败等下一轮
   } finally {

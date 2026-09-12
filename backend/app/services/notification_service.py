@@ -4,7 +4,7 @@ Handles creation, querying, and read-state management for notifications.
 Also manages user preference records.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,6 +40,9 @@ class NotificationService:
             content=content,
             link=link,
             ref_id=ref_id,
+            # 显式写入而非依赖 SQL 端 now()：flush 后属性不过期，
+            # 序列化/实时推送不会触发懒加载 IO（MissingGreenlet）。
+            created_at=datetime.now(timezone.utc),
         )
         self.db.add(notification)
         await self.db.flush()

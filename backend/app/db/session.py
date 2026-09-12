@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import AsyncAdaptedQueuePool
 
 from app.core.config import settings
+from app.core.post_commit import drain_registry, start_registry, stop_registry
 
 # Create async engine with connection pooling optimized for MySQL
 engine: AsyncEngine = create_async_engine(
@@ -49,13 +50,18 @@ async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
             ...
     """
     async with async_session_factory() as session:
+        token = start_registry()
         try:
             yield session
             await session.commit()
+            # 事务已提交：此刻执行登记在案的推送/广播，行锁与连接已释放，
+            # 慢客户端再也拖不住业务事务。钩子异常在 drain 内部吞掉记日志。
+            await drain_registry()
         except Exception:
             await session.rollback()
             raise
         finally:
+            stop_registry(token)
             await session.close()
 
 

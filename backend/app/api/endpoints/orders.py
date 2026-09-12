@@ -88,6 +88,28 @@ async def _apply_accept_window(
             response.accept_available_at = created + timedelta(seconds=wait_seconds)
 
 
+def _apply_slim_list_payload(response: OrderResponse) -> OrderResponse:
+    """大厅轮询瘦身：剥掉列表卡片用不到的大字段，降低 JSON 体积与前端重绘成本。
+
+    - description/description_raw/description_ai/notes/game_account/交付凭证
+      在列表里从不展示，全部置空（详情页走单独接口拿全量）；
+    - 附件只保留首图（大厅卡片的缩略图来源）；
+    - intro 缺失时用 description_raw 前 40 字补位，摘要不因瘦身退化。
+    """
+    if not response.intro and response.description_raw:
+        response.intro = response.description_raw[:40]
+    response.description = None
+    response.description_raw = None
+    response.description_ai = None
+    response.notes = None
+    response.game_account = None
+    response.delivery_attachments = None
+    response.delivery_note = None
+    if response.attachments and len(response.attachments) > 1:
+        response.attachments = response.attachments[:1]
+    return response
+
+
 def _serialize_order(order, viewer: User) -> OrderResponse:
     """Serialize an order, redacting game_account from viewers who don't own
     it, weren't assigned to it, and aren't admins.
@@ -295,6 +317,10 @@ async def list_orders(
         str | None,
         Query(max_length=100, description="综合搜索：订单号精确命中优先，其次标题/游戏/需求内容"),
     ] = None,
+    slim: Annotated[
+        bool,
+        Query(description="大厅轮询瘦身：剥掉列表卡片用不到的大字段"),
+    ] = False,
 ) -> OrderListResponse:
     """
     List orders with filtering and pagination.
@@ -338,6 +364,8 @@ async def list_orders(
 
     responses = [_serialize_order(order, current_user) for order in orders]
     responses = await _enrich_order_responses(db, responses, orders, current_user)
+    if slim:
+        responses = [_apply_slim_list_payload(response) for response in responses]
 
     return OrderListResponse(
         items=responses,

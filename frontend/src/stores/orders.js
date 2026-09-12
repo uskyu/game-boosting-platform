@@ -97,6 +97,33 @@ export const useOrdersStore = defineStore('orders', () => {
     }
   }
 
+  // 轮询快照对比：这些字段任一变化才需要重渲；更新时间/标题/摘要等
+  // 变更必然伴随其中之一（updated_at 会跳）。
+  function orderSnapshotKey(order) {
+    return [
+      order.id,
+      order.status,
+      order.claim_status,
+      order.claimed_count,
+      order.updated_at,
+      order.deadline || '',
+      order.priority ?? '',
+      order.accept_available_at || '',
+      order.my_claim?.status || '',
+      order.compensation_amount ?? '',
+      order.title || '',
+      order.intro || '',
+    ].join('|')
+  }
+
+  function isSameOrderSnapshot(prev, next) {
+    if (!Array.isArray(prev) || prev.length !== next.length) return false
+    for (let i = 0; i < next.length; i += 1) {
+      if (orderSnapshotKey(prev[i]) !== orderSnapshotKey(next[i])) return false
+    }
+    return true
+  }
+
   // options.silent：静默刷新（大厅 30s 轮询用）——不切换 loading 骨架屏、不清空现有数据、失败不弹错误
   // 请求序号守卫：慢网络上旧响应后到会覆盖新筛选结果（搜索"闪回"），
   // 每次发起递增序号，落地的响应若不是最新一次请求则直接丢弃。
@@ -142,6 +169,11 @@ export const useOrdersStore = defineStore('orders', () => {
       params.boss_contact = options.bossContact
     }
 
+    // 大厅轮询瘦身：列表卡片用不到的大字段由后端剥掉，减小 JSON 与重绘成本
+    if (options.slim) {
+      params.slim = 1
+    }
+
     try {
       const response = await api.get('/orders/', { params })
 
@@ -149,7 +181,14 @@ export const useOrdersStore = defineStore('orders', () => {
         return { success: true, stale: true }
       }
 
-      orders.value = response.data.items
+      const items = response.data.items
+      // 静默轮询快照对比：与当前展示完全一致时跳过整组替换，
+      // 避免每 2 秒推倒重渲 20 张卡片（低端手机肉眼可见卡顿）。
+      if (silent && isSameOrderSnapshot(orders.value, items)) {
+        return { success: true, unchanged: true }
+      }
+
+      orders.value = items
       pagination.value = {
         page: response.data.page,
         pageSize: response.data.page_size,

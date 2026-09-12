@@ -63,6 +63,9 @@ export const useChatStore = defineStore('chat', () => {
   let heartbeatTimer = null
   let reconnectAttempts = 0
   let shouldReconnect = true
+  // WS 鉴权自愈状态：令牌过期导致的 auth_fail 不再永久放弃重连
+  let wsAuthRecovering = false
+  let wsAuthFailCount = 0
   const typingHideTimers = {}
   const lastTypingSentAt = {}
   const authStore = useAuthStore()
@@ -361,6 +364,31 @@ export const useChatStore = defineStore('chat', () => {
     reconnectTimer = window.setTimeout(() => {
       connectWebSocket()
     }, delay)
+  }
+
+  // WS 鉴权失败自愈：access token 可能在断线期间过期。借一次鉴权 HTTP
+  // 请求触发 axios 拦截器的单飞刷新，拿到新令牌后恢复重连；连续超过
+  // 上限仍失败（刷新令牌也失效）才彻底放弃，等待用户重新登录。
+  const WS_AUTH_FAIL_LIMIT = 5
+
+  async function recoverAuthThenReconnect() {
+    if (wsAuthRecovering) return
+    wsAuthRecovering = true
+    try {
+      const authStore = useAuthStore()
+      if (wsAuthFailCount > WS_AUTH_FAIL_LIMIT || !authStore.refreshToken) {
+        shouldReconnect = false
+        return
+      }
+      await api.get('/auth/me')
+      shouldReconnect = true
+      scheduleReconnect()
+    } catch {
+      // 刷新失败：拦截器已登出并跳登录页，WS 保持死亡即可
+      shouldReconnect = false
+    } finally {
+      wsAuthRecovering = false
+    }
   }
 
   function startHeartbeat() {
@@ -768,6 +796,7 @@ export const useChatStore = defineStore('chat', () => {
       // Handle auth handshake responses before normal message loop
       if (parsed.event === 'auth_ok') {
         reconnectAttempts = 0
+        wsAuthFailCount = 0
         socketStatus.value = 'connected'
         startHeartbeat()
         fetchUnreadSummary()
@@ -781,8 +810,12 @@ export const useChatStore = defineStore('chat', () => {
       }
 
       if (parsed.event === 'auth_fail') {
+        // 令牌在断线期间过期曾导致这里永久放弃重连——线上表现为
+        // 「声音没了、数据不更新，要重新登录」。改为刷新令牌后自愈。
         shouldReconnect = false
+        wsAuthFailCount += 1
         nextSocket.close()
+        recoverAuthThenReconnect()
         return
       }
 
