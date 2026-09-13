@@ -78,6 +78,16 @@ export const useChatStore = defineStore('chat', () => {
     return authStore.isCurrentSession(context)
   }
 
+  // 冷加载竞态：/auth/me 未返回时 user 为空，此时发出的请求落地后会被
+  // isCurrentAuthContext 判为跨会话而静默丢弃（移动端消息中心偶发
+  // 「暂无对话」、刷新会话页偶发「会话不存在」的根因）。先等 auth 初始化
+  // 完成（内部有并发去重），再捕获上下文。
+  async function ensureAuthReady() {
+    if (authStore.accessToken && !authStore.isAuthenticated) {
+      await authStore.initialize()
+    }
+  }
+
   const activeConversation = computed(() => (
     conversations.value.find((item) => item.id === activeConversationId.value) || null
   ))
@@ -401,6 +411,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function fetchConversations(options = {}) {
+    await ensureAuthReady()
     const authContext = captureAuthContext()
     if (!isCurrentAuthContext(authContext)) return { success: false, stale: true }
     loading.value = true
@@ -437,6 +448,7 @@ export const useChatStore = defineStore('chat', () => {
     if (!conversationId) {
       return { success: false, error: '无效的会话 ID' }
     }
+    await ensureAuthReady()
     const authContext = captureAuthContext()
     if (!isCurrentAuthContext(authContext)) return { success: false, stale: true }
 
@@ -710,6 +722,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function fetchUnreadSummary() {
+    await ensureAuthReady()
     const authContext = captureAuthContext()
     if (!isCurrentAuthContext(authContext)) return { success: false, stale: true }
     try {
