@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 
 import { useAuthStore } from '@/stores/auth'
 import { useOrdersStore } from '@/stores/orders'
@@ -15,6 +16,8 @@ import {
 import { getClaimSettlementMeta } from '@/utils/order'
 import { formatCount, formatDateTime, formatOrderPrice, formatPrice, serverNow } from '@/utils/display'
 
+const route = useRoute()
+const router = useRouter()
 const walletStore = useWalletStore()
 const authStore = useAuthStore()
 const ordersStore = useOrdersStore()
@@ -427,6 +430,11 @@ async function refreshAll() {
 }
 
 onMounted(() => {
+  // 从接单失败弹窗「去充值」跳转过来：直接打开充值弹层，并清掉 URL 参数避免重进再弹
+  if (route.query.recharge === '1' && !authStore.isAdmin) {
+    openRecharge()
+    router.replace({ query: { ...route.query, recharge: undefined } })
+  }
   // 并行拉取：钱包数据与审核中报名单互不依赖，串行会放大远程库延迟
   Promise.all([refreshAll(), fetchReviewClaims(), fetchRechargeData(), fetchDepositData()])
   countdownTimer = window.setInterval(() => {

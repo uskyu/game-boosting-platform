@@ -40,6 +40,14 @@ const showDeliverModal = ref(false)
 const showClaimModal = ref(false)
 // 接单失败中央强提醒（复用 modal-scrim/modal-card，保留顶部 errorMessage 的同时弹窗）
 const showClaimFailModal = ref(false)
+// 接单失败若是「可用余额不够冻结炸单赔付金」，弹窗里补缺口文案并给直达充值的按钮，
+// 让用户知道下一步该干什么（很多人看不懂裸的错误文案就来问）。
+const claimFailNeedsRecharge = computed(() => (errorMessage.value || '').includes('余额不足以冻结'))
+
+function goRechargeFromFail() {
+  showClaimFailModal.value = false
+  router.push({ name: 'wallet', query: { recharge: '1' } })
+}
 // 灯箱：订单画廊 / 交付附件各自独立索引
 const orderLightboxVisible = ref(false)
 const orderLightboxIndex = ref(0)
@@ -1017,8 +1025,13 @@ onUnmounted(() => {
           <div class="modal-card" role="alertdialog" aria-modal="true" aria-label="接手失败">
             <h3 class="text-lg font-semibold text-ink-1">接手失败</h3>
             <p class="mt-3 text-sm leading-6 text-ink-2">{{ errorMessage || '接手失败，请稍后重试' }}</p>
+            <p v-if="claimFailNeedsRecharge" class="mt-2 text-sm font-semibold leading-6 text-warning">
+              【需钱包有 {{ formatPrice(order?.compensation_amount) }} 余额才可接手订单】
+            </p>
             <div class="mt-6 flex gap-3">
-              <button type="button" class="btn-primary flex-1" @click="showClaimFailModal = false">知道了</button>
+              <button v-if="claimFailNeedsRecharge" type="button" class="btn-secondary flex-1" @click="showClaimFailModal = false">知道了</button>
+              <button v-if="claimFailNeedsRecharge" type="button" class="btn-primary flex-1" @click="goRechargeFromFail">去充值</button>
+              <button v-else type="button" class="btn-primary flex-1" @click="showClaimFailModal = false">知道了</button>
             </div>
           </div>
         </div>
