@@ -246,6 +246,19 @@ async def scan_due_payouts(
                     ),
                 )
             if done:
+                # 每个名额结算完立刻提交：行锁只持有到本名额结束，不再跨名额
+                # 累积到整轮扫描结束——此前审核/取消/接单会撞上调度器持锁窗口。
+                try:
+                    await db.commit()
+                except Exception as exc:
+                    logger.warning(
+                        "Payout scan commit failed for claim %s (order %s): %s",
+                        claim.id,
+                        order.id,
+                        exc,
+                    )
+                    await db.rollback()
+                    continue
                 settled_claim_ids.append(claim.id)
         except Exception as exc:
             logger.warning(
@@ -256,7 +269,7 @@ async def scan_due_payouts(
             )
             continue
 
-        # 到账通知（尽力而为，失败不影响结算结果）
+        # 到账通知（尽力而为，失败不影响结算结果；此时行锁已随提交释放）
         try:
             await _notify_auto_settled(db, order, claim)
         except Exception as exc:

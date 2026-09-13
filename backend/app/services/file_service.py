@@ -5,6 +5,7 @@ from pathlib import Path
 from uuid import uuid4
 import warnings
 
+import anyio
 from fastapi import HTTPException, UploadFile, status
 from PIL import Image, UnidentifiedImageError
 
@@ -38,6 +39,16 @@ async def validate_image_upload(
     if len(data) > max_size_bytes:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"图片大小不能超过{max_size_bytes // (1024 * 1024)}MB")
 
+    # PIL 解码/重编码 10MB 截图要 1-5 秒 CPU：放线程池执行，单 worker 事件循环
+    # 冻结期间全站请求都会停摆，绝不能在事件循环里做。
+    return await anyio.to_thread.run_sync(
+        _validate_and_normalize_image, data, content_type, suffix
+    )
+
+
+def _validate_and_normalize_image(data: bytes, content_type: str, suffix: str) -> tuple[bytes, str, str]:
+    declared_matches = content_type in _ALLOWED_TYPES
+    extension_matches = declared_matches and suffix in _ALLOWED_TYPES[content_type]
     try:
         with Image.open(BytesIO(data)) as image:
             if image.width * image.height > _MAX_IMAGE_PIXELS:
@@ -52,8 +63,6 @@ async def validate_image_upload(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="图片内容无效")
 
     standard_info = _FORMAT_INFO.get(actual_format)
-    declared_matches = content_type in _ALLOWED_TYPES
-    extension_matches = declared_matches and suffix in _ALLOWED_TYPES[content_type]
     if standard_info and declared_matches and extension_matches and content_type == standard_info[1]:
         return data, standard_info[0], standard_info[1]
 

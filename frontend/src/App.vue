@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import AppNavIcon from '@/components/AppNavIcon.vue'
@@ -342,6 +342,15 @@ watch(
   },
   { immediate: true }
 )
+
+onMounted(() => {
+  // 兜底自愈：公共页/深链冷加载时路由守卫不一定触发会话恢复，这里补一次
+  // initialize（内部有并发去重，与守卫的 fetchCurrentUser 互不冲突）。
+  // 修复"带着有效登录凭证打开站点却停在未登录态"。
+  if (!authStore.isAuthenticated) {
+    authStore.initialize().catch(() => {})
+  }
+})
 
 watch(
   () => chatStore.socketStatus,

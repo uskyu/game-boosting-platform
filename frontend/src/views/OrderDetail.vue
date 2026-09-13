@@ -354,21 +354,26 @@ async function submitPayout() {
   if (payoutForm.value.note.trim()) {
     payload.note = payoutForm.value.note.trim()
   }
-  const result = await ordersStore.reviewClaim(order.value.id, payoutForm.value.claimId, payload)
-  payoutSubmitting.value = false
-  if (result.success) {
-    showPayoutModal.value = false
-    const approvedClaim = result.data
-    if (approvedClaim?.status === 'DELIVERED' && approvedClaim.approved_at) {
-      successMessage.value = approvedClaim.settlement_due_at
-        ? `已审核通过，预计 ${formatDateTime(approvedClaim.settlement_due_at)} 自动结算`
-        : '已审核通过，报酬将自动结算'
+  try {
+    const result = await ordersStore.reviewClaim(order.value.id, payoutForm.value.claimId, payload)
+    if (result.success) {
+      showPayoutModal.value = false
+      const approvedClaim = result.data
+      if (approvedClaim?.status === 'DELIVERED' && approvedClaim.approved_at) {
+        successMessage.value = approvedClaim.settlement_due_at
+          ? `已审核通过，预计 ${formatDateTime(approvedClaim.settlement_due_at)} 自动结算`
+          : '已审核通过，报酬将自动结算'
+      } else {
+        successMessage.value = '已审核通过，报酬已结算并计入对方钱包'
+      }
+      await Promise.all([ordersStore.fetchOrder(order.value.id), ordersStore.fetchClaims(order.value.id)])
     } else {
-      successMessage.value = '已审核通过，报酬已结算并计入对方钱包'
+      errorMessage.value = result.error || '审核失败，请稍后重试'
     }
-    await Promise.all([ordersStore.fetchOrder(order.value.id), ordersStore.fetchClaims(order.value.id)])
-  } else {
-    errorMessage.value = result.error || '审核失败，请稍后重试'
+  } finally {
+    // 必须复位：没有 finally 时，任何 await 链上的异常/挂起都会把按钮
+    // 永久钉在"提交中..."（叠加防重入 guard，只能刷新页面）。
+    payoutSubmitting.value = false
   }
 }
 

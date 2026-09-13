@@ -8,6 +8,7 @@
 行为与原来的内联发送一致。
 """
 
+import asyncio
 import contextvars
 import logging
 from collections.abc import Callable, Coroutine
@@ -40,14 +41,26 @@ async def run_after_commit(factory: Callable[[], Coroutine[Any, Any, None]]) -> 
 
 
 async def drain_registry() -> None:
-    """commit 成功后调用：执行并清空已登记的钩子，单个失败不影响其余。"""
+    """commit 成功后调用：把已登记的钩子改为后台任务执行并清空登记表。
+
+    WS 扇出是尽力而为的旁路副作用，不该拖住 HTTP 响应（单轮 gather 碰上
+    慢客户端最长要等 _SEND_TIMEOUT_SECONDS）；改为 create_task 后响应立即
+    返回，扇出在后台完成，单个失败由任务的 done-callback 记日志。
+    """
     registry = _registry.get()
     if not registry:
         return
     pending = list(registry)
     registry.clear()
+    loop = asyncio.get_running_loop()
     for factory in pending:
-        try:
-            await factory()
-        except Exception:
-            logger.warning("post-commit hook failed", exc_info=True)
+        task = loop.create_task(factory())
+        task.add_done_callback(_log_task_failure)
+
+
+def _log_task_failure(task: "asyncio.Task[Any]") -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning("post-commit hook failed: %r", exc, exc_info=exc)

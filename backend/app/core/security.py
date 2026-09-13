@@ -8,6 +8,7 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import anyio
 from cryptography.fernet import Fernet, InvalidToken
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -16,6 +17,16 @@ from app.core.config import settings
 
 # Password hashing context using bcrypt
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+async def ahash_password(password: str) -> str:
+    """bcrypt 哈希（约 200-400ms CPU）放线程池，避免冻结事件循环。"""
+    return await anyio.to_thread.run_sync(pwd_context.hash, password)
+
+
+async def averify_password(plain_password: str, hashed_password: str) -> bool:
+    """bcrypt 校验放线程池，避免登录高峰时阻塞全站请求。"""
+    return await anyio.to_thread.run_sync(pwd_context.verify, plain_password, hashed_password)
 
 
 def _get_fernet() -> Fernet:

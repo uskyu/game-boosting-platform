@@ -37,6 +37,7 @@ class CaptchaResponse(BaseModel):
     description="返回验证码ID和base64图片，有效期5分钟，一次性使用",
 )
 async def get_captcha(request: Request) -> CaptchaResponse:
+    import anyio
     import base64
 
     ip = request.client.host if request.client else "unknown"
@@ -45,7 +46,8 @@ async def get_captcha(request: Request) -> CaptchaResponse:
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="请求过于频繁，请稍后再试",
         )
-    captcha_id, png_bytes = captcha_service.create()
+    # PIL 图片生成放线程池，避免注册页高频刷新时阻塞事件循环
+    captcha_id, png_bytes = await anyio.to_thread.run_sync(captcha_service.create)
     b64 = base64.b64encode(png_bytes).decode("ascii")
     return CaptchaResponse(
         captcha_id=captcha_id,

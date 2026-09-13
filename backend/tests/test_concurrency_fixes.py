@@ -127,7 +127,11 @@ async def test_publish_broadcasts_only_after_commit(
     )
     assert resp.status_code == 201, resp.text
 
-    # WS 广播发生在 commit 之后：响应返回时已送达记录器
+    # WS 广播发生在 commit 之后、且已改为后台任务不阻塞响应：等待扇出落地
+    for _ in range(100):
+        if recorded:
+            break
+        await asyncio.sleep(0.02)
     assert len(recorded) == 1
     assert recorded[0]["user_id"] == booster_user["user"]["id"]
 

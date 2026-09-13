@@ -5,7 +5,7 @@
 
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import api from '@/utils/api'
+import api, { refreshAccessToken } from '@/utils/api'
 
 export const useAuthStore = defineStore('auth', () => {
   // State
@@ -132,14 +132,18 @@ export const useAuthStore = defineStore('auth', () => {
       error.value = null
       try {
         const response = await api.get('/auth/me')
-        if (requestSeq !== authRequestSeq || generation !== sessionGeneration.value || token !== accessToken.value) {
+        // 注意：这里不能用 token 是否变化来判断 stale——401 拦截器刷新令牌是
+        // 请求成功路径的常态（冷加载 access 过期时），刷新后 token 必然变化，
+        // 但响应就是同一个账号的有效会话；把这种结果当 stale 丢弃会导致
+        // "带着新令牌却永远未登录"。账号切换/登出由 sessionGeneration 覆盖。
+        if (requestSeq !== authRequestSeq || generation !== sessionGeneration.value) {
           return { success: false, stale: true }
         }
         setUser(response.data)
         return { success: true }
       } catch (err) {
         // Token might be invalid, clear everything, but only for this session.
-        if (requestSeq !== authRequestSeq || generation !== sessionGeneration.value || token !== accessToken.value) {
+        if (requestSeq !== authRequestSeq || generation !== sessionGeneration.value) {
           return { success: false, stale: true, error: err.message }
         }
         if (err.status === 401) {
@@ -223,6 +227,17 @@ export const useAuthStore = defineStore('auth', () => {
   async function initialize() {
     if (accessToken.value) {
       await fetchCurrentUser()
+      return
+    }
+    // 只有 refresh token（access 过期/丢失）也要恢复会话，否则带着有效
+    // 登录凭证打开页面会停在未登录态。刷新失败再清空。
+    if (refreshToken.value) {
+      try {
+        await refreshAccessToken({ refreshToken: refreshToken.value, setTokens })
+        await fetchCurrentUser()
+      } catch {
+        clearTokens()
+      }
     }
   }
 

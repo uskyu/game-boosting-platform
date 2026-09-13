@@ -21,8 +21,8 @@ engine: AsyncEngine = create_async_engine(
     settings.DB_URL,
     echo=settings.DEBUG,
     poolclass=AsyncAdaptedQueuePool,
-    pool_size=20,
-    max_overflow=10,
+    pool_size=40,
+    max_overflow=20,
     pool_timeout=30,
     pool_recycle=1800,  # Recycle connections every 30 minutes
     # aiomysql's async adapter does not accept SQLAlchemy's pre-ping argument.

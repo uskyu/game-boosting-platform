@@ -48,12 +48,17 @@ api.interceptors.request.use(
 // issued.  The others wait for the same promise.
 let refreshPromise = null
 
-function doRefresh(authStore) {
+// 刷新请求必须带超时：裸 axios 默认 timeout=0（无限等），弱网/黑洞下一旦
+// 挂起，所有等 401 恢复的请求都会被这个单飞锁一起卡死（审核弹窗"提交中
+// ..."永不结束、必须刷新页面的根因之一）。15 秒拿不到就按会话失效处理。
+export function refreshAccessToken(authStore) {
   if (!refreshPromise) {
     refreshPromise = axios
-      .post(apiPath('/auth/refresh'), {
-        refresh_token: authStore.refreshToken,
-      })
+      .post(
+        apiPath('/auth/refresh'),
+        { refresh_token: authStore.refreshToken },
+        { timeout: 15000 },
+      )
       .then((res) => {
         const { access_token, refresh_token } = res.data
         authStore.setTokens(access_token, refresh_token)
@@ -116,7 +121,7 @@ api.interceptors.response.use(
 
       if (authStore.refreshToken) {
         try {
-          const newToken = await doRefresh(authStore)
+          const newToken = await refreshAccessToken(authStore)
           originalRequest.headers.Authorization = `Bearer ${newToken}`
           return api(originalRequest)
         } catch {

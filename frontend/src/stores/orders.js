@@ -124,16 +124,24 @@ export const useOrdersStore = defineStore('orders', () => {
     return true
   }
 
-  // options.silent：静默刷新（大厅 30s 轮询用）——不切换 loading 骨架屏、不清空现有数据、失败不弹错误
+  // options.silent：静默刷新（大厅轮询用）——不切换 loading 骨架屏、不清空现有数据、失败不弹错误
   // 请求序号守卫：慢网络上旧响应后到会覆盖新筛选结果（搜索"闪回"），
   // 每次发起递增序号，落地的响应若不是最新一次请求则直接丢弃。
   let ordersRequestSeq = 0
+  let ordersUserFetchActive = false
 
   async function fetchOrders(options = {}) {
     const silent = Boolean(options.silent)
+    if (silent && ordersUserFetchActive) {
+      // 用户主动请求（搜索/筛选/翻页）在飞时跳过本轮静默轮询：否则轮询会
+      // 递增序号把慢网络上的搜索响应作废，骨架屏只能干等下一轮轮询落地
+      //（搜索请求耗时 5 秒时骨架屏就挂 5 秒，正是老板看到的"搜索迟钝"）。
+      return { success: true, skipped: true }
+    }
     if (!silent) {
       loading.value = true
       error.value = null
+      ordersUserFetchActive = true
     }
     const requestSeq = ++ordersRequestSeq
 
@@ -204,6 +212,7 @@ export const useOrdersStore = defineStore('orders', () => {
       return { success: false, error: err.message }
     } finally {
       if (!silent) {
+        ordersUserFetchActive = false
         loading.value = false
       }
     }

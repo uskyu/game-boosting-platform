@@ -14,6 +14,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import MutableHeaders
+from starlette.types import ASGIApp
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.router import api_router
@@ -129,6 +131,33 @@ app.add_middleware(
 )
 
 logger.info("Configured CORS origins: %s", settings.cors_origins)
+
+
+class UploadCacheControlMiddleware:
+    """给 /uploads 静态图补 Cache-Control。
+
+    文件名是 uuid hex（file_service.save_image_bytes），内容永不变化，可以
+    immutable 永久缓存；Starlette FileResponse 默认只发 ETag/Last-Modified，
+    大截图每次打开审核面板都要回源验证，跨境链路上白白多一个 RTT。
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] == "http" and scope.get("path", "").startswith("/uploads/"):
+            async def send_with_cache(message) -> None:
+                if message["type"] == "http.response.start":
+                    headers = MutableHeaders(scope=message)
+                    headers["Cache-Control"] = "public, max-age=31536000, immutable"
+                await send(message)
+
+            await self.app(scope, receive, send_with_cache)
+        else:
+            await self.app(scope, receive, send)
+
+
+app.add_middleware(UploadCacheControlMiddleware)
 
 # Serve uploaded files in development/runtime container.
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_PATH)), name="uploads")

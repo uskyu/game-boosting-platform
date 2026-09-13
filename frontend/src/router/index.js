@@ -198,7 +198,11 @@ router.beforeEach(async (to, from, next) => {
   setDocTitle()
   siteStore.fetchSettings().then(setDocTitle)
 
-  if (authStore.accessToken && !authStore.user) {
+  if (!authStore.accessToken && authStore.refreshToken && !authStore.user) {
+    // 冷加载时 access 已过期/丢失但 refresh 还在：先恢复会话再判断，
+    // 否则带着有效凭证访问受保护页会被误踹到登录页（"不自动登录"）。
+    await authStore.initialize()
+  } else if (authStore.accessToken && !authStore.user) {
     if (to.meta.adminOnly || to.meta.guest) {
       // admin 判定 / 已登录访问登录页需要准确身份，保持阻塞等待
       await authStore.fetchCurrentUser()

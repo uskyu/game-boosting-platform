@@ -14,10 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.security import (
+    ahash_password,
+    averify_password,
     create_access_token,
     create_refresh_token,
-    hash_password,
-    verify_password,
     verify_token,
 )
 from app.models.user import BoosterApplicationStatus, User, UserRole
@@ -91,7 +91,7 @@ class UserService:
         user = User(
             email=user_data.email,
             username=user_data.username,
-            hashed_password=hash_password(user_data.password),
+            hashed_password=await ahash_password(user_data.password),
             role=role,
             is_active=True,
             is_verified=False,
@@ -144,7 +144,7 @@ class UserService:
         admin = User(
             email=settings.DEFAULT_ADMIN_EMAIL,
             username=settings.DEFAULT_ADMIN_USERNAME,
-            hashed_password=hash_password(password),
+            hashed_password=await ahash_password(password),
             role=UserRole.ADMIN,
             is_active=True,
             is_verified=True,
@@ -189,7 +189,7 @@ class UserService:
                 detail="邮箱或密码错误",
             )
 
-        if not verify_password(password, user.hashed_password):
+        if not await averify_password(password, user.hashed_password):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="邮箱或密码错误",
@@ -418,13 +418,13 @@ class UserService:
         Raises:
             HTTPException: If current password is incorrect.
         """
-        if not verify_password(current_password, user.hashed_password):
+        if not await averify_password(current_password, user.hashed_password):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="当前密码错误",
             )
 
-        user.hashed_password = hash_password(new_password)
+        user.hashed_password = await ahash_password(new_password)
 
         await self._db.flush()
         await self._db.refresh(user)

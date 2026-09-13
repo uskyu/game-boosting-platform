@@ -242,12 +242,15 @@ class User(Base):
     )
 
     # Relationships
+    # 历史订单关系默认不加载（noload）：selectin 会让每个认证请求都隐式拉取
+    # 该用户全部订单（每条还带 4 重 joined JOIN），是全站查询放大的根源。
+    # 需要时在查询处显式 selectinload。
     # Orders created by this user (as customer)
     orders_as_customer: Mapped[list["Order"]] = relationship(
         "Order",
         back_populates="user",
         foreign_keys="Order.user_id",
-        lazy="selectin",
+        lazy="noload",
         cascade="save-update, merge",
     )
 
@@ -256,7 +259,7 @@ class User(Base):
         "Order",
         back_populates="booster",
         foreign_keys="Order.booster_id",
-        lazy="selectin",
+        lazy="noload",
     )
 
     @property

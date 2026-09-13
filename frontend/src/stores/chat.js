@@ -83,7 +83,7 @@ export const useChatStore = defineStore('chat', () => {
   // 「暂无对话」、刷新会话页偶发「会话不存在」的根因）。先等 auth 初始化
   // 完成（内部有并发去重），再捕获上下文。
   async function ensureAuthReady() {
-    if (authStore.accessToken && !authStore.isAuthenticated) {
+    if (!authStore.isAuthenticated && (authStore.accessToken || authStore.refreshToken)) {
       await authStore.initialize()
     }
   }

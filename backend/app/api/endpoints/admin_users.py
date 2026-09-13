@@ -7,7 +7,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import DatabaseSession, get_current_admin
-from app.core.security import hash_password
+from app.core.security import ahash_password
 from app.models.user import User, UserRole
 from app.models.wallet import Wallet
 from app.schemas.admin_users import (
@@ -150,7 +150,7 @@ async def reset_admin_user_password(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="管理员密码不能在用户管理中重置，请本人到设置页验证当前密码后修改",
         )
-    user.hashed_password = hash_password(payload.password)
+    user.hashed_password = await ahash_password(payload.password)
     await db.flush()
     return AdminUserMessageResponse(message="密码已重置")
 
