@@ -72,7 +72,7 @@ onMounted(async () => {
     <!-- 双栏固定高度（桌面双栏 / 移动端单聊天窗，均可视口内滚动）：
          会话列表在框内滚动，不再有多少会话就把页面拉多长、把聊天窗顶到页面底部；
          ChatPanel 自带 h-full+内部滚动，填满即可 -->
-    <section class="grid h-[78vh] min-h-[480px] gap-6 xl:grid-cols-[360px_minmax(0,1fr)]">
+    <section class="grid h-[calc(100vh-240px)] min-h-[420px] gap-6 xl:grid-cols-[360px_minmax(0,1fr)]">
       <aside class="surface-card cyber-corner hidden flex-col overflow-hidden p-4 sm:p-5 xl:flex">
         <div class="mb-4 flex items-center justify-between gap-3 px-2">
           <div>
