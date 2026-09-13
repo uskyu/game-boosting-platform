@@ -69,9 +69,10 @@ onMounted(async () => {
       </div>
     </div>
 
-    <!-- 移动端只显示聊天面板（会话列表隐藏，避免占满首屏）；xl 起恢复双栏 -->
-    <section class="grid min-h-[78vh] gap-6 xl:grid-cols-[360px_minmax(0,1fr)]">
-      <aside class="surface-card cyber-corner hidden p-4 sm:p-5 xl:block">
+    <!-- 双栏固定高度：会话列表在框内滚动，不再有多少会话就把页面拉多长、
+         把聊天窗顶到页面底部；ChatPanel 自带 h-full+内部滚动，填满即可 -->
+    <section class="grid h-[78vh] gap-6 xl:grid-cols-[360px_minmax(0,1fr)]">
+      <aside class="surface-card cyber-corner hidden flex-col overflow-hidden p-4 sm:p-5 xl:flex">
         <div class="mb-4 flex items-center justify-between gap-3 px-2">
           <div>
             <p class="text-xs uppercase tracking-[0.12em] text-primary">列表</p>
@@ -82,12 +83,14 @@ onMounted(async () => {
           </router-link>
         </div>
 
-        <ChatConversationList
-          :conversations="conversations"
-          :active-conversation-id="normalizedConversationId"
-          :loading="chatStore.loading"
-          @select="openConversation"
-        />
+        <div class="min-h-0 flex-1 overflow-y-auto pr-1">
+          <ChatConversationList
+            :conversations="conversations"
+            :active-conversation-id="normalizedConversationId"
+            :loading="chatStore.loading"
+            @select="openConversation"
+          />
+        </div>
       </aside>
 
       <ChatPanel :conversation-id="normalizedConversationId" />
