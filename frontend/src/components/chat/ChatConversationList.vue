@@ -132,26 +132,26 @@ async function handleTogglePin(event, conversation) {
       <p class="empty-state__copy">{{ emptyDescription }}</p>
     </div>
 
-    <div v-else class="space-y-3">
+    <div v-else class="space-y-2">
       <button
         v-for="conversation in sortedItems"
         :key="conversation.id"
         type="button"
-        class="chat-conversation-card"
+        class="chat-conversation-card group"
         :class="{
           'chat-conversation-card-active': Number(activeConversationId) === Number(conversation.id),
         }"
         @click="handleSelect(conversation)"
       >
-        <div class="flex items-start gap-4">
+        <div class="flex items-start gap-3.5">
           <div class="chat-avatar">
             {{ getAvatarLabel(conversation) }}
           </div>
 
           <div class="min-w-0 flex-1 text-left">
-            <div class="flex items-start justify-between gap-3">
+            <div class="flex items-start justify-between gap-2">
               <div class="min-w-0">
-                <div class="flex flex-wrap items-center gap-2">
+                <div class="flex flex-wrap items-center gap-1.5">
                   <p class="truncate text-sm font-semibold text-ink-1">
                     {{ getTitle(conversation) }}
                   </p>
@@ -167,21 +167,22 @@ async function handleTogglePin(event, conversation) {
                     title="已置顶"
                     aria-label="已置顶"
                   >
-                    <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
                       <path stroke-linecap="round" stroke-linejoin="round" d="m14 4 6 6-3 1-4 5v4l-2-2-2 2v-4l-5-5-1-3 6 1 5-5z" />
                     </svg>
                   </span>
                 </div>
-                <p class="mt-1 truncate text-xs text-ink-3">
+                <p class="mt-0.5 truncate text-xs text-ink-3">
                   {{ getSubtitle(conversation) }}
                 </p>
               </div>
 
-              <div class="flex flex-col items-end gap-2">
+              <div class="flex shrink-0 flex-col items-end gap-1">
                 <span class="text-[11px] text-ink-3">{{ getTimestamp(conversation) }}</span>
+                <ChatUnreadBadge :count="Number(conversation.unread_count || 0)" />
                 <button
                   type="button"
-                  class="min-h-11 min-w-11 rounded-full p-2 text-ink-3 transition hover:bg-surface-3 hover:text-warning"
+                  class="h-7 w-7 rounded-full p-1 text-ink-3 opacity-50 transition hover:bg-surface-3 hover:text-warning hover:opacity-100 focus-visible:opacity-100"
                   :title="conversation.is_pinned ? '取消置顶' : '置顶会话'"
                   :aria-label="conversation.is_pinned ? '取消置顶' : '置顶会话'"
                   @click="handleTogglePin($event, conversation)"
@@ -190,11 +191,10 @@ async function handleTogglePin(event, conversation) {
                     <path stroke-linecap="round" stroke-linejoin="round" d="m14 4 6 6-3 1-4 5v4l-2-2-2 2v-4l-5-5-1-3 6 1 5-5z" />
                   </svg>
                 </button>
-                <ChatUnreadBadge :count="Number(conversation.unread_count || 0)" />
               </div>
             </div>
 
-            <p class="mt-4 truncate text-sm text-ink-2">
+            <p class="mt-1.5 truncate text-sm text-ink-2">
               {{ getPreview(conversation) }}
             </p>
           </div>

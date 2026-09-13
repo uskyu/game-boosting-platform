@@ -1178,7 +1178,9 @@
   ────────────────────────────── */
   .chat-shell {
     @apply surface-card relative overflow-hidden;
-    min-height: 72vh;
+    /* 高度交给宿主容器（消息页固定高双栏），填满即可；输入框必须始终贴窗口底部 */
+    height: 100%;
+    min-height: 24rem;
   }
 
   .chat-panel-header {
@@ -1225,9 +1227,9 @@
 
   .chat-message-list {
     @apply relative overflow-y-auto pr-2;
-    height: 55vh;
-    min-height: 28rem;
-    max-height: 100%;
+    /* 填满聊天窗弹性区（头/搜索/输入框之外的空间），不再写死 55vh 导致输入框被顶出窗口 */
+    height: 100%;
+    min-height: 8rem;
     scroll-behavior: smooth;
     scrollbar-width: thin;
     scrollbar-color: var(--scrollbar-thumb) transparent;
