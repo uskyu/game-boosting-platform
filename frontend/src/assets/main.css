@@ -968,11 +968,12 @@
       padding: 10px 12px !important;
     }
     .od-ops__head { display: none !important; }
-    .od-ops__body { flex-direction: row !important; align-items: stretch; gap: 8px !important; margin-top: 0 !important; }
-    .od-ops__body > button { width: auto !important; min-height: 44px; }
-    .od-ops__back { order: -1; flex: 0 0 auto; }
+    .od-ops__body { flex-direction: row !important; flex-wrap: wrap; align-items: stretch; gap: 8px !important; margin-top: 0 !important; }
+    .od-ops__body > button { width: auto !important; min-height: 44px; white-space: nowrap; padding-left: 14px !important; padding-right: 14px !important; }
+    .od-ops__notice { flex: 0 0 100% !important; order: -2 !important; margin: 0 !important; padding: 6px 10px !important; }
+    .od-ops__back { order: -1; flex: 0 0 auto; font-size: 13px; }
     .od-ops__chip { flex: 0 0 auto; }
-    .od-ops__primary { order: 50; flex: 1 1 auto; }
+    .od-ops__primary { order: 50; flex: 1 1 auto; justify-content: center; }
     .od-ops__desktop-only { display: none !important; }
   }
   /* <md 有底部 Tab：操作栏叠在 Tab 之上 */

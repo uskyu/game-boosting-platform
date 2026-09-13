@@ -823,7 +823,7 @@ onUnmounted(() => {
             <!-- 抢单等待状态仅影响展示，按钮禁用条件仍由剩余秒数和服务端共同决定。 -->
             <div
               v-if="isBooster && canAcceptOrder"
-              :class="[acceptWaitState === 'waiting' ? 'message-warning' : 'message-info', 'text-xs leading-6']"
+              :class="[acceptWaitState === 'waiting' ? 'message-warning' : 'message-info', 'od-ops__notice', 'text-xs leading-6']"
             >
               <template v-if="acceptWaitState === 'waiting'">
                 接单等待中：配置等待 {{ acceptRequiredWait }} 秒，当前还剩 {{ acceptWaitSeconds }} 秒，倒计时结束后即可接单。
