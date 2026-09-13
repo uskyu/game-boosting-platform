@@ -1184,7 +1184,7 @@
   }
 
   .chat-panel-header {
-    @apply relative flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3 sm:gap-4 sm:px-8 sm:py-5;
+    @apply relative flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3 sm:gap-4 sm:px-6;
     border-color: var(--line-1);
   }
 
@@ -1296,7 +1296,7 @@
   }
 
   .chat-security-notice {
-    @apply rounded-tile px-3 py-1 text-xs leading-5 sm:px-4 sm:py-3 sm:text-sm;
+    @apply rounded-tile px-3 py-1 text-[11px] leading-4 sm:text-xs;
     color: var(--warning);
     background: var(--warning-soft);
   }

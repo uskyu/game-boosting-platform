@@ -17,6 +17,7 @@ const authStore = useAuthStore()
 const chatStore = useChatStore()
 
 const draft = ref('')
+const searchOpen = ref(false)
 const searchQuery = ref('')
 const searchResults = ref([])
 const searching = ref(false)
@@ -260,6 +261,14 @@ async function handleSearch() {
   searching.value = false
 }
 
+function toggleSearch() {
+  searchOpen.value = !searchOpen.value
+  if (!searchOpen.value) {
+    searchQuery.value = ''
+    handleClearSearch()
+  }
+}
+
 function handleClearSearch() {
   searchResults.value = []
   hasSearched.value = false
@@ -327,32 +336,54 @@ onBeforeUnmount(() => {
     <div v-if="conversation" class="flex h-full min-h-0 flex-col overflow-hidden">
       <header class="chat-panel-header">
         <div class="min-w-0">
-          <div class="flex flex-wrap items-center gap-2 sm:gap-3">
-            <h1 class="truncate text-lg font-semibold text-ink-1 sm:text-2xl">{{ conversationTitle }}</h1>
+          <div class="flex flex-wrap items-center gap-2">
+            <h1 class="truncate text-lg font-semibold text-ink-1">{{ conversationTitle }}</h1>
             <span class="chat-status-pill">{{ socketStatusText }}</span>
           </div>
-          <p class="mt-1 text-xs text-ink-2 sm:mt-2 sm:text-sm">{{ conversationSubtitle }}</p>
+          <p class="mt-0.5 truncate text-xs text-ink-2">{{ conversationSubtitle }}</p>
         </div>
 
-        <button
-          v-if="!hasAdmin && !authStore.isAdmin"
-          type="button"
-          class="btn-secondary shrink-0 !min-h-[36px] !px-4 text-xs sm:!min-h-0 sm:!px-5 sm:text-sm"
-          :disabled="invitingAdmin"
-          @click="handleInviteAdmin"
-        >
-          {{ invitingAdmin ? '呼叫中...' : '呼叫客服' }}
-        </button>
-        <span
-          v-else-if="hasAdmin"
-          class="chat-status-pill !bg-warning-soft !text-warning"
-        >
-          客服已加入
-        </span>
+        <div class="flex shrink-0 items-center gap-2">
+          <button
+            v-if="searchOpen"
+            type="button"
+            class="btn-ghost hidden !px-3 text-xs sm:inline-flex"
+            @click="toggleSearch"
+          >
+            收起搜索
+          </button>
+          <button
+            v-else
+            type="button"
+            class="chat-icon-button hidden !h-9 !min-w-9 !px-2 sm:inline-flex"
+            title="搜索消息"
+            aria-label="搜索消息"
+            @click="toggleSearch"
+          >
+            <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="m21 21-4.35-4.35M17 10.5a6.5 6.5 0 1 1-13 0 6.5 6.5 0 0 1 13 0z" />
+            </svg>
+          </button>
+          <button
+            v-if="!hasAdmin && !authStore.isAdmin"
+            type="button"
+            class="btn-secondary shrink-0 !min-h-[36px] !px-4 text-xs"
+            :disabled="invitingAdmin"
+            @click="handleInviteAdmin"
+          >
+            {{ invitingAdmin ? '呼叫中...' : '呼叫客服' }}
+          </button>
+          <span
+            v-else-if="hasAdmin"
+            class="chat-status-pill !bg-warning-soft !text-warning"
+          >
+            客服已加入
+          </span>
+        </div>
       </header>
 
-      <!-- 消息搜索：手机端隐藏（省竖向空间，桌面端保留） -->
-      <div class="hidden border-b border-line-1 px-6 py-4 sm:block sm:px-8">
+      <!-- 消息搜索：默认收起，头部图标按需展开；手机端隐藏 -->
+      <div v-if="searchOpen" class="hidden border-b border-line-1 px-4 py-2.5 sm:block sm:px-6">
         <ChatSearchBar
           v-model="searchQuery"
           :results="searchResults"
@@ -391,7 +422,7 @@ onBeforeUnmount(() => {
         />
       </div>
 
-      <div class="shrink-0 border-t border-line-1 px-3 py-3 sm:px-8 sm:py-5">
+      <div class="shrink-0 border-t border-line-1 px-3 py-2.5 sm:px-6 sm:py-3">
         <ChatComposer
           v-model="draft"
           :disabled="!conversation"
