@@ -565,8 +565,12 @@ class OrderClaimItem(BaseModel):
         default=None,
         description="结算计时模式：AFTER_DELIVERY/AFTER_APPROVAL/ORDER_DELAY；NULL 仅兼容 033 前记录",
     )
-    settle_hours_snapshot: int | None = Field(default=None, description="审核时锁定的结算小时数")
-    settlement_due_at: datetime | None = Field(default=None, description="固定结算时间")
+    settle_hours_snapshot: int | None = Field(
+        default=None, description="当前生效的结算小时数，充值升级时会缩短"
+    )
+    settlement_due_at: datetime | None = Field(
+        default=None, description="当前预计结算时间，充值升级时会缩短"
+    )
     settled_at: datetime | None = Field(default=None, description="结算时间")
     is_first: bool = Field(default=False, description="是否首抢（该用户即订单当前接单人）")
 

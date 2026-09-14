@@ -18,7 +18,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.deposit import (
     DEFAULT_DEPOSIT_RETURN_COOLDOWN_DAYS,
     DEFAULT_DEPOSIT_TIERS,
+    SETTLEMENT_MODE_AFTER_APPROVAL,
     SETTLEMENT_MODE_AFTER_DELIVERY,
+    SETTLEMENT_MODE_ORDER_DELAY,
     SETTLEMENT_MODES,
     DepositSetting,
     DepositTier,
@@ -154,7 +156,12 @@ async def return_block_reason(db: AsyncSession, user_id: int) -> str | None:
 
 
 async def transfer_in(db: AsyncSession, user: User, amount: Decimal) -> None:
-    """缴纳保证金：余额 → 保证金。总开关关闭时拒绝缴纳。"""
+    """缴纳保证金：余额 → 保证金。总开关关闭时拒绝缴纳。
+
+    充值升级后，所有尚未结算的报名记录都要立即按新的保证金档位
+    重算结算时效。先锁报名记录、再锁钱包，和结算调度器的锁顺序一致，
+    避免充值与自动结算并发时互相等待。
+    """
     if not await is_deposit_enabled(db):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -162,8 +169,63 @@ async def transfer_in(db: AsyncSession, user: User, amount: Decimal) -> None:
         )
     amount = Decimal(str(amount)).quantize(_CENT, rounding=ROUND_HALF_UP)
     wallet_service = get_wallet_service(db)
+
+    # 结算调度器的顺序是 order -> claim -> wallet；这里先锁 claim，
+    # 再进入钱包转账，保持一致，防止充值升级与自动结算形成死锁。
+    unsettled_result = await db.execute(
+        select(OrderClaim)
+        .where(
+            OrderClaim.booster_id == user.id,
+            OrderClaim.status.in_(_UNFINISHED_CLAIM_STATES),
+            OrderClaim.settled_at.is_(None),
+        )
+        .with_for_update()
+    )
+    unsettled_claims = list(unsettled_result.scalars().all())
+
     wallet = await wallet_service.get_or_create_wallet(user.id)
     await wallet_service.transfer_to_deposit(wallet, amount=amount)
+
+    if not unsettled_claims:
+        return
+
+    setting = await get_or_create_deposit_setting(db)
+    tier, _balance = await get_user_tier(db, user.id)
+    if tier is None:
+        return
+
+    hours = max(int(tier.settle_hours or 0), 0)
+    configured_mode = setting.settlement_mode
+    if configured_mode not in SETTLEMENT_MODES:
+        configured_mode = SETTLEMENT_MODE_ORDER_DELAY
+
+    for claim in unsettled_claims:
+        # 已有快照的订单保留原来的计时起点，只升级该订单的时效；
+        # 迁移前数据或此前没有可用保证金档位的数据，按当前模式补齐。
+        mode = claim.settlement_mode_snapshot
+        if mode not in (SETTLEMENT_MODE_AFTER_DELIVERY, SETTLEMENT_MODE_AFTER_APPROVAL):
+            mode = configured_mode
+
+        claim.settlement_mode_snapshot = mode
+        claim.settle_hours_snapshot = hours
+
+        if mode == SETTLEMENT_MODE_AFTER_DELIVERY:
+            claim.settlement_due_at = (
+                _as_utc(claim.delivered_at) + timedelta(hours=hours)
+                if claim.delivered_at is not None
+                else None
+            )
+        elif mode == SETTLEMENT_MODE_AFTER_APPROVAL:
+            claim.settlement_due_at = (
+                _as_utc(claim.approved_at) + timedelta(hours=hours)
+                if claim.approved_at is not None
+                else None
+            )
+        else:
+            # 当前配置不合法时退回旧订单时效逻辑，避免伪造一个固定到期时间。
+            claim.settlement_due_at = None
+
+    await db.flush()
 
 
 async def transfer_out(db: AsyncSession, user: User, amount: Decimal) -> None:

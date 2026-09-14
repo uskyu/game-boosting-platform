@@ -55,7 +55,12 @@ def _order_delay_due(claim: OrderClaim, order: Order) -> datetime | None:
 
 
 def _snapshot_settle_due(claim: OrderClaim) -> datetime | None:
-    """Return the immutable due time captured on a post-migration claim."""
+    """Return the current due time captured for a post-migration claim.
+
+    The payout amount and review terms remain fixed, while an unsettled claim
+    may have this timestamp shortened when the booster upgrades their deposit
+    tier.
+    """
     if claim.settlement_mode_snapshot is None or claim.settlement_due_at is None:
         return None
     return _as_utc(claim.settlement_due_at)
@@ -192,9 +197,9 @@ async def scan_due_payouts(
         try:
             async with db.begin_nested():
                 # Candidate rows can become delivered/settled or have their
-                # immutable due time changed after the initial scan. Lock both
-                # rows, then recompute the legacy mode/tier and due time from
-                # current database state before settling.
+                # due time changed after the initial scan. Lock both rows,
+                # then recompute legacy mode/tier and due time from current
+                # database state before settling.
                 locked_order = (
                     await db.execute(
                         select(Order).where(Order.id == order.id).with_for_update()

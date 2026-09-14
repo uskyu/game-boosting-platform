@@ -603,7 +603,7 @@ class OrderService:
         order: Order,
         delivered_at: datetime,
     ) -> None:
-        """Freeze settlement timing when a post-033 claim is delivered.
+        """Capture the initial settlement timing when a post-033 claim is delivered.
 
         NULL is reserved for claims created before migration 033.  New claims
         use ORDER_DELAY when deposit mode is disabled or no enabled tier is
@@ -631,7 +631,7 @@ class OrderService:
         if mode == SETTLEMENT_MODE_AFTER_DELIVERY:
             claim.settlement_due_at = delivered_at + timedelta(hours=hours)
         else:
-            # AFTER_APPROVAL gets its fixed due time only at review.
+            # AFTER_APPROVAL gets its due time only at review.
             claim.settlement_due_at = None
 
     async def _holds_after_approval(self, claim: OrderClaim) -> bool:
@@ -1500,7 +1500,7 @@ class OrderService:
     async def auto_settle_due_claim(
         self, order: Order, claim: OrderClaim, *, delay_from_tier: bool = False
     ) -> bool:
-        """Auto-settle a due claim using its immutable approval terms."""
+        """Auto-settle a due claim using its stored approval terms."""
         if claim.status != ClaimLifecycleStatus.DELIVERED:
             return False
         if (
@@ -1733,10 +1733,9 @@ class OrderService:
                     detail=f"炸单赔偿扣除金额需在 0 ~ {compensation} 之间",
                 )
 
-        # AFTER_APPROVAL stores the review terms and fixed due time. The
-        # scheduler later settles using these values even if tier/balance/config
-        # changes in the meantime. Store the concrete net payout even when the
-        # reviewer omitted amount, using the exact wallet settlement formula.
+        # AFTER_APPROVAL stores the review payout terms and starts the timer.
+        # A later deposit upgrade may shorten the timer, but must not change
+        # the concrete net payout or deduction approved by the reviewer.
         if await self._holds_after_approval(claim):
             approved_at = datetime.now(timezone.utc)
             claim.approved_at = approved_at

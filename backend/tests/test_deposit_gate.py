@@ -311,6 +311,63 @@ async def test_settlement_mode_after_delivery_auto_settles(
     assert Decimal(str(wallet.available_balance)) == Decimal("600.00")
 
 
+async def test_deposit_upgrade_shortens_existing_after_delivery_claim(
+    client: AsyncClient, admin_user: dict, booster_user: dict, db_session
+):
+    """充值升到顶档后，已交付但未结算的旧名额立即改用 1 小时档。"""
+    await _enable_deposit(
+        client,
+        admin_user,
+        settlement_mode="AFTER_DELIVERY",
+        tiers=[
+            {
+                "threshold": 0,
+                "wait_seconds": 0,
+                "exempt_compensation": False,
+                "settle_hours": 72,
+                "enabled": True,
+            },
+            {
+                "threshold": 1000,
+                "wait_seconds": 0,
+                "exempt_compensation": True,
+                "settle_hours": 1,
+                "enabled": True,
+            },
+        ],
+    )
+    await _fund(client, admin_user, booster_user, 1200)
+    order = await _make_order(client, admin_user, price="100.00")
+    assert (await _accept(client, booster_user, order["id"])).status_code == 200
+    assert (
+        await client.put(
+            f"/orders/{order['id']}/deliver",
+            headers=auth_header(booster_user),
+        )
+    ).status_code == 200
+
+    claim = (
+        await db_session.execute(
+            select(OrderClaim).where(OrderClaim.order_id == order["id"])
+        )
+    ).scalar_one()
+    assert claim.settle_hours_snapshot == 72
+
+    await _deposit(client, booster_user, 1000)
+    await db_session.commit()
+    await db_session.refresh(claim)
+    assert claim.settle_hours_snapshot == 1
+    assert claim.settlement_due_at == claim.delivered_at + timedelta(hours=1)
+
+    settled = await scan_due_payouts(
+        db_session, now=claim.settlement_due_at + timedelta(seconds=1)
+    )
+    await db_session.commit()
+    assert claim.id in settled
+    await db_session.refresh(claim)
+    assert claim.status == ClaimLifecycleStatus.SETTLED
+
+
 async def test_after_approval_holds_until_due(
     client: AsyncClient, admin_user: dict, booster_user: dict, db_session
 ):
@@ -419,7 +476,7 @@ async def test_after_approval_waits_for_approval(
 async def test_after_approval_snapshots_review_terms_and_due_time(
     client: AsyncClient, admin_user: dict, booster_user: dict, db_session
 ):
-    """审核金额、扣款、备注和档位时效 remain fixed after approval."""
+    """审核金额等结果固定，但充值升级可缩短尚未结算的到账时效。"""
     await _enable_deposit(
         client,
         admin_user,
@@ -499,7 +556,7 @@ async def test_after_approval_snapshots_review_terms_and_due_time(
     assert approved_at is not None and due_at is not None
     assert due_at == approved_at + timedelta(hours=24)
 
-    # Changing the active tier after review must not move this claim's due time.
+    # 充值升级后，未结算名额按新档位缩短；审核金额/扣款/备注仍保持原结果。
     await _enable_deposit(
         client,
         admin_user,
@@ -517,7 +574,9 @@ async def test_after_approval_snapshots_review_terms_and_due_time(
     await _deposit(client, booster_user, 100)
     await db_session.commit()
     await db_session.refresh(claim)
-    assert claim.settlement_due_at == due_at
+    assert claim.settle_hours_snapshot == 1
+    assert claim.settlement_due_at == approved_at + timedelta(hours=1)
+    due_at = claim.settlement_due_at
 
     duplicate = await client.put(
         f"/orders/{order['id']}/claims/{claim.id}/review",
@@ -528,7 +587,7 @@ async def test_after_approval_snapshots_review_terms_and_due_time(
     assert duplicate.json()["detail"] == "该记录已审核通过，等待自动结算"
 
     assert await scan_due_payouts(
-        db_session, now=approved_at + timedelta(hours=2)
+        db_session, now=approved_at + timedelta(minutes=30)
     ) == []
 
     settled = await scan_due_payouts(

@@ -348,7 +348,9 @@ class OrderClaim(Base):
     # 老板审核通过时间。保证金模式选择「通过后计时」时，审核通过只记录时间，
     # 由调度器在 approved_at + 档位结账时效 到期后完成结算。
     approved_at: Mapped[datetime | None] = mapped_column(nullable=True)
-    # AFTER_APPROVAL 审核时固定的结算条款；为空表示迁移前的 legacy claim。
+    # AFTER_APPROVAL 审核时固定的到账金额条款；为空表示迁移前的 legacy claim。
+    # 未结算期间若打手充值升级，结算小时数与到期时间会按新档位缩短，
+    # 但 approved_* 金额/扣款/备注仍保持审核结果不变。
     approved_payout_amount: Mapped[Decimal | None] = mapped_column(
         Numeric(precision=12, scale=2), nullable=True
     )
