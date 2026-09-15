@@ -139,6 +139,7 @@ async def scan_due_payouts(
 
     deposit_on = await deposit_service.is_deposit_enabled(db)
     settlement_mode = "AFTER_DELIVERY"
+    setting = None
     tiers: list[DepositTier] = []
     if deposit_on:
         setting = await deposit_service.get_or_create_deposit_setting(db)
@@ -173,17 +174,27 @@ async def scan_due_payouts(
             if deposit_on
             else None
         )
-        candidate_due = (
-            _marker_due(claim, order)
-            if claim.settlement_mode_snapshot is not None
-            else _legacy_due(
+        if deposit_on:
+            # Recalculate the candidate deadline from the current balance as
+            # well as the stored marker, so a pre-deployment high balance can
+            # shorten an old claim before we take the settlement locks.
+            candidate_due = deposit_service.resolve_unsettled_settlement_due(
                 claim,
-                order,
-                deposit_enabled=deposit_on,
-                tier=candidate_tier,
-                settlement_mode=settlement_mode,
+                candidate_tier,
+                setting,
             )
-        )
+        else:
+            candidate_due = (
+                _marker_due(claim, order)
+                if claim.settlement_mode_snapshot is not None
+                else _legacy_due(
+                    claim,
+                    order,
+                    deposit_enabled=False,
+                    tier=None,
+                    settlement_mode=settlement_mode,
+                )
+            )
         if candidate_due is None:
             if claim.settlement_mode_snapshot is None:
                 logger.info(
@@ -226,17 +237,29 @@ async def scan_due_payouts(
                     locked_tier, _ = await deposit_service.get_user_tier(
                         db, locked_claim.booster_id
                     )
-                locked_due = (
-                    _marker_due(locked_claim, locked_order)
-                    if locked_claim.settlement_mode_snapshot is not None
-                    else _legacy_due(
-                        locked_claim,
-                        locked_order,
-                        deposit_enabled=locked_deposit_on,
-                        tier=locked_tier,
-                        settlement_mode=locked_mode,
+                    await deposit_service.refresh_unsettled_claim_settlements(
+                        db,
+                        locked_claim.booster_id,
+                        claims=[locked_claim],
                     )
-                )
+                if locked_deposit_on:
+                    locked_due = deposit_service.resolve_unsettled_settlement_due(
+                        locked_claim,
+                        locked_tier,
+                        locked_setting,
+                    )
+                else:
+                    locked_due = (
+                        _marker_due(locked_claim, locked_order)
+                        if locked_claim.settlement_mode_snapshot is not None
+                        else _legacy_due(
+                            locked_claim,
+                            locked_order,
+                            deposit_enabled=False,
+                            tier=None,
+                            settlement_mode=locked_mode,
+                        )
+                    )
                 if locked_due is None or locked_due > now:
                     continue
 
@@ -245,7 +268,11 @@ async def scan_due_payouts(
                     locked_order,
                     locked_claim,
                     delay_from_tier=(
-                        locked_claim.settlement_mode_snapshot is None
+                        locked_claim.settlement_mode_snapshot
+                        not in (
+                            SETTLEMENT_MODE_AFTER_DELIVERY,
+                            SETTLEMENT_MODE_AFTER_APPROVAL,
+                        )
                         and locked_deposit_on
                         and locked_tier is not None
                     ),

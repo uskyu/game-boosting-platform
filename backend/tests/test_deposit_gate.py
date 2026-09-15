@@ -368,6 +368,71 @@ async def test_deposit_upgrade_shortens_existing_after_delivery_claim(
     assert claim.status == ClaimLifecycleStatus.SETTLED
 
 
+async def test_existing_deposit_balance_shortens_old_claim_on_claims_read(
+    client: AsyncClient, admin_user: dict, booster_user: dict, db_session
+):
+    """A pre-deployment high balance also refreshes an old unsettled claim."""
+    await _enable_deposit(
+        client,
+        admin_user,
+        settlement_mode="AFTER_DELIVERY",
+        tiers=[
+            {
+                "threshold": 0,
+                "wait_seconds": 0,
+                "exempt_compensation": False,
+                "settle_hours": 72,
+                "enabled": True,
+            },
+            {
+                "threshold": 1000,
+                "wait_seconds": 0,
+                "exempt_compensation": True,
+                "settle_hours": 1,
+                "enabled": True,
+            },
+        ],
+    )
+    await _fund(client, admin_user, booster_user, 1200)
+    order = await _make_order(client, admin_user, price="100.00")
+    assert (await _accept(client, booster_user, order["id"])).status_code == 200
+    assert (
+        await client.put(
+            f"/orders/{order['id']}/deliver",
+            headers=auth_header(booster_user),
+        )
+    ).status_code == 200
+
+    claim = (
+        await db_session.execute(
+            select(OrderClaim).where(OrderClaim.order_id == order["id"])
+        )
+    ).scalar_one()
+    wallet = (
+        await db_session.execute(
+            select(Wallet).where(Wallet.user_id == booster_user["user"]["id"])
+        )
+    ).scalar_one()
+    assert claim.settle_hours_snapshot == 72
+
+    # Simulate a user who already had the deposit before this release: the
+    # balance exists, but there was no new transfer event to trigger a refresh.
+    wallet.deposit_balance = Decimal("1000.00")
+    await db_session.commit()
+
+    response = await client.get(
+        "/orders/claims/mine?status=DELIVERED",
+        headers=auth_header(booster_user),
+    )
+    assert response.status_code == 200, response.text
+    item = next(item for item in response.json()["items"] if item["order_id"] == order["id"])
+    assert item["settle_hours_snapshot"] == 1
+
+    await db_session.commit()
+    await db_session.refresh(claim)
+    assert claim.settlement_due_at == claim.delivered_at + timedelta(hours=1)
+
+
 async def test_after_approval_holds_until_due(
     client: AsyncClient, admin_user: dict, booster_user: dict, db_session
 ):

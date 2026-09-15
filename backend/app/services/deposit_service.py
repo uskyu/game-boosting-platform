@@ -21,7 +21,6 @@ from app.models.deposit import (
     SETTLEMENT_MODE_AFTER_APPROVAL,
     SETTLEMENT_MODE_AFTER_DELIVERY,
     SETTLEMENT_MODE_ORDER_DELAY,
-    SETTLEMENT_MODES,
     DepositSetting,
     DepositTier,
 )
@@ -102,6 +101,160 @@ def resolve_tier(tiers: list[DepositTier], deposit_balance: Decimal) -> DepositT
         else:
             break
     return matched or tiers[0]
+
+
+_SNAPSHOT_SETTLEMENT_MODES = (
+    SETTLEMENT_MODE_AFTER_DELIVERY,
+    SETTLEMENT_MODE_AFTER_APPROVAL,
+)
+
+
+def _configured_settlement_mode(setting: DepositSetting) -> str:
+    """Return a safe settlement mode for legacy claims."""
+    if setting.settlement_mode in _SNAPSHOT_SETTLEMENT_MODES:
+        return setting.settlement_mode
+    return SETTLEMENT_MODE_ORDER_DELAY
+
+
+def _claim_settlement_start(claim: OrderClaim, mode: str) -> datetime | None:
+    """Return the timestamp used by a deposit settlement timer."""
+    if mode == SETTLEMENT_MODE_AFTER_APPROVAL:
+        return claim.approved_at
+    if mode == SETTLEMENT_MODE_AFTER_DELIVERY:
+        return claim.delivered_at
+    return None
+
+
+def resolve_unsettled_settlement_due(
+    claim: OrderClaim,
+    tier: DepositTier | None,
+    setting: DepositSetting,
+) -> datetime | None:
+    """Resolve a claim's current due time without lengthening it.
+
+    Valid snapshots keep their original mode and timer origin. The current
+    tier may shorten the timer, while legacy/fallback snapshots are upgraded
+    to the currently configured mode. This pure resolver is safe to use while
+    the scheduler is deciding which rows need locking.
+    """
+    if tier is None:
+        return None
+
+    current_hours = max(int(tier.settle_hours or 0), 0)
+    existing_mode = claim.settlement_mode_snapshot
+    existing_hours = claim.settle_hours_snapshot
+
+    if existing_mode in _SNAPSHOT_SETTLEMENT_MODES:
+        if (
+            existing_hours is not None
+            and int(existing_hours) <= current_hours
+            and claim.settlement_due_at is not None
+        ):
+            return _as_utc(claim.settlement_due_at)
+        mode = existing_mode
+        # A missing due marker is repaired at the old duration unless the
+        # current tier is faster; never invent a longer timer during repair.
+        effective_hours = current_hours
+        if existing_hours is not None:
+            effective_hours = min(effective_hours, max(int(existing_hours), 0))
+    else:
+        mode = _configured_settlement_mode(setting)
+        effective_hours = current_hours
+
+    started_at = _claim_settlement_start(claim, mode)
+    if started_at is None:
+        return None
+    return _as_utc(started_at) + timedelta(hours=effective_hours)
+
+
+def _refresh_claim_settlement_terms(
+    claim: OrderClaim,
+    tier: DepositTier,
+    setting: DepositSetting,
+) -> bool:
+    """Shorten one unsettled claim to the current deposit tier if needed."""
+    current_hours = max(int(tier.settle_hours or 0), 0)
+    existing_mode = claim.settlement_mode_snapshot
+
+    if existing_mode is None:
+        mode = _configured_settlement_mode(setting)
+        if mode == SETTLEMENT_MODE_ORDER_DELAY:
+            return False
+
+        new_due = resolve_unsettled_settlement_due(claim, tier, setting)
+        changed = False
+        if claim.settle_hours_snapshot != current_hours:
+            claim.settle_hours_snapshot = current_hours
+            changed = True
+        if claim.settlement_due_at != new_due:
+            claim.settlement_due_at = new_due
+            changed = True
+        return changed
+
+    old_hours = claim.settle_hours_snapshot
+    old_due = _as_utc(claim.settlement_due_at) if claim.settlement_due_at else None
+    new_due = resolve_unsettled_settlement_due(claim, tier, setting)
+    should_refresh = (
+        old_hours is None
+        or current_hours < int(old_hours)
+        or (old_due is None and new_due is not None)
+        or (new_due is not None and old_due is not None and new_due < old_due)
+    )
+    if not should_refresh:
+        return False
+
+    changed = False
+    if old_hours != current_hours:
+        claim.settle_hours_snapshot = current_hours
+        changed = True
+    if old_due != new_due:
+        claim.settlement_due_at = new_due
+        changed = True
+    return changed
+
+
+async def refresh_unsettled_claim_settlements(
+    db: AsyncSession,
+    user_id: int,
+    *,
+    claims: list[OrderClaim] | None = None,
+) -> int:
+    """Apply the current deposit tier to a user's unsettled claims.
+
+    This only shortens existing timers. It also covers users who already had
+    a high deposit balance before this behavior was deployed; reads and the
+    scheduler can therefore catch up old unsettled claims without touching
+    settled claims or approved payout terms.
+    """
+    if claims is None:
+        result = await db.execute(
+            select(OrderClaim)
+            .where(
+                OrderClaim.booster_id == user_id,
+                OrderClaim.status.in_(_UNFINISHED_CLAIM_STATES),
+                OrderClaim.settled_at.is_(None),
+            )
+            .with_for_update()
+        )
+        claims = list(result.scalars().all())
+    if not claims:
+        return 0
+
+    setting = await get_or_create_deposit_setting(db)
+    if not setting.enabled:
+        return 0
+    tier, _balance = await get_user_tier(db, user_id)
+    if tier is None:
+        return 0
+
+    changed = sum(
+        _refresh_claim_settlement_terms(claim, tier, setting)
+        for claim in claims
+        if claim.status in _UNFINISHED_CLAIM_STATES and claim.settled_at is None
+    )
+    if changed:
+        await db.flush()
+    return changed
 
 
 async def get_user_tier(db: AsyncSession, user_id: int) -> tuple[DepositTier | None, Decimal]:
@@ -189,43 +342,11 @@ async def transfer_in(db: AsyncSession, user: User, amount: Decimal) -> None:
     if not unsettled_claims:
         return
 
-    setting = await get_or_create_deposit_setting(db)
-    tier, _balance = await get_user_tier(db, user.id)
-    if tier is None:
-        return
-
-    hours = max(int(tier.settle_hours or 0), 0)
-    configured_mode = setting.settlement_mode
-    if configured_mode not in SETTLEMENT_MODES:
-        configured_mode = SETTLEMENT_MODE_ORDER_DELAY
-
-    for claim in unsettled_claims:
-        # 已有快照的订单保留原来的计时起点，只升级该订单的时效；
-        # 迁移前数据或此前没有可用保证金档位的数据，按当前模式补齐。
-        mode = claim.settlement_mode_snapshot
-        if mode not in (SETTLEMENT_MODE_AFTER_DELIVERY, SETTLEMENT_MODE_AFTER_APPROVAL):
-            mode = configured_mode
-
-        claim.settlement_mode_snapshot = mode
-        claim.settle_hours_snapshot = hours
-
-        if mode == SETTLEMENT_MODE_AFTER_DELIVERY:
-            claim.settlement_due_at = (
-                _as_utc(claim.delivered_at) + timedelta(hours=hours)
-                if claim.delivered_at is not None
-                else None
-            )
-        elif mode == SETTLEMENT_MODE_AFTER_APPROVAL:
-            claim.settlement_due_at = (
-                _as_utc(claim.approved_at) + timedelta(hours=hours)
-                if claim.approved_at is not None
-                else None
-            )
-        else:
-            # 当前配置不合法时退回旧订单时效逻辑，避免伪造一个固定到期时间。
-            claim.settlement_due_at = None
-
-    await db.flush()
+    await refresh_unsettled_claim_settlements(
+        db,
+        user.id,
+        claims=unsettled_claims,
+    )
 
 
 async def transfer_out(db: AsyncSession, user: User, amount: Decimal) -> None:
@@ -253,7 +374,9 @@ __all__ = [
     "get_user_tier",
     "is_deposit_enabled",
     "list_tiers",
+    "refresh_unsettled_claim_settlements",
     "resolve_tier",
+    "resolve_unsettled_settlement_due",
     "return_block_reason",
     "transfer_in",
     "transfer_out",

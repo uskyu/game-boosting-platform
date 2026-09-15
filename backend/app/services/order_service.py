@@ -880,13 +880,20 @@ class OrderService:
     ) -> dict[str, Any] | None:
         """The booster's claim contract dict on this order, or None."""
         result = await self._db.execute(
-            select(OrderClaim).where(
-                OrderClaim.order_id == order.id, OrderClaim.booster_id == booster.id
-            )
+            select(OrderClaim)
+            .where(OrderClaim.order_id == order.id, OrderClaim.booster_id == booster.id)
+            .with_for_update()
         )
         claim = result.scalar_one_or_none()
         if claim is None:
             return None
+        from app.services import deposit_service
+
+        await deposit_service.refresh_unsettled_claim_settlements(
+            self._db,
+            booster.id,
+            claims=[claim],
+        )
         return self._serialize_claim(
             claim,
             order_booster_id=order.booster_id,
@@ -901,6 +908,12 @@ class OrderService:
         order_ids = [order.id for order in orders]
         if not order_ids:
             return {}
+        from app.services import deposit_service
+
+        await deposit_service.refresh_unsettled_claim_settlements(
+            self._db,
+            booster.id,
+        )
         result = await self._db.execute(
             select(OrderClaim).where(
                 OrderClaim.booster_id == booster.id,
@@ -987,6 +1000,17 @@ class OrderService:
             )
         order_booster_id = order.booster_id
 
+        booster_ids = await self._db.execute(
+            select(OrderClaim.booster_id).where(OrderClaim.order_id == order_id)
+        )
+        from app.services import deposit_service
+
+        for booster_id in set(booster_ids.scalars().all()):
+            await deposit_service.refresh_unsettled_claim_settlements(
+                self._db,
+                booster_id,
+            )
+
         rows = await self._db.execute(
             select(OrderClaim, User.username, User.email)
             .join(User, OrderClaim.booster_id == User.id)
@@ -1021,6 +1045,12 @@ class OrderService:
         claim record ID as a compatibility alias, so both sides can locate the
         same order from either number shown in older UI versions.
         """
+        from app.services import deposit_service
+
+        await deposit_service.refresh_unsettled_claim_settlements(
+            self._db,
+            booster_id,
+        )
         conditions = [OrderClaim.booster_id == booster_id]
         if status_filter is not None:
             conditions.append(OrderClaim.status == status_filter)
