@@ -162,6 +162,11 @@ class OrderCreate(BaseModel):
         le=23,
         description="到账时效小时部分（0-23）：打手交付后到时自动结算",
     )
+    # 老板开关：必须上传完成截图才能申请结单
+    require_delivery_image: bool = Field(
+        default=False,
+        description="开启后打手必须先上传 ≥1 张完成截图才能提交结单申请",
+    )
 
     description_ai: str | None = Field(
         default=None,
@@ -287,6 +292,10 @@ class OrderUpdate(BaseModel):
         ge=0,
         le=23,
         description="到账时效小时部分（0-23）",
+    )
+    require_delivery_image: bool | None = Field(
+        default=None,
+        description="开启/关闭“必须上传完成截图才能申请结单”；不传保持不变",
     )
 
     @model_validator(mode="after")
@@ -468,6 +477,10 @@ class OrderResponse(BaseModel):
     payout_delay_hours: int | None = Field(
         default=None,
         description="到账时效小时部分（0-23）：交付后到时自动结算",
+    )
+    require_delivery_image: bool = Field(
+        default=False,
+        description="是否要求上传完成截图后才能申请结单",
     )
     escrow_amount: Decimal | None = Field(
         default=None,

@@ -23,6 +23,12 @@ _FORMAT_INFO = {
     "WEBP": (".webp", "image/webp"),
 }
 _MAX_IMAGE_PIXELS = 100_000_000
+# 超过 2MB 的上传图自动重编码：最长边 2000px、JPEG 质量 82。
+# 手机/游戏全屏截图动辄 5-10MB，跨境链路几十 KB/s 时要下载几分钟；
+# 压后几百 KB 秒开，屏幕上看不出差别（老板已验收）。
+_COMPRESS_THRESHOLD_BYTES = 2 * 1024 * 1024
+_MAX_UPLOAD_EDGE = 2000
+_UPLOAD_JPEG_QUALITY = 82
 
 
 async def validate_image_upload(
@@ -49,6 +55,8 @@ async def validate_image_upload(
 def _validate_and_normalize_image(data: bytes, content_type: str, suffix: str) -> tuple[bytes, str, str]:
     declared_matches = content_type in _ALLOWED_TYPES
     extension_matches = declared_matches and suffix in _ALLOWED_TYPES[content_type]
+    # 大图一律走重编码路径（即使声明的格式完全匹配），小图才允许原样透传
+    must_compress = len(data) > _COMPRESS_THRESHOLD_BYTES
     try:
         with Image.open(BytesIO(data)) as image:
             if image.width * image.height > _MAX_IMAGE_PIXELS:
@@ -63,7 +71,7 @@ def _validate_and_normalize_image(data: bytes, content_type: str, suffix: str) -
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="图片内容无效")
 
     standard_info = _FORMAT_INFO.get(actual_format)
-    if standard_info and declared_matches and extension_matches and content_type == standard_info[1]:
+    if standard_info and declared_matches and extension_matches and content_type == standard_info[1] and not must_compress:
         return data, standard_info[0], standard_info[1]
 
     try:
@@ -73,6 +81,12 @@ def _validate_and_normalize_image(data: bytes, content_type: str, suffix: str) -
                 image.load()
             if image.width * image.height > _MAX_IMAGE_PIXELS:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="图片像素量过大")
+            if max(image.width, image.height) > _MAX_UPLOAD_EDGE:
+                scale = _MAX_UPLOAD_EDGE / max(image.width, image.height)
+                image = image.resize(
+                    (round(image.width * scale), round(image.height * scale)),
+                    Image.LANCZOS,
+                )
             if image.mode not in ("RGB", "L"):
                 if "transparency" in image.info or "A" in image.getbands():
                     rgba = image.convert("RGBA")
@@ -82,7 +96,7 @@ def _validate_and_normalize_image(data: bytes, content_type: str, suffix: str) -
                 else:
                     image = image.convert("RGB")
             output = BytesIO()
-            image.save(output, format="JPEG", quality=95, optimize=True)
+            image.save(output, format="JPEG", quality=_UPLOAD_JPEG_QUALITY, optimize=True)
             return output.getvalue(), ".jpg", "image/jpeg"
     except HTTPException:
         raise

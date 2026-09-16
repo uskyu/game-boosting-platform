@@ -163,6 +163,10 @@ class Order(Base):
     # 到账时效：天部分 0-30 + 小时部分 0-23（都为 null=不设置；交付后到时自动结算）
     payout_delay_days: Mapped[int | None] = mapped_column(nullable=True)
     payout_delay_hours: Mapped[int | None] = mapped_column(nullable=True)
+    # 老板开关：开启后打手必须上传 ≥1 张完成截图才能提交结单申请
+    require_delivery_image: Mapped[bool] = mapped_column(
+        default=False, server_default="0", nullable=False
+    )
 
     # Dispatch controls (legacy status remains the workflow status)
     max_claims: Mapped[int] = mapped_column(default=1, server_default="1", nullable=False)

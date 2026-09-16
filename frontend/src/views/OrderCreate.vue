@@ -39,6 +39,7 @@ function applyTemplate(template) {
     game_id: null, game_name: '', title: '', price: '', service_type: '陪玩', notes: '',
     description_raw: '', boss_contact: '', max_claims: 1, compensation_enabled: false,
     compensation_amount: '', payout_delay_days: '', payout_delay_hours: '',
+    require_delivery_image: true,
     attachments: formData.value.attachments,
   }, template)
   handleGameChange()
@@ -100,6 +101,8 @@ const formData = ref({
   compensation_amount: '',
   payout_delay_days: '',
   payout_delay_hours: '',
+  // 老板开关：必须上传完成截图才能申请结单（默认开启）
+  require_delivery_image: true,
 })
 
 // 到账时效快捷选项：点选后填入天/小时输入框
@@ -204,6 +207,7 @@ async function publishOrder() {
     max_claims: maxClaims,
     payout_delay_days: payoutDelay.days,
     payout_delay_hours: payoutDelay.hours,
+    require_delivery_image: formData.value.require_delivery_image,
   }
   if (compensationAmount != null) {
     payload.compensation_amount = compensationAmount
@@ -348,6 +352,24 @@ onMounted(async () => {
               @click="applyPayoutDelayShortcut(shortcut)"
             >
               {{ shortcut.label }}
+            </button>
+          </div>
+        </div>
+
+        <!-- 结单必须上传截图：老板开关，默认开启 -->
+        <div class="sm:col-span-2 rounded-tile border border-line-1 p-4">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p class="text-sm font-semibold text-ink-1">结单必须上传完成截图</p>
+              <p class="mt-1 text-xs leading-5 text-ink-3">开启后，打手必须先上传至少 1 张完成截图才能提交结单申请，避免误点直接结单。</p>
+            </div>
+            <button
+              type="button"
+              :class="formData.require_delivery_image ? 'filter-pill-active' : 'filter-pill'"
+              :aria-pressed="formData.require_delivery_image"
+              @click="formData.require_delivery_image = !formData.require_delivery_image"
+            >
+              {{ formData.require_delivery_image ? '已开启' : '未开启' }}
             </button>
           </div>
         </div>

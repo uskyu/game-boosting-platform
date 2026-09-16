@@ -226,6 +226,7 @@ class OrderService:
             compensation_amount=await self._resolve_compensation(order_data.compensation_amount),
             payout_delay_days=order_data.payout_delay_days,
             payout_delay_hours=order_data.payout_delay_hours,
+            require_delivery_image=bool(order_data.require_delivery_image),
             status=OrderStatus.PENDING,
         )
 
@@ -1336,6 +1337,15 @@ class OrderService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="该报名记录已结算，无需重复交付",
             )
+
+        # 老板开关：开启后必须先上传 ≥1 张完成截图，防止手快直接提交结单
+        if order.require_delivery_image:
+            attachments = claim.delivery_attachments or []
+            if not any(attachments):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="该订单要求先上传至少 1 张完成截图，再提交结单申请",
+                )
 
         claim.status = ClaimLifecycleStatus.DELIVERED
         claim.delivered_at = datetime.now(timezone.utc)

@@ -203,6 +203,12 @@ const myClaim = computed(() => {
   ) || null
 })
 
+// 名额里已保存的交付图数量：交付弹窗"必须上传截图"门禁用它判断
+const myClaimAttachmentsCount = computed(() => {
+  const items = myClaim.value?.delivery_attachments
+  return Array.isArray(items) ? items.length : 0
+})
+
 // 我的报名单是否已提交汇报（DELIVERED/SETTLED）；无报名单时回退订单级 DELIVERED
 const isClaimDelivered = computed(() => {
   if (myClaim.value) return ['DELIVERED', 'SETTLED'].includes(myClaim.value.status)
@@ -661,6 +667,10 @@ onUnmounted(() => {
             <p class="info-tile__label">到账时效</p>
             <p class="info-tile__value">{{ formatPayoutDelay(order) }}</p>
           </div>
+          <div v-if="order.require_delivery_image" class="od-key__item">
+            <p class="info-tile__label">结单要求</p>
+            <p class="info-tile__value font-semibold text-warning">必须上传完成截图</p>
+          </div>
           <div class="od-key__item">
             <p class="info-tile__label">订单号</p>
             <p class="info-tile__value tabular-nums">#{{ order.id }}</p>
@@ -1002,7 +1012,13 @@ onUnmounted(() => {
 
     <!-- 弹窗/灯箱挂在页面根节点：loading 骨架屏切换会卸载子组件并丢弃其关闭事件 -->
     <template v-if="order">
-      <OrderDeliverModal v-model="showDeliverModal" :order-id="order.id" @success="onDeliverSuccess" />
+      <OrderDeliverModal
+        v-model="showDeliverModal"
+        :order-id="order.id"
+        :require-delivery-image="!!order?.require_delivery_image"
+        :attached-count="myClaimAttachmentsCount"
+        @success="onDeliverSuccess"
+      />
 
       <!-- 两步确认：详情页先弹「接手订单」，确认后订单进入进行中 -->
       <teleport to="body">

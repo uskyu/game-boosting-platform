@@ -5,6 +5,10 @@ import { useOrdersStore } from '@/stores/orders'
 const props = defineProps({
   modelValue: { type: Boolean, required: true },
   orderId: { type: [String, Number], required: true },
+  // 老板开关：本单必须上传 ≥1 张完成截图才能结单
+  requireDeliveryImage: { type: Boolean, default: false },
+  // 名额里已保存的交付图数量（此前上传成功但未提交结单的图片）
+  attachedCount: { type: Number, default: 0 },
 })
 
 const emit = defineEmits(['update:modelValue', 'success'])
@@ -19,7 +23,12 @@ const submitting = ref(false)
 const generalError = ref('')
 
 const noteLen = computed(() => note.value.length)
-const canSubmit = computed(() => !submitting.value && noteLen.value <= 2000)
+const doneCount = computed(() => uploadStates.value.filter((s) => s === 'done').length)
+// 需要图片但（本次会话上传成功的 + 名额里已存的）一张都没有
+const needImage = computed(
+  () => props.requireDeliveryImage && doneCount.value + props.attachedCount === 0
+)
+const canSubmit = computed(() => !submitting.value && noteLen.value <= 2000 && !needImage.value)
 
 const MAX_FILES = 5
 const MAX_SIZE = 10 * 1024 * 1024
@@ -131,6 +140,10 @@ async function handleSubmit() {
     generalError.value = `最多 ${MAX_FILES} 张`
     return
   }
+  if (needImage.value) {
+    generalError.value = '该订单要求至少上传 1 张完成截图后才能提交结单'
+    return
+  }
   submitting.value = true
   // 先逐张上传 deliver-attachments
   for (let i = 0; i < files.value.length; i++) {
@@ -185,7 +198,7 @@ async function handleSubmit() {
           </div>
 
           <div>
-            <label class="label">汇报图片（可选，常见图片格式，最多 5 张，单张 ≤10MB）</label>
+            <label class="label">汇报图片（{{ requireDeliveryImage ? '本单必传：至少 1 张，' : '可选，' }}常见图片格式，最多 5 张，单张 ≤10MB）</label>
             <input
               type="file"
               accept="image/*,.heic,.heif,.avif,.bmp,.gif"
@@ -194,7 +207,8 @@ async function handleSubmit() {
               :disabled="submitting || files.length >= MAX_FILES"
               @change="onPick"
             />
-            <p class="helper-text">常见图片格式均可选择，无法直接保存的格式会由后端转换；失败可重试。</p>
+            <p class="helper-text">常见图片格式均可选择，超过 2MB 会自动压缩；失败可重试。</p>
+            <p v-if="needImage" class="message-error mt-2">该订单要求上传完成截图后才能提交结单，请先选择图片并等上传完成。</p>
 
             <div v-if="files.length" class="mt-3 grid grid-cols-3 gap-3 sm:grid-cols-5">
               <div v-for="(url, idx) in previews" :key="idx" class="relative overflow-hidden rounded-tile border border-line-1 bg-surface-2">
@@ -225,7 +239,7 @@ async function handleSubmit() {
 
         <div class="mt-6 flex gap-3">
           <button type="button" class="btn-secondary flex-1" :disabled="submitting" @click="onClose">取消</button>
-          <button type="button" class="btn-success flex-1" :disabled="!canSubmit" @click="handleSubmit">{{ submitting ? '提交中…' : '提交并结束订单' }}</button>
+          <button type="button" class="btn-success flex-1" :disabled="!canSubmit" @click="handleSubmit">{{ submitting ? '提交中…' : needImage ? '先上传截图' : '提交并结束订单' }}</button>
         </div>
       </div>
     </div>
