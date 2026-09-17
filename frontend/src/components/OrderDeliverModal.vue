@@ -23,10 +23,11 @@ const submitting = ref(false)
 const generalError = ref('')
 
 const noteLen = computed(() => note.value.length)
-const doneCount = computed(() => uploadStates.value.filter((s) => s === 'done').length)
-// 需要图片但（本次会话上传成功的 + 名额里已存的）一张都没有
+// 门禁注意：上传是在点击「提交」时才发生的（onPick 只入队不触发上传），
+// 所以这里只能按「是否已选择/已存在图片」判断——若按"已上传成功数"判断，
+// 提交按钮在 0 张上传成功时被禁用，而上传又依赖提交按钮，形成死锁。
 const needImage = computed(
-  () => props.requireDeliveryImage && doneCount.value + props.attachedCount === 0
+  () => props.requireDeliveryImage && files.value.length === 0 && props.attachedCount === 0
 )
 const canSubmit = computed(() => !submitting.value && noteLen.value <= 2000 && !needImage.value)
 
@@ -145,27 +146,29 @@ async function handleSubmit() {
     return
   }
   submitting.value = true
-  // 先逐张上传 deliver-attachments
-  for (let i = 0; i < files.value.length; i++) {
-    if (uploadStates.value[i] === 'done') continue
-    const r = await uploadOne(i)
-    if (!r.success) {
-      generalError.value = `第 ${i + 1} 张上传失败：${r.error || '请稍后重试'}。已上传的图片会保留，订单尚未结束。`
-      submitting.value = false
+  try {
+    // 先逐张上传 deliver-attachments（已成功的跳过）
+    for (let i = 0; i < files.value.length; i++) {
+      if (uploadStates.value[i] === 'done') continue
+      const r = await uploadOne(i)
+      if (!r.success) {
+        generalError.value = `第 ${i + 1} 张上传失败：${r.error || '请稍后重试'}。已上传的图片会保留，订单尚未结束。`
+        return
+      }
+    }
+    // 再调 deliver
+    const res = await ordersStore.deliverOrder(props.orderId, note.value.trim())
+    if (!res.success) {
+      generalError.value = res.error || '提交失败'
       return
     }
-  }
-  // 再调 deliver
-  const res = await ordersStore.deliverOrder(props.orderId, note.value.trim())
-  if (!res.success) {
-    generalError.value = res.error || '提交失败'
+    emit('success', res.data)
+    emit('update:modelValue', false)
+    reset()
+  } finally {
+    // 任何 await 链上的异常都必须复位提交态，否则按钮永久禁用只能刷新页面
     submitting.value = false
-    return
   }
-  submitting.value = false
-  emit('success', res.data)
-  emit('update:modelValue', false)
-  reset()
 }
 </script>
 
@@ -208,7 +211,7 @@ async function handleSubmit() {
               @change="onPick"
             />
             <p class="helper-text">常见图片格式均可选择，超过 2MB 会自动压缩；失败可重试。</p>
-            <p v-if="needImage" class="message-error mt-2">该订单要求上传完成截图后才能提交结单，请先选择图片并等上传完成。</p>
+            <p v-if="needImage" class="message-error mt-2">该订单要求上传完成截图后才能提交结单：请先选择图片，再点击提交（会上传图片并提交结单申请）。</p>
 
             <div v-if="files.length" class="mt-3 grid grid-cols-3 gap-3 sm:grid-cols-5">
               <div v-for="(url, idx) in previews" :key="idx" class="relative overflow-hidden rounded-tile border border-line-1 bg-surface-2">
