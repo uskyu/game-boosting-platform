@@ -9,7 +9,6 @@ services:
   # ===========================================================================
   db:
     image: ${MYSQL_IMAGE:-mysql:8.0}
-    container_name: game-boosting-db
     restart: unless-stopped
     environment:
       TZ: ${TZ:-UTC}
@@ -46,7 +45,6 @@ services:
   backend:
     image: ${BACKEND_IMAGE:-ghcr.io/uskyu/game-boosting-platform-backend:latest}
     pull_policy: always
-    container_name: game-boosting-backend
     restart: unless-stopped
     environment:
       TZ: ${TZ:-UTC}
@@ -93,7 +91,6 @@ services:
   frontend:
     image: ${FRONTEND_IMAGE:-ghcr.io/uskyu/game-boosting-platform-frontend:latest}
     pull_policy: always
-    container_name: game-boosting-frontend
     restart: unless-stopped
     ports:
       - "${FRONTEND_PORT:-80}:80"
@@ -115,10 +112,6 @@ services:
 networks:
   game-boosting-network:
     driver: bridge
-    name: game-boosting-network
-    ipam:
-      config:
-        - subnet: 10.210.0.0/16
 
 # =============================================================================
 # Volumes
@@ -126,7 +119,5 @@ networks:
 volumes:
   mysql_data:
     driver: local
-    name: game-boosting-mysql-data
   backend_uploads:
     driver: local
-    name: game-boosting-backend-uploads
