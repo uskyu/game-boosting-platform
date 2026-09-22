@@ -186,7 +186,7 @@ onMounted(load)
         <div>
           <label class="label" for="announcement-content">HTML 内容</label>
           <textarea id="announcement-content" v-model="form.content_html" class="input min-h-48 resize-y font-mono text-sm" maxlength="20000" required></textarea>
-          <p class="helper-text">支持段落、标题、列表、链接和图片；危险脚本会在服务端自动清除。</p>
+          <p class="helper-text">尽量保留你粘贴的 HTML、class、内联样式和响应式 CSS；脚本、事件属性与危险链接会由服务端移除。</p>
         </div>
 
         <label class="inline-flex w-fit cursor-pointer items-center gap-3 text-sm text-ink-1">
