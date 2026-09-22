@@ -883,18 +883,10 @@ class OrderService:
         result = await self._db.execute(
             select(OrderClaim)
             .where(OrderClaim.order_id == order.id, OrderClaim.booster_id == booster.id)
-            .with_for_update()
         )
         claim = result.scalar_one_or_none()
         if claim is None:
             return None
-        from app.services import deposit_service
-
-        await deposit_service.refresh_unsettled_claim_settlements(
-            self._db,
-            booster.id,
-            claims=[claim],
-        )
         return self._serialize_claim(
             claim,
             order_booster_id=order.booster_id,
@@ -909,12 +901,6 @@ class OrderService:
         order_ids = [order.id for order in orders]
         if not order_ids:
             return {}
-        from app.services import deposit_service
-
-        await deposit_service.refresh_unsettled_claim_settlements(
-            self._db,
-            booster.id,
-        )
         result = await self._db.execute(
             select(OrderClaim).where(
                 OrderClaim.booster_id == booster.id,

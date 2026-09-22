@@ -4,11 +4,13 @@ Contains all API route handlers organized by resource.
 """
 
 from app.api.endpoints.admin import router as admin_router
+from app.api.endpoints.admin_announcements import router as admin_announcements_router
 from app.api.endpoints.admin_deposit import router as admin_deposit_router
 from app.api.endpoints.admin_payment import router as admin_payment_router
 from app.api.endpoints.admin_site import router as admin_site_router
 from app.api.endpoints.admin_users import router as admin_users_router
 from app.api.endpoints.auth import router as auth_router
+from app.api.endpoints.announcements import router as announcements_router
 from app.api.endpoints.chat import router as chat_router
 from app.api.endpoints.deposit import router as deposit_router
 from app.api.endpoints.games import router as games_router
@@ -29,9 +31,11 @@ __all__ = [
     "admin_deposit_router",
     "admin_payment_router",
     "admin_router",
+    "admin_announcements_router",
     "admin_site_router",
     "admin_users_router",
     "auth_router",
+    "announcements_router",
     "chat_router",
     "deposit_router",
     "games_router",

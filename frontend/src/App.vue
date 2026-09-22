@@ -3,9 +3,11 @@ import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import AppNavIcon from '@/components/AppNavIcon.vue'
+import AnnouncementModal from '@/components/AnnouncementModal.vue'
 import ChatUnreadBadge from '@/components/chat/ChatUnreadBadge.vue'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 import { useAuthStore } from '@/stores/auth'
+import { useAnnouncementsStore } from '@/stores/announcements'
 import { useChatStore } from '@/stores/chat'
 import { useNotificationsStore } from '@/stores/notifications'
 import { useSettingsStore } from '@/stores/settings'
@@ -18,6 +20,7 @@ import { restorePushSubscription, unsubscribeFromPush } from '@/services/push'
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
+const announcementsStore = useAnnouncementsStore()
 const chatStore = useChatStore()
 const notificationsStore = useNotificationsStore()
 const settingsStore = useSettingsStore()
@@ -37,7 +40,9 @@ settingsStore.initTheme()
 
 let unreadPollingTimer = null
 
-const NOTIF_POLL_INTERVAL = 10_000
+// WebSocket is the primary notification channel.  Poll only while it is
+// disconnected, as a slow-network reconciliation fallback.
+const NOTIF_POLL_INTERVAL = 60_000
 let notifPollTimer = null
 let knownNotifIds = null
 // 在飞保护：弱网下上一轮没回来就不开新一轮，避免请求堆积
@@ -125,7 +130,9 @@ async function startNotifPolling(generation = authGeneration) {
   await pollOrderNotifications({ baseline: true, generation })
   if (!authStore.isAuthenticated || generation !== authGeneration) return
   notifPollTimer = window.setInterval(() => {
-    pollOrderNotifications({ generation }).catch(() => {})
+    if (chatStore.socketStatus !== 'connected') {
+      pollOrderNotifications({ generation }).catch(() => {})
+    }
   }, NOTIF_POLL_INTERVAL)
 }
 
@@ -303,6 +310,7 @@ async function syncChatLifecycle(isLoggedIn) {
   knownNotifIds = null
   chatStore.disconnectWebSocket({ clearState: true })
   notificationsStore.resetState()
+  announcementsStore.resetState()
   toastsStore.resetState()
   if (isLoggedIn) {
     const authContext = authStore.getSessionContext()
@@ -314,6 +322,7 @@ async function syncChatLifecycle(isLoggedIn) {
       notificationsStore.fetchUnreadCount({
         isCurrent: () => authStore.isAuthenticated && generation === authGeneration,
       }),
+      announcementsStore.fetchActive(),
     ])
     if (!authStore.isAuthenticated || generation !== authGeneration) return
     chatStore.connectWebSocket()
@@ -522,6 +531,12 @@ onBeforeUnmount(() => {
           </transition-group>
         </div>
       </teleport>
+
+      <AnnouncementModal
+        v-if="isAuthenticated && announcementsStore.active"
+        :announcement="announcementsStore.active"
+        @close="announcementsStore.closeActive"
+      />
     </main>
 
     <footer v-if="!hideFooter" class="mt-4 border-t border-line-1 bg-surface/60">

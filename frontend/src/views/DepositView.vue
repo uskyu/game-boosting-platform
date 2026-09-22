@@ -53,6 +53,11 @@ function isCurrentTier(tier) {
 
 const canReturn = computed(() => Boolean(overview.value?.can_return))
 
+const currentTierLabel = computed(() => {
+  const threshold = overview.value?.current_threshold
+  return threshold == null ? '暂未形成档位' : `≥ ${formatPrice(threshold)} 档`
+})
+
 function validateAmount(raw, max, noun) {
   const amount = Number(raw)
   if (raw === '' || raw === null || !Number.isFinite(amount) || amount <= 0) {
@@ -134,9 +139,12 @@ onMounted(async () => {
           <p class="text-xs font-medium uppercase tracking-[0.12em] text-ink-2">可用余额</p>
           <p class="mt-2.5 text-2xl font-semibold tabular-nums text-ink-1">{{ formatPrice(overview.available_balance) }}</p>
         </article>
-        <article class="stat-card xl:col-span-2">
-          <p class="text-xs font-medium uppercase tracking-[0.12em] text-ink-2">当前档位权益</p>
-          <p class="mt-2.5 text-sm text-ink-1">
+        <article class="stat-card border-primary/40 bg-primary-soft xl:col-span-2">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <p class="text-xs font-medium uppercase tracking-[0.12em] text-primary">当前保证金权益</p>
+            <span class="tag !bg-primary !text-white">{{ currentTierLabel }}</span>
+          </div>
+          <p class="mt-3 text-sm text-ink-1">
             接单等待 {{ formatWaitSeconds(overview.wait_seconds) }}
             <span class="mx-2 text-ink-3">·</span>
             接单免冻结赔付金 {{ overview.exempt_compensation ? '是' : '否' }}

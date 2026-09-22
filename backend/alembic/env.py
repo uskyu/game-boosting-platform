@@ -15,7 +15,7 @@ from app.core.config import settings
 from app.models.base import Base
 
 # Import all models to ensure they are registered with Base.metadata
-from app.models import Conversation, ConversationParticipant, Message, MessageDeletion, Order, User  # noqa: F401
+from app.models import Announcement, AnnouncementView, Conversation, ConversationParticipant, Message, MessageDeletion, Order, User  # noqa: F401
 
 # Alembic Config object
 config = context.config

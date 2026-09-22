@@ -528,10 +528,13 @@ onUnmounted(() => {
 
     <div class="wallet-grid">
     <!-- 保证金：可用余额转入保证金，按门槛匹配阶梯权益 -->
-    <section v-if="!authStore.isAdmin && showDepositCard" class="surface-card p-4 sm:p-6 lg:p-8">
+    <section v-if="!authStore.isAdmin && showDepositCard" class="surface-card border-primary/30 p-4 sm:p-6 lg:p-8">
       <div class="flex items-center justify-between gap-4">
-        <h2 class="text-2xl font-semibold text-ink-1">保证金</h2>
-        <router-link :to="{ name: 'deposit' }" class="btn-ghost !px-4 !py-2 text-sm">查看权益阶梯</router-link>
+        <div>
+          <h2 class="text-2xl font-semibold text-ink-1">保证金权益</h2>
+          <p class="mt-1 text-sm text-ink-2">余额越充足，接单等待越短、结账越快。</p>
+        </div>
+        <router-link :to="{ name: 'deposit' }" class="btn-primary !px-4 !py-2 text-sm">查看权益 →</router-link>
       </div>
 
       <div class="mt-6 grid gap-4 sm:grid-cols-3">

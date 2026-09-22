@@ -17,6 +17,10 @@ const roleMeta = computed(() => getUserRoleMeta(user.value?.role === 'ADMIN' ? '
 const avatarText = computed(() => user.value?.username?.slice(0, 1)?.toUpperCase() || 'U')
 // 保证金余额：管理员接口返回 403，仅普通用户拉取，失败静默（不阻断个人中心）
 const depositBalance = computed(() => walletStore.depositOverview?.deposit_balance ?? 0)
+const depositTierLabel = computed(() => {
+  const threshold = walletStore.depositOverview?.current_threshold
+  return threshold == null ? '暂未形成档位' : `≥ ${formatPrice(threshold)} 档`
+})
 function isPasswordStrong(pw) {
   return pw.length >= 8 && /[A-Z]/.test(pw) && /\d/.test(pw)
 }
@@ -143,9 +147,13 @@ onMounted(async () => {
             <p class="text-xs font-medium uppercase tracking-[0.12em] text-ink-2">可用余额</p>
             <p class="mt-2.5 text-2xl font-semibold tabular-nums text-ink-1">{{ formatPrice(walletStore.wallet?.available_balance ?? 0) }}</p>
           </article>
-          <router-link :to="{ name: 'deposit' }" class="stat-card block transition-colors duration-base hover:border-primary">
-            <p class="text-sm text-ink-2">保证金</p>
+          <router-link :to="{ name: 'deposit' }" class="stat-card group block border-primary/40 bg-primary-soft transition-colors duration-base hover:border-primary" aria-label="查看保证金权益">
+            <div class="flex items-center justify-between gap-2">
+              <p class="text-sm font-medium text-primary">保证金权益</p>
+              <span class="text-primary transition-transform duration-base group-hover:translate-x-0.5" aria-hidden="true">→</span>
+            </div>
             <p class="mt-2 text-lg font-semibold tabular-nums text-ink-1">{{ formatPrice(depositBalance) }}</p>
+            <p class="mt-1 text-xs text-ink-2">{{ depositTierLabel }} · 点击查看权益</p>
           </router-link>
           <article class="stat-card"><p class="text-sm text-ink-2">账号</p><p class="mt-2 text-lg font-semibold text-ink-1">{{ user?.is_active ? '正常' : '停用' }}</p></article>
         </div>

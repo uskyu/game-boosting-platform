@@ -206,22 +206,18 @@ watch(isAuthenticated, (loggedIn) => {
   }
 })
 
-// 大厅自动刷新：每 2 秒页面可见时静默拉取；新订单通知同时立即触发刷新（watch newOrderNotificationVersion）
-const HALL_REFRESH_INTERVAL = 2_000
+// 大厅以 WebSocket 新订单通知为主，收到通知后立即同步；30 秒低频对账作为断线兜底。
+const HALL_REFRESH_INTERVAL = 30_000
 let hallRefreshTimer = null
 let hallUnmounted = false
 // 抢单倒计时：独立 1 秒计时器，仅驱动 now 变化
 let countdownTimer = null
 // 在飞保护：弱网下一轮没跑完就不开新一轮，避免请求堆积占满浏览器连接
 let hallRefreshing = false
-let hallRefreshQueued = false
 
 async function silentRefresh() {
   if (hallUnmounted || !isAuthenticated.value || document.visibilityState !== 'visible') return
-  if (hallRefreshing) {
-    hallRefreshQueued = true
-    return
-  }
+  if (hallRefreshing) return
   hallRefreshing = true
   try {
     await ordersStore.fetchOrders({ silent: true, slim: true })
@@ -229,10 +225,6 @@ async function silentRefresh() {
     // 静默失败等下一轮
   } finally {
     hallRefreshing = false
-    if (hallRefreshQueued) {
-      hallRefreshQueued = false
-      silentRefresh().catch(() => {})
-    }
   }
 }
 

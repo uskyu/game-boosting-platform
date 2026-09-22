@@ -7,11 +7,13 @@ from fastapi import APIRouter
 
 from app.api.endpoints import (
     admin_deposit_router,
+    admin_announcements_router,
     admin_payment_router,
     admin_router,
     admin_site_router,
     admin_users_router,
     auth_router,
+    announcements_router,
     chat_router,
     deposit_router,
     games_router,
@@ -35,10 +37,12 @@ api_router = APIRouter()
 
 # Include all endpoint routers
 api_router.include_router(auth_router)
+api_router.include_router(announcements_router)
 api_router.include_router(orders_router)
 api_router.include_router(order_templates_router)
 api_router.include_router(users_router)
 api_router.include_router(admin_router)
+api_router.include_router(admin_announcements_router)
 api_router.include_router(admin_site_router)
 api_router.include_router(admin_payment_router)
 api_router.include_router(admin_deposit_router)

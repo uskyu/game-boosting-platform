@@ -9,18 +9,19 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import text
 from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError, TimeoutError as SQLAlchemyTimeoutError
 
 from app.api.router import api_router
 from app.core.config import settings
-from app.db.session import async_session_factory, close_db, init_db
+from app.db.session import async_session_factory, close_db, engine, init_db
 from app.services.user_service import get_user_service
 
 # Configure logging
@@ -251,6 +252,20 @@ async def validation_exception_handler(
     )
 
 
+async def _database_unavailable_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Fail fast when the pool/database is unavailable instead of hanging clients."""
+    logger.warning("Database unavailable for %s %s: %s", request.method, request.url.path, exc)
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"detail": "database temporarily unavailable"},
+        headers={"Retry-After": "5"},
+    )
+
+
+app.add_exception_handler(SQLAlchemyTimeoutError, _database_unavailable_handler)
+app.add_exception_handler(DBAPIError, _database_unavailable_handler)
+
+
 # Include API router
 app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 
@@ -260,11 +275,28 @@ app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 async def health_check() -> dict:
     """
     Health check endpoint for container orchestration.
+
+    A process-only response is not sufficient here: the API can be alive while
+    every request is waiting for a stale or exhausted MySQL connection.
     """
+    try:
+        async def _probe_database() -> None:
+            async with engine.connect() as connection:
+                await connection.execute(text("SELECT 1"))
+
+        await asyncio.wait_for(_probe_database(), timeout=settings.DB_HEALTH_TIMEOUT)
+    except Exception as exc:
+        logger.warning("Database health probe failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="database unavailable",
+        ) from exc
+
     return {
         "status": "healthy",
         "app": settings.APP_NAME,
         "version": "1.0.0",
+        "database": "ok",
     }
 
 

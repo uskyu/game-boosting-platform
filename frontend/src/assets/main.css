@@ -864,6 +864,24 @@
     box-shadow: var(--shadow-pop);
   }
 
+  .announcement-content {
+    @apply text-sm leading-7 text-ink-2;
+  }
+
+  .announcement-content h2,
+  .announcement-content h3 {
+    @apply mt-5 font-semibold text-ink-1 first:mt-0;
+  }
+
+  .announcement-content h2 { @apply text-xl; }
+  .announcement-content h3 { @apply text-lg; }
+  .announcement-content p { @apply mb-3 last:mb-0; }
+  .announcement-content ul { @apply mb-3 list-disc space-y-1 pl-5; }
+  .announcement-content ol { @apply mb-3 list-decimal space-y-1 pl-5; }
+  .announcement-content blockquote { @apply my-3 border-l-2 border-primary pl-4 text-ink-1; }
+  .announcement-content a { @apply font-medium text-primary underline underline-offset-2; }
+  .announcement-content img { @apply my-3 max-h-72 max-w-full rounded-tile object-contain; }
+
   /* 弹窗移动变体：底部滑出面板，内容滚动且操作区可见 */
   @media (max-width: 767px) {
     .modal-scrim--sheet {

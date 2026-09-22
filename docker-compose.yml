@@ -49,6 +49,12 @@ services:
     environment:
       TZ: ${TZ:-UTC}
       DB_URL: mysql+aiomysql://${MYSQL_USER:-boosting_user}:${MYSQL_PASSWORD:-boosting_password}@db:3306/${MYSQL_DATABASE:-game_boosting}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-40}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-20}
+      DB_POOL_TIMEOUT: ${DB_POOL_TIMEOUT:-10}
+      DB_POOL_RECYCLE: ${DB_POOL_RECYCLE:-1200}
+      DB_CONNECT_TIMEOUT: ${DB_CONNECT_TIMEOUT:-5}
+      DB_HEALTH_TIMEOUT: ${DB_HEALTH_TIMEOUT:-3}
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
       # API Keys
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-your_api_key_here}

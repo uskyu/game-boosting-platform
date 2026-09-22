@@ -24,6 +24,15 @@ class Settings(BaseSettings):
 
     # Database Configuration
     DB_URL: str
+    # The browser talks to the API, never to MySQL directly.  Keep the pool
+    # tunable from environment variables so production can be adjusted without
+    # a code change.
+    DB_POOL_SIZE: int = 40
+    DB_MAX_OVERFLOW: int = 20
+    DB_POOL_TIMEOUT: int = 10
+    DB_POOL_RECYCLE: int = 1200
+    DB_CONNECT_TIMEOUT: int = 5
+    DB_HEALTH_TIMEOUT: int = 3
 
     # DeepSeek API Configuration
     DEEPSEEK_API_KEY: str

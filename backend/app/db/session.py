@@ -21,12 +21,18 @@ engine: AsyncEngine = create_async_engine(
     settings.DB_URL,
     echo=settings.DEBUG,
     poolclass=AsyncAdaptedQueuePool,
-    pool_size=40,
-    max_overflow=20,
-    pool_timeout=30,
-    pool_recycle=1800,  # Recycle connections every 30 minutes
-    # aiomysql's async adapter does not accept SQLAlchemy's pre-ping argument.
+    pool_size=settings.DB_POOL_SIZE,
+    max_overflow=settings.DB_MAX_OVERFLOW,
+    pool_timeout=settings.DB_POOL_TIMEOUT,
+    pool_recycle=settings.DB_POOL_RECYCLE,
+    # aiomysql's SQLAlchemy adapter requires ping(reconnect), while
+    # SQLAlchemy's pre-ping hook calls ping() without arguments.  Enabling
+    # pool_pre_ping therefore crashes on aiomysql 0.2.0; bounded recycle plus
+    # the database-backed health probe below is the compatible safeguard.
     pool_pre_ping=False,
+    connect_args={
+        "connect_timeout": settings.DB_CONNECT_TIMEOUT,
+    },
 )
 
 # Create async session factory

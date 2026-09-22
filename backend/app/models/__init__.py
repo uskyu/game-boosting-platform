@@ -4,6 +4,7 @@ Exports all SQLAlchemy ORM models for the application.
 """
 
 from app.models.base import Base, TimestampMixin
+from app.models.announcement import Announcement, AnnouncementFrequency, AnnouncementView
 from app.models.booster_service import BoosterService
 from app.models.chat import (
     Conversation,
@@ -34,6 +35,9 @@ from app.models.withdrawal import WithdrawalChannel, WithdrawalRequest, Withdraw
 
 __all__ = [
     "Base",
+    "Announcement",
+    "AnnouncementFrequency",
+    "AnnouncementView",
     "BoosterApplicationStatus",
     "BoosterService",
     "Conversation",
