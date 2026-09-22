@@ -24,6 +24,14 @@ const selectedStatus = ref(String(route.query.status || ''))
 const claimStatus = ref(String(route.query.claim_status || ''))
 const claimSearch = ref(String(route.query.claim_q || ''))
 
+function getClaimSettlementDisplayMeta(claim) {
+  const isLegacyCancelledClaim = claim?.order?.status === 'CANCELLED'
+    && ['CLAIMED', 'DELIVERED'].includes(claim?.status)
+  return getClaimSettlementMeta(
+    isLegacyCancelledClaim ? { ...claim, status: 'CANCELLED' } : claim,
+  )
+}
+
 // 管理员默认"我的派单"：整页刷新时用户信息可能晚于挂载到达，用 watch 兜底切换。
 // URL 已指定 tab 时以 URL 为准。
 watch(() => useAuthStore().isAdmin, (isAdmin) => {
@@ -346,9 +354,8 @@ onUnmounted(() => {
             <div class="flex flex-wrap items-end justify-between gap-3">
               <div class="min-w-0">
                 <div class="flex flex-wrap items-center gap-2">
-                  <span :class="getClaimSettlementMeta(claim).tagClass">{{ getClaimSettlementMeta(claim).label }}</span>
+                  <span :class="getClaimSettlementDisplayMeta(claim).tagClass">{{ getClaimSettlementDisplayMeta(claim).label }}</span>
                   <span v-if="claim.order?.status === 'DISPUTED'" class="tag !bg-danger-soft !text-danger">订单争议中</span>
-                  <span v-if="claim.order?.status === 'CANCELLED' && claim.status !== 'CANCELLED'" class="tag !bg-danger-soft !text-danger">订单已取消</span>
                 </div>
                 <p class="mt-2 truncate text-[13px] text-ink-3">
                   {{ claim.order?.game_name || '' }} · {{ formatShortDate(claim.created_at) }} · 接单 #{{ claim.id }} · 订单 #{{ claim.order?.id || claim.order_id }}<template v-if="claim.delivered_at"> · 交付于 {{ formatDateTime(claim.delivered_at) }}</template>
@@ -361,7 +368,7 @@ onUnmounted(() => {
                 </div>
                 <div class="info-tile info-tile--compact">
                   <p class="info-tile__label">接单状态</p>
-                  <p class="info-tile__value text-sm">{{ claim.order?.status === 'CANCELLED' ? '已取消' : getClaimSettlementMeta(claim).label }}</p>
+                  <p class="info-tile__value text-sm">{{ getClaimSettlementDisplayMeta(claim).label }}</p>
                 </div>
               </div>
             </div>

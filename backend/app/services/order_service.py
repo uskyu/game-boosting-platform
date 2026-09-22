@@ -10,7 +10,7 @@ from decimal import Decimal
 from typing import Any
 
 from fastapi import HTTPException, status
-from sqlalchemy import Text, case, cast, exists, func, or_, select, update
+from sqlalchemy import Text, and_, case, cast, exists, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -828,11 +828,33 @@ class OrderService:
         """Return the raw value for enum-ish column data."""
         return value.value if hasattr(value, "value") else value
 
+    @classmethod
+    def _effective_claim_status(
+        cls, claim_status: Any, order_status: Any
+    ) -> Any:
+        """Return the user-facing claim status after applying order state.
+
+        Older cancellation code could close the parent order without closing
+        its CLAIMED/DELIVERED claim rows.  Treat those rows as cancelled at the
+        read boundary so old data cannot be shown as still in progress.
+        SETTLED is intentionally preserved because that work has already been
+        paid out.
+        """
+        claim_value = cls._enum_value(claim_status)
+        order_value = cls._enum_value(order_status)
+        if order_value == OrderStatus.CANCELLED.value and claim_value in {
+            ClaimLifecycleStatus.CLAIMED.value,
+            ClaimLifecycleStatus.DELIVERED.value,
+        }:
+            return ClaimLifecycleStatus.CANCELLED.value
+        return claim_value
+
     def _serialize_claim(
         self,
         claim: OrderClaim,
         *,
         order_booster_id: int | None,
+        order_status: OrderStatus | None = None,
         booster_nickname: str | None = None,
         booster_email: str | None = None,
     ) -> dict[str, Any]:
@@ -843,7 +865,7 @@ class OrderService:
             "booster_id": claim.booster_id,
             "booster_nickname": booster_nickname,
             "booster_email": booster_email,
-            "status": self._enum_value(claim.status),
+            "status": self._effective_claim_status(claim.status, order_status),
             "delivery_note": claim.delivery_note,
             "delivery_attachments": claim.delivery_attachments or None,
             "created_at": claim.created_at,
@@ -872,6 +894,7 @@ class OrderService:
         return self._serialize_claim(
             claim,
             order_booster_id=order.booster_id,
+            order_status=order.status,
             booster_nickname=username,
             booster_email=email,
         )
@@ -890,6 +913,7 @@ class OrderService:
         return self._serialize_claim(
             claim,
             order_booster_id=order.booster_id,
+            order_status=order.status,
             booster_nickname=booster.username,
             booster_email=booster.email,
         )
@@ -916,6 +940,7 @@ class OrderService:
             views[order.id] = self._serialize_claim(
                 claim,
                 order_booster_id=order.booster_id,
+                order_status=order.status,
                 booster_nickname=booster.username,
                 booster_email=booster.email,
             )
@@ -934,7 +959,19 @@ class OrderService:
             return {}
         result = await self._db.execute(
             select(OrderClaim.order_id, OrderClaim.status, func.count(OrderClaim.id))
-            .where(OrderClaim.order_id.in_(order_ids))
+            .join(Order, OrderClaim.order_id == Order.id)
+            .where(
+                OrderClaim.order_id.in_(order_ids),
+                or_(
+                    Order.status != OrderStatus.CANCELLED,
+                    OrderClaim.status.in_(
+                        (
+                            ClaimLifecycleStatus.SETTLED,
+                            ClaimLifecycleStatus.CANCELLED,
+                        )
+                    ),
+                ),
+            )
             .group_by(OrderClaim.order_id, OrderClaim.status)
         )
         counts: dict[int, dict[str, int]] = {}
@@ -951,9 +988,11 @@ class OrderService:
             select(OrderClaim.order_id, func.count(OrderClaim.id))
             .where(
                 OrderClaim.order_id.in_(order_ids),
+                Order.status != OrderStatus.CANCELLED,
                 OrderClaim.status == ClaimLifecycleStatus.DELIVERED,
                 OrderClaim.approved_at.is_(None),
             )
+            .join(Order, OrderClaim.order_id == Order.id)
             .group_by(OrderClaim.order_id)
         )
         for order_id, count in pending_result.all():
@@ -1010,6 +1049,7 @@ class OrderService:
                 self._serialize_claim(
                     claim,
                     order_booster_id=order_booster_id,
+                    order_status=order.status,
                     booster_nickname=username,
                     booster_email=email,
                 )
@@ -1040,7 +1080,33 @@ class OrderService:
         )
         conditions = [OrderClaim.booster_id == booster_id]
         if status_filter is not None:
-            conditions.append(OrderClaim.status == status_filter)
+            if status_filter in (
+                ClaimLifecycleStatus.CLAIMED,
+                ClaimLifecycleStatus.DELIVERED,
+            ):
+                conditions.extend(
+                    (
+                        Order.status != OrderStatus.CANCELLED,
+                        OrderClaim.status == status_filter,
+                    )
+                )
+            elif status_filter == ClaimLifecycleStatus.CANCELLED:
+                conditions.append(
+                    or_(
+                        OrderClaim.status == ClaimLifecycleStatus.CANCELLED,
+                        and_(
+                            Order.status == OrderStatus.CANCELLED,
+                            OrderClaim.status.in_(
+                                (
+                                    ClaimLifecycleStatus.CLAIMED,
+                                    ClaimLifecycleStatus.DELIVERED,
+                                )
+                            ),
+                        ),
+                    )
+                )
+            else:
+                conditions.append(OrderClaim.status == status_filter)
 
         if q and q.strip():
             for token in q.strip().split():
@@ -1083,7 +1149,9 @@ class OrderService:
         items: list[dict[str, Any]] = []
         for claim, order in result.all():
             item = self._serialize_claim(
-                claim, order_booster_id=order.booster_id
+                claim,
+                order_booster_id=order.booster_id,
+                order_status=order.status,
             )
             item["order"] = {
                 "id": order.id,

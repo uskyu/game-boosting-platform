@@ -5,7 +5,9 @@
 """
 
 from httpx import AsyncClient
+from sqlalchemy import update
 
+from app.models.order import Order
 from tests.conftest import auth_header
 
 
@@ -22,16 +24,24 @@ async def _register(client: AsyncClient, email: str, username: str) -> dict:
     return resp.json()
 
 
-async def _create_order(client: AsyncClient, admin_user: dict, max_claims: int = 1) -> dict:
+async def _create_order(
+    client: AsyncClient,
+    admin_user: dict,
+    max_claims: int = 1,
+    compensation_amount: str | None = None,
+) -> dict:
+    payload = {
+        "game_name": "王者荣耀",
+        "current_rank": "钻石",
+        "target_rank": "王者",
+        "price": "100.00",
+        "max_claims": max_claims,
+    }
+    if compensation_amount is not None:
+        payload["compensation_amount"] = compensation_amount
     resp = await client.post(
         "/orders/create",
-        json={
-            "game_name": "王者荣耀",
-            "current_rank": "钻石",
-            "target_rank": "王者",
-            "price": "100.00",
-            "max_claims": max_claims,
-        },
+        json=payload,
         headers=auth_header(admin_user),
     )
     assert resp.status_code == 201
@@ -84,6 +94,88 @@ async def test_cancel_marks_claimed_claims_cancelled(client: AsyncClient, admin_
     )
     assert resp.status_code == 400
     assert "已取消" in resp.json()["detail"]
+
+
+async def test_legacy_cancelled_order_is_effectively_cancelled(
+    client: AsyncClient,
+    admin_user: dict,
+    db_session,
+):
+    """A parent cancelled by older code must not remain active in my claims."""
+    order = await _create_order(client, admin_user)
+    booster = await _register(client, "legacy-cancel@example.com", "LegacyCancel")
+    order_id = order["id"]
+
+    resp = await client.put(f"/orders/{order_id}/accept", headers=auth_header(booster))
+    assert resp.status_code == 200
+
+    # Simulate the historical inconsistent row: parent cancelled, claim still
+    # CLAIMED because the old cancellation path did not close the claim.
+    await db_session.execute(
+        update(Order).where(Order.id == order_id).values(status="CANCELLED")
+    )
+    await db_session.commit()
+
+    active = await client.get(
+        "/orders/claims/mine?status=CLAIMED", headers=auth_header(booster)
+    )
+    assert active.status_code == 200
+    assert active.json()["total"] == 0
+
+    cancelled = await client.get(
+        "/orders/claims/mine?status=CANCELLED", headers=auth_header(booster)
+    )
+    assert cancelled.status_code == 200
+    assert cancelled.json()["total"] == 1
+    assert cancelled.json()["items"][0]["status"] == "CANCELLED"
+    assert cancelled.json()["items"][0]["order"]["status"] == "CANCELLED"
+
+
+async def test_legacy_cancellation_intervention_releases_old_hold(
+    client: AsyncClient,
+    admin_user: dict,
+    db_session,
+):
+    """Retrying cancellation repairs both the stale claim and old hold."""
+    order = await _create_order(
+        client, admin_user, compensation_amount="25.00"
+    )
+    booster = await _register(client, "legacy-hold@example.com", "LegacyHold")
+    booster_id = booster["user"]["id"]
+    order_id = order["id"]
+
+    funded = await client.post(
+        f"/admin/wallets/{booster_id}/adjust",
+        json={"amount": "100.00", "reason": "legacy cancellation test"},
+        headers=auth_header(admin_user),
+    )
+    assert funded.status_code == 200
+    resp = await client.put(f"/orders/{order_id}/accept", headers=auth_header(booster))
+    assert resp.status_code == 200
+    wallet = await client.get("/wallet", headers=auth_header(booster))
+    assert wallet.status_code == 200
+    assert wallet.json()["frozen_balance"] == "25.00"
+
+    await db_session.execute(
+        update(Order).where(Order.id == order_id).values(status="CANCELLED")
+    )
+    await db_session.commit()
+
+    resp = await client.put(
+        f"/admin/orders/{order_id}/intervene",
+        json={"action": "CANCELLED", "reason": "repair legacy cancellation"},
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 200
+
+    wallet = await client.get("/wallet", headers=auth_header(booster))
+    assert wallet.status_code == 200
+    assert wallet.json()["frozen_balance"] == "0.00"
+    claims = await client.get(
+        f"/orders/{order_id}/claims", headers=auth_header(admin_user)
+    )
+    assert claims.status_code == 200
+    assert claims.json()["items"][0]["status"] == "CANCELLED"
 
 
 async def test_cancel_keeps_settled_claims(client: AsyncClient, admin_user: dict):
