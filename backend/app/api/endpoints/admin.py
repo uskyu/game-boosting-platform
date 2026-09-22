@@ -9,6 +9,7 @@ from sqlalchemy import func, select, update
 from app.api.chat_utils import send_order_system_message
 from app.api.deps import DatabaseSession, get_current_admin
 from app.api.notification_utils import notify_user
+from app.api.order_events import broadcast_order_state_changed
 from app.models.booster_service import BoosterService
 from app.models.deposit import SETTLEMENT_MODE_AFTER_APPROVAL
 from app.models.game import Game, GameCategory, GamePlatform
@@ -266,6 +267,12 @@ async def intervene_order(
             "reason": payload.reason,
         },
     )
+    await broadcast_order_state_changed(
+        order_id=order.id,
+        status=order.status,
+        claim_status=order.claim_status,
+        claimed_count=order.claimed_count,
+    )
     return OrderResponse.model_validate(order)
 
 
@@ -318,6 +325,13 @@ async def assign_order(
         + (f" {order.booster.username}" if order.booster is not None else ""),
         link=f"/orders/{order.id}",
         ref_id=order.id,
+    )
+
+    await broadcast_order_state_changed(
+        order_id=order.id,
+        status=order.status,
+        claim_status=order.claim_status,
+        claimed_count=order.claimed_count,
     )
 
     return OrderResponse.model_validate(order)

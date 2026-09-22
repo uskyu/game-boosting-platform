@@ -74,6 +74,24 @@ class ConnectionManager:
             *(self._send_and_prune(user_id, ws, data) for ws in sockets)
         )
 
+    async def broadcast(self, data: dict) -> None:
+        """Broadcast a small platform-wide event to every connected client."""
+        async with self._lock:
+            socket_pairs = [
+                (user_id, websocket)
+                for user_id, sockets in self.connections.items()
+                for websocket in list(sockets)
+            ]
+        if not socket_pairs:
+            return
+        await asyncio.gather(
+            *(
+                self._send_and_prune(user_id, websocket, data)
+                for user_id, websocket in socket_pairs
+            ),
+            return_exceptions=True,
+        )
+
     async def send_to_conversation(
         self,
         conversation_id: int,

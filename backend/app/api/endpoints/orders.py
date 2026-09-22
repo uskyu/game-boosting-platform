@@ -10,6 +10,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy import select
 from app.api.chat_utils import send_order_system_message
+from app.api.order_events import broadcast_order_state_changed
 from app.api.deps import (
     CurrentUser,
     DatabaseSession,
@@ -758,6 +759,12 @@ async def accept_order(
     # 消息/通知写入与订单不在同一加载上下文，序列化前刷新订单，
     # 防止 expired 属性在同步属性访问时触发 MissingGreenlet 500。
     await db.refresh(order)
+    await broadcast_order_state_changed(
+        order_id=order.id,
+        status=order.status,
+        claim_status=order.claim_status,
+        claimed_count=order.claimed_count,
+    )
 
     return OrderResponse.model_validate(order)
 
@@ -814,6 +821,12 @@ async def deliver_order(
     # 防止 expired 属性在同步属性访问时触发 MissingGreenlet 500。
     await db.refresh(order)
     await db.refresh(claim)
+    await broadcast_order_state_changed(
+        order_id=order.id,
+        status=order.status,
+        claim_status=order.claim_status,
+        claimed_count=order.claimed_count,
+    )
 
     response = _serialize_order(order, current_user)
     claim_view = await order_service.get_order_claim_view(order, current_user)
@@ -874,6 +887,13 @@ async def confirm_order(
             ref_id=order.id,
         )
 
+    await broadcast_order_state_changed(
+        order_id=order.id,
+        status=order.status,
+        claim_status=order.claim_status,
+        claimed_count=order.claimed_count,
+    )
+
     return OrderResponse.model_validate(order)
 
 
@@ -920,6 +940,13 @@ async def cancel_order(
             link=f"/orders/{order.id}",
             ref_id=order.id,
         )
+
+    await broadcast_order_state_changed(
+        order_id=order.id,
+        status=order.status,
+        claim_status=order.claim_status,
+        claimed_count=order.claimed_count,
+    )
 
     return OrderResponse.model_validate(order)
 
@@ -988,6 +1015,13 @@ async def dispute_order(
                 ref_id=order.id,
             )
 
+    await broadcast_order_state_changed(
+        order_id=order.id,
+        status=order.status,
+        claim_status=order.claim_status,
+        claimed_count=order.claimed_count,
+    )
+
     return OrderResponse.model_validate(order)
 
 
@@ -1028,6 +1062,12 @@ async def refund_order(
 @router.put("/{order_id}/claim-control", response_model=OrderResponse, summary="订单抢单控制")
 async def claim_control(order_id: int, payload: ClaimControlRequest, current_user: CurrentUser, db: DatabaseSession) -> OrderResponse:
     order = await get_order_service(db).claim_control(order_id, payload.action, current_user)
+    await broadcast_order_state_changed(
+        order_id=order.id,
+        status=order.status,
+        claim_status=order.claim_status,
+        claimed_count=order.claimed_count,
+    )
     return OrderResponse.model_validate(order)
 
 

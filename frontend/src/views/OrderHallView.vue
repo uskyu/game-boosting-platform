@@ -206,7 +206,8 @@ watch(isAuthenticated, (loggedIn) => {
   }
 })
 
-// 大厅以 WebSocket 新订单通知为主，收到通知后立即同步；30 秒低频对账作为断线兜底。
+// 大厅以 WebSocket 新订单/订单状态事件为主，收到事件后立即同步；
+// 低频对账继续作为断线或事件丢失时的兜底。
 const HALL_REFRESH_INTERVAL = 30_000
 let hallRefreshTimer = null
 let hallUnmounted = false
@@ -231,6 +232,19 @@ async function silentRefresh() {
 // 新订单通知到达时立即更新可见大厅；若已有刷新在飞，排队补一次。
 watch(() => notificationsStore.newOrderNotificationVersion, () => {
   silentRefresh().catch(() => {})
+})
+
+// 接单、取消、派单、抢单控制等状态变化会广播给所有在线大厅，
+// 避免其他打手继续看到已经失效的订单卡片。
+watch(() => chatStore.orderStateChangeVersion, () => {
+  silentRefresh().catch(() => {})
+})
+
+// 重连成功后补一次同步，覆盖断线期间错过的状态事件。
+watch(() => chatStore.socketStatus, (status, previousStatus) => {
+  if (status === 'connected' && previousStatus !== 'connected') {
+    silentRefresh().catch(() => {})
+  }
 })
 
 // 登录后的大厅启动：拉订单、拉聊天摘要、开自动刷新。

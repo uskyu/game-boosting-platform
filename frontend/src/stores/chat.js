@@ -58,6 +58,8 @@ export const useChatStore = defineStore('chat', () => {
   const loading = ref(false)
   const hasMore = ref({})
   const error = ref(null)
+  const orderStateChangeVersion = ref(0)
+  const lastOrderStateChange = ref(null)
 
   let reconnectTimer = null
   let heartbeatTimer = null
@@ -1004,6 +1006,19 @@ export const useChatStore = defineStore('chat', () => {
         break
       }
 
+      case 'order_state_changed': {
+        const orderId = Number(data.order_id || 0)
+        if (!orderId) {
+          return
+        }
+        lastOrderStateChange.value = {
+          ...data,
+          order_id: orderId,
+        }
+        orderStateChangeVersion.value += 1
+        break
+      }
+
       case 'notification': {
         // 与全站轮询共用通知偏好和 toast 去重；真人聊天仍走 new_message。
         if (!isCurrentAuthContext(authContext)) return
@@ -1039,6 +1054,8 @@ export const useChatStore = defineStore('chat', () => {
     loading,
     hasMore,
     error,
+    orderStateChangeVersion,
+    lastOrderStateChange,
     activeConversation,
     currentMessages,
     fetchConversations,

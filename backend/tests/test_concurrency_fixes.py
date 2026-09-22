@@ -15,7 +15,10 @@ connection_manager_module = importlib.import_module("app.services.connection_man
 from httpx import AsyncClient
 from sqlalchemy import select
 
+from app.api.order_events import broadcast_order_state_changed
+from app.core.post_commit import drain_registry, start_registry, stop_registry
 from app.models.notification import Notification
+from app.models.order import OrderStatus
 from app.services.connection_manager import connection_manager
 from tests.conftest import auth_header
 
@@ -92,6 +95,66 @@ async def test_manager_send_to_missing_user_is_noop(monkeypatch):
         connection_manager_module, "_SEND_TIMEOUT_SECONDS", MONKEY_TIMEOUT
     )
     await connection_manager.send_to_user(424242, {"event": "ping"})
+
+
+async def test_manager_broadcasts_to_all_users_and_prunes_broken_socket(monkeypatch):
+    """订单状态事件要送到所有大厅连接，坏连接不能阻塞其他人。"""
+    monkeypatch.setattr(
+        connection_manager_module, "_SEND_TIMEOUT_SECONDS", MONKEY_TIMEOUT
+    )
+    healthy_a = FakeWebSocket()
+    healthy_b = FakeWebSocket()
+    broken = FakeWebSocket(broken=True)
+    await connection_manager.connect(9003, healthy_a)
+    await connection_manager.connect(9004, healthy_b)
+    await connection_manager.connect(9005, broken)
+    payload = {
+        "event": "order_state_changed",
+        "data": {"order_id": 123, "status": OrderStatus.LOCKED.value},
+    }
+    try:
+        await connection_manager.broadcast(payload)
+        assert healthy_a.sent == [payload]
+        assert healthy_b.sent == [payload]
+        assert broken.closed
+        assert 9005 not in connection_manager.connections
+    finally:
+        await connection_manager.disconnect(9003, healthy_a)
+        await connection_manager.disconnect(9004, healthy_b)
+
+
+async def test_order_state_event_runs_after_commit(monkeypatch):
+    """订单状态广播登记后不会在事务提交前发送。"""
+    recorded: list[dict] = []
+
+    async def _record(payload: dict) -> None:
+        recorded.append(payload)
+
+    monkeypatch.setattr(connection_manager, "broadcast", _record)
+    token = start_registry()
+    try:
+        await broadcast_order_state_changed(
+            order_id=321,
+            status=OrderStatus.CANCELLED,
+            claim_status="CLOSED",
+            claimed_count=0,
+        )
+        assert recorded == []
+        await drain_registry()
+        await asyncio.sleep(0)
+        assert recorded == [
+            {
+                "event": "order_state_changed",
+                "data": {
+                    "order_id": 321,
+                    "status": "CANCELLED",
+                    "claim_status": "CLOSED",
+                    "claimed_count": 0,
+                },
+            }
+        ]
+    finally:
+        stop_registry(token)
 
 
 # ---------------------------------------------------------------------------
