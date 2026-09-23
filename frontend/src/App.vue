@@ -42,11 +42,16 @@ let unreadPollingTimer = null
 
 // WebSocket is the primary notification channel.  Poll only while it is
 // disconnected, as a slow-network reconciliation fallback.
-const NOTIF_POLL_INTERVAL = 60_000
+// 注意：这条轮询同时是"有新单时的声音"和"大厅立即刷新"（newOrderNotificationVersion）
+// 的唯一来源，WS 一断就会走它。拉成 60 秒会让桌面/手机都出现"有提示音但不出单"，
+// 老板实测反馈。5 秒既保持即时感，成本也只是每用户 0.2 QPS 的轻量分页请求。
+const NOTIF_POLL_INTERVAL = 5_000
 let notifPollTimer = null
 let knownNotifIds = null
-// 在飞保护：弱网下上一轮没回来就不开新一轮，避免请求堆积
+// 在飞保护：弱网下上一轮没回来就不开新一轮，避免请求堆积。
+// 请求本身有硬超时，故这个锁会由 finally 可靠释放。
 let notifPolling = false
+const NOTIF_REQUEST_TIMEOUT = 10_000
 // 认证代次和请求序号共同阻止旧账号的轮询响应落到新账号状态上。
 let authGeneration = 0
 let notifRequestSeq = 0
@@ -59,9 +64,9 @@ function isCurrentNotifRequest(generation, requestToken, authContext) {
 
 async function pollOrderNotifications({ baseline = false, generation = authGeneration } = {}) {
   const authContext = authStore.getSessionContext()
+  if (notifPolling) return
   if (
-    notifPolling
-    || !authStore.isCurrentSession(authContext)
+    !authStore.isCurrentSession(authContext)
     || generation !== authGeneration
     || document.visibilityState !== 'visible'
   ) {
@@ -71,7 +76,10 @@ async function pollOrderNotifications({ baseline = false, generation = authGener
   notifPolling = true
   let items = []
   try {
-    const response = await api.get('/notifications', { params: { page: 1, page_size: 10 } })
+    const response = await api.get('/notifications', {
+      params: { page: 1, page_size: 10 },
+      timeout: NOTIF_REQUEST_TIMEOUT,
+    })
     if (!isCurrentNotifRequest(generation, requestToken, authContext)) {
       return
     }
@@ -352,6 +360,17 @@ watch(
   { immediate: true }
 )
 
+function handleAppVisibility() {
+  if (document.visibilityState !== 'visible' || !authStore.isAuthenticated) return
+  // 移动浏览器从后台恢复时，WS readyState 可能还短暂显示 OPEN，
+  // 但页面冻结期间的新通知已错过。前台恢复时强制做一次通知对账。
+  const generation = authGeneration
+  pollOrderNotifications({ generation }).catch(() => {})
+  notificationsStore.fetchUnreadCount({
+    isCurrent: () => authStore.isAuthenticated && generation === authGeneration,
+  }).catch(() => {})
+}
+
 onMounted(() => {
   // 兜底自愈：公共页/深链冷加载时路由守卫不一定触发会话恢复，这里补一次
   // initialize（内部有并发去重，与守卫的 fetchCurrentUser 互不冲突）。
@@ -359,6 +378,8 @@ onMounted(() => {
   if (!authStore.isAuthenticated) {
     authStore.initialize().catch(() => {})
   }
+  document.addEventListener('visibilitychange', handleAppVisibility)
+  window.addEventListener('focus', handleAppVisibility)
 })
 
 watch(
@@ -375,6 +396,8 @@ onBeforeUnmount(() => {
   notifRequestSeq += 1
   stopUnreadPolling()
   stopNotifPolling()
+  document.removeEventListener('visibilitychange', handleAppVisibility)
+  window.removeEventListener('focus', handleAppVisibility)
   chatStore.disconnectWebSocket()
 })
 </script>

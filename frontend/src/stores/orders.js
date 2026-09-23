@@ -129,14 +129,15 @@ export const useOrdersStore = defineStore('orders', () => {
   // 每次发起递增序号，落地的响应若不是最新一次请求则直接丢弃。
   let ordersRequestSeq = 0
   let ordersUserFetchActive = false
+  let ordersSilentRefreshQueued = false
 
   async function fetchOrders(options = {}) {
     const silent = Boolean(options.silent)
     if (silent && ordersUserFetchActive) {
-      // 用户主动请求（搜索/筛选/翻页）在飞时跳过本轮静默轮询：否则轮询会
-      // 递增序号把慢网络上的搜索响应作废，骨架屏只能干等下一轮轮询落地
-      //（搜索请求耗时 5 秒时骨架屏就挂 5 秒，正是老板看到的"搜索迟钝"）。
-      return { success: true, skipped: true }
+      // 用户主动请求（搜索/筛选/首屏加载）在飞时不让轮询抢序号覆盖它，
+      // 但通知触发的刷新也不能丢：等用户请求结束后补拉一次大厅快照。
+      ordersSilentRefreshQueued = true
+      return { success: true, skipped: true, queued: true }
     }
     if (!silent) {
       loading.value = true
@@ -183,7 +184,12 @@ export const useOrdersStore = defineStore('orders', () => {
     }
 
     try {
-      const response = await api.get('/orders/', { params })
+      const response = await api.get('/orders/', {
+        params,
+        // Bound mobile/cross-border stalls so loading and the user-fetch guard
+        // cannot remain pending forever.
+        timeout: 10000,
+      })
 
       if (requestSeq !== ordersRequestSeq) {
         return { success: true, stale: true }
@@ -214,6 +220,12 @@ export const useOrdersStore = defineStore('orders', () => {
       if (!silent) {
         ordersUserFetchActive = false
         loading.value = false
+        if (ordersSilentRefreshQueued) {
+          ordersSilentRefreshQueued = false
+          queueMicrotask(() => {
+            fetchOrders({ silent: true, slim: true }).catch(() => {})
+          })
+        }
       }
     }
   }

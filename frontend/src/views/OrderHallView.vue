@@ -212,15 +212,19 @@ watch(isAuthenticated, (loggedIn) => {
 // 大厅以 WebSocket 新订单/订单状态事件为主，收到事件后立即同步；
 // 轮询只作为断线、事件丢失或移动端 WS 被系统挂起时的兜底。
 // 移动端注意：息屏/切后台时浏览器会冻结定时器并挂断 WebSocket，微信内置
-// 浏览器也可能拦截 WSS——只靠固定 30 秒对账会让手机用户比桌面用户晚几十
-// 秒才看到新订单（老板实测「电脑端没延迟、手机端有延迟」）。因此 WS 不可
-// 用时改用短间隔兜底，页面重新可见时立即刷新并重校准时钟。
-const HALL_RECONCILE_INTERVAL = 30_000
+// 浏览器也可能拦截 WSS——只靠长间隔对账会让手机用户比桌面用户晚几十秒
+// 才看到新订单（老板实测「电脑端没延迟、手机端有延迟」，以及 WS 断时
+// 「有提示音但不出单」）。因此对账间隔压到秒级，WS 不可用更短。
+// 成本侧：slim 响应 + noload 查询后单次列表请求 ~30ms，秒级轮询可承受。
+const HALL_RECONCILE_INTERVAL = 10_000
 const HALL_FALLBACK_INTERVAL = 5_000
 let hallRefreshTimer = null
 let hallUnmounted = false
 // 抢单倒计时：独立 1 秒计时器，仅驱动 now 变化
 let countdownTimer = null
+// 合并刷新期间到达的通知，当前请求结束后补拉一次，避免「有声音但没新单」
+//（通知恰好撞上轮询在飞时，旧版直接丢弃刷新信号）。
+let hallRefreshQueued = false
 // 在飞保护：弱网下一轮没跑完就不开新一轮，避免请求堆积占满浏览器连接
 let hallRefreshing = false
 
@@ -250,7 +254,10 @@ function handleHallVisibility() {
 
 async function silentRefresh() {
   if (hallUnmounted || !isAuthenticated.value || document.visibilityState !== 'visible') return
-  if (hallRefreshing) return
+  if (hallRefreshing) {
+    hallRefreshQueued = true
+    return
+  }
   hallRefreshing = true
   try {
     await ordersStore.fetchOrders({ silent: true, slim: true })
@@ -258,6 +265,10 @@ async function silentRefresh() {
     // 静默失败等下一轮
   } finally {
     hallRefreshing = false
+    if (hallRefreshQueued && !hallUnmounted) {
+      hallRefreshQueued = false
+      window.setTimeout(() => silentRefresh().catch(() => {}), 0)
+    }
   }
 }
 
