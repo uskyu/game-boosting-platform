@@ -3,7 +3,7 @@ Orders API endpoints.
 Handles order creation, listing, and management operations.
 """
 
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated
 
@@ -19,7 +19,7 @@ from app.api.deps import (
 from app.api.notification_utils import notify_boosters_new_order, notify_user
 from app.core.config import settings
 from app.models.notification import NotificationType
-from app.models.order import ClaimLifecycleStatus, Order, OrderStatus
+from app.models.order import ClaimLifecycleStatus, ClaimStatus, Order, OrderStatus
 from app.models.user import User, UserRole
 from app.schemas.order import (
     AIAnalysisResponse,
@@ -65,7 +65,7 @@ def _delivery_attachment_items(attachments) -> list[OrderDeliveryAttachment]:
 
 
 async def _apply_accept_window(
-    db, responses: list[OrderResponse], viewer: User
+    db, responses: list[OrderResponse], orders: list[Order], viewer: User
 ) -> None:
     """按查看者的保证金档位，为订单补上「还需等待多少秒才能接单」。
 
@@ -80,7 +80,35 @@ async def _apply_accept_window(
         return
     tier, _balance = await deposit_service.get_user_tier(db, viewer.id)
     wait_seconds = int(tier.wait_seconds or 0) if tier else 0
+    now = datetime.now(timezone.utc)
+    orders_by_id = {order.id: order for order in orders}
     for response in responses:
+        order = orders_by_id.get(response.id)
+        if order is None:
+            continue
+
+        # The wait window only describes an order that this viewer can still
+        # accept. Once the order is full/closed, the viewer already has a
+        # claim, or the deadline has passed, exposing the original publish
+        # timestamp makes the UI show a stale countdown beside a grabbed
+        # order.
+        deadline = order.deadline
+        if deadline is not None:
+            if deadline.tzinfo is None:
+                deadline = deadline.replace(tzinfo=timezone.utc)
+            if deadline <= now:
+                continue
+        if (
+            order.user_id == viewer.id
+            or order.is_archived
+            or order.status not in (OrderStatus.PENDING, OrderStatus.LOCKED)
+            or order.claim_status != ClaimStatus.OPEN
+            or order.claimed_count >= order.max_claims
+            or (order.status == OrderStatus.LOCKED and order.max_claims <= 1)
+            or response.my_claim is not None
+        ):
+            continue
+
         response.accept_wait_seconds = wait_seconds
         if wait_seconds > 0 and response.created_at is not None:
             created = response.created_at
@@ -151,7 +179,7 @@ async def _enrich_order_response(db, response: OrderResponse, order, viewer: Use
         elif order.user_id != viewer.id:
             # Reset even if the incoming response was not serialized defensively.
             response.boss_contact = None
-    await _apply_accept_window(db, [response], viewer)
+    await _apply_accept_window(db, [response], [order], viewer)
     return response
 
 
@@ -191,7 +219,7 @@ async def _enrich_order_responses(
                     response.boss_contact = orders_by_id[response.id].boss_contact
             elif orders_by_id[response.id].user_id != viewer.id:
                 response.boss_contact = None
-    await _apply_accept_window(db, responses, viewer)
+    await _apply_accept_window(db, responses, orders, viewer)
     return responses
 
 

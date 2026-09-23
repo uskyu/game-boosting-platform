@@ -373,6 +373,18 @@ export const useOrdersStore = defineStore('orders', () => {
     }
   }
 
+  function applyOrderStateChange(change) {
+    const orderId = Number(change?.order_id || 0)
+    if (!orderId) return
+
+    const order = orders.value.find((item) => Number(item.id) === orderId)
+    if (!order) return
+
+    if (change.status != null) order.status = change.status
+    if (change.claim_status != null) order.claim_status = change.claim_status
+    if (change.claimed_count != null) order.claimed_count = Number(change.claimed_count)
+  }
+
   async function deliverOrder(orderId, deliveryNote) {
     // 不切换全局 loading：详情页骨架屏会卸载交付弹窗，丢失其关闭事件
     error.value = null
@@ -615,6 +627,7 @@ export const useOrdersStore = defineStore('orders', () => {
     fetchMyClaims,
     reviewClaim,
     acceptOrder,
+    applyOrderStateChange,
     deliverOrder,
     uploadDeliverAttachment,
     deleteDeliverAttachment,

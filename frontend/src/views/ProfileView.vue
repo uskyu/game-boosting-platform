@@ -21,15 +21,28 @@ const depositTierLabel = computed(() => {
   const threshold = walletStore.depositOverview?.current_threshold
   return threshold == null ? '暂未形成档位' : `≥ ${formatPrice(threshold)} 档`
 })
-function isPasswordStrong(pw) {
-  return pw.length >= 8 && /[A-Z]/.test(pw) && /\d/.test(pw)
-}
+const passwordValidation = computed(() => {
+  const newPassword = passwordForm.value.newPassword
+  const confirmPassword = passwordForm.value.confirmPassword
+  const newPasswordIssues = []
+
+  if (newPassword.length < 8) newPasswordIssues.push('至少 8 位')
+  if (!/[A-Z]/.test(newPassword)) newPasswordIssues.push('包含大写字母')
+  if (!/\d/.test(newPassword)) newPasswordIssues.push('包含数字')
+
+  return {
+    newPasswordIssues,
+    confirmMismatch: Boolean(confirmPassword) && newPassword !== confirmPassword,
+    currentMissing: passwordForm.value.currentPassword.trim() === '',
+  }
+})
 
 const canSubmitPassword = computed(() => {
   return (
-    passwordForm.value.currentPassword.trim() !== '' &&
-    isPasswordStrong(passwordForm.value.newPassword) &&
-    passwordForm.value.newPassword === passwordForm.value.confirmPassword
+    !passwordValidation.value.currentMissing &&
+    passwordValidation.value.newPasswordIssues.length === 0 &&
+    passwordForm.value.confirmPassword !== '' &&
+    !passwordValidation.value.confirmMismatch
   )
 })
 
@@ -211,15 +224,33 @@ onMounted(async () => {
             <div>
               <label class="label" for="current-password">当前密码</label>
               <input id="current-password" v-model="passwordForm.currentPassword" type="password" class="input" />
+              <p v-if="passwordValidation.currentMissing && (passwordForm.newPassword || passwordForm.confirmPassword)" class="mt-1 text-xs text-danger">请输入当前密码</p>
             </div>
             <div class="grid gap-5 sm:grid-cols-2">
               <div>
                 <label class="label" for="new-password">新密码</label>
-                <input id="new-password" v-model="passwordForm.newPassword" type="password" class="input" />
+                <input
+                  id="new-password"
+                  v-model="passwordForm.newPassword"
+                  type="password"
+                  class="input"
+                  :class="{ 'input-error': passwordForm.newPassword && passwordValidation.newPasswordIssues.length }"
+                />
+                <p v-if="passwordForm.newPassword && passwordValidation.newPasswordIssues.length" class="mt-1 text-xs text-danger">
+                  新密码还需要：{{ passwordValidation.newPasswordIssues.join('、') }}
+                </p>
+                <p v-else class="mt-1 text-xs text-ink-3">至少 8 位，包含大写字母和数字</p>
               </div>
               <div>
                 <label class="label" for="confirm-new-password">确认</label>
-                <input id="confirm-new-password" v-model="passwordForm.confirmPassword" type="password" class="input" />
+                <input
+                  id="confirm-new-password"
+                  v-model="passwordForm.confirmPassword"
+                  type="password"
+                  class="input"
+                  :class="{ 'input-error': passwordValidation.confirmMismatch }"
+                />
+                <p v-if="passwordValidation.confirmMismatch" class="mt-1 text-xs text-danger">两次输入的密码不一致</p>
               </div>
             </div>
             <button class="btn-secondary w-full py-3" :disabled="changingPassword || !canSubmitPassword">{{ changingPassword ? '提交中...' : '更新密码' }}</button>

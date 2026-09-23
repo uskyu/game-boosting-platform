@@ -148,7 +148,10 @@ async def test_top_tier_can_accept_immediately(
     detail = (
         await client.get(f"/orders/{order['id']}", headers=auth_header(booster_user))
     ).json()
-    assert detail["accept_wait_seconds"] == 0
+    # The order is already claimed by this viewer, so the response must not
+    # keep exposing a stale accept window alongside the active claim.
+    assert detail["accept_wait_seconds"] is None
+    assert detail["accept_available_at"] is None
 
 
 async def test_mid_tier_shortens_wait(

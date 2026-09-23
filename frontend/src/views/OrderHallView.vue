@@ -36,6 +36,9 @@ const openOnly = ref(true)
 const now = ref(serverNow())
 
 function getAcceptWaitMetaFor(order) {
+  if (!isOrderClaimable(order) || order.my_claim) {
+    return { remaining: 0, total: 0, state: 'available' }
+  }
   return getAcceptWaitMeta(order, now.value)
 }
 
@@ -236,7 +239,8 @@ watch(() => notificationsStore.newOrderNotificationVersion, () => {
 
 // 接单、取消、派单、抢单控制等状态变化会广播给所有在线大厅，
 // 避免其他打手继续看到已经失效的订单卡片。
-watch(() => chatStore.orderStateChangeVersion, () => {
+watch(() => chatStore.lastOrderStateChange, (change) => {
+  ordersStore.applyOrderStateChange(change)
   silentRefresh().catch(() => {})
 })
 
