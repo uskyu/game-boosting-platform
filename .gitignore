@@ -63,3 +63,7 @@ config.md
 
 # user uploads (runtime data)
 backend/uploads/
+
+# 本地测试残留：勿入库（tmp/ 可能是本地 MySQL datadir；uploads/ 为本地运行产物）
+tmp/
+uploads/
