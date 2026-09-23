@@ -210,14 +210,43 @@ watch(isAuthenticated, (loggedIn) => {
 })
 
 // 大厅以 WebSocket 新订单/订单状态事件为主，收到事件后立即同步；
-// 低频对账继续作为断线或事件丢失时的兜底。
-const HALL_REFRESH_INTERVAL = 30_000
+// 轮询只作为断线、事件丢失或移动端 WS 被系统挂起时的兜底。
+// 移动端注意：息屏/切后台时浏览器会冻结定时器并挂断 WebSocket，微信内置
+// 浏览器也可能拦截 WSS——只靠固定 30 秒对账会让手机用户比桌面用户晚几十
+// 秒才看到新订单（老板实测「电脑端没延迟、手机端有延迟」）。因此 WS 不可
+// 用时改用短间隔兜底，页面重新可见时立即刷新并重校准时钟。
+const HALL_RECONCILE_INTERVAL = 30_000
+const HALL_FALLBACK_INTERVAL = 5_000
 let hallRefreshTimer = null
 let hallUnmounted = false
 // 抢单倒计时：独立 1 秒计时器，仅驱动 now 变化
 let countdownTimer = null
 // 在飞保护：弱网下一轮没跑完就不开新一轮，避免请求堆积占满浏览器连接
 let hallRefreshing = false
+
+function hallPollInterval() {
+  return chatStore.socketStatus === 'connected'
+    ? HALL_RECONCILE_INTERVAL
+    : HALL_FALLBACK_INTERVAL
+}
+
+function restartHallTimer() {
+  if (hallUnmounted || !isAuthenticated.value) return
+  if (hallRefreshTimer) {
+    window.clearInterval(hallRefreshTimer)
+    hallRefreshTimer = null
+  }
+  hallRefreshTimer = window.setInterval(silentRefresh, hallPollInterval())
+}
+
+// 页面重新可见（手机解锁/切回应用）：先校准倒计时基准，再立刻同步一次，
+// 不让用户对着刚解冻的陈旧页面干等下一个轮询周期。
+function handleHallVisibility() {
+  if (hallUnmounted || document.visibilityState !== 'visible') return
+  now.value = serverNow()
+  restartHallTimer()
+  silentRefresh().catch(() => {})
+}
 
 async function silentRefresh() {
   if (hallUnmounted || !isAuthenticated.value || document.visibilityState !== 'visible') return
@@ -245,10 +274,12 @@ watch(() => chatStore.lastOrderStateChange, (change) => {
 })
 
 // 重连成功后补一次同步，覆盖断线期间错过的状态事件。
+// 同时按 WS 状态切换轮询节奏：断了走 5 秒短兜底，恢复后回到 30 秒对账。
 watch(() => chatStore.socketStatus, (status, previousStatus) => {
   if (status === 'connected' && previousStatus !== 'connected') {
     silentRefresh().catch(() => {})
   }
+  restartHallTimer()
 })
 
 // 登录后的大厅启动：拉订单、拉聊天摘要、开自动刷新。
@@ -263,9 +294,7 @@ async function startHallLifecycle() {
   ])
   // 页面可能在上面的弱网请求完成前已被卸载；卸载后绝不能复活大厅轮询，
   // 否则它会在“我的派单”继续拉全量订单并覆盖搜索结果。
-  if (!hallUnmounted && !hallRefreshTimer) {
-    hallRefreshTimer = window.setInterval(silentRefresh, HALL_REFRESH_INTERVAL)
-  }
+  restartHallTimer()
 }
 
 onMounted(() => {
@@ -275,6 +304,8 @@ onMounted(() => {
       now.value = serverNow()
     }, 1000)
   }
+  document.addEventListener('visibilitychange', handleHallVisibility)
+  window.addEventListener('focus', handleHallVisibility)
   if (isAuthenticated.value) {
     startHallLifecycle()
   }
@@ -286,6 +317,8 @@ onUnmounted(() => {
     window.clearInterval(countdownTimer)
     countdownTimer = null
   }
+  document.removeEventListener('visibilitychange', handleHallVisibility)
+  window.removeEventListener('focus', handleHallVisibility)
   if (hallRefreshTimer) {
     window.clearInterval(hallRefreshTimer)
     hallRefreshTimer = null

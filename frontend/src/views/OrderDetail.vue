@@ -586,18 +586,30 @@ watch(
   { immediate: true }
 )
 
+// 手机解锁/切回应用时定时器刚从冻结中恢复：立刻校准时钟基准，别让接单
+// 按钮因为 displayTime 落后而多禁用一两秒（禁用条件本身是时间差计算）。
+function handleDetailVisibility() {
+  if (document.visibilityState === 'visible') {
+    now.value = serverNow()
+  }
+}
+
 onMounted(() => {
   if (!claimCountdownTimer) {
     claimCountdownTimer = window.setInterval(() => {
       now.value = serverNow()
     }, 1000)
   }
+  document.addEventListener('visibilitychange', handleDetailVisibility)
+  window.addEventListener('focus', handleDetailVisibility)
 })
 
 onUnmounted(() => {
   detailLoadSeq += 1
   reviewsLoadSeq += 1
   ordersStore.clearCurrentOrder()
+  document.removeEventListener('visibilitychange', handleDetailVisibility)
+  window.removeEventListener('focus', handleDetailVisibility)
   if (claimCountdownTimer) {
     window.clearInterval(claimCountdownTimer)
     claimCountdownTimer = null
