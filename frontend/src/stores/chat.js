@@ -4,10 +4,16 @@ import api from '@/utils/api'
 import { useAuthStore } from '@/stores/auth'
 import { useToastsStore } from '@/stores/toasts'
 import { playChatMessage } from '@/utils/sound'
+import {
+  getWebSocketHealthAction,
+  getWebSocketReconnectDelay,
+  WS_HEARTBEAT_INTERVAL_MS,
+  WS_STALE_TIMEOUT_MS,
+  WS_WATCHDOG_INTERVAL_MS,
+  WS_CONNECTING_TIMEOUT_MS,
+} from '@/utils/websocketRecovery'
 
 const DEFAULT_MESSAGE_LIMIT = 30
-const MAX_RECONNECT_DELAY = 30000
-const HEARTBEAT_INTERVAL = 30000
 const TYPING_THROTTLE_MS = 3000
 const TYPING_VISIBLE_MS = 5000
 
@@ -63,7 +69,12 @@ export const useChatStore = defineStore('chat', () => {
 
   let reconnectTimer = null
   let heartbeatTimer = null
+  let watchdogTimer = null
+  let connectTimeoutTimer = null
+  let lastPongAt = 0
+  let socketStartedAt = 0
   let reconnectAttempts = 0
+  let recoveryInFlight = false
   let shouldReconnect = true
   // WS 鉴权自愈状态：令牌过期导致的 auth_fail 不再永久放弃重连
   let wsAuthRecovering = false
@@ -317,6 +328,26 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  function clearWatchdog() {
+    if (watchdogTimer) {
+      window.clearInterval(watchdogTimer)
+      watchdogTimer = null
+    }
+  }
+
+  function clearConnectTimeout() {
+    if (connectTimeoutTimer) {
+      window.clearTimeout(connectTimeoutTimer)
+      connectTimeoutTimer = null
+    }
+  }
+
+  function clearSocketTimers() {
+    clearHeartbeat()
+    clearWatchdog()
+    clearConnectTimeout()
+  }
+
   function clearTypingState() {
     Object.values(typingHideTimers).forEach((timer) => window.clearTimeout(timer))
     Object.keys(typingHideTimers).forEach((key) => {
@@ -366,14 +397,12 @@ export const useChatStore = defineStore('chat', () => {
     clearReconnectTimer()
 
     const authStore = useAuthStore()
-    if (!shouldReconnect || !authStore.accessToken) {
-      return
-    }
+    if (!shouldReconnect || !authStore.accessToken) return
 
-    const delay = Math.min(1000 * (2 ** reconnectAttempts), MAX_RECONNECT_DELAY)
+    const delay = getWebSocketReconnectDelay(reconnectAttempts)
     reconnectAttempts += 1
-
     reconnectTimer = window.setTimeout(() => {
+      reconnectTimer = null
       connectWebSocket()
     }, delay)
   }
@@ -406,10 +435,34 @@ export const useChatStore = defineStore('chat', () => {
   function startHeartbeat() {
     clearHeartbeat()
     heartbeatTimer = window.setInterval(() => {
-      if (socket.value?.readyState === WebSocket.OPEN) {
-        socket.value.send(JSON.stringify({ event: 'ping', data: {} }))
+      if (document.visibilityState !== 'visible') return
+      const ws = socket.value
+      if (!ws || ws.readyState !== WebSocket.OPEN) return
+      try {
+        ws.send(JSON.stringify({ event: 'ping', data: {} }))
+      } catch {
+        ws.close()
       }
-    }, HEARTBEAT_INTERVAL)
+    }, WS_HEARTBEAT_INTERVAL_MS)
+  }
+
+  function startWatchdog() {
+    clearWatchdog()
+    watchdogTimer = window.setInterval(() => {
+      const ws = socket.value
+      if (document.visibilityState !== 'visible' || !ws) return
+      const action = getWebSocketHealthAction({
+        readyState: ws.readyState,
+        openState: WebSocket.OPEN,
+        connectingState: WebSocket.CONNECTING,
+        closingState: WebSocket.CLOSING,
+        authenticated: socketStatus.value === 'connected',
+        socketStartedAt,
+        lastPongAt,
+        now: Date.now(),
+      })
+      if (action === 'replace') recoverWebSocketIfStale()
+    }, WS_WATCHDOG_INTERVAL_MS)
   }
 
   async function fetchConversations(options = {}) {
@@ -763,7 +816,61 @@ export const useChatStore = defineStore('chat', () => {
     }))
   }
 
-  function connectWebSocket() {
+  function recoverWebSocketIfStale() {
+    const authStore = useAuthStore()
+    if (
+      document.visibilityState !== 'visible'
+      || !shouldReconnect
+      || !authStore.accessToken
+      || wsAuthRecovering
+      || recoveryInFlight
+    ) return
+    const ws = socket.value
+
+    if (!ws) {
+      recoveryInFlight = true
+      reconnectAttempts = 0
+      clearReconnectTimer()
+      connectWebSocket({ recovery: true })
+      return
+    }
+
+    const health = getWebSocketHealthAction({
+      readyState: ws.readyState,
+      openState: WebSocket.OPEN,
+      connectingState: WebSocket.CONNECTING,
+      closingState: WebSocket.CLOSING,
+      authenticated: socketStatus.value === 'connected',
+      socketStartedAt,
+      lastPongAt,
+      now: Date.now(),
+    })
+    if (health === 'healthy' || health === 'connecting' || health === 'authenticating' || health === 'wait-close') return
+
+    recoveryInFlight = true
+    reconnectAttempts = 0
+    // 先摘掉旧 socket，再 close。某些浏览器会长时间停在 CLOSING，
+    // 不能等它派发 onclose 才开始替代连接。
+    socket.value = null
+    clearSocketTimers()
+    socketStatus.value = 'disconnected'
+    try {
+      ws.close()
+    } catch {
+      // 旧半开连接关闭失败时仍继续恢复。
+    }
+    connectWebSocket({ recovery: true })
+  }
+
+  function handleNetworkOnline() {
+    recoverWebSocketIfStale()
+  }
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('online', handleNetworkOnline)
+  }
+
+  function connectWebSocket(options = {}) {
     const authStore = useAuthStore()
     const token = authStore.accessToken
     const authContext = captureAuthContext()
@@ -772,16 +879,76 @@ export const useChatStore = defineStore('chat', () => {
       return
     }
 
-    if (socket.value && [WebSocket.OPEN, WebSocket.CONNECTING].includes(socket.value.readyState)) {
+    const existingSocket = socket.value
+    if (existingSocket) {
+      const health = getWebSocketHealthAction({
+        readyState: existingSocket.readyState,
+        openState: WebSocket.OPEN,
+        connectingState: WebSocket.CONNECTING,
+        closingState: WebSocket.CLOSING,
+        authenticated: socketStatus.value === 'connected',
+        socketStartedAt,
+        lastPongAt,
+        now: Date.now(),
+      })
+      if (health === 'healthy' || health === 'connecting' || health === 'authenticating' || health === 'wait-close') return
+      recoveryInFlight = true
+      socket.value = null
+      clearSocketTimers()
+      socketStatus.value = 'disconnected'
+      try {
+        existingSocket.close()
+      } catch {
+        // 旧连接已失效时忽略关闭异常。
+      }
+      connectWebSocket({ recovery: true })
       return
     }
 
-    shouldReconnect = true
+    if (!options.recovery) {
+      shouldReconnect = true
+      recoveryInFlight = false
+    }
     clearReconnectTimer()
     socketStatus.value = 'connecting'
+    socketStartedAt = Date.now()
+    lastPongAt = 0
 
-    const nextSocket = new WebSocket(getWebSocketUrl())
+    let nextSocket
+    try {
+      nextSocket = new WebSocket(getWebSocketUrl())
+    } catch {
+      socket.value = null
+      socketStatus.value = 'disconnected'
+      recoveryInFlight = false
+      if (shouldReconnect && authStore.accessToken && isCurrentAuthContext(authContext)) {
+        scheduleReconnect()
+      }
+      return
+    }
     socket.value = nextSocket
+    clearConnectTimeout()
+    const handleSocketClosed = () => {
+      const isCurrentSocket = socket.value === nextSocket
+      if (isCurrentSocket) socket.value = null
+      if (!isCurrentSocket) return
+
+      clearSocketTimers()
+      recoveryInFlight = false
+      socketStatus.value = 'disconnected'
+      if (shouldReconnect && useAuthStore().accessToken && isCurrentAuthContext(authContext)) {
+        scheduleReconnect()
+      }
+    }
+
+    connectTimeoutTimer = window.setTimeout(() => {
+      if (socket.value !== nextSocket || socketStatus.value === 'connected') return
+      try {
+        nextSocket.close()
+      } finally {
+        handleSocketClosed()
+      }
+    }, WS_CONNECTING_TIMEOUT_MS)
 
     nextSocket.onopen = () => {
       if (socket.value !== nextSocket || !isCurrentAuthContext(authContext)) {
@@ -790,10 +957,14 @@ export const useChatStore = defineStore('chat', () => {
       }
 
       // Send auth event as first message (token is NOT in the URL)
-      nextSocket.send(JSON.stringify({
-        event: 'auth',
-        data: { token },
-      }))
+      try {
+        nextSocket.send(JSON.stringify({
+          event: 'auth',
+          data: { token },
+        }))
+      } catch {
+        try { nextSocket.close() } finally { handleSocketClosed() }
+      }
     }
 
     nextSocket.onmessage = (event) => {
@@ -812,8 +983,12 @@ export const useChatStore = defineStore('chat', () => {
       if (parsed.event === 'auth_ok') {
         reconnectAttempts = 0
         wsAuthFailCount = 0
+        recoveryInFlight = false
+        lastPongAt = Date.now()
+        clearConnectTimeout()
         socketStatus.value = 'connected'
         startHeartbeat()
+        startWatchdog()
         fetchUnreadSummary()
         if (conversations.value.length > 0) {
           fetchConversations({
@@ -841,36 +1016,17 @@ export const useChatStore = defineStore('chat', () => {
     }
 
     nextSocket.onerror = () => {
-      nextSocket.close()
+      try { nextSocket.close() } finally { handleSocketClosed() }
     }
 
-    nextSocket.onclose = () => {
-      const isCurrentSocket = socket.value === nextSocket
-      if (isCurrentSocket) {
-        socket.value = null
-      }
-
-      if (!isCurrentSocket) {
-        return
-      }
-
-      clearHeartbeat()
-      socketStatus.value = 'disconnected'
-
-      if (
-        shouldReconnect
-        && useAuthStore().accessToken
-        && isCurrentAuthContext(authContext)
-      ) {
-        scheduleReconnect()
-      }
-    }
+    nextSocket.onclose = handleSocketClosed
   }
 
   function disconnectWebSocket(options = {}) {
     shouldReconnect = false
+    recoveryInFlight = false
     clearReconnectTimer()
-    clearHeartbeat()
+    clearSocketTimers()
 
     if (socket.value) {
       const currentSocket = socket.value
@@ -1035,6 +1191,7 @@ export const useChatStore = defineStore('chat', () => {
       }
 
       case 'pong':
+        lastPongAt = Date.now()
         break
 
       default:
@@ -1075,6 +1232,7 @@ export const useChatStore = defineStore('chat', () => {
     setActiveConversation,
     sendTyping,
     connectWebSocket,
+    recoverWebSocketIfStale,
     disconnectWebSocket,
     handleWsMessage,
     resetState,

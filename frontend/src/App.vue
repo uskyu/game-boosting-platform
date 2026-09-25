@@ -362,8 +362,10 @@ watch(
 
 function handleAppVisibility() {
   if (document.visibilityState !== 'visible' || !authStore.isAuthenticated) return
-  // 移动浏览器从后台恢复时，WS readyState 可能还短暂显示 OPEN，
-  // 但页面冻结期间的新通知已错过。前台恢复时强制做一次通知对账。
+  // 恢复前台时同时检查 WS 活性：仍 OPEN 但 pong 超时的半开连接会被替换；
+  // healthy 连接保持不动，focus/visibility 双事件不会创建重复 socket。
+  chatStore.recoverWebSocketIfStale()
+  // 移动浏览器从后台恢复时，页面冻结期间可能错过通知，立即做一次对账。
   const generation = authGeneration
   pollOrderNotifications({ generation }).catch(() => {})
   notificationsStore.fetchUnreadCount({
@@ -380,7 +382,13 @@ onMounted(() => {
   }
   document.addEventListener('visibilitychange', handleAppVisibility)
   window.addEventListener('focus', handleAppVisibility)
+  window.addEventListener('online', handleNetworkOnline)
 })
+
+function handleNetworkOnline() {
+  if (!authStore.isAuthenticated) return
+  chatStore.recoverWebSocketIfStale()
+}
 
 watch(
   () => chatStore.socketStatus,
@@ -398,6 +406,7 @@ onBeforeUnmount(() => {
   stopNotifPolling()
   document.removeEventListener('visibilitychange', handleAppVisibility)
   window.removeEventListener('focus', handleAppVisibility)
+  window.removeEventListener('online', handleNetworkOnline)
   chatStore.disconnectWebSocket()
 })
 </script>

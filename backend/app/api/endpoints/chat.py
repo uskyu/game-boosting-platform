@@ -1,6 +1,8 @@
 """Chat API endpoints."""
 
 import asyncio
+import logging
+import time
 from typing import Annotated, Any
 
 from fastapi import APIRouter, File, Query, UploadFile, WebSocket, WebSocketDisconnect, status
@@ -29,6 +31,7 @@ from app.services.chat_service import get_chat_service
 from app.services.connection_manager import get_connection_manager
 
 router = APIRouter(prefix="/chat", tags=["聊天"])
+logger = logging.getLogger(__name__)
 
 
 def _serialize_participant(
@@ -251,6 +254,9 @@ async def chat_websocket(websocket: WebSocket) -> None:
     # ── Phase 2: normal message loop ──
     connection_manager = get_connection_manager()
     await connection_manager.connect(current_user.id, websocket)
+    connected_at = time.monotonic()
+    close_code: int | None = None
+    disconnect_kind = "client_disconnect"
 
     try:
         while True:
@@ -260,15 +266,32 @@ async def chat_websocket(websocket: WebSocket) -> None:
                     timeout=60,
                 )
             except asyncio.TimeoutError:
-                await websocket.close(code=1000, reason="心跳超时")
+                disconnect_kind = "receive_timeout"
+                close_code = status.WS_1000_NORMAL_CLOSURE
+                try:
+                    await websocket.close(code=close_code, reason="心跳超时")
+                except WebSocketDisconnect as exc:
+                    close_code = exc.code
+                    disconnect_kind = "disconnect_during_timeout_close"
                 break
-            except WebSocketDisconnect:
+            except WebSocketDisconnect as exc:
+                close_code = exc.code
+                disconnect_kind = "client_disconnect"
                 break
             except ValueError:
                 await websocket.send_json(
                     _build_ws_event("error", {"message": "消息格式无效"})
                 )
                 continue
+            except Exception as exc:
+                close_code = getattr(exc, "code", None)
+                disconnect_kind = f"receive_error:{type(exc).__name__}"
+                logger.warning(
+                    "WebSocket receive failed user_id=%s kind=%s",
+                    current_user.id,
+                    type(exc).__name__,
+                )
+                break
 
             if not isinstance(payload, dict):
                 await websocket.send_json(
@@ -280,7 +303,12 @@ async def chat_websocket(websocket: WebSocket) -> None:
             data = payload.get("data") or {}
 
             if event == "ping":
-                await websocket.send_json(_build_ws_event("pong", {}))
+                try:
+                    await websocket.send_json(_build_ws_event("pong", {}))
+                except WebSocketDisconnect as exc:
+                    close_code = exc.code
+                    disconnect_kind = "disconnect_during_pong"
+                    break
                 continue
 
             if event != "typing":
@@ -325,6 +353,15 @@ async def chat_websocket(websocket: WebSocket) -> None:
             )
     finally:
         await connection_manager.disconnect(current_user.id, websocket)
+        # 生命周期日志不含 token、消息内容或私人聊天数据；方便将来区分
+        # 正常离开、服务端心跳超时、以及半开连接在 pong 写入时断开的场景。
+        logger.info(
+            "WebSocket closed user_id=%s kind=%s code=%s lifetime_seconds=%.1f",
+            current_user.id,
+            disconnect_kind,
+            close_code,
+            time.monotonic() - connected_at,
+        )
 
 
 @router.post(
