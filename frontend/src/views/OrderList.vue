@@ -309,7 +309,28 @@ onUnmounted(() => {
       </div>
     </section>
 
-    <div v-if="error" class="message-error">{{ error }}</div>
+    <!-- 加载失败（多为跨境链路抖动）：保留原有列表不清空，给一个不刷新整页的重试入口 -->
+    <div v-if="error" class="message-error flex flex-wrap items-center gap-x-3 gap-y-1">
+      <span class="min-w-0 flex-1">{{ error }}</span>
+      <button
+        v-if="activeTab === 'published'"
+        type="button"
+        class="filter-pill shrink-0"
+        :disabled="loading"
+        @click="fetchOrders()"
+      >
+        {{ loading ? '加载中…' : '重新加载' }}
+      </button>
+      <button
+        v-else
+        type="button"
+        class="filter-pill shrink-0"
+        :disabled="claimsLoading"
+        @click="fetchClaims(claimsPagination.page || 1)"
+      >
+        {{ claimsLoading ? '加载中…' : '重新加载' }}
+      </button>
+    </div>
 
     <!-- ── 我的接单：打手自己接的活（进行中 / 待审核 / 已结算） ── -->
     <template v-if="activeTab === 'claims'">

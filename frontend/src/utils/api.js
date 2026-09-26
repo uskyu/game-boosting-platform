@@ -7,6 +7,7 @@ import axios from 'axios'
 import { useAuthStore } from '@/stores/auth'
 import router from '@/router'
 import { syncServerTime } from '@/utils/display'
+import { getNextRetryDelayMs, shouldRetryRequest } from '@/utils/apiRetry'
 
 const rawApiBaseURL = import.meta.env.VITE_API_BASE_URL || '/api/v1'
 const apiBaseURL = rawApiBaseURL.endsWith('/')
@@ -101,6 +102,14 @@ function readableApiError(error) {
     if (messages.length > 0) return messages.join('；')
   }
 
+  // 网络层失败（没收到任何响应）：把 axios 的英文原始报错（"timeout of
+  // 10000ms exceeded" / "Network Error"）翻译成可操作的中文提示，
+  // 避免用户对着一句英文不知道发生了什么。
+  if (!data && error.message) {
+    if (/timeout/i.test(error.message)) return '网络连接超时，请检查网络后重试'
+    if (/network/i.test(error.message)) return '网络连接失败，请检查网络后重试'
+  }
+
   return detail || error.message || '请求失败'
 }
 
@@ -114,6 +123,16 @@ api.interceptors.response.use(
   async (error) => {
     const originalRequest = error.config
     const authStore = useAuthStore()
+
+    // 网络层失败（超时/连接被重置，没收到任何响应）且为幂等 GET：
+    // 等待片刻后换一条新连接重试，把跨境链路偶发的连接黑洞对用户隐藏。
+    // 只重试一次，且绝不覆盖写请求——见 utils/apiRetry.js。
+    if (originalRequest && shouldRetryRequest(error, originalRequest._netRetryCount || 0)) {
+      const delay = getNextRetryDelayMs(originalRequest._netRetryCount || 0)
+      originalRequest._netRetryCount = (originalRequest._netRetryCount || 0) + 1
+      await new Promise((resolve) => setTimeout(resolve, delay))
+      return api(originalRequest)
+    }
 
     // Handle 401 Unauthorized
     if (error.response?.status === 401 && !originalRequest._retry) {
