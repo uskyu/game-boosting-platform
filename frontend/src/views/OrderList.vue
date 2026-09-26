@@ -112,6 +112,16 @@ function getMetaLine(order) {
   return pieces.join(' · ')
 }
 
+// 派单卡片meta 行的接单打手段：老板ID 旁边显示哪一个打手接了单
+// （发布人视角 booster 不脱敏；多人接单时为首抢打手 + 总人数）
+function getBoosterMetaText(order) {
+  const { claimed } = getClaimMeta(order)
+  if (claimed <= 0) return ''
+  const name = order.booster?.username || (order.booster_id != null ? `用户 #${order.booster_id}` : '')
+  if (!name) return ''
+  return claimed > 1 ? `打手 ${name} 共 ${claimed} 人` : `打手 ${name}`
+}
+
 function buildSummary(order) {
   if (order.intro) {
     return order.intro.length > 28 ? `${order.intro.slice(0, 28)}...` : order.intro
@@ -451,7 +461,7 @@ onUnmounted(() => {
                     消息 {{ getOrderUnreadCount(order.id) }}
                   </span>
                 </div>
-                <p class="mt-2 truncate text-[13px] text-ink-3">{{ order.game_name }} · {{ formatShortDate(order.created_at) }} · #{{ order.id }}<template v-if="order.boss_contact"> · 老板ID {{ order.boss_contact }}</template></p>
+                <p class="mt-2 truncate text-[13px] text-ink-3">{{ order.game_name }} · {{ formatShortDate(order.created_at) }} · #{{ order.id }}<template v-if="order.boss_contact"> · 老板ID {{ order.boss_contact }}</template><template v-if="getBoosterMetaText(order)"> · {{ getBoosterMetaText(order) }}</template></p>
               </div>
               <div class="flex shrink-0 gap-2">
                 <div class="info-tile info-tile--compact">

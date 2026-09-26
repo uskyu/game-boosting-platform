@@ -140,6 +140,8 @@ class OrderService:
               减少、冻结余额增加（ESCROW_HOLD），余额不足返回 400。
             - 被禁止发单（can_publish=False）的非管理员返回 403；
               ADMIN 发单不受 can_publish 限。
+            - 服务费费率（百分比）仅 ADMIN 可设置，非管理员传入也被忽略
+              （按平台默认费率结算，打手入账 = price × (1 - 有效费率)）。
         """
         if user.role != UserRole.ADMIN and not user.can_publish:
             raise HTTPException(
@@ -227,6 +229,13 @@ class OrderService:
             payout_delay_days=order_data.payout_delay_days,
             payout_delay_hours=order_data.payout_delay_hours,
             require_delivery_image=bool(order_data.require_delivery_image),
+            # 服务费仅管理员可设：非管理员发布时强制落空（按平台默认费率），
+            # 防止用户发布人抽成打手报酬
+            service_fee_rate=(
+                order_data.service_fee_rate
+                if user.role == UserRole.ADMIN
+                else None
+            ),
             status=OrderStatus.PENDING,
         )
 
@@ -2310,6 +2319,11 @@ class OrderService:
                 role=self._extract_ai_detail_value(ai_tags_input, "role"),
                 requirements=self._extract_ai_detail_requirements(ai_tags_input),
             )
+
+        # 服务费仅管理员可改：非管理员（含订单创建者本人）的编辑请求
+        # 显式剔除该字段，值保持不变
+        if user.role != UserRole.ADMIN:
+            update_data.pop("service_fee_rate", None)
 
         for field, value in update_data.items():
             if hasattr(order, field):

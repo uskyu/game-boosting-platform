@@ -4,13 +4,16 @@ Pydantic models for order-related API request/response validation.
 """
 
 from datetime import datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 
+from app.core.money import resolve_service_fee_rate
 from app.models.order import PaymentStatus, ClaimStatus
 from app.schemas.serializers import serialize_datetime_utc
+
+_FEE_CENT = Decimal("0.01")
 
 
 class OrderAttachment(BaseModel):
@@ -167,6 +170,14 @@ class OrderCreate(BaseModel):
         default=False,
         description="开启后打手必须先上传 ≥1 张完成截图才能提交结单申请",
     )
+    # 服务费费率（百分比，如 8 表示 8%）：仅管理员发布时可设置；
+    # 不传 / null = 按平台默认费率（settings.COMMISSION_RATE）
+    service_fee_rate: Decimal | None = Field(
+        default=None,
+        ge=0,
+        le=100,
+        description="服务费费率（百分比，如 8 表示 8%）：仅管理员可设置，不设置按平台默认费率",
+    )
 
     description_ai: str | None = Field(
         default=None,
@@ -296,6 +307,12 @@ class OrderUpdate(BaseModel):
     require_delivery_image: bool | None = Field(
         default=None,
         description="开启/关闭“必须上传完成截图才能申请结单”；不传保持不变",
+    )
+    service_fee_rate: Decimal | None = Field(
+        default=None,
+        ge=0,
+        le=100,
+        description="服务费费率（百分比，如 8 表示 8%）：仅管理员可修改，不传保持不变",
     )
 
     @model_validator(mode="after")
@@ -482,6 +499,19 @@ class OrderResponse(BaseModel):
         default=False,
         description="是否要求上传完成截图后才能申请结单",
     )
+    # 服务费（逐单费率优先，未设置回退平台全局 COMMISSION_RATE）
+    service_fee_rate: Decimal | None = Field(
+        default=None,
+        description="本单有效服务费费率（百分比，如 8.00 表示 8%）",
+    )
+    service_fee_amount: Decimal | None = Field(
+        default=None,
+        description="服务费金额 = 订单金额 × 有效费率（分位四舍五入）",
+    )
+    net_amount: Decimal | None = Field(
+        default=None,
+        description="实际到账 = 订单金额 - 服务费（与打手结算入账同舍入口径）",
+    )
     escrow_amount: Decimal | None = Field(
         default=None,
         description="发布人托管总额（非管理员发布 = price × max_claims，管理员平台单为 null）",
@@ -499,6 +529,26 @@ class OrderResponse(BaseModel):
     @field_serializer("deadline", "created_at", "updated_at", "locked_at", "delivered_at", "completed_at", "paid_at", "accept_available_at")
     def serialize_datetime(self, value: datetime | None) -> str | None:
         return serialize_datetime_utc(value)
+
+    @model_validator(mode="after")
+    def compute_service_fee(self) -> "OrderResponse":
+        """按有效费率计算服务费/实际到账，供前端直接展示。
+
+        与结算口径保持一致：wallet_service.calculate_order_income 使用同一个
+        resolve_service_fee_rate 解析（逐单费率优先，回退平台全局），分位
+        ROUND_HALF_UP 舍入。service_fee_rate 回写为“有效百分比”，未设置
+        费率时按平台默认展示。FastAPI 二次校验时结果幂等。
+        """
+        fraction = resolve_service_fee_rate(self.service_fee_rate)
+        price = Decimal(str(self.price))
+        self.service_fee_rate = (fraction * Decimal("100")).quantize(
+            _FEE_CENT, rounding=ROUND_HALF_UP
+        )
+        self.service_fee_amount = (price * fraction).quantize(
+            _FEE_CENT, rounding=ROUND_HALF_UP
+        )
+        self.net_amount = price - self.service_fee_amount
+        return self
 
     model_config = ConfigDict(
         from_attributes=True,

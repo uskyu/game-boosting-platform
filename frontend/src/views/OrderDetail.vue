@@ -10,7 +10,7 @@ import { useChatStore } from '@/stores/chat'
 import { useOrdersStore } from '@/stores/orders'
 import { getGameImage } from '@/data/gameImages'
 import api from '@/utils/api'
-import { formatDateTime, formatDueCountdown, formatOrderPrice, formatPayoutDelay, formatPrice, formatSettlementDelay, formatShortDate, getAcceptWaitMeta, serverNow } from '@/utils/display'
+import { formatDateTime, formatDueCountdown, formatFeeRate, formatMoneyFixed, formatOrderPrice, formatPayoutDelay, formatPrice, formatSettlementDelay, formatShortDate, getAcceptWaitMeta, serverNow } from '@/utils/display'
 import { getClaimSettlementMeta, getOrderStatusBadgeClass, getOrderStatusLabel, getOrderStatusMeta, getHumanStatusLabel, getHumanStatusSubtitle } from '@/utils/order'
 
 const props = defineProps({
@@ -332,10 +332,22 @@ function claimBoosterName(claim) {
   return claim?.booster_nickname || (claim?.booster_id != null ? `用户 #${claim.booster_id}` : '打手')
 }
 
+// 服务费拆分：后端按有效费率回显（分位四舍五入，与结算同口径）；费率 0 时不展示
+const serviceFeeView = computed(() => {
+  const fee = Number(order.value?.service_fee_amount ?? 0)
+  if (!(fee > 0)) return null
+  return {
+    rate: formatFeeRate(order.value?.service_fee_rate),
+    fee,
+    net: Number(order.value?.net_amount ?? 0),
+  }
+})
+
 function openPayoutModal(claim) {
   payoutForm.value = {
     claimId: claim.id,
-    amount: String(order.value?.price ?? ''),
+    // 默认按扣除服务费后的净额打款；无服务费时为订单全额
+    amount: String(order.value?.net_amount ?? order.value?.price ?? ''),
     deduction: '',
     note: '',
   }
@@ -661,6 +673,14 @@ onUnmounted(() => {
           <div class="od-key__item od-key__item--price">
             <p class="info-tile__label">金额</p>
             <p class="od-key__price">{{ formatOrderPrice(order) }}</p>
+          </div>
+          <div v-if="serviceFeeView" class="od-key__item">
+            <p class="info-tile__label">服务费 {{ serviceFeeView.rate }}</p>
+            <p class="info-tile__value tabular-nums text-warning">-{{ formatMoneyFixed(serviceFeeView.fee) }}</p>
+          </div>
+          <div v-if="serviceFeeView" class="od-key__item">
+            <p class="info-tile__label">实际到账</p>
+            <p class="od-key__price">{{ formatMoneyFixed(serviceFeeView.net) }}</p>
           </div>
           <div v-if="order.server" class="od-key__item">
             <p class="info-tile__label">区服</p>
@@ -1082,7 +1102,10 @@ onUnmounted(() => {
             <div class="mt-4 space-y-4">
               <div>
                 <label class="label" for="payout-amount">打款金额</label>
-                <input id="payout-amount" v-model="payoutForm.amount" type="number" min="0" step="0.01" class="input" placeholder="默认订单全额" />
+                <input id="payout-amount" v-model="payoutForm.amount" type="number" min="0" step="0.01" class="input" :placeholder="serviceFeeView ? '默认扣除服务费后的金额' : '默认订单全额'" />
+                <p v-if="serviceFeeView" class="mt-2 text-xs leading-5 text-ink-2">
+                  已扣除服务费 {{ serviceFeeView.rate }}（-{{ formatMoneyFixed(serviceFeeView.fee) }}），默认到账 {{ formatMoneyFixed(serviceFeeView.net) }}；需按全额发放可手动改回 {{ formatOrderPrice(order) }}。
+                </p>
               </div>
               <div v-if="order.compensation_amount">
                 <label class="label" for="payout-deduction">扣除炸单赔偿金（0 ~ {{ formatPrice(order.compensation_amount) }}）</label>

@@ -6,7 +6,7 @@ import Lightbox from '@/components/Lightbox.vue'
 import { useChatStore } from '@/stores/chat'
 import { useOrdersStore } from '@/stores/orders'
 import api from '@/utils/api'
-import { formatDateTime, formatOrderPrice, formatPayoutDelay, formatPrice, parsePayoutDelay } from '@/utils/display'
+import { formatDateTime, formatFeeRate, formatMoneyFixed, formatOrderPrice, formatPayoutDelay, formatPrice, parsePayoutDelay, serviceFeeBreakdown } from '@/utils/display'
 import { getClaimSettlementMeta, getOrderStatusBadgeClass, getOrderStatusLabel } from '@/utils/order'
 
 const props = defineProps({
@@ -132,6 +132,9 @@ function applyEditData(state, o) {
   state.boss_contact = o.boss_contact || ''
   state.compensation_enabled = Number(o.compensation_amount ?? 0) > 0
   state.compensation_amount = o.compensation_amount != null ? String(o.compensation_amount) : ''
+  // 服务费：有效费率 >0 时视为开启（后端回显的是生效百分比）
+  state.service_fee_enabled = Number(o.service_fee_rate ?? 0) > 0
+  state.service_fee_rate = o.service_fee_rate != null ? String(o.service_fee_rate) : ''
   state.payout_delay_days = o.payout_delay_days != null ? String(o.payout_delay_days) : ''
   state.payout_delay_hours = o.payout_delay_hours != null ? String(o.payout_delay_hours) : ''
 }
@@ -151,13 +154,42 @@ function applyPayoutDelayShortcut(state, shortcut) {
   state.payout_delay_hours = shortcut.hours
 }
 
-function openEditPanel() {
-  const o = order.value
+// 服务费快捷费率
+const serviceFeeShortcuts = [
+  { label: '5%', rate: '5' },
+  { label: '8%', rate: '8' },
+  { label: '10%', rate: '10' },
+]
+
+// 订单当前服务费拆分（后端回显有效费率；费率 0 时不展示）
+const orderServiceFeeView = computed(() => {
+  const fee = Number(order.value?.service_fee_amount ?? 0)
+  if (!(fee > 0)) return null
+  return {
+    rate: formatFeeRate(order.value?.service_fee_rate),
+    fee,
+    net: Number(order.value?.net_amount ?? 0),
+  }
+})
+
+// 编辑面板服务费实时预览
+const editServiceFeePreview = computed(() => {
+  const state = editPanel.value
+  if (!state || !state.service_fee_enabled) return null
+  const price = Number(state.price)
+  if (!Number.isFinite(price) || price <= 0) return null
+  const rate = Number(state.service_fee_rate)
+  const breakdown = serviceFeeBreakdown(price, Number.isFinite(rate) ? rate : 0)
+  return { price, ratePercent: breakdown.ratePercent, fee: breakdown.fee, net: breakdown.net }
+})
+
+function openEditPanel() {  const o = order.value
   if (!o) return
   editPanel.value = {
     title: '', intro: '', description: '', price: '',
     max_claims: 1, deadline: '', attachments: [], newFiles: null,
     boss_contact: '', compensation_enabled: false, compensation_amount: '', payout_delay_days: '', payout_delay_hours: '',
+    service_fee_enabled: false, service_fee_rate: '',
     error: '', submitting: false, uploading: '', uploadProgress: '', removingIndex: -1,
   }
   applyEditData(editPanel.value, o)
@@ -258,6 +290,20 @@ async function submitEdit() {
     }
   }
 
+  // 服务费：开启后费率必填（0-100 百分数）；关闭则清空（回落到平台默认费率）
+  let serviceFeeRate = null
+  if (state.service_fee_enabled) {
+    if (state.service_fee_rate === '') {
+      state.error = '请填写服务费费率（0-100 的百分数）'
+      return
+    }
+    serviceFeeRate = Number(state.service_fee_rate)
+    if (!Number.isFinite(serviceFeeRate) || serviceFeeRate < 0 || serviceFeeRate > 100) {
+      state.error = '服务费费率需为 0-100 之间的数值'
+      return
+    }
+  }
+
   const payoutDelay = parsePayoutDelay(state.payout_delay_days, state.payout_delay_hours)
   if (payoutDelay.error) {
     state.error = payoutDelay.error
@@ -277,6 +323,7 @@ async function submitEdit() {
     deadline: state.deadline || null,
     boss_contact: bossContact || null,
     compensation_amount: compensationAmount,
+    service_fee_rate: serviceFeeRate,
     payout_delay_days: payoutDelay.days,
     payout_delay_hours: payoutDelay.hours,
   })
@@ -530,7 +577,7 @@ onMounted(async () => {
         </div>
 
         <!-- 增量契约字段：老板ID / 炸单赔偿金 / 到账时效（有值才展示） -->
-        <div v-if="order.boss_contact || Number(order.compensation_amount) > 0 || formatPayoutDelay(order)" class="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div v-if="order.boss_contact || Number(order.compensation_amount) > 0 || formatPayoutDelay(order) || orderServiceFeeView" class="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <div v-if="order.boss_contact" class="info-tile min-w-0">
             <p class="info-tile__label">老板ID</p>
             <p class="info-tile__value break-words">{{ order.boss_contact }}</p>
@@ -542,6 +589,14 @@ onMounted(async () => {
           <div v-if="formatPayoutDelay(order)" class="info-tile">
             <p class="info-tile__label">到账时效</p>
             <p class="info-tile__value tabular-nums">{{ formatPayoutDelay(order) }}到账</p>
+          </div>
+          <div v-if="orderServiceFeeView" class="info-tile">
+            <p class="info-tile__label">服务费 {{ orderServiceFeeView.rate }}</p>
+            <p class="info-tile__value tabular-nums text-warning">-{{ formatMoneyFixed(orderServiceFeeView.fee) }}</p>
+          </div>
+          <div v-if="orderServiceFeeView" class="info-tile">
+            <p class="info-tile__label">实际到账</p>
+            <p class="info-tile__value tabular-nums text-price">{{ formatMoneyFixed(orderServiceFeeView.net) }}</p>
           </div>
         </div>
 
@@ -687,6 +742,43 @@ onMounted(async () => {
             <div v-if="editPanel.compensation_enabled" class="mt-3">
               <label class="label" for="edit-compensation">赔偿金额</label>
               <input id="edit-compensation" v-model="editPanel.compensation_amount" type="number" min="0.01" step="0.01" class="input" placeholder="例如 50" :disabled="editPanel.submitting" />
+            </div>
+          </div>
+          <!-- 服务费：按订单金额百分比收取，打手实际到账 = 金额 - 服务费 -->
+          <div class="rounded-tile border border-line-1 p-4">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p class="text-sm font-semibold text-ink-1">服务费</p>
+                <p class="mt-1 text-xs leading-5 text-ink-3">按订单金额的百分比收取，打手实际到账 = 订单金额 - 服务费；不开启则按平台默认费率（默认 0%）。</p>
+              </div>
+              <button
+                type="button"
+                :class="editPanel.service_fee_enabled ? 'filter-pill-active' : 'filter-pill'"
+                :aria-pressed="editPanel.service_fee_enabled"
+                :disabled="editPanel.submitting"
+                @click="editPanel.service_fee_enabled = !editPanel.service_fee_enabled"
+              >
+                {{ editPanel.service_fee_enabled ? '已开启' : '未开启' }}
+              </button>
+            </div>
+            <div v-if="editPanel.service_fee_enabled" class="mt-3">
+              <label class="label" for="edit-service-fee-rate">服务费费率（%）</label>
+              <div class="flex flex-wrap items-center gap-2">
+                <input id="edit-service-fee-rate" v-model="editPanel.service_fee_rate" type="number" min="0" max="100" step="0.1" class="input max-w-[140px]" placeholder="例如：8" :disabled="editPanel.submitting" />
+                <button
+                  v-for="shortcut in serviceFeeShortcuts"
+                  :key="shortcut.label"
+                  type="button"
+                  class="filter-pill"
+                  :disabled="editPanel.submitting"
+                  @click="editPanel.service_fee_rate = shortcut.rate"
+                >
+                  {{ shortcut.label }}
+                </button>
+              </div>
+              <p v-if="editServiceFeePreview" class="mt-2 text-xs leading-5 text-ink-2">
+                订单金额 {{ formatMoneyFixed(editServiceFeePreview.price) }} · 服务费 {{ formatFeeRate(editServiceFeePreview.ratePercent) }} -{{ formatMoneyFixed(editServiceFeePreview.fee) }} · 打手实际到账 <span class="font-semibold text-price">{{ formatMoneyFixed(editServiceFeePreview.net) }}</span>
+              </p>
             </div>
           </div>
           <div>
@@ -947,13 +1039,24 @@ onMounted(async () => {
             </div>
           </div>
 
+          <!-- 服务费拆分：设了费率时展示，避免“全额到账”误解（入账的是净额） -->
+          <div v-if="orderServiceFeeView" class="mt-5 rounded-tile border border-line-1 p-4">
+            <p class="text-sm font-semibold text-ink-1">服务费拆分</p>
+            <p class="mt-1 text-xs leading-5 text-ink-2">
+              订单金额 {{ priceLabel(order) }} · 服务费 {{ orderServiceFeeView.rate }} -{{ formatMoneyFixed(orderServiceFeeView.fee) }} · 打手实际到账 <span class="font-semibold tabular-nums text-price">{{ formatMoneyFixed(orderServiceFeeView.net) }}</span>
+            </p>
+          </div>
+
           <!-- 打款区：仅待审核时显示 -->
           <div v-if="reviewModal.claim.status === 'DELIVERED' && !reviewModal.claim.approved_at" class="mt-5 space-y-3">
             <label class="flex cursor-pointer items-start gap-3 rounded-tile border border-line-1 p-4" :class="reviewModal.payout.mode === 'full' ? 'border-primary bg-primary-soft' : ''">
               <input v-model="reviewModal.payout.mode" type="radio" value="full" class="mt-1" />
               <div>
                 <p class="text-sm font-semibold text-ink-1">审核通过 · 全额到账</p>
-                <p class="mt-1 text-sm tabular-nums text-price">{{ priceLabel(order) }} 全部计入打手余额</p>
+                <p class="mt-1 text-sm tabular-nums text-price">
+                  <template v-if="orderServiceFeeView">{{ formatMoneyFixed(orderServiceFeeView.net) }} 计入打手余额（已扣除服务费 {{ orderServiceFeeView.rate }} -{{ formatMoneyFixed(orderServiceFeeView.fee) }}）</template>
+                  <template v-else>{{ priceLabel(order) }} 全部计入打手余额</template>
+                </p>
               </div>
             </label>
             <label class="flex cursor-pointer items-start gap-3 rounded-tile border border-line-1 p-4" :class="reviewModal.payout.mode === 'partial' ? 'border-primary bg-primary-soft' : ''">

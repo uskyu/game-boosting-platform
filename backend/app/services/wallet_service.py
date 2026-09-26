@@ -27,7 +27,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
+from app.core.money import resolve_service_fee_rate
 from app.models.order import Order
 from app.models.recharge import RechargeOrder, RechargeStatus
 from app.models.user import User
@@ -52,13 +52,16 @@ def calculate_order_income(order: Order, payout_amount: Decimal | None = None) -
 
     An explicit payout is already the net amount agreed by the reviewer and
     therefore bypasses commission. An omitted payout follows the existing
-    order-price minus commission rule. Keeping this calculation in one place
-    lets AFTER_APPROVAL review snapshots and the scheduler use identical
-    rounding semantics.
+    order-price minus commission rule, with the per-order service fee rate
+    taking precedence over the global platform rate. Keeping this calculation
+    in one place lets AFTER_APPROVAL review snapshots and the scheduler use
+    identical rounding semantics.
     """
     if payout_amount is not None:
         return _to_decimal(payout_amount).quantize(_CENT, rounding=ROUND_HALF_UP)
-    commission_rate = Decimal(str(settings.COMMISSION_RATE))
+    commission_rate = resolve_service_fee_rate(
+        getattr(order, "service_fee_rate", None)
+    )
     return (
         _to_decimal(order.price) * (Decimal("1") - commission_rate)
     ).quantize(_CENT, rounding=ROUND_HALF_UP)

@@ -5,6 +5,13 @@ const priceFormatter = new Intl.NumberFormat('zh-CN', {
   maximumFractionDigits: 2,
 })
 
+const fixedPriceFormatter = new Intl.NumberFormat('zh-CN', {
+  style: 'currency',
+  currency: 'CNY',
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+})
+
 const DISPLAY_TIME_ZONE = 'Asia/Shanghai'
 
 const shortDateFormatter = new Intl.DateTimeFormat('zh-CN', {
@@ -217,4 +224,36 @@ export function parsePayoutDelay(daysRaw, hoursRaw) {
     return { error: '到账时效需至少设置天数或小时数（不设置请都留空）' }
   }
   return { days: daysEmpty ? null : days, hours: hoursEmpty ? null : hours }
+}
+
+/** 固定两位小数的金额展示（¥138.00）：服务费三段拆分场景使用。 */
+export function formatMoneyFixed(value) {
+  const numericValue = Number(value ?? 0)
+  return fixedPriceFormatter.format(Number.isNaN(numericValue) ? 0 : numericValue)
+}
+
+/** 费率百分比展示：8 → "8%"，8.5 → "8.5%"；0 / 非法 → 空串。 */
+export function formatFeeRate(ratePercent) {
+  const rate = Number(ratePercent)
+  if (!Number.isFinite(rate) || rate <= 0) return ''
+  return `${Number(rate.toFixed(2))}%`
+}
+
+/**
+ * 服务费拆分预览（仅创建/编辑页实时预览用）。
+ * 权威数字以后端 OrderResponse.service_fee_amount / net_amount 为准
+ * （后端同为分位四舍五入，与本函数口径一致）。ratePercent 为百分数（8 = 8%）。
+ */
+export function serviceFeeBreakdown(price, ratePercent) {
+  const amount = Number(price)
+  const rate = Number(ratePercent)
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return { ratePercent: 0, fee: 0, net: 0 }
+  }
+  if (!Number.isFinite(rate) || rate <= 0) {
+    return { ratePercent: 0, fee: 0, net: amount }
+  }
+  const fee = Math.round(((amount * rate) / 100) * 100) / 100
+  const net = Math.round((amount - fee) * 100) / 100
+  return { ratePercent: rate, fee, net }
 }

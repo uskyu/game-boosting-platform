@@ -167,6 +167,12 @@ class Order(Base):
     require_delivery_image: Mapped[bool] = mapped_column(
         default=False, server_default="0", nullable=False
     )
+    # 服务费费率（百分比，如 8.00 表示 8%）：仅管理员发布/编辑时可设；
+    # null = 按平台默认费率（settings.COMMISSION_RATE）。打手结算入账 =
+    # price × (1 - 有效费率)，平台抽成即不入账差额（与全局佣金同一语义）。
+    service_fee_rate: Mapped[Decimal | None] = mapped_column(
+        Numeric(precision=5, scale=2), nullable=True
+    )
 
     # Dispatch controls (legacy status remains the workflow status)
     max_claims: Mapped[int] = mapped_column(default=1, server_default="1", nullable=False)

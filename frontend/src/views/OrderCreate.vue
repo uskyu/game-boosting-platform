@@ -5,8 +5,9 @@ import { useRouter } from 'vue-router'
 import { useGamesStore } from '@/stores/games'
 import { useOrdersStore } from '@/stores/orders'
 import { useOrderTemplatesStore } from '@/stores/orderTemplates'
+import { useAuthStore } from '@/stores/auth'
 import api from '@/utils/api'
-import { parsePayoutDelay } from '@/utils/display'
+import { formatFeeRate, formatMoneyFixed, parsePayoutDelay, serviceFeeBreakdown } from '@/utils/display'
 import { getPublishButtonLabel } from '@/utils/humanCopy'
 import { cleanTemplatePayload, resetOrderForm } from '@/utils/orderTemplates'
 
@@ -14,6 +15,9 @@ const router = useRouter()
 const gamesStore = useGamesStore()
 const ordersStore = useOrdersStore()
 const templatesStore = useOrderTemplatesStore()
+const authStore = useAuthStore()
+// 服务费仅管理员可设置（服务端同样强制，非管理员传入会被忽略）
+const isAdmin = computed(() => authStore.isAdmin)
 const templateSheetOpen = ref(false)
 const saveTemplateOpen = ref(false)
 const templateName = ref('')
@@ -39,7 +43,7 @@ function applyTemplate(template) {
     game_id: null, game_name: '', title: '', price: '', service_type: '陪玩', notes: '',
     description_raw: '', boss_contact: '', max_claims: 1, compensation_enabled: false,
     compensation_amount: '', payout_delay_days: '', payout_delay_hours: '',
-    require_delivery_image: true,
+    require_delivery_image: true, service_fee_enabled: false, service_fee_rate: '',
     attachments: formData.value.attachments,
   }, template)
   handleGameChange()
@@ -103,6 +107,9 @@ const formData = ref({
   payout_delay_hours: '',
   // 老板开关：必须上传完成截图才能申请结单（默认开启）
   require_delivery_image: true,
+  // 服务费：仅管理员可见/可设，按订单金额百分比扣除
+  service_fee_enabled: false,
+  service_fee_rate: '',
 })
 
 // 到账时效快捷选项：点选后填入天/小时输入框
@@ -118,6 +125,23 @@ function applyPayoutDelayShortcut(shortcut) {
   formData.value.payout_delay_days = shortcut.days
   formData.value.payout_delay_hours = shortcut.hours
 }
+
+// 服务费快捷费率：点选后填入费率输入框
+const serviceFeeShortcuts = [
+  { label: '5%', rate: '5' },
+  { label: '8%', rate: '8' },
+  { label: '10%', rate: '10' },
+]
+
+// 服务费实时预览：订单金额 / 服务费 / 打手实际到账（权威数字以创建后详情为准）
+const serviceFeePreview = computed(() => {
+  if (!formData.value.service_fee_enabled) return null
+  const price = Number(formData.value.price)
+  if (!Number.isFinite(price) || price <= 0) return null
+  const rate = Number(formData.value.service_fee_rate)
+  const breakdown = serviceFeeBreakdown(price, Number.isFinite(rate) ? rate : 0)
+  return { price, ratePercent: breakdown.ratePercent, fee: breakdown.fee, net: breakdown.net }
+})
 
 // 游戏下拉：只列管理员上架的游戏；仅有一个时默认选中
 const catalogGames = computed(() => gamesStore.games)
@@ -182,6 +206,20 @@ async function publishOrder() {
     }
   }
 
+  // 服务费：仅管理员可设，开启后费率必填（0-100）
+  let serviceFeeRate = null
+  if (isAdmin.value && formData.value.service_fee_enabled) {
+    if (formData.value.service_fee_rate === '') {
+      errorMessage.value = '请填写服务费费率（0-100 的百分数）'
+      return
+    }
+    serviceFeeRate = Number(formData.value.service_fee_rate)
+    if (!Number.isFinite(serviceFeeRate) || serviceFeeRate < 0 || serviceFeeRate > 100) {
+      errorMessage.value = '服务费费率需为 0-100 之间的数值'
+      return
+    }
+  }
+
   const payoutDelay = parsePayoutDelay(formData.value.payout_delay_days, formData.value.payout_delay_hours)
   if (payoutDelay.error) {
     errorMessage.value = payoutDelay.error
@@ -211,6 +249,9 @@ async function publishOrder() {
   }
   if (compensationAmount != null) {
     payload.compensation_amount = compensationAmount
+  }
+  if (serviceFeeRate != null) {
+    payload.service_fee_rate = serviceFeeRate
   }
 
   const result = await ordersStore.createOrder(payload)
@@ -393,6 +434,42 @@ onMounted(async () => {
           <div v-if="formData.compensation_enabled" class="mt-3">
             <label class="label" for="create-compensation">赔偿金额</label>
             <input id="create-compensation" v-model="formData.compensation_amount" type="number" min="0.01" step="0.01" class="input" placeholder="例如：50" />
+          </div>
+        </div>
+
+        <!-- 服务费：仅管理员可见，按订单金额百分比收取，打手实际到账 = 金额 - 服务费 -->
+        <div v-if="isAdmin" class="sm:col-span-2 rounded-tile border border-line-1 p-4">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p class="text-sm font-semibold text-ink-1">服务费</p>
+              <p class="mt-1 text-xs leading-5 text-ink-3">按订单金额的百分比收取，打手实际到账 = 订单金额 - 服务费；不开启则按平台默认费率（默认 0%）。</p>
+            </div>
+            <button
+              type="button"
+              :class="formData.service_fee_enabled ? 'filter-pill-active' : 'filter-pill'"
+              :aria-pressed="formData.service_fee_enabled"
+              @click="formData.service_fee_enabled = !formData.service_fee_enabled"
+            >
+              {{ formData.service_fee_enabled ? '已开启' : '未开启' }}
+            </button>
+          </div>
+          <div v-if="formData.service_fee_enabled" class="mt-3">
+            <label class="label" for="create-service-fee-rate">服务费费率（%）</label>
+            <div class="flex flex-wrap items-center gap-2">
+              <input id="create-service-fee-rate" v-model="formData.service_fee_rate" type="number" min="0" max="100" step="0.1" class="input max-w-[140px]" placeholder="例如：8" />
+              <button
+                v-for="shortcut in serviceFeeShortcuts"
+                :key="shortcut.label"
+                type="button"
+                class="filter-pill"
+                @click="formData.service_fee_rate = shortcut.rate"
+              >
+                {{ shortcut.label }}
+              </button>
+            </div>
+            <p v-if="serviceFeePreview" class="mt-2 text-xs leading-5 text-ink-2">
+              订单金额 {{ formatMoneyFixed(serviceFeePreview.price) }} · 服务费 {{ formatFeeRate(serviceFeePreview.ratePercent) }} -{{ formatMoneyFixed(serviceFeePreview.fee) }} · 打手实际到账 <span class="font-semibold text-price">{{ formatMoneyFixed(serviceFeePreview.net) }}</span>
+            </p>
           </div>
         </div>
 

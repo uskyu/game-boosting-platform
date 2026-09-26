@@ -20,7 +20,7 @@ import {
   getWithdrawalStatusTagClass,
 } from '@/stores/wallet'
 import api from '@/utils/api'
-import { formatDateTime, formatOrderPrice, formatPayoutDelay, formatPrice, parsePayoutDelay } from '@/utils/display'
+import { formatDateTime, formatFeeRate, formatMoneyFixed, formatOrderPrice, formatPayoutDelay, formatPrice, parsePayoutDelay, serviceFeeBreakdown } from '@/utils/display'
 import {
   getOrderStatusBadgeClass,
   getOrderStatusLabel,
@@ -372,6 +372,27 @@ const publishPayoutDelayShortcuts = [
   { label: '1天12小时', days: 1, hours: 12 },
 ]
 
+const publishServiceFeeShortcuts = [
+  { label: '5%', rate: '5' },
+  { label: '8%', rate: '8' },
+  { label: '10%', rate: '10' },
+]
+
+// 服务费实时预览：订单金额 / 服务费 / 打手实际到账
+const publishServiceFeePreview = computed(() => {
+  const state = publishModal.value
+  if (!state || !state.service_fee_enabled) return null
+  const price = Number(state.price)
+  if (!Number.isFinite(price) || price <= 0) return null
+  const rate = Number(state.service_fee_rate)
+  const breakdown = serviceFeeBreakdown(price, Number.isFinite(rate) ? rate : 0)
+  return { price, ratePercent: breakdown.ratePercent, fee: breakdown.fee, net: breakdown.net }
+})
+
+function applyPublishServiceFeeShortcut(shortcut) {
+  if (publishModal.value) publishModal.value.service_fee_rate = shortcut.rate
+}
+
 function applyPublishPayoutDelayShortcut(shortcut) {
   if (!publishModal.value) return
   publishModal.value.payout_delay_days = shortcut.days
@@ -400,6 +421,8 @@ async function openPublishModal() {
     boss_contact: '',
     compensation_enabled: false,
     compensation_amount: '',
+    service_fee_enabled: false,
+    service_fee_rate: '',
     payout_delay_days: '',
     payout_delay_hours: '',
     error: '',
@@ -465,6 +488,20 @@ async function submitPublishModal() {
     }
   }
 
+  // 服务费：开启后费率必填（0-100 百分数）
+  let serviceFeeRate = null
+  if (state.service_fee_enabled) {
+    if (state.service_fee_rate === '') {
+      state.error = '请填写服务费费率（0-100 的百分数）'
+      return
+    }
+    serviceFeeRate = Number(state.service_fee_rate)
+    if (!Number.isFinite(serviceFeeRate) || serviceFeeRate < 0 || serviceFeeRate > 100) {
+      state.error = '服务费费率需为 0-100 之间的数值'
+      return
+    }
+  }
+
   const payoutDelay = parsePayoutDelay(state.payout_delay_days, state.payout_delay_hours)
   if (payoutDelay.error) {
     state.error = payoutDelay.error
@@ -489,6 +526,9 @@ async function submitPublishModal() {
   }
   if (state.compensation_enabled) {
     payload.compensation_amount = compensationAmount
+  }
+  if (serviceFeeRate != null) {
+    payload.service_fee_rate = serviceFeeRate
   }
   const result = await ordersStore.createOrder(payload)
   if (!result.success) {
@@ -1386,6 +1426,42 @@ onMounted(async () => {
               <div v-if="publishModal.compensation_enabled" class="mt-3">
                 <label class="label" for="publish-compensation">赔偿金额</label>
                 <input id="publish-compensation" v-model="publishModal.compensation_amount" type="number" min="0.01" step="0.01" class="input" placeholder="例如 50" />
+              </div>
+            </div>
+
+            <!-- 服务费：按订单金额百分比收取，打手实际到账 = 金额 - 服务费 -->
+            <div class="rounded-tile border border-line-1 p-4">
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p class="text-sm font-semibold text-ink-1">服务费</p>
+                  <p class="mt-1 text-xs leading-5 text-ink-3">按订单金额的百分比收取，打手实际到账 = 订单金额 - 服务费；不开启则按平台默认费率（默认 0%）。</p>
+                </div>
+                <button
+                  type="button"
+                  :class="publishModal.service_fee_enabled ? 'filter-pill-active' : 'filter-pill'"
+                  :aria-pressed="publishModal.service_fee_enabled"
+                  @click="publishModal.service_fee_enabled = !publishModal.service_fee_enabled"
+                >
+                  {{ publishModal.service_fee_enabled ? '已开启' : '未开启' }}
+                </button>
+              </div>
+              <div v-if="publishModal.service_fee_enabled" class="mt-3">
+                <label class="label" for="publish-service-fee-rate">服务费费率（%）</label>
+                <div class="flex flex-wrap items-center gap-2">
+                  <input id="publish-service-fee-rate" v-model="publishModal.service_fee_rate" type="number" min="0" max="100" step="0.1" class="input max-w-[140px]" placeholder="例如：8" />
+                  <button
+                    v-for="shortcut in publishServiceFeeShortcuts"
+                    :key="shortcut.label"
+                    type="button"
+                    class="filter-pill"
+                    @click="applyPublishServiceFeeShortcut(shortcut)"
+                  >
+                    {{ shortcut.label }}
+                  </button>
+                </div>
+                <p v-if="publishServiceFeePreview" class="mt-2 text-xs leading-5 text-ink-2">
+                  订单金额 {{ formatMoneyFixed(publishServiceFeePreview.price) }} · 服务费 {{ formatFeeRate(publishServiceFeePreview.ratePercent) }} -{{ formatMoneyFixed(publishServiceFeePreview.fee) }} · 打手实际到账 <span class="font-semibold text-price">{{ formatMoneyFixed(publishServiceFeePreview.net) }}</span>
+                </p>
               </div>
             </div>
 
