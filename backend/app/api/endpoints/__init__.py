@@ -7,6 +7,7 @@ from app.api.endpoints.admin import router as admin_router
 from app.api.endpoints.admin_announcements import router as admin_announcements_router
 from app.api.endpoints.admin_deposit import router as admin_deposit_router
 from app.api.endpoints.admin_payment import router as admin_payment_router
+from app.api.endpoints.admin_service_fee import router as admin_service_fee_router
 from app.api.endpoints.admin_site import router as admin_site_router
 from app.api.endpoints.admin_users import router as admin_users_router
 from app.api.endpoints.auth import router as auth_router
@@ -30,6 +31,7 @@ from app.api.endpoints.wallet import router as wallet_router, withdrawals_router
 __all__ = [
     "admin_deposit_router",
     "admin_payment_router",
+    "admin_service_fee_router",
     "admin_router",
     "admin_announcements_router",
     "admin_site_router",

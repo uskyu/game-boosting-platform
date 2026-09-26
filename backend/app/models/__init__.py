@@ -28,6 +28,7 @@ from app.models.order import Order, OrderStatus, PaymentStatus
 from app.models.order_template import OrderTemplate
 from app.models.recharge import RechargeOrder, RechargeStatus
 from app.models.review import Review
+from app.models.service_fee import ServiceFeeSetting
 from app.models.site_setting import SiteSetting
 from app.models.user import BoosterApplicationStatus, User, UserRole
 from app.models.wallet import Wallet, WalletTransaction, WalletTransactionType
@@ -63,6 +64,7 @@ __all__ = [
     "RechargeOrder",
     "RechargeStatus",
     "Review",
+    "ServiceFeeSetting",
     "SiteSetting",
     "TimestampMixin",
     "User",

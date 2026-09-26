@@ -230,11 +230,10 @@ class OrderService:
             payout_delay_hours=order_data.payout_delay_hours,
             require_delivery_image=bool(order_data.require_delivery_image),
             # 服务费仅管理员可设：非管理员发布时强制落空（按平台默认费率），
-            # 防止用户发布人抽成打手报酬
-            service_fee_rate=(
-                order_data.service_fee_rate
-                if user.role == UserRole.ADMIN
-                else None
+            # 防止用户发布人抽成打手报酬。管理员开启但未手输费率时，按发布
+            # 瞬间的全局服务费烙盘（见 _resolve_order_service_fee）。
+            service_fee_rate=await self._resolve_order_service_fee(
+                order_data.service_fee_enabled, order_data.service_fee_rate, user
             ),
             status=OrderStatus.PENDING,
         )
@@ -666,6 +665,36 @@ class OrderService:
         setting = await deposit_service.get_or_create_deposit_setting(self._db)
         default = _to_decimal(getattr(setting, "default_compensation", None))
         return default if default > _ZERO else None
+
+    async def _resolve_order_service_fee(
+        self,
+        enabled: bool | None,
+        requested: Decimal | None,
+        user: User,
+    ) -> Decimal | None:
+        """发布/编辑时解析本单服务费费率（百分数，None = 不收取）。
+
+        - 非管理员：一律 None（不可设，按平台默认费率），防止用户发布人
+          抽成打手报酬；
+        - 显式关闭开关：None；
+        - 手填了费率：逐单值优先（某单要特例就特例；仅传 rate 不传开关
+          的旧调用方也走这条，保持兼容）；
+        - 开启但未手输：按发布瞬间的「全局服务费」烙盘——之后全局调整
+          只影响新发的订单，已发布订单的收费规则不变；
+        - 开关与费率都不传：None（历史默认，不收）。
+        """
+        if user.role != UserRole.ADMIN:
+            return None
+        if enabled is False:
+            return None
+        if requested is not None:
+            return requested
+        if enabled is True:
+            from app.services import service_fee_service
+
+            setting = await service_fee_service.get_or_create_service_fee_setting(self._db)
+            return _to_decimal(setting.service_fee_rate)
+        return None
 
     async def _deposit_gate(self, booster_id: int) -> tuple[int, bool]:
         """返回打手的 (接单等待秒数, 是否免除炸单赔付金)。
@@ -2324,6 +2353,16 @@ class OrderService:
         # 显式剔除该字段，值保持不变
         if user.role != UserRole.ADMIN:
             update_data.pop("service_fee_rate", None)
+            update_data.pop("service_fee_enabled", None)
+        elif "service_fee_enabled" in update_data or "service_fee_rate" in update_data:
+            # 开关/费率组合解析（两个字段都不传时下方循环不会碰到费率）：
+            # 开+手填=手填值；开+未填=按当前全局服务费重新烙盘；关=不收取
+            update_data["service_fee_rate"] = await self._resolve_order_service_fee(
+                update_data.get("service_fee_enabled"),
+                update_data.get("service_fee_rate"),
+                user,
+            )
+            update_data.pop("service_fee_enabled", None)
 
         for field, value in update_data.items():
             if hasattr(order, field):

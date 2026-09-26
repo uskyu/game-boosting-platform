@@ -7,11 +7,13 @@ import AdminDashboard from '@/components/admin/AdminDashboard.vue'
 import AdminUserList from '@/components/admin/AdminUserList.vue'
 import AdminSiteSettings from '@/components/admin/AdminSiteSettings.vue'
 import AdminPaymentSettings from '@/components/admin/AdminPaymentSettings.vue'
+import AdminServiceFeeSettings from '@/components/admin/AdminServiceFeeSettings.vue'
 import AdminDepositSettings from '@/components/admin/AdminDepositSettings.vue'
 import AdminAnnouncements from '@/components/admin/AdminAnnouncements.vue'
 import Lightbox from '@/components/Lightbox.vue'
 import { useOrdersStore } from '@/stores/orders'
 import { useGamesStore } from '@/stores/games'
+import { useServiceFeeStore } from '@/stores/serviceFee'
 import {
   useWalletStore,
   WITHDRAWAL_STATUS_OPTIONS,
@@ -38,10 +40,13 @@ const router = useRouter()
 const authStore = useAuthStore()
 const isAdmin = computed(() => authStore.isAdmin)
 const gamesStore = useGamesStore()
+const serviceFeeStore = useServiceFeeStore()
+// 后台全局服务费费率（百分数）；>0 时发布弹窗默认开启服务费开关
+const globalServiceFeeRate = ref(0)
 const ordersStore = useOrdersStore()
 const walletStore = useWalletStore()
 
-const TAB_KEYS = ['dashboard', 'orders', 'withdrawals', 'wallet-adjust', 'games', 'users', 'site', 'payment', 'deposit', 'announcements']
+const TAB_KEYS = ['dashboard', 'orders', 'withdrawals', 'wallet-adjust', 'games', 'users', 'site', 'payment', 'service-fee', 'deposit', 'announcements']
 
 function normalizeTab(tab) {
   const value = Array.isArray(tab) ? tab[0] : tab
@@ -378,13 +383,14 @@ const publishServiceFeeShortcuts = [
   { label: '10%', rate: '10' },
 ]
 
-// 服务费实时预览：订单金额 / 服务费 / 打手实际到账
+// 服务费实时预览：订单金额 / 服务费 / 打手实际到账；费率留空时按全局费率预览
 const publishServiceFeePreview = computed(() => {
   const state = publishModal.value
   if (!state || !state.service_fee_enabled) return null
   const price = Number(state.price)
   if (!Number.isFinite(price) || price <= 0) return null
-  const rate = Number(state.service_fee_rate)
+  const typed = Number(state.service_fee_rate)
+  const rate = state.service_fee_rate === '' ? globalServiceFeeRate.value : typed
   const breakdown = serviceFeeBreakdown(price, Number.isFinite(rate) ? rate : 0)
   return { price, ratePercent: breakdown.ratePercent, fee: breakdown.fee, net: breakdown.net }
 })
@@ -407,6 +413,11 @@ const selectedPublishGame = computed(() => {
 })
 
 async function openPublishModal() {
+  // 全局服务费：每次打开都拉最新值，保证开关默认态与预览和后台设置一致
+  const feeResult = await serviceFeeStore.fetchSettings(true)
+  if (feeResult.success) {
+    globalServiceFeeRate.value = Number(feeResult.data?.service_fee_rate ?? 0)
+  }
   publishModal.value = {
     game_id: '',
     title: '',
@@ -421,7 +432,7 @@ async function openPublishModal() {
     boss_contact: '',
     compensation_enabled: false,
     compensation_amount: '',
-    service_fee_enabled: false,
+    service_fee_enabled: globalServiceFeeRate.value > 0,
     service_fee_rate: '',
     payout_delay_days: '',
     payout_delay_hours: '',
@@ -488,13 +499,9 @@ async function submitPublishModal() {
     }
   }
 
-  // 服务费：开启后费率必填（0-100 百分数）
+  // 服务费：开启后：填了费率=逐单值，留空=按后台全局费率
   let serviceFeeRate = null
-  if (state.service_fee_enabled) {
-    if (state.service_fee_rate === '') {
-      state.error = '请填写服务费费率（0-100 的百分数）'
-      return
-    }
+  if (state.service_fee_enabled && state.service_fee_rate !== '') {
     serviceFeeRate = Number(state.service_fee_rate)
     if (!Number.isFinite(serviceFeeRate) || serviceFeeRate < 0 || serviceFeeRate > 100) {
       state.error = '服务费费率需为 0-100 之间的数值'
@@ -527,6 +534,8 @@ async function submitPublishModal() {
   if (state.compensation_enabled) {
     payload.compensation_amount = compensationAmount
   }
+  // 显式传开关：开+手填=逐单费率；开+留空=后台全局费率；关=不收
+  payload.service_fee_enabled = state.service_fee_enabled
   if (serviceFeeRate != null) {
     payload.service_fee_rate = serviceFeeRate
   }
@@ -854,6 +863,7 @@ onMounted(async () => {
           <button v-if="isAdmin" type="button" :class="activeTab === 'users' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'users'">用户管理</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'site' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'site'">站点管理</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'payment' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'payment'">支付设置</button>
+          <button v-if="isAdmin" type="button" :class="activeTab === 'service-fee' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'service-fee'">服务费设置</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'deposit' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'deposit'">保证金管理</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'announcements' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'announcements'">公告管理</button>
         </nav>
@@ -865,6 +875,7 @@ onMounted(async () => {
     <AdminUserList v-else-if="activeTab === 'users'" />
     <AdminSiteSettings v-else-if="activeTab === 'site'" />
     <AdminPaymentSettings v-else-if="activeTab === 'payment'" />
+    <AdminServiceFeeSettings v-else-if="activeTab === 'service-fee'" />
     <AdminDepositSettings v-else-if="activeTab === 'deposit'" />
     <AdminAnnouncements v-else-if="activeTab === 'announcements'" />
 
@@ -1434,7 +1445,7 @@ onMounted(async () => {
               <div class="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <p class="text-sm font-semibold text-ink-1">服务费</p>
-                  <p class="mt-1 text-xs leading-5 text-ink-3">按订单金额的百分比收取，打手实际到账 = 订单金额 - 服务费；不开启则按平台默认费率（默认 0%）。</p>
+                  <p class="mt-1 text-xs leading-5 text-ink-3">按订单金额的百分比收取，打手实际到账 = 订单金额 - 服务费。</p>
                 </div>
                 <button
                   type="button"
@@ -1445,8 +1456,15 @@ onMounted(async () => {
                   {{ publishModal.service_fee_enabled ? '已开启' : '未开启' }}
                 </button>
               </div>
+              <!-- 开关底下显示当前收取的服务费（后台全局设置） -->
+              <p class="mt-2 text-xs leading-5 text-ink-2">
+                <template v-if="globalServiceFeeRate > 0">
+                  当前全局服务费：<span class="font-semibold text-price">{{ globalServiceFeeRate }}%</span>，开启后本单按此收取；也可在下方手动填其他费率。
+                </template>
+                <template v-else>后台尚未设置全局服务费；开启后请在下方手动填写费率。</template>
+              </p>
               <div v-if="publishModal.service_fee_enabled" class="mt-3">
-                <label class="label" for="publish-service-fee-rate">服务费费率（%）</label>
+                <label class="label" for="publish-service-fee-rate">自定义费率（%，留空 = 按全局）</label>
                 <div class="flex flex-wrap items-center gap-2">
                   <input id="publish-service-fee-rate" v-model="publishModal.service_fee_rate" type="number" min="0" max="100" step="0.1" class="input max-w-[140px]" placeholder="例如：8" />
                   <button

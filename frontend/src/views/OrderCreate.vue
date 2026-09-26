@@ -6,6 +6,7 @@ import { useGamesStore } from '@/stores/games'
 import { useOrdersStore } from '@/stores/orders'
 import { useOrderTemplatesStore } from '@/stores/orderTemplates'
 import { useAuthStore } from '@/stores/auth'
+import { useServiceFeeStore } from '@/stores/serviceFee'
 import api from '@/utils/api'
 import { formatFeeRate, formatMoneyFixed, parsePayoutDelay, serviceFeeBreakdown } from '@/utils/display'
 import { getPublishButtonLabel } from '@/utils/humanCopy'
@@ -16,8 +17,11 @@ const gamesStore = useGamesStore()
 const ordersStore = useOrdersStore()
 const templatesStore = useOrderTemplatesStore()
 const authStore = useAuthStore()
+const serviceFeeStore = useServiceFeeStore()
 // 服务费仅管理员可设置（服务端同样强制，非管理员传入会被忽略）
 const isAdmin = computed(() => authStore.isAdmin)
+// 后台全局服务费费率（百分数）；>0 时发布表单默认开启服务费开关
+const globalServiceFeeRate = ref(0)
 const templateSheetOpen = ref(false)
 const saveTemplateOpen = ref(false)
 const templateName = ref('')
@@ -47,6 +51,10 @@ function applyTemplate(template) {
     attachments: formData.value.attachments,
   }, template)
   handleGameChange()
+  // 后台设了全局服务费时，套用模板后同样默认开启服务费开关
+  if (globalServiceFeeRate.value > 0) {
+    formData.value.service_fee_enabled = true
+  }
   templateSheetOpen.value = false
   templateMessage.value = `已应用模板：${template.name}`
 }
@@ -133,12 +141,14 @@ const serviceFeeShortcuts = [
   { label: '10%', rate: '10' },
 ]
 
-// 服务费实时预览：订单金额 / 服务费 / 打手实际到账（权威数字以创建后详情为准）
+// 服务费实时预览：订单金额 / 服务费 / 打手实际到账（权威数字以创建后详情为准）。
+// 费率留空时按后台全局费率预览。
 const serviceFeePreview = computed(() => {
   if (!formData.value.service_fee_enabled) return null
   const price = Number(formData.value.price)
   if (!Number.isFinite(price) || price <= 0) return null
-  const rate = Number(formData.value.service_fee_rate)
+  const typed = Number(formData.value.service_fee_rate)
+  const rate = formData.value.service_fee_rate === '' ? globalServiceFeeRate.value : typed
   const breakdown = serviceFeeBreakdown(price, Number.isFinite(rate) ? rate : 0)
   return { price, ratePercent: breakdown.ratePercent, fee: breakdown.fee, net: breakdown.net }
 })
@@ -206,13 +216,9 @@ async function publishOrder() {
     }
   }
 
-  // 服务费：仅管理员可设，开启后费率必填（0-100）
+  // 服务费：仅管理员可设。开启后：填了费率=逐单值，留空=按后台全局费率
   let serviceFeeRate = null
-  if (isAdmin.value && formData.value.service_fee_enabled) {
-    if (formData.value.service_fee_rate === '') {
-      errorMessage.value = '请填写服务费费率（0-100 的百分数）'
-      return
-    }
+  if (isAdmin.value && formData.value.service_fee_enabled && formData.value.service_fee_rate !== '') {
     serviceFeeRate = Number(formData.value.service_fee_rate)
     if (!Number.isFinite(serviceFeeRate) || serviceFeeRate < 0 || serviceFeeRate > 100) {
       errorMessage.value = '服务费费率需为 0-100 之间的数值'
@@ -250,8 +256,12 @@ async function publishOrder() {
   if (compensationAmount != null) {
     payload.compensation_amount = compensationAmount
   }
-  if (serviceFeeRate != null) {
-    payload.service_fee_rate = serviceFeeRate
+  if (isAdmin.value) {
+    // 显式传开关：开+手填=逐单费率；开+留空=后台全局费率；关=不收
+    payload.service_fee_enabled = formData.value.service_fee_enabled
+    if (serviceFeeRate != null) {
+      payload.service_fee_rate = serviceFeeRate
+    }
   }
 
   const result = await ordersStore.createOrder(payload)
@@ -290,6 +300,16 @@ watch(
 
 onMounted(async () => {
   await Promise.all([gamesStore.ensureCatalog(), templatesStore.fetchTemplates()])
+  // 管理员：拉全局服务费；后台设了费率时发单默认开启服务费开关
+  if (isAdmin.value) {
+    const result = await serviceFeeStore.fetchSettings(true)
+    if (result.success) {
+      globalServiceFeeRate.value = Number(result.data?.service_fee_rate ?? 0)
+      if (globalServiceFeeRate.value > 0) {
+        formData.value.service_fee_enabled = true
+      }
+    }
+  }
 })
 </script>
 
@@ -442,7 +462,7 @@ onMounted(async () => {
           <div class="flex flex-wrap items-center justify-between gap-3">
             <div>
               <p class="text-sm font-semibold text-ink-1">服务费</p>
-              <p class="mt-1 text-xs leading-5 text-ink-3">按订单金额的百分比收取，打手实际到账 = 订单金额 - 服务费；不开启则按平台默认费率（默认 0%）。</p>
+              <p class="mt-1 text-xs leading-5 text-ink-3">按订单金额的百分比收取，打手实际到账 = 订单金额 - 服务费。</p>
             </div>
             <button
               type="button"
@@ -453,8 +473,15 @@ onMounted(async () => {
               {{ formData.service_fee_enabled ? '已开启' : '未开启' }}
             </button>
           </div>
+          <!-- 开关底下显示当前收取的服务费（后台全局设置） -->
+          <p class="mt-2 text-xs leading-5 text-ink-2">
+            <template v-if="globalServiceFeeRate > 0">
+              当前全局服务费：<span class="font-semibold text-price">{{ globalServiceFeeRate }}%</span>，开启后本单按此收取；也可在下方手动填其他费率。
+            </template>
+            <template v-else>后台尚未设置全局服务费；开启后请在下方手动填写费率。</template>
+          </p>
           <div v-if="formData.service_fee_enabled" class="mt-3">
-            <label class="label" for="create-service-fee-rate">服务费费率（%）</label>
+            <label class="label" for="create-service-fee-rate">自定义费率（%，留空 = 按全局）</label>
             <div class="flex flex-wrap items-center gap-2">
               <input id="create-service-fee-rate" v-model="formData.service_fee_rate" type="number" min="0" max="100" step="0.1" class="input max-w-[140px]" placeholder="例如：8" />
               <button

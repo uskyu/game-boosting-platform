@@ -10,6 +10,7 @@ from app.api.endpoints import (
     admin_announcements_router,
     admin_payment_router,
     admin_router,
+    admin_service_fee_router,
     admin_site_router,
     admin_users_router,
     auth_router,
@@ -46,6 +47,7 @@ api_router.include_router(admin_announcements_router)
 api_router.include_router(admin_site_router)
 api_router.include_router(admin_payment_router)
 api_router.include_router(admin_deposit_router)
+api_router.include_router(admin_service_fee_router)
 api_router.include_router(admin_users_router)
 api_router.include_router(chat_router)
 api_router.include_router(deposit_router)

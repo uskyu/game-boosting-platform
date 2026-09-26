@@ -5,6 +5,7 @@ import { useRouter } from 'vue-router'
 import Lightbox from '@/components/Lightbox.vue'
 import { useChatStore } from '@/stores/chat'
 import { useOrdersStore } from '@/stores/orders'
+import { useServiceFeeStore } from '@/stores/serviceFee'
 import api from '@/utils/api'
 import { formatDateTime, formatFeeRate, formatMoneyFixed, formatOrderPrice, formatPayoutDelay, formatPrice, parsePayoutDelay, serviceFeeBreakdown } from '@/utils/display'
 import { getClaimSettlementMeta, getOrderStatusBadgeClass, getOrderStatusLabel } from '@/utils/order'
@@ -18,6 +19,9 @@ const props = defineProps({
 
 const router = useRouter()
 const chatStore = useChatStore()
+const serviceFeeStore = useServiceFeeStore()
+// 后台全局服务费费率（百分数）：编辑面板开关底下显示，留空费率时预览用
+const globalServiceFeeRate = ref(0)
 const ordersStore = useOrdersStore()
 
 const order = ref(null)
@@ -172,18 +176,20 @@ const orderServiceFeeView = computed(() => {
   }
 })
 
-// 编辑面板服务费实时预览
+// 编辑面板服务费实时预览；费率留空时按全局费率预览
 const editServiceFeePreview = computed(() => {
   const state = editPanel.value
   if (!state || !state.service_fee_enabled) return null
   const price = Number(state.price)
   if (!Number.isFinite(price) || price <= 0) return null
-  const rate = Number(state.service_fee_rate)
+  const typed = Number(state.service_fee_rate)
+  const rate = state.service_fee_rate === '' ? globalServiceFeeRate.value : typed
   const breakdown = serviceFeeBreakdown(price, Number.isFinite(rate) ? rate : 0)
   return { price, ratePercent: breakdown.ratePercent, fee: breakdown.fee, net: breakdown.net }
 })
 
-function openEditPanel() {  const o = order.value
+function openEditPanel() {
+  const o = order.value
   if (!o) return
   editPanel.value = {
     title: '', intro: '', description: '', price: '',
@@ -290,13 +296,9 @@ async function submitEdit() {
     }
   }
 
-  // 服务费：开启后费率必填（0-100 百分数）；关闭则清空（回落到平台默认费率）
+  // 服务费：开启后：填了费率=逐单值，留空=按后台全局费率；关闭=不收取
   let serviceFeeRate = null
-  if (state.service_fee_enabled) {
-    if (state.service_fee_rate === '') {
-      state.error = '请填写服务费费率（0-100 的百分数）'
-      return
-    }
+  if (state.service_fee_enabled && state.service_fee_rate !== '') {
     serviceFeeRate = Number(state.service_fee_rate)
     if (!Number.isFinite(serviceFeeRate) || serviceFeeRate < 0 || serviceFeeRate > 100) {
       state.error = '服务费费率需为 0-100 之间的数值'
@@ -323,6 +325,8 @@ async function submitEdit() {
     deadline: state.deadline || null,
     boss_contact: bossContact || null,
     compensation_amount: compensationAmount,
+    // 显式传开关：开+手填=逐单费率；开+留空=按后台全局费率；关=不收取
+    service_fee_enabled: state.service_fee_enabled,
     service_fee_rate: serviceFeeRate,
     payout_delay_days: payoutDelay.days,
     payout_delay_hours: payoutDelay.hours,
@@ -526,6 +530,11 @@ onMounted(async () => {
   // 并行拉取：订单详情与接单名单互不依赖（远程库延迟下串行会翻倍）
   await Promise.all([fetchOrder(), ordersStore.fetchClaims(props.id)])
   loading.value = false
+  // 全局服务费：失败不影响主流程（编辑面板只是少一行提示）
+  const feeResult = await serviceFeeStore.fetchSettings(true)
+  if (feeResult.success) {
+    globalServiceFeeRate.value = Number(feeResult.data?.service_fee_rate ?? 0)
+  }
 })
 </script>
 
@@ -749,7 +758,7 @@ onMounted(async () => {
             <div class="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <p class="text-sm font-semibold text-ink-1">服务费</p>
-                <p class="mt-1 text-xs leading-5 text-ink-3">按订单金额的百分比收取，打手实际到账 = 订单金额 - 服务费；不开启则按平台默认费率（默认 0%）。</p>
+                <p class="mt-1 text-xs leading-5 text-ink-3">按订单金额的百分比收取，打手实际到账 = 订单金额 - 服务费。</p>
               </div>
               <button
                 type="button"
@@ -761,8 +770,15 @@ onMounted(async () => {
                 {{ editPanel.service_fee_enabled ? '已开启' : '未开启' }}
               </button>
             </div>
+            <!-- 开关底下显示当前收取的服务费（后台全局设置） -->
+            <p class="mt-2 text-xs leading-5 text-ink-2">
+              <template v-if="globalServiceFeeRate > 0">
+                当前全局服务费：<span class="font-semibold text-price">{{ globalServiceFeeRate }}%</span>，开启后本单按此收取；也可在下方手动填其他费率。
+              </template>
+              <template v-else>后台尚未设置全局服务费；开启后请在下方手动填写费率。</template>
+            </p>
             <div v-if="editPanel.service_fee_enabled" class="mt-3">
-              <label class="label" for="edit-service-fee-rate">服务费费率（%）</label>
+              <label class="label" for="edit-service-fee-rate">自定义费率（%，留空 = 按全局）</label>
               <div class="flex flex-wrap items-center gap-2">
                 <input id="edit-service-fee-rate" v-model="editPanel.service_fee_rate" type="number" min="0" max="100" step="0.1" class="input max-w-[140px]" placeholder="例如：8" :disabled="editPanel.submitting" />
                 <button

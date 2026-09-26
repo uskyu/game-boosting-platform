@@ -178,6 +178,13 @@ class OrderCreate(BaseModel):
         le=100,
         description="服务费费率（百分比，如 8 表示 8%）：仅管理员可设置，不设置按平台默认费率",
     )
+    # 服务费开关（三态）：不传=沿用旧契约（仅按 rate 判断）；
+    # 开启后按 service_fee_rate（手填）或后台全局服务费收取；
+    # 显式 false = 本单不收服务费
+    service_fee_enabled: bool | None = Field(
+        default=None,
+        description="是否开启服务费；开启+不填费率=按后台全局服务费，关闭=不收取",
+    )
 
     description_ai: str | None = Field(
         default=None,
@@ -313,6 +320,10 @@ class OrderUpdate(BaseModel):
         ge=0,
         le=100,
         description="服务费费率（百分比，如 8 表示 8%）：仅管理员可修改，不传保持不变",
+    )
+    service_fee_enabled: bool | None = Field(
+        default=None,
+        description="服务费开关：不传保持不变；开启+不传费率=按当前全局服务费，关闭=不收取",
     )
 
     @model_validator(mode="after")
