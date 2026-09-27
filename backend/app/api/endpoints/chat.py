@@ -33,6 +33,13 @@ from app.services.connection_manager import get_connection_manager
 router = APIRouter(prefix="/chat", tags=["聊天"])
 logger = logging.getLogger(__name__)
 
+# 连接空闲容忍上限：移动端浏览器一旦锁屏/切后台/被系统省电冻结，客户端心跳
+# （前端每 20s 一发、仅页面可见时发）就会停发。60 秒的旧值把这些连接全部判死，
+# 线上表现为手机端只能靠 5 秒轮询兜底看新单（B 机近 24h 2378 次 receive_timeout、
+# 连接寿命中位数正好 60 秒）。放到 10 分钟后，手机短时冻结再回来连接仍然活着；
+# 真正的死连接由客户端 45s 无 pong 主动换连 + 服务端发送 5s 超时即摘除两道保险清理。
+WS_IDLE_TIMEOUT_SECONDS = 600
+
 
 def _serialize_participant(
     participant: ConversationParticipant,
@@ -263,7 +270,7 @@ async def chat_websocket(websocket: WebSocket) -> None:
             try:
                 payload = await asyncio.wait_for(
                     websocket.receive_json(),
-                    timeout=60,
+                    timeout=WS_IDLE_TIMEOUT_SECONDS,
                 )
             except asyncio.TimeoutError:
                 disconnect_kind = "receive_timeout"

@@ -216,8 +216,10 @@ watch(isAuthenticated, (loggedIn) => {
 // 才看到新订单（老板实测「电脑端没延迟、手机端有延迟」，以及 WS 断时
 // 「有提示音但不出单」）。因此对账间隔压到秒级，WS 不可用更短。
 // 成本侧：slim 响应 + noload 查询后单次列表请求 ~30ms，秒级轮询可承受。
+// 2026-09-27：WS 兜底从 5s 收到 2s。手机端长连接反复被冻结/杀掉后大部分时间
+// 走的就是这条兜底，5s 就是老板实测的「起码五秒」来源；2s 把最坏延迟压到 2s。
 const HALL_RECONCILE_INTERVAL = 10_000
-const HALL_FALLBACK_INTERVAL = 5_000
+const HALL_FALLBACK_INTERVAL = 2_000
 let hallRefreshTimer = null
 let hallUnmounted = false
 // 抢单倒计时：独立 1 秒计时器，仅驱动 now 变化

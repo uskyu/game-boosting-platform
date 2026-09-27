@@ -820,11 +820,15 @@ export const useChatStore = defineStore('chat', () => {
     const authStore = useAuthStore()
     if (
       document.visibilityState !== 'visible'
-      || !shouldReconnect
       || !authStore.accessToken
       || wsAuthRecovering
       || recoveryInFlight
     ) return
+    // 用户回到前台就是最强的"该恢复了"信号：鉴权失败 5 次后 shouldReconnect 曾被
+    // 永久置 false，手机端表现为声音和数据都不更新、只能手动刷新页面（线上实测）。
+    // 已登录（有 token）就无条件复位，交给 auth_fail → recoverAuthThenReconnect
+    // 那条自愈链重新校准；登出时 accessToken 会被清空，上面的守卫仍然拦得住。
+    shouldReconnect = true
     const ws = socket.value
 
     if (!ws) {

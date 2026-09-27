@@ -44,8 +44,11 @@ let unreadPollingTimer = null
 // disconnected, as a slow-network reconciliation fallback.
 // 注意：这条轮询同时是"有新单时的声音"和"大厅立即刷新"（newOrderNotificationVersion）
 // 的唯一来源，WS 一断就会走它。拉成 60 秒会让桌面/手机都出现"有提示音但不出单"，
-// 老板实测反馈。5 秒既保持即时感，成本也只是每用户 0.2 QPS 的轻量分页请求。
-const NOTIF_POLL_INTERVAL = 5_000
+// 老板实测反馈。
+// 2026-09-27：5s→2s。手机端 WS 被系统冻结/杀掉后大部分时间走这条兜底，5s 就是
+// 老板实测的「起码五秒」；2s 把最坏延迟压到 2s。成本是每用户 0.5 QPS 的轻量分页
+// （列表 slim+noload，单次 ~30ms），大厅兜底同步收到 2s。
+const NOTIF_POLL_INTERVAL = 2_000
 let notifPollTimer = null
 let knownNotifIds = null
 // 在飞保护：弱网下上一轮没回来就不开新一轮，避免请求堆积。

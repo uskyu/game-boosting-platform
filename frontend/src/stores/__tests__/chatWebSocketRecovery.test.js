@@ -242,6 +242,30 @@ describe('chat WebSocket recovery', () => {
     expect(FakeWebSocket.instances).toHaveLength(2)
   })
 
+  it('escapes the give-up corner: a resume signal reconnects after auth failures', async () => {
+    const chat = useChatStore()
+    const ws = connectAndAuthenticate(chat)
+    // 手机断网/令牌过期：auth_fail 且刷新令牌这条路也不通（/auth/me 失败），
+    // 旧逻辑会把 shouldReconnect 永久置 false，之后连重连都不再尝试。
+    apiGet.mockRejectedValue(new Error('offline'))
+    ws.message('auth_fail', {})
+    await flushMicrotasks()
+    await flushMicrotasks()
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect(chat.socketStatus).toBe('disconnected')
+
+    // 网络恢复/用户回到前台：App.vue 的 focus/visibility/online 都会调到这里，
+    // 必须把连接重新拉起来，不能停在放弃态（线上表现为要手动刷新页面才好）。
+    apiGet.mockResolvedValue({ data: { total_unread: 0, items: [] } })
+    chat.recoverWebSocketIfStale()
+    expect(FakeWebSocket.instances).toHaveLength(2)
+
+    const replacement = FakeWebSocket.instances[1]
+    replacement.open()
+    replacement.message('auth_ok', { user_id: 1 })
+    expect(chat.socketStatus).toBe('connected')
+  })
+
   it('does not reconnect after explicit logout/disconnect', async () => {
     const chat = useChatStore()
     const ws = connectAndAuthenticate(chat)
