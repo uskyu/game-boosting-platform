@@ -15,6 +15,7 @@ import {
 } from '@/stores/wallet'
 import { getClaimSettlementMeta } from '@/utils/order'
 import { formatCount, formatDateTime, formatOrderPrice, formatPrice, serverNow } from '@/utils/display'
+import { describeRefreshRule, quotaNotice, validateWithdrawAmount } from '@/utils/withdrawRules'
 
 const route = useRoute()
 const router = useRouter()
@@ -307,6 +308,9 @@ const walletInfo = computed(() =>
   walletStore.wallet || { available_balance: 0, frozen_balance: 0, total_income: 0, total_withdrawn: 0 }
 )
 
+// 提现机会提示：now 每秒推进，跨过刷新点（如下午 12:00 / 间隔到期）时自动解除禁用
+const withdrawQuotaNotice = computed(() => quotaNotice(walletStore.quota, now.value))
+
 // 统计卡＝白卡同款，仅数字颜色区分语义（文档 5 节：可用余额/提现=ink-1、冻结=warning、收入=success）
 const statCards = computed(() => [
   { label: '可用余额', value: formatPrice(walletInfo.value.available_balance), valueClass: 'text-ink-1', cardClass: 'stat-card' },
@@ -348,12 +352,10 @@ function transactionAmountClass(item) {
 
 function validateWithdrawForm() {
   const errors = {}
-  const amount = Number(withdrawForm.value.amount)
 
-  if (withdrawForm.value.amount === '' || !Number.isFinite(amount) || amount < 1) {
-    errors.amount = '提现金额不能低于 1 元'
-  } else if (walletStore.wallet && amount > walletInfo.value.available_balance) {
-    errors.amount = '提现金额不能超过可用余额'
+  const amountError = validateWithdrawAmount(withdrawForm.value.amount, walletInfo.value.available_balance)
+  if (amountError) {
+    errors.amount = amountError
   }
 
   if (!withdrawForm.value.account_name.trim()) {
@@ -400,6 +402,7 @@ async function submitWithdrawal() {
       walletStore.fetchWallet(),
       walletStore.fetchMyWithdrawals({ page: 1 }),
       walletStore.fetchTransactions({ page: 1 }),
+      walletStore.fetchQuota(),
     ])
   } else {
     withdrawMessage.value = { type: 'error', text: result.error || '提交失败' }
@@ -426,6 +429,7 @@ async function refreshAll() {
     walletStore.fetchWallet(),
     walletStore.fetchTransactions({ page: 1 }),
     walletStore.fetchMyWithdrawals({ page: 1 }),
+    walletStore.fetchQuota(),
   ])
 }
 
@@ -682,6 +686,8 @@ onUnmounted(() => {
         {{ withdrawMessage.text }}
       </div>
 
+      <div v-if="withdrawQuotaNotice.text" class="message-info mt-4">{{ withdrawQuotaNotice.text }}</div>
+
       <form class="mt-6 grid gap-5 lg:grid-cols-2" @submit.prevent="submitWithdrawal">
         <div>
           <label class="label" for="withdraw-amount">提现金额（元）</label>
@@ -690,10 +696,11 @@ onUnmounted(() => {
             v-model="withdrawForm.amount"
             type="number"
             min="1"
-            step="0.01"
+            step="1"
             class="input"
             :class="{ 'input-error': formErrors.amount }"
-            placeholder="最低 1 元"
+            placeholder="最低 1 元，需为整数"
+            @input="formErrors.amount = ''"
           />
           <p v-if="formErrors.amount" class="mt-2 text-xs text-danger">{{ formErrors.amount }}</p>
         </div>
@@ -761,10 +768,12 @@ onUnmounted(() => {
         </div>
 
         <div class="lg:col-span-2">
-          <button class="btn-primary w-full py-3 sm:w-auto sm:!px-10" :disabled="submittingWithdrawal || walletStore.submitting">
+          <button class="btn-primary w-full py-3 sm:w-auto sm:!px-10" :disabled="submittingWithdrawal || walletStore.submitting || withdrawQuotaNotice.blocked">
             {{ submittingWithdrawal ? '提交中...' : '提交申请' }}
           </button>
-          <p class="helper-text">提交后金额将进入冻结状态，管理员审核通过并打款后完成提现。</p>
+          <p class="helper-text">
+            <template v-if="walletStore.quota && !withdrawQuotaNotice.blocked">当前有 1 次提现机会，{{ describeRefreshRule(walletStore.quota) }}；</template>提交后金额将进入冻结状态，管理员审核通过并打款后完成提现。
+          </p>
         </div>
       </form>
     </section>

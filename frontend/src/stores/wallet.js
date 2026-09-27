@@ -162,6 +162,8 @@ export const useWalletStore = defineStore('wallet', () => {
   const depositSettingsLoading = ref(false)
   const submitting = ref(false)
   const error = ref(null)
+  // 提现机会（刷新规则）：available=false 时禁用提交，next_refresh_at 为下次恢复时间
+  const quota = ref(null)
 
   // Actions
   async function fetchWallet() {
@@ -553,6 +555,18 @@ export const useWalletStore = defineStore('wallet', () => {
     error.value = null
   }
 
+  // GET /withdrawals/quota：提现机会与下次恢复时间（服务端按刷新规则计算）
+  async function fetchQuota() {
+    try {
+      const response = await api.get('/withdrawals/quota')
+      quota.value = response.data || null
+      return { success: true, data: quota.value }
+    } catch (err) {
+      // 拉不到机会不阻塞钱包页其余数据，仅返回错误供调用方忽略
+      return { success: false, error: err.message }
+    }
+  }
+
   return {
     // State
     wallet,
@@ -580,6 +594,7 @@ export const useWalletStore = defineStore('wallet', () => {
     depositSettingsLoading,
     submitting,
     error,
+    quota,
     // Actions
     fetchWallet,
     fetchTransactions,
@@ -601,6 +616,7 @@ export const useWalletStore = defineStore('wallet', () => {
     transferFromDeposit,
     fetchDepositSettings,
     updateDepositSettings,
+    fetchQuota,
     clearError,
   }
 })

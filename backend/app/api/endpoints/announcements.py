@@ -1,19 +1,16 @@
 """Authenticated user-facing announcement endpoints."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import or_, select
 
 from app.api.deps import CurrentUser, DatabaseSession
+from app.core.product_time import PRODUCT_TIMEZONE
 from app.models.announcement import Announcement, AnnouncementFrequency, AnnouncementView
 from app.schemas.announcement import AnnouncementPublicResponse
 
 router = APIRouter(prefix="/announcements", tags=["announcements"])
-# The deployment uses Asia/Shanghai and the backend image does not ship the
-# optional system tzdata package. A fixed +08:00 offset is correct for this
-# product timezone (which has no DST) and keeps the midnight rule deterministic.
-PRODUCT_TIMEZONE = timezone(timedelta(hours=8))
 
 
 def _utc_now_naive() -> datetime:

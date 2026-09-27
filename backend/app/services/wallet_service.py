@@ -18,7 +18,8 @@ balance_before / balance_after always snapshot available_balance.
 """
 
 import logging
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 
@@ -27,17 +28,34 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.money import resolve_service_fee_rate
+from app.core.money import is_whole_yuan, resolve_service_fee_rate
+from app.core.product_time import product_local_date, product_noon_utc, product_wall_text
 from app.models.order import Order
 from app.models.recharge import RechargeOrder, RechargeStatus
 from app.models.user import User
 from app.models.wallet import Wallet, WalletTransaction, WalletTransactionType
 from app.models.withdrawal import WithdrawalRequest, WithdrawalStatus
+from app.models.withdrawal_rule import WithdrawalRefreshMode
+from app.services.withdrawal_rule_service import get_or_create_withdrawal_rule_setting
 
 logger = logging.getLogger(__name__)
 
 _CENT = Decimal("0.01")
 _ZERO = Decimal("0.00")
+
+
+@dataclass(frozen=True)
+class WithdrawalQuota:
+    """某用户在当前刷新规则下能否提现。
+
+    next_refresh_at 是 naive UTC；None = 当前有机会且为滚动模式
+    （下次取决于何时提现）。
+    """
+
+    available: bool
+    mode: WithdrawalRefreshMode
+    interval_hours: int
+    next_refresh_at: datetime | None
 
 
 def _to_decimal(value: Decimal | int | str) -> Decimal:
@@ -120,6 +138,75 @@ class WalletService:
         )
         wallet = result.scalar_one()
         return wallet
+
+    # ------------------------------------------------------------------
+    # 提现机会（刷新规则由后台可配，每次请求现读现算）
+    # ------------------------------------------------------------------
+
+    async def _last_active_withdrawal_at(self, user_id: int) -> datetime | None:
+        """该用户最近一条占用机会的提现时间（被驳回的不占机会）。"""
+        result = await self._db.execute(
+            select(WithdrawalRequest.created_at)
+            .where(
+                WithdrawalRequest.user_id == user_id,
+                WithdrawalRequest.status != WithdrawalStatus.REJECTED,
+            )
+            .order_by(WithdrawalRequest.created_at.desc(), WithdrawalRequest.id.desc())
+            .limit(1)
+        )
+        return result.scalars().first()
+
+    async def get_withdrawal_quota(self, user: User) -> WithdrawalQuota:
+        """按后台当前配置的刷新规则计算该用户的提现机会。"""
+        rule = await get_or_create_withdrawal_rule_setting(self._db)
+        # 库里是 naive UTC，保持既有约定
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        last = await self._last_active_withdrawal_at(user.id)
+
+        if rule.mode == WithdrawalRefreshMode.DAILY_NOON:
+            noon_today = product_noon_utc(product_local_date(now))
+            # 全站统一墙钟：窗口 = [最近一次 12:00, 下一次 12:00)
+            window_start = (
+                noon_today
+                if now >= noon_today
+                else product_noon_utc(product_local_date(now) - timedelta(days=1))
+            )
+            next_refresh = window_start + timedelta(days=1)
+            available = last is None or last < window_start
+        else:
+            # 模式 A：按每个用户自己滚动计时
+            available = last is None
+            next_refresh = (
+                None
+                if last is None
+                else last + timedelta(hours=rule.interval_hours)
+            )
+            if next_refresh is not None:
+                available = now >= next_refresh
+
+        # 两种模式都返回后台配置值：前端在模式 A 下用它倒计时
+        return WithdrawalQuota(
+            available=available,
+            mode=rule.mode,
+            interval_hours=rule.interval_hours,
+            next_refresh_at=next_refresh,
+        )
+
+    async def _ensure_withdrawal_quota(self, user: User) -> WithdrawalQuota:
+        """没有提现机会时抛 400。"""
+        quota = await self.get_withdrawal_quota(user)
+        if not quota.available:
+            if quota.next_refresh_at is not None:
+                detail = (
+                    f"提现机会已用完，{product_wall_text(quota.next_refresh_at)}后可再次申请"
+                )
+            else:
+                detail = "提现机会已用完，请等待刷新后再申请"
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=detail,
+            )
+        return quota
 
     # ------------------------------------------------------------------
     # Core mutation primitive
@@ -1108,8 +1195,18 @@ class WalletService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="提现金额不能低于1元",
             )
+        if not is_whole_yuan(amount):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="提现金额必须为整数（元）",
+            )
 
         wallet = await self.get_or_create_wallet(user.id)
+
+        # 锁住该用户的钱包行：同一用户的并发提交会被串行化，第二个请求等第一个
+        # 提交后必能看到已产生的记录，因此不建唯一索引也不会重复发放机会。
+        await self._lock_wallet(wallet.id)
+        await self._ensure_withdrawal_quota(user)
 
         withdrawal = WithdrawalRequest(
             user_id=user.id,

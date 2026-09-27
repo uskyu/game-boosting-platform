@@ -6,10 +6,12 @@ Pydantic models for wallet / withdrawal API request and response validation.
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
+from app.core.money import is_whole_yuan
 from app.models.wallet import WalletTransactionType
 from app.models.withdrawal import WithdrawalChannel, WithdrawalStatus
+from app.models.withdrawal_rule import WithdrawalRefreshMode
 from app.schemas.serializers import serialize_datetime_utc
 
 # =============================================================================
@@ -73,9 +75,16 @@ class WithdrawalCreateRequest(BaseModel):
     amount: Decimal = Field(
         ...,
         ge=1,
-        description="提现金额（元），最低1元",
+        description="提现金额（元），需为整数，最低 1 元",
         examples=[100.00],
     )
+
+    @field_validator("amount")
+    @classmethod
+    def _amount_must_be_whole_yuan(cls, value: Decimal) -> Decimal:
+        if not is_whole_yuan(value):
+            raise ValueError("提现金额必须为整数（元）")
+        return value
 
     channel: WithdrawalChannel = Field(
         ...,
@@ -110,6 +119,24 @@ class WithdrawalQrcodeUploadResponse(BaseModel):
     name: str = Field(description="原始文件名")
     size: int = Field(description="文件大小（字节）")
     content_type: str = Field(description="图片 MIME 类型")
+
+
+class WithdrawalQuotaResponse(BaseModel):
+    """当前用户的提现机会状态（按后台配置的刷新规则实时计算）。"""
+
+    available: bool = Field(description="当前是否有提现机会")
+    mode: WithdrawalRefreshMode = Field(description="当前生效的刷新模式")
+    interval_hours: int = Field(
+        description="每隔多少小时刷新一次（模式 A 生效，模式 B 下仍返回后台配置值）"
+    )
+    next_refresh_at: datetime | None = Field(
+        default=None,
+        description="下次恢复机会的时间（UTC）；模式 A 且当前有机会时为 null（取决于何时提现）",
+    )
+
+    @field_serializer("next_refresh_at")
+    def serialize_dt(self, value: datetime | None) -> str | None:
+        return serialize_datetime_utc(value)
 
 
 class WithdrawalResponse(BaseModel):

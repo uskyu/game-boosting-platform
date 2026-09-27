@@ -8,6 +8,7 @@ import AdminUserList from '@/components/admin/AdminUserList.vue'
 import AdminSiteSettings from '@/components/admin/AdminSiteSettings.vue'
 import AdminPaymentSettings from '@/components/admin/AdminPaymentSettings.vue'
 import AdminServiceFeeSettings from '@/components/admin/AdminServiceFeeSettings.vue'
+import AdminWithdrawalRuleSettings from '@/components/admin/AdminWithdrawalRuleSettings.vue'
 import AdminDepositSettings from '@/components/admin/AdminDepositSettings.vue'
 import AdminAnnouncements from '@/components/admin/AdminAnnouncements.vue'
 import Lightbox from '@/components/Lightbox.vue'
@@ -46,7 +47,7 @@ const globalServiceFeeRate = ref(0)
 const ordersStore = useOrdersStore()
 const walletStore = useWalletStore()
 
-const TAB_KEYS = ['dashboard', 'orders', 'withdrawals', 'wallet-adjust', 'games', 'users', 'site', 'payment', 'service-fee', 'deposit', 'announcements']
+const TAB_KEYS = ['dashboard', 'orders', 'withdrawals', 'wallet-adjust', 'games', 'users', 'site', 'payment', 'service-fee', 'withdrawal-rule', 'deposit', 'announcements']
 
 function normalizeTab(tab) {
   const value = Array.isArray(tab) ? tab[0] : tab
@@ -864,6 +865,7 @@ onMounted(async () => {
           <button v-if="isAdmin" type="button" :class="activeTab === 'site' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'site'">站点管理</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'payment' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'payment'">支付设置</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'service-fee' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'service-fee'">服务费设置</button>
+          <button v-if="isAdmin" type="button" :class="activeTab === 'withdrawal-rule' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'withdrawal-rule'">提现规则</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'deposit' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'deposit'">保证金管理</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'announcements' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'announcements'">公告管理</button>
         </nav>
@@ -876,6 +878,7 @@ onMounted(async () => {
     <AdminSiteSettings v-else-if="activeTab === 'site'" />
     <AdminPaymentSettings v-else-if="activeTab === 'payment'" />
     <AdminServiceFeeSettings v-else-if="activeTab === 'service-fee'" />
+    <AdminWithdrawalRuleSettings v-else-if="activeTab === 'withdrawal-rule'" />
     <AdminDepositSettings v-else-if="activeTab === 'deposit'" />
     <AdminAnnouncements v-else-if="activeTab === 'announcements'" />
 

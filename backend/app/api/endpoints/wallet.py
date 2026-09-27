@@ -17,6 +17,7 @@ from app.schemas.wallet import (
     WithdrawalCreateRequest,
     WithdrawalListResponse,
     WithdrawalQrcodeUploadResponse,
+    WithdrawalQuotaResponse,
     WithdrawalResponse,
 )
 from app.services.file_service import save_image_bytes, validate_image_upload
@@ -158,6 +159,29 @@ async def create_withdrawal(
         qrcode_url=qrcode_url,
     )
     return WithdrawalResponse.model_validate(withdrawal)
+
+
+@withdrawals_router.get(
+    "/quota",
+    response_model=WithdrawalQuotaResponse,
+    summary="我的提现机会",
+    description=(
+        "按后台配置的刷新规则实时计算当前登录用户的提现机会"
+        "（INTERVAL：按本人上次提现滚动计时；DAILY_NOON：自然日 12:00 全站刷新；被驳回的申请不占机会）"
+    ),
+)
+async def get_my_withdrawal_quota(
+    current_user: CurrentUser,
+    db: DatabaseSession,
+) -> WithdrawalQuotaResponse:
+    wallet_service = get_wallet_service(db)
+    quota = await wallet_service.get_withdrawal_quota(current_user)
+    return WithdrawalQuotaResponse(
+        available=quota.available,
+        mode=quota.mode,
+        interval_hours=quota.interval_hours,
+        next_refresh_at=quota.next_refresh_at,
+    )
 
 
 @withdrawals_router.get(

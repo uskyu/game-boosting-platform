@@ -5,7 +5,7 @@ pydantic schemas can resolve the effective service-fee rate without
 import cycles.
 """
 
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from app.core.config import settings
 
@@ -34,3 +34,21 @@ def resolve_service_fee_rate(order_rate: Decimal | int | str | None) -> Decimal:
     if rate > _ONE:
         return _ONE
     return rate
+
+
+def is_whole_yuan(value: Decimal | int | str | None) -> bool:
+    """金额是否为整数元：100、100.00 都算整数；50.5 不算。
+
+    归一成 Decimal 后与 to_integral_value() 比较，因此 100、'100.00'、
+    Decimal('1E+4') 都算整数。None 与任何无法解析的值（含 NaN/Infinity）
+    返回 False 而不抛异常。
+    """
+    if value is None:
+        return False
+    try:
+        normalized = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return False
+    if not normalized.is_finite():
+        return False
+    return normalized == normalized.to_integral_value()
