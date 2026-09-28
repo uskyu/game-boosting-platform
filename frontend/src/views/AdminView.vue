@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { useAuthStore } from '@/stores/auth'
@@ -9,6 +9,8 @@ import AdminSiteSettings from '@/components/admin/AdminSiteSettings.vue'
 import AdminPaymentSettings from '@/components/admin/AdminPaymentSettings.vue'
 import AdminServiceFeeSettings from '@/components/admin/AdminServiceFeeSettings.vue'
 import AdminWithdrawalRuleSettings from '@/components/admin/AdminWithdrawalRuleSettings.vue'
+import AdminWithdrawalCategorySettings from '@/components/admin/AdminWithdrawalCategorySettings.vue'
+import AdminPayoutBatches from '@/components/admin/AdminPayoutBatches.vue'
 import AdminDepositSettings from '@/components/admin/AdminDepositSettings.vue'
 import AdminAnnouncements from '@/components/admin/AdminAnnouncements.vue'
 import Lightbox from '@/components/Lightbox.vue'
@@ -35,6 +37,8 @@ import {
   getGameCategoryMeta,
   getGamePlatformLabel,
 } from '@/utils/gameCatalog'
+import { useWithdrawalPayoutStore } from '@/stores/withdrawalPayout'
+import { PAYOUT_CATEGORIES, defaultBatchRemark } from '@/utils/withdrawalCategories'
 
 const route = useRoute()
 const router = useRouter()
@@ -46,8 +50,9 @@ const serviceFeeStore = useServiceFeeStore()
 const globalServiceFeeRate = ref(0)
 const ordersStore = useOrdersStore()
 const walletStore = useWalletStore()
+const withdrawalPayoutStore = useWithdrawalPayoutStore()
 
-const TAB_KEYS = ['dashboard', 'orders', 'withdrawals', 'wallet-adjust', 'games', 'users', 'site', 'payment', 'service-fee', 'withdrawal-rule', 'deposit', 'announcements']
+const TAB_KEYS = ['dashboard', 'orders', 'withdrawals', 'wallet-adjust', 'games', 'users', 'site', 'payment', 'service-fee', 'withdrawal-rule', 'withdrawal-category', 'payout-batches', 'deposit', 'announcements']
 
 function normalizeTab(tab) {
   const value = Array.isArray(tab) ? tab[0] : tab
@@ -75,6 +80,10 @@ const message = ref({ type: '', text: '' })
 const submittingKey = ref('')
 
 const withdrawalStatus = ref('PENDING')
+// 提现分类（渠道）筛选：支付宝 / 微信 / 银行卡
+const withdrawalChannel = ref('ALIPAY')
+// 勾选加入打款批次的提现单 id（仅待审核 / 待打款可勾选）
+const selectedWithdrawalIds = ref([])
 const adjustForm = ref({ user_id: '', amount: '', reason: '' })
 const adjustMessage = ref({ type: '', text: '' })
 // 弹窗：assign（派单）/ reject（驳回提现）/ mark-paid（标记已打款）
@@ -130,10 +139,95 @@ function goDispatchDetail(order) {
 // ── 提现处理 ──
 
 async function fetchWithdrawals(page = 1) {
+  // 切分类 / 切状态 / 翻页 / 审核动作都会重拉列表：勾选态一并作废，避免跨页勾到已失效的单
+  selectedWithdrawalIds.value = []
   await walletStore.fetchAdminWithdrawals({
     status: withdrawalStatus.value,
+    channel: withdrawalChannel.value,
     page,
   })
+}
+
+// 提现分类胶囊：银行卡保留可审核，只是不能批量打款
+const withdrawalChannelPills = [
+  { value: 'ALIPAY', label: '支付宝分类' },
+  { value: 'WECHAT', label: '微信分类' },
+  { value: 'BANK', label: '银行卡分类' },
+]
+
+function changeWithdrawalChannel(channel) {
+  if (withdrawalChannel.value === channel) return
+  withdrawalChannel.value = channel
+  fetchWithdrawals(1)
+}
+
+// 只有还在审核链上的提现单能进批次（后端同样拒绝已打款 / 已驳回）
+function canSelectWithdrawal(item) {
+  return item.status === 'PENDING' || item.status === 'APPROVED'
+}
+
+function isWithdrawalSelected(id) {
+  return selectedWithdrawalIds.value.includes(id)
+}
+
+function toggleWithdrawalSelection(item) {
+  if (!canSelectWithdrawal(item)) return
+  selectedWithdrawalIds.value = isWithdrawalSelected(item.id)
+    ? selectedWithdrawalIds.value.filter((id) => id !== item.id)
+    : [...selectedWithdrawalIds.value, item.id]
+}
+
+// 已选金额按当前页汇总（切筛选 / 翻页会清空选择，选中的一定都在本页）
+const selectedWithdrawalTotal = computed(() =>
+  selectedWithdrawalIds.value.reduce((sum, id) => {
+    const item = walletStore.adminWithdrawals.find((row) => row.id === id)
+    const amount = Number(item?.amount)
+    return sum + (Number.isFinite(amount) ? amount : 0)
+  }, 0)
+)
+
+// ── 打款批次：提现处理勾选 → 建批 → 「打款批次」页导回执 ──
+
+const payoutCategoryOptions = PAYOUT_CATEGORIES.map((item) => ({ value: item.value, label: item.label }))
+const showPayoutBatchModal = ref(false)
+const payoutBatchForm = reactive({ category: 'ALIPAY', remark: '' })
+const payoutBatchError = ref('')
+
+function openPayoutBatchModal() {
+  if (!selectedWithdrawalIds.value.length) return
+  payoutBatchError.value = ''
+  // 按当前分类预选（银行卡不参与批量打款，入口已禁用，这里兜底按支付宝）
+  payoutBatchForm.category = withdrawalChannel.value === 'BANK' ? 'ALIPAY' : withdrawalChannel.value
+  payoutBatchForm.remark = defaultBatchRemark()
+  showPayoutBatchModal.value = true
+}
+
+function closePayoutBatchModal() {
+  if (withdrawalPayoutStore.submitting) return
+  showPayoutBatchModal.value = false
+}
+
+async function submitPayoutBatch() {
+  payoutBatchError.value = ''
+  if (!selectedWithdrawalIds.value.length) {
+    payoutBatchError.value = '请先勾选要加入批次的提现'
+    return
+  }
+  const count = selectedWithdrawalIds.value.length
+  const totalText = formatPrice(selectedWithdrawalTotal.value)
+  const result = await withdrawalPayoutStore.createBatch({
+    ids: [...selectedWithdrawalIds.value],
+    category: payoutBatchForm.category,
+    remark: payoutBatchForm.remark,
+  })
+  if (!result.success) {
+    payoutBatchError.value = formatApiError(result.error) || '创建打款批次失败'
+    return
+  }
+  showPayoutBatchModal.value = false
+  selectedWithdrawalIds.value = []
+  message.value = { type: 'success', text: `已创建打款批次：${count} 笔，合计 ${totalText}` }
+  activeTab.value = 'payout-batches'
 }
 
 function withdrawalApplicant(item) {
@@ -866,6 +960,8 @@ onMounted(async () => {
           <button v-if="isAdmin" type="button" :class="activeTab === 'payment' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'payment'">支付设置</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'service-fee' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'service-fee'">服务费设置</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'withdrawal-rule' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'withdrawal-rule'">提现规则</button>
+          <button v-if="isAdmin" type="button" :class="activeTab === 'withdrawal-category' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'withdrawal-category'">提现分类</button>
+          <button v-if="isAdmin" type="button" :class="activeTab === 'payout-batches' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'payout-batches'">打款批次</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'deposit' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'deposit'">保证金管理</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'announcements' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'announcements'">公告管理</button>
         </nav>
@@ -879,6 +975,8 @@ onMounted(async () => {
     <AdminPaymentSettings v-else-if="activeTab === 'payment'" />
     <AdminServiceFeeSettings v-else-if="activeTab === 'service-fee'" />
     <AdminWithdrawalRuleSettings v-else-if="activeTab === 'withdrawal-rule'" />
+    <AdminWithdrawalCategorySettings v-else-if="activeTab === 'withdrawal-category'" />
+    <AdminPayoutBatches v-else-if="activeTab === 'payout-batches'" />
     <AdminDepositSettings v-else-if="activeTab === 'deposit'" />
     <AdminAnnouncements v-else-if="activeTab === 'announcements'" />
 
@@ -971,6 +1069,35 @@ onMounted(async () => {
         </div>
       </div>
 
+      <!-- 提现分类胶囊：银行卡分类保留（可正常审核 / 标记已打款），只是不参与批量打款 -->
+      <div class="mt-4 flex flex-wrap items-center gap-2">
+        <button
+          v-for="channel in withdrawalChannelPills"
+          :key="channel.value"
+          type="button"
+          :class="withdrawalChannel === channel.value ? 'tab-pill-active' : 'tab-pill'"
+          @click="changeWithdrawalChannel(channel.value)"
+        >
+          {{ channel.label }}
+        </button>
+      </div>
+
+      <!-- 勾选提现单 → 打包成打款批次 -->
+      <div v-if="selectedWithdrawalIds.length" class="mt-4 flex flex-wrap items-center gap-3">
+        <span class="text-sm text-ink-2">已选 {{ selectedWithdrawalIds.length }} 笔 · 合计 {{ formatPrice(selectedWithdrawalTotal) }}</span>
+        <span v-if="withdrawalChannel === 'BANK'" class="message-info !py-1.5">银行卡不参与批量打款</span>
+        <button
+          type="button"
+          class="btn-primary min-h-[44px] !px-4 !py-2"
+          :disabled="withdrawalChannel === 'BANK'"
+          :title="withdrawalChannel === 'BANK' ? '银行卡不参与批量打款' : ''"
+          @click="openPayoutBatchModal"
+        >
+          创建打款批次
+        </button>
+        <button type="button" class="btn-ghost !px-4 !py-2" @click="selectedWithdrawalIds = []">取消选择</button>
+      </div>
+
       <div v-if="loadingWithdrawals" class="mt-6 space-y-3" aria-busy="true">
         <div v-for="n in 4" :key="`wd-skeleton-${n}`" class="skeleton h-36 !rounded-card"></div>
       </div>
@@ -1029,7 +1156,27 @@ onMounted(async () => {
             打款流水号：{{ item.payment_reference }}
           </div>
 
-          <p class="mt-4 text-xs text-ink-3">点击卡片查看详情并处理 →</p>
+          <div class="mt-4 flex flex-wrap items-center justify-between gap-3">
+            <!-- 勾选加入打款批次：点击不能顺带打开详情弹窗（@click.stop 拦住冒泡） -->
+            <label
+              v-if="canSelectWithdrawal(item)"
+              class="inline-flex min-h-[44px] cursor-pointer items-center gap-2 text-sm text-ink-2"
+              title="仅待审核/待打款的提现可加入批次"
+              @click.stop
+            >
+              <input
+                type="checkbox"
+                class="cursor-pointer"
+                :checked="isWithdrawalSelected(item.id)"
+                title="仅待审核/待打款的提现可加入批次"
+                @click.stop
+                @change="toggleWithdrawalSelection(item)"
+              />
+              加入批次
+            </label>
+            <span v-else class="text-xs text-ink-3" title="仅待审核/待打款的提现可加入批次">不可加入批次</span>
+            <p class="text-xs text-ink-3">点击卡片查看详情并处理 →</p>
+          </div>
         </article>
       </div>
 
@@ -1310,6 +1457,62 @@ onMounted(async () => {
               标记已打款
             </button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 创建打款批次弹窗（独立弹窗：payload 是 ids+category+remark，不复用通用 modal） -->
+    <div v-if="showPayoutBatchModal" class="modal-scrim modal-scrim--sheet">
+      <div class="absolute inset-0" aria-hidden="true" @click="closePayoutBatchModal"></div>
+
+      <div class="modal-card modal-sheet" role="dialog" aria-modal="true" aria-label="创建打款批次">
+        <div class="relative z-10">
+          <h3 class="text-2xl font-semibold text-ink-1">创建打款批次</h3>
+          <p class="mt-2 text-sm text-ink-2">
+            已选 {{ selectedWithdrawalIds.length }} 笔 · 合计
+            <span class="font-semibold tabular-nums text-price">{{ formatPrice(selectedWithdrawalTotal) }}</span>
+          </p>
+
+          <div v-if="payoutBatchError" class="message-error mt-4">{{ payoutBatchError }}</div>
+
+          <form class="mt-5 space-y-4" @submit.prevent="submitPayoutBatch">
+            <div>
+              <p class="label">打款分类</p>
+              <div class="flex flex-wrap items-center gap-2">
+                <button
+                  v-for="option in payoutCategoryOptions"
+                  :key="option.value"
+                  type="button"
+                  class="filter-pill"
+                  :class="{ 'filter-pill-active': payoutBatchForm.category === option.value }"
+                  @click="payoutBatchForm.category = option.value"
+                >
+                  {{ option.label }}
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <label class="label" for="payout-batch-remark">批次备注</label>
+              <input
+                id="payout-batch-remark"
+                v-model="payoutBatchForm.remark"
+                type="text"
+                class="input"
+                maxlength="120"
+                placeholder="例如「9月28号提现打款」"
+              />
+            </div>
+
+            <p class="text-xs text-ink-3">创建后到「打款批次」页导出付款文件、导入回执。</p>
+
+            <div class="flex justify-end gap-3 pt-2">
+              <button type="button" class="btn-ghost !px-4 !py-2" @click="closePayoutBatchModal">取消</button>
+              <button type="submit" class="btn-primary !px-5 !py-2" :disabled="withdrawalPayoutStore.submitting">
+                {{ withdrawalPayoutStore.submitting ? '创建中...' : '创建' }}
+              </button>
+            </div>
+          </form>
         </div>
       </div>
     </div>

@@ -13,6 +13,8 @@ from app.api.endpoints import (
     admin_service_fee_router,
     admin_site_router,
     admin_users_router,
+    admin_withdrawal_category_router,
+    admin_withdrawal_payout_router,
     admin_withdrawal_rule_router,
     auth_router,
     announcements_router,
@@ -50,6 +52,8 @@ api_router.include_router(admin_payment_router)
 api_router.include_router(admin_deposit_router)
 api_router.include_router(admin_service_fee_router)
 api_router.include_router(admin_withdrawal_rule_router)
+api_router.include_router(admin_withdrawal_category_router)
+api_router.include_router(admin_withdrawal_payout_router)
 api_router.include_router(admin_users_router)
 api_router.include_router(chat_router)
 api_router.include_router(deposit_router)

@@ -5,6 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useOrdersStore } from '@/stores/orders'
 import { useWalletStore } from '@/stores/wallet'
+import { useWithdrawalSettingsStore } from '@/stores/withdrawalSettings'
 import {
   TRANSACTION_TYPE_META,
   WITHDRAWAL_CHANNELS,
@@ -22,6 +23,7 @@ const router = useRouter()
 const walletStore = useWalletStore()
 const authStore = useAuthStore()
 const ordersStore = useOrdersStore()
+const withdrawalSettings = useWithdrawalSettingsStore()
 
 // 到账倒计时按秒跳动：now 用服务器校准时间（设备本地时钟可能偏差数秒）
 const now = ref(serverNow())
@@ -266,6 +268,24 @@ const formErrors = ref({})
 const withdrawMessage = ref({ type: '', text: '' })
 const submittingWithdrawal = ref(false)
 
+// 渠道开关：后台关闭的渠道在表单里禁用并标注（BANK 恒开），提交时服务端还会再拦一次
+const channelOptions = computed(() =>
+  WITHDRAWAL_CHANNELS.map((channel) => {
+    const enabled = withdrawalSettings.isChannelEnabled(channel.value)
+    return {
+      value: channel.value,
+      label: enabled ? channel.label : `${channel.label}（暂未开放）`,
+      enabled,
+    }
+  })
+)
+
+// 当前选中的渠道被后台关掉时（设置变更 / 缓存过期）在表单内提示更换
+const currentChannelDisabled = computed(() => {
+  const option = channelOptions.value.find((item) => item.value === withdrawForm.value.channel)
+  return option ? !option.enabled : false
+})
+
 // ── 收款二维码（ALIPAY / WECHAT 可选，PNG/JPEG/WebP ≤10MB）──
 const qrcode = ref(null) // 上传成功后 {url,name,size,content_type}
 const qrcodeUploading = ref(false)
@@ -440,7 +460,8 @@ onMounted(() => {
     router.replace({ query: { ...route.query, recharge: undefined } })
   }
   // 并行拉取：钱包数据与审核中报名单互不依赖，串行会放大远程库延迟
-  Promise.all([refreshAll(), fetchReviewClaims(), fetchRechargeData(), fetchDepositData()])
+  // 渠道开关单独一路：拉不到（如 403）不阻塞页面，isChannelEnabled 会按默认全开兜底
+  Promise.all([refreshAll(), fetchReviewClaims(), fetchRechargeData(), fetchDepositData(), withdrawalSettings.fetchChannels()])
   countdownTimer = window.setInterval(() => {
     now.value = serverNow()
   }, 1000)
@@ -708,10 +729,11 @@ onUnmounted(() => {
         <div>
           <label class="label" for="withdraw-channel">收款渠道</label>
           <select id="withdraw-channel" v-model="withdrawForm.channel" class="input">
-            <option v-for="channel in WITHDRAWAL_CHANNELS" :key="channel.value" :value="channel.value">
+            <option v-for="channel in channelOptions" :key="channel.value" :value="channel.value" :disabled="!channel.enabled">
               {{ channel.label }}
             </option>
           </select>
+          <div v-if="currentChannelDisabled" class="message-error mt-2">该收款渠道暂未开放，请选择其他渠道</div>
         </div>
 
         <div>

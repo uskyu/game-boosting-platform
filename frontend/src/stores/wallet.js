@@ -279,6 +279,7 @@ export const useWalletStore = defineStore('wallet', () => {
       const response = await api.get('/admin/withdrawals', {
         params: {
           status: options.status || undefined,
+          channel: options.channel || undefined,
           page: options.page || adminWithdrawalsPagination.value.page,
           page_size: options.pageSize || adminWithdrawalsPagination.value.pageSize,
         },

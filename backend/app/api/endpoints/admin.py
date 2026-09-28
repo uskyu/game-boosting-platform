@@ -17,7 +17,7 @@ from app.models.notification import NotificationType
 from app.models.order import ClaimLifecycleStatus, Order, OrderClaim, OrderStatus
 from app.models.user import BoosterApplicationStatus, User
 from app.models.wallet import Wallet
-from app.models.withdrawal import WithdrawalStatus
+from app.models.withdrawal import WithdrawalChannel, WithdrawalStatus
 from app.schemas.admin import (
     AdminOrderAssignRequest,
     AdminOrderInterventionRequest,
@@ -471,6 +471,7 @@ async def list_withdrawals_for_admin(
     db: DatabaseSession,
     current_admin: Annotated[User, Depends(get_current_admin)],
     status_filter: WithdrawalStatus | None = Query(default=None, alias="status"),
+    channel_filter: WithdrawalChannel | None = Query(default=None, alias="channel"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
 ) -> AdminWithdrawalListResponse:
@@ -478,6 +479,7 @@ async def list_withdrawals_for_admin(
     wallet_service = get_wallet_service(db)
     withdrawals, total = await wallet_service.list_withdrawals(
         status_filter=status_filter,
+        channel_filter=channel_filter,
         page=page,
         page_size=page_size,
     )

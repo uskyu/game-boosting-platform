@@ -34,8 +34,9 @@ from app.models.order import Order
 from app.models.recharge import RechargeOrder, RechargeStatus
 from app.models.user import User
 from app.models.wallet import Wallet, WalletTransaction, WalletTransactionType
-from app.models.withdrawal import WithdrawalRequest, WithdrawalStatus
+from app.models.withdrawal import WithdrawalChannel, WithdrawalRequest, WithdrawalStatus
 from app.models.withdrawal_rule import WithdrawalRefreshMode
+from app.services.withdrawal_channel_service import ensure_channel_enabled
 from app.services.withdrawal_rule_service import get_or_create_withdrawal_rule_setting
 
 logger = logging.getLogger(__name__)
@@ -1208,6 +1209,9 @@ class WalletService:
         await self._lock_wallet(wallet.id)
         await self._ensure_withdrawal_quota(user)
 
+        # 渠道开关校验：被后台关闭的支付宝/微信渠道不允许新增提现（BANK 不受限）。
+        await ensure_channel_enabled(self._db, channel)
+
         withdrawal = WithdrawalRequest(
             user_id=user.id,
             amount=amount,
@@ -1397,6 +1401,7 @@ class WalletService:
         *,
         user_id: int | None = None,
         status_filter: WithdrawalStatus | None = None,
+        channel_filter: WithdrawalChannel | None = None,
         page: int = 1,
         page_size: int = 20,
     ) -> tuple[list[WithdrawalRequest], int]:
@@ -1410,6 +1415,9 @@ class WalletService:
         if status_filter is not None:
             query = query.where(WithdrawalRequest.status == status_filter)
             count_query = count_query.where(WithdrawalRequest.status == status_filter)
+        if channel_filter is not None:
+            query = query.where(WithdrawalRequest.channel == channel_filter)
+            count_query = count_query.where(WithdrawalRequest.channel == channel_filter)
 
         total = int((await self._db.execute(count_query)).scalar() or 0)
 

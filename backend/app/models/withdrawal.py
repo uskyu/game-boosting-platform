@@ -135,6 +135,12 @@ class WithdrawalRequest(Base):
         nullable=True,
     )
 
+    # 所属批量打款批次（支付宝/微信分类批量付款，见 withdrawal_payout_batch.py）
+    payout_batch_id: Mapped[int | None] = mapped_column(
+        nullable=True,
+        index=True,
+    )
+
     paid_at: Mapped[datetime | None] = mapped_column(
         nullable=True,
     )

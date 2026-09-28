@@ -33,6 +33,12 @@ from app.models.site_setting import SiteSetting
 from app.models.user import BoosterApplicationStatus, User, UserRole
 from app.models.wallet import Wallet, WalletTransaction, WalletTransactionType
 from app.models.withdrawal import WithdrawalChannel, WithdrawalRequest, WithdrawalStatus
+from app.models.withdrawal_channel_settings import WithdrawalChannelSetting
+from app.models.withdrawal_payout_batch import (
+    WithdrawalPayoutBatch,
+    WithdrawalPayoutBatchStatus,
+    WithdrawalPayoutCategory,
+)
 from app.models.withdrawal_rule import WithdrawalRefreshMode, WithdrawalRuleSetting
 
 __all__ = [
@@ -76,6 +82,10 @@ __all__ = [
     "WalletTransaction",
     "WalletTransactionType",
     "WithdrawalChannel",
+    "WithdrawalChannelSetting",
+    "WithdrawalPayoutBatch",
+    "WithdrawalPayoutBatchStatus",
+    "WithdrawalPayoutCategory",
     "WithdrawalRefreshMode",
     "WithdrawalRequest",
     "WithdrawalRuleSetting",

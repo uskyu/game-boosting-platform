@@ -20,8 +20,13 @@ from app.schemas.wallet import (
     WithdrawalQuotaResponse,
     WithdrawalResponse,
 )
+from app.schemas.withdrawal_payout import (
+    WithdrawalChannelOptionResponse,
+    WithdrawalChannelOptionsResponse,
+)
 from app.services.file_service import save_image_bytes, validate_image_upload
 from app.services.wallet_service import get_wallet_service
+from app.services.withdrawal_channel_service import get_channel_options
 
 router = APIRouter(prefix="/wallet", tags=["钱包"])
 
@@ -159,6 +164,22 @@ async def create_withdrawal(
         qrcode_url=qrcode_url,
     )
     return WithdrawalResponse.model_validate(withdrawal)
+
+
+@withdrawals_router.get(
+    "/channels",
+    response_model=WithdrawalChannelOptionsResponse,
+    summary="可用的提现渠道",
+    description="返回各提现渠道（支付宝/微信/银行卡）及当前是否对外开放（BANK 始终开放）",
+)
+async def get_withdrawal_channels(
+    current_user: CurrentUser,
+    db: DatabaseSession,
+) -> WithdrawalChannelOptionsResponse:
+    options = await get_channel_options(db)
+    return WithdrawalChannelOptionsResponse(
+        items=[WithdrawalChannelOptionResponse(**opt) for opt in options]
+    )
 
 
 @withdrawals_router.get(

@@ -10,6 +10,12 @@ from app.api.endpoints.admin_payment import router as admin_payment_router
 from app.api.endpoints.admin_service_fee import router as admin_service_fee_router
 from app.api.endpoints.admin_site import router as admin_site_router
 from app.api.endpoints.admin_users import router as admin_users_router
+from app.api.endpoints.admin_withdrawal_category import (
+    router as admin_withdrawal_category_router,
+)
+from app.api.endpoints.admin_withdrawal_payout import (
+    router as admin_withdrawal_payout_router,
+)
 from app.api.endpoints.admin_withdrawal_rule import (
     router as admin_withdrawal_rule_router,
 )
@@ -39,6 +45,8 @@ __all__ = [
     "admin_announcements_router",
     "admin_site_router",
     "admin_users_router",
+    "admin_withdrawal_category_router",
+    "admin_withdrawal_payout_router",
     "admin_withdrawal_rule_router",
     "auth_router",
     "announcements_router",
