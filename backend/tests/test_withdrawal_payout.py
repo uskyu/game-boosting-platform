@@ -20,11 +20,12 @@ from urllib.parse import quote
 import xlrd
 import xlwt
 from httpx import AsyncClient
-from sqlalchemy import select
+from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.product_time import product_local_date
 from app.models.notification import Notification
+from app.models.withdrawal import WithdrawalChannel, WithdrawalRequest, WithdrawalStatus
 from app.services.withdrawal_payout_service import MAX_BATCH_ITEMS
 from tests.conftest import auth_header
 
@@ -2084,3 +2085,171 @@ async def test_payout_batch_list_and_detail_pagination(
     assert detail["items"][0]["payout_result"] is None
     assert detail["items"][0]["status"] == "PENDING"
     assert detail["remark"] == "第1批"
+
+
+# =============================================================================
+# 21. 全选辅助端点：/withdrawal-payout/selectable-withdrawals
+# =============================================================================
+
+
+async def _selectable_withdrawals(
+    client: AsyncClient, admin_user: dict, **params
+) -> dict:
+    resp = await client.get(
+        "/admin/withdrawal-payout/selectable-withdrawals",
+        params=params,
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+async def test_selectable_withdrawals_eligibility_and_filters(
+    client: AsyncClient, admin_user: dict, make_captcha
+):
+    """只有待审核/待打款进全选池；status / channel 筛选口径与后台列表一致。"""
+    # 4 笔支付宝：2 待审核 + 1 待打款 + 1 已驳回 + 1 已打款
+    _, pending_a = await _make_withdrawal(
+        client, admin_user, make_captcha,
+        email="sel_pa@example.com", username="SelPa", amount=10,
+    )
+    _, pending_b = await _make_withdrawal(
+        client, admin_user, make_captcha,
+        email="sel_pb@example.com", username="SelPb", amount=20,
+    )
+    _, approved = await _make_withdrawal(
+        client, admin_user, make_captcha,
+        email="sel_approved@example.com", username="SelApproved", amount=40,
+    )
+    await _approve(client, admin_user, approved["id"])
+    _, rejected = await _make_withdrawal(
+        client, admin_user, make_captcha,
+        email="sel_rejected@example.com", username="SelRejected", amount=80,
+    )
+    await _reject(client, admin_user, rejected["id"])
+    _, paid = await _make_withdrawal(
+        client, admin_user, make_captcha,
+        email="sel_paid@example.com", username="SelPaid", amount=160,
+    )
+    await _approve(client, admin_user, paid["id"])
+    await _mark_paid(client, admin_user, paid["id"], "SEL-PAID-1")
+
+    # 1 笔微信待审核
+    _, wechat = await _make_withdrawal(
+        client, admin_user, make_captcha,
+        email="sel_wechat@example.com", username="SelWechat", amount=30,
+        channel="WECHAT",
+    )
+
+    eligible_ids = {pending_a["id"], pending_b["id"], approved["id"], wechat["id"]}
+
+    # a. 不带参数：4 笔可勾选（2 待审核 + 1 待打款 + 1 微信待审核）
+    data = await _selectable_withdrawals(client, admin_user)
+    assert data["exceeded"] is False
+    assert data["max_items"] == MAX_BATCH_ITEMS
+    assert data["count"] == 4
+    assert {item["id"] for item in data["items"]} == eligible_ids
+    assert [item["id"] for item in data["items"]] == sorted(eligible_ids), "按 id 升序"
+    # 明细项只含 id + amount
+    assert set(data["items"][0]) == {"id", "amount"}
+    assert Decimal(str(data["total_amount"])) == Decimal("100.00"), "10+20+40+30"
+    by_id = {item["id"]: item for item in data["items"]}
+    assert by_id[pending_a["id"]]["amount"] == "10.00"
+    assert by_id[wechat["id"]]["amount"] == "30.00"
+
+    # b. status=PENDING：只剩 3 笔待审核（2 支付宝 + 1 微信）
+    data = await _selectable_withdrawals(client, admin_user, status="PENDING")
+    assert data["count"] == 3
+    assert {item["id"] for item in data["items"]} == {
+        pending_a["id"], pending_b["id"], wechat["id"],
+    }
+    assert Decimal(str(data["total_amount"])) == Decimal("60.00")
+
+    # c. status=APPROVED：只剩那笔待打款
+    data = await _selectable_withdrawals(client, admin_user, status="APPROVED")
+    assert data["count"] == 1
+    assert data["items"][0]["id"] == approved["id"]
+
+    # d. channel=WECHAT：只剩微信那笔
+    data = await _selectable_withdrawals(client, admin_user, channel="WECHAT")
+    assert data["count"] == 1
+    assert data["items"][0]["id"] == wechat["id"]
+
+    # e. status=REJECTED：被驳回的不在可勾选池里 → 空
+    data = await _selectable_withdrawals(client, admin_user, status="REJECTED")
+    assert data["count"] == 0
+    assert data["items"] == []
+    assert Decimal(str(data["total_amount"])) == Decimal("0.00")
+
+    # f. channel=ALIPAY + status=PENDING：支付宝的两笔待审核
+    data = await _selectable_withdrawals(
+        client, admin_user, channel="ALIPAY", status="PENDING"
+    )
+    assert data["count"] == 2
+    assert {item["id"] for item in data["items"]} == {pending_a["id"], pending_b["id"]}
+
+
+async def test_selectable_withdrawals_exceeds_max_items(
+    client: AsyncClient, admin_user: dict, db_session: AsyncSession
+):
+    """超过单批上限：exceeded=true、items 为空，但 count 仍是真实命中数、总额照算。"""
+    admin_id = admin_user["user"]["id"]
+    bulk = MAX_BATCH_ITEMS + 1
+
+    # 走 SQLAlchemy core 批量插入（绕开 HTTP，几百倍快），全部为可勾选状态
+    await db_session.execute(
+        insert(WithdrawalRequest),
+        [
+            {
+                "user_id": admin_id,
+                "amount": Decimal("1.00"),
+                "channel": WithdrawalChannel.ALIPAY,
+                "account_name": "批量",
+                "account_no": f"bulk-{index}",
+                "status": WithdrawalStatus.PENDING,
+            }
+            for index in range(bulk)
+        ],
+    )
+    await db_session.commit()
+
+    data = await _selectable_withdrawals(client, admin_user)
+    assert data["exceeded"] is True
+    assert data["items"] == [], "超上限不回明细"
+    assert data["max_items"] == MAX_BATCH_ITEMS
+    assert data["count"] == bulk, "count 必须是真实命中数"
+    assert Decimal(str(data["total_amount"])) == Decimal(bulk)
+
+    # 缩小筛选范围后解除 exceeded
+    data = await _selectable_withdrawals(
+        client, admin_user, status="APPROVED"
+    )
+    assert data["exceeded"] is False
+    assert data["count"] == 0
+    assert data["items"] == []
+
+
+async def test_selectable_withdrawals_requires_admin(
+    client: AsyncClient, admin_user: dict, registered_user: dict, make_captcha
+):
+    """非管理员 403。"""
+    _, withdrawal = await _make_withdrawal(
+        client, admin_user, make_captcha,
+        email="sel_perm@example.com", username="SelPerm", amount=30,
+    )
+
+    # 普通用户（含已登录）一律 403
+    resp = await client.get(
+        "/admin/withdrawal-payout/selectable-withdrawals",
+        headers=auth_header(registered_user),
+    )
+    assert resp.status_code == 403, resp.text
+
+    # 未登录则 401（与其它 admin 端点口径一致）
+    resp = await client.get("/admin/withdrawal-payout/selectable-withdrawals")
+    assert resp.status_code == 401, resp.text
+
+    # 管理员可以正常读，且能看到那笔待审核
+    data = await _selectable_withdrawals(client, admin_user)
+    assert data["count"] == 1
+    assert data["items"][0]["id"] == withdrawal["id"]

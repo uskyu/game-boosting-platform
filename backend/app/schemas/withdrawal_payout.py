@@ -121,6 +121,32 @@ class PayoutBatchListResponse(BaseModel):
 
 
 # =============================================================================
+# 可全选的提现（后台「全选当前筛选」）
+# =============================================================================
+
+
+class SelectableWithdrawalItem(BaseModel):
+    """可加入批次的单条提现（只要 id + 金额，够前端全选用）。"""
+
+    id: int = Field(description="提现ID")
+    amount: Decimal = Field(description="提现金额")
+
+
+class SelectableWithdrawalsResponse(BaseModel):
+    """当前筛选（状态 / 渠道）下可加入打款批次的提现汇总。
+
+    命中笔数超过单批上限时只回汇总（items 为空、exceeded=true），
+    前端据此禁用「全选当前筛选」并提示先缩小筛选范围分批创建。
+    """
+
+    items: list[SelectableWithdrawalItem] = Field(description="可勾选的提现列表（按提现ID升序）；超过单批上限时为空")
+    count: int = Field(description="当前筛选下符合条件的提现笔数")
+    total_amount: Decimal = Field(description="当前筛选下符合条件的提现金额合计")
+    max_items: int = Field(description="单个批次最多允许的笔数")
+    exceeded: bool = Field(description="符合条件的笔数是否超过单批上限")
+
+
+# =============================================================================
 # 回执导入结果
 # =============================================================================
 

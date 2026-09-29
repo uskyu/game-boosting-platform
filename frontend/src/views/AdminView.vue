@@ -82,8 +82,12 @@ const submittingKey = ref('')
 const withdrawalStatus = ref('PENDING')
 // 提现分类（渠道）筛选：支付宝 / 微信 / 银行卡
 const withdrawalChannel = ref('ALIPAY')
-// 勾选加入打款批次的提现单 id（仅待审核 / 待打款可勾选）
+// 勾选加入打款批次的提现单 id（仅待审核 / 待打款可勾选；按勾选顺序排列）
 const selectedWithdrawalIds = ref([])
+// 已选 id → 金额（Number）。与 id 列表并存的单独 map，翻页/切筛选不清空时仍能算出合计
+const selectedWithdrawalAmounts = ref({})
+// 「全选当前筛选」的预览数据（count / total_amount / exceeded）；随列表加载一起刷新
+const selectablePreview = ref(null)
 const adjustForm = ref({ user_id: '', amount: '', reason: '' })
 const adjustMessage = ref({ type: '', text: '' })
 // 弹窗：assign（派单）/ reject（驳回提现）/ mark-paid（标记已打款）
@@ -139,13 +143,18 @@ function goDispatchDetail(order) {
 // ── 提现处理 ──
 
 async function fetchWithdrawals(page = 1) {
-  // 切分类 / 切状态 / 翻页 / 审核动作都会重拉列表：勾选态一并作废，避免跨页勾到已失效的单
-  selectedWithdrawalIds.value = []
   await walletStore.fetchAdminWithdrawals({
     status: withdrawalStatus.value,
     channel: withdrawalChannel.value,
     page,
   })
+  // 「全选当前筛选」的预览：与列表一次成对刷新（多一次便宜的汇总查询）。
+  // 失败时置 null，按钮隐藏，不影响列表本身。
+  const preview = await walletStore.fetchSelectableWithdrawals({
+    status: withdrawalStatus.value,
+    channel: withdrawalChannel.value,
+  })
+  selectablePreview.value = preview.success ? preview.data : null
 }
 
 // 提现分类胶囊：银行卡保留可审核，只是不能批量打款
@@ -158,6 +167,9 @@ const withdrawalChannelPills = [
 function changeWithdrawalChannel(channel) {
   if (withdrawalChannel.value === channel) return
   withdrawalChannel.value = channel
+  // 一个批次只收同一分类，混着别的分类建批会被后端拒绝，所以提前清掉勾选
+  clearWithdrawalSelection()
+  message.value = { type: 'info', text: '已切换提现分类，之前的勾选已清空' }
   fetchWithdrawals(1)
 }
 
@@ -170,21 +182,96 @@ function isWithdrawalSelected(id) {
   return selectedWithdrawalIds.value.includes(id)
 }
 
+// 加入/移出勾选：id 列表与金额 map 同步增减，翻页后合计才不丢
 function toggleWithdrawalSelection(item) {
   if (!canSelectWithdrawal(item)) return
-  selectedWithdrawalIds.value = isWithdrawalSelected(item.id)
-    ? selectedWithdrawalIds.value.filter((id) => id !== item.id)
-    : [...selectedWithdrawalIds.value, item.id]
+  if (isWithdrawalSelected(item.id)) {
+    removeWithdrawalFromSelection(item.id)
+  } else {
+    selectedWithdrawalIds.value = [...selectedWithdrawalIds.value, item.id]
+    selectedWithdrawalAmounts.value = {
+      ...selectedWithdrawalAmounts.value,
+      [item.id]: Number(item.amount),
+    }
+  }
 }
 
-// 已选金额按当前页汇总（切筛选 / 翻页会清空选择，选中的一定都在本页）
+// 单笔移出（被审核/驳回/打款处理后调用，避免留下已失效的勾选）
+function removeWithdrawalFromSelection(id) {
+  const amounts = { ...selectedWithdrawalAmounts.value }
+  delete amounts[id]
+  selectedWithdrawalAmounts.value = amounts
+  selectedWithdrawalIds.value = selectedWithdrawalIds.value.filter((value) => value !== id)
+}
+
+function clearWithdrawalSelection() {
+  selectedWithdrawalIds.value = []
+  selectedWithdrawalAmounts.value = {}
+}
+
+// 已选金额：按 id 列表 + 金额 map 汇总（选择跨页保留，不能只统计当前页）
 const selectedWithdrawalTotal = computed(() =>
   selectedWithdrawalIds.value.reduce((sum, id) => {
-    const item = walletStore.adminWithdrawals.find((row) => row.id === id)
-    const amount = Number(item?.amount)
+    const amount = Number(selectedWithdrawalAmounts.value[id])
     return sum + (Number.isFinite(amount) ? amount : 0)
   }, 0)
 )
+
+// 本页可勾选的提现（待审核 / 待打款）
+const pageSelectableWithdrawals = computed(() =>
+  walletStore.adminWithdrawals.filter((item) => canSelectWithdrawal(item))
+)
+
+// 「全选本页」的勾选态：本页可勾选的全部已选（且本页确实有可勾选项）
+const allPageSelected = computed(
+  () =>
+    pageSelectableWithdrawals.value.length > 0 &&
+    pageSelectableWithdrawals.value.every((item) => isWithdrawalSelected(item.id))
+)
+
+function togglePageSelection() {
+  if (!pageSelectableWithdrawals.value.length) return
+  const pageIds = pageSelectableWithdrawals.value.map((item) => item.id)
+  if (allPageSelected.value) {
+    const dropping = new Set(pageIds)
+    const amounts = { ...selectedWithdrawalAmounts.value }
+    pageIds.forEach((id) => delete amounts[id])
+    selectedWithdrawalAmounts.value = amounts
+    selectedWithdrawalIds.value = selectedWithdrawalIds.value.filter((id) => !dropping.has(id))
+    return
+  }
+  // 已勾过的保持原位，只把本页没选上的追加进来；金额 map 同步写入
+  const amounts = { ...selectedWithdrawalAmounts.value }
+  const added = []
+  pageSelectableWithdrawals.value.forEach((item) => {
+    if (!isWithdrawalSelected(item.id)) {
+      added.push(item.id)
+      amounts[item.id] = Number(item.amount)
+    }
+  })
+  selectedWithdrawalAmounts.value = amounts
+  selectedWithdrawalIds.value = [...selectedWithdrawalIds.value, ...added]
+}
+
+// 「全选当前筛选」：把预览里的 id + 金额全部并进勾选（幂等，已选的不会重复计数）
+function selectAllMatchingFilter() {
+  const preview = selectablePreview.value
+  if (!preview || preview.exceeded || !preview.count) return
+  const amounts = { ...selectedWithdrawalAmounts.value }
+  const added = []
+  preview.items.forEach((item) => {
+    if (!isWithdrawalSelected(item.id)) {
+      added.push(item.id)
+      amounts[item.id] = Number(item.amount)
+    }
+  })
+  selectedWithdrawalAmounts.value = amounts
+  selectedWithdrawalIds.value = [...selectedWithdrawalIds.value, ...added]
+  message.value = {
+    type: 'success',
+    text: `已选入 ${preview.count} 笔，可翻页继续勾选或直接创建批次`,
+  }
+}
 
 // ── 打款批次：提现处理勾选 → 建批 → 「打款批次」页导回执 ──
 
@@ -225,7 +312,7 @@ async function submitPayoutBatch() {
     return
   }
   showPayoutBatchModal.value = false
-  selectedWithdrawalIds.value = []
+  clearWithdrawalSelection()
   message.value = { type: 'success', text: `已创建打款批次：${count} 笔，合计 ${totalText}` }
   activeTab.value = 'payout-batches'
 }
@@ -260,6 +347,8 @@ async function approveWithdrawal(item) {
   submittingKey.value = `withdrawal-${item.id}`
   const result = await walletStore.reviewWithdrawal(item.id, 'approve')
   if (result.success) {
+    // 处理过的单不再是可勾选状态，从勾选里摘掉，避免合计里留一笔死单
+    removeWithdrawalFromSelection(item.id)
     message.value = { type: 'success', text: '提现申请已通过，等待打款' }
     if (withdrawalDetail.value?.id === item.id) closeWithdrawalDetail()
     await fetchWithdrawals(walletStore.adminWithdrawalsPagination.page)
@@ -359,6 +448,8 @@ async function submitModal() {
       state.submitting = false
       return
     }
+    // 被驳回的单已不可勾选，摘出勾选（含金额），免得合计里留一笔失效单
+    removeWithdrawalFromSelection(state.withdrawalId)
     message.value = { type: 'success', text: '提现申请已驳回' }
     await fetchWithdrawals(walletStore.adminWithdrawalsPagination.page)
   } else if (state.type === 'mark-paid') {
@@ -368,6 +459,8 @@ async function submitModal() {
       state.submitting = false
       return
     }
+    // 已打款的单到达终态，同样摘出勾选
+    removeWithdrawalFromSelection(state.withdrawalId)
     message.value = { type: 'success', text: '已标记已打款' }
     await fetchWithdrawals(walletStore.adminWithdrawalsPagination.page)
   }
@@ -1080,13 +1173,52 @@ onMounted(async () => {
         >
           {{ channel.label }}
         </button>
+
+        <!-- 本页全选：一键勾选/反选当前页所有可勾选的提现（翻页会换一组，不影响其它页的勾选） -->
+        <label
+          v-if="walletStore.adminWithdrawals.length"
+          class="ml-auto inline-flex min-h-[44px] cursor-pointer items-center gap-2 text-sm text-ink-2"
+          title="勾选本页所有待审核/待打款的提现"
+          @click.stop
+        >
+          <input
+            type="checkbox"
+            class="cursor-pointer"
+            :checked="allPageSelected"
+            :disabled="!pageSelectableWithdrawals.length"
+            @click.stop
+            @change="togglePageSelection"
+          />
+          全选本页
+        </label>
       </div>
 
-      <!-- 勾选提现单 → 打包成打款批次 -->
-      <div v-if="selectedWithdrawalIds.length" class="mt-4 flex flex-wrap items-center gap-3">
-        <span class="text-sm text-ink-2">已选 {{ selectedWithdrawalIds.length }} 笔 · 合计 {{ formatPrice(selectedWithdrawalTotal) }}</span>
-        <span v-if="withdrawalChannel === 'BANK'" class="message-info !py-1.5">银行卡不参与批量打款</span>
+      <!-- 勾选提现单 → 打包成打款批次；没有勾选但当前筛选命中可勾选单时，仍展示全选入口 -->
+      <div v-if="selectedWithdrawalIds.length || (selectablePreview && selectablePreview.count)" class="mt-4 flex flex-wrap items-center gap-3">
+        <span v-if="selectedWithdrawalIds.length" class="text-sm text-ink-2">已选 {{ selectedWithdrawalIds.length }} 笔 · 合计 {{ formatPrice(selectedWithdrawalTotal) }}</span>
+        <span v-if="withdrawalChannel === 'BANK' && selectedWithdrawalIds.length" class="message-info !py-1.5">银行卡不参与批量打款</span>
+        <!-- 全选当前筛选：一次勾选当前筛选命中的全部提现，不必逐页点 -->
         <button
+          v-if="selectablePreview && selectablePreview.count && !selectablePreview.exceeded"
+          type="button"
+          class="btn-secondary min-h-[44px] !px-4 !py-2"
+          :title="`勾选当前筛选下的 ${selectablePreview.count} 笔提现`"
+          @click="selectAllMatchingFilter"
+        >
+          全选当前筛选
+          <span class="text-xs text-ink-3">（{{ selectablePreview.count }} 笔 · {{ formatPrice(selectablePreview.total_amount) }}）</span>
+        </button>
+        <button
+          v-else-if="selectablePreview && selectablePreview.exceeded"
+          type="button"
+          class="btn-secondary min-h-[44px] !px-4 !py-2"
+          disabled
+          title="当前筛选命中的提现超过单个批次上限，请先缩小筛选范围再分批创建"
+        >
+          超过 3000 笔，请先缩小筛选范围分批创建
+        </button>
+        <button
+          v-if="selectedWithdrawalIds.length"
           type="button"
           class="btn-primary min-h-[44px] !px-4 !py-2"
           :disabled="withdrawalChannel === 'BANK'"
@@ -1095,7 +1227,7 @@ onMounted(async () => {
         >
           创建打款批次
         </button>
-        <button type="button" class="btn-ghost !px-4 !py-2" @click="selectedWithdrawalIds = []">取消选择</button>
+        <button v-if="selectedWithdrawalIds.length" type="button" class="btn-ghost !px-4 !py-2" @click="clearWithdrawalSelection">取消选择</button>
       </div>
 
       <div v-if="loadingWithdrawals" class="mt-6 space-y-3" aria-busy="true">

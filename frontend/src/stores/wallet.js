@@ -147,7 +147,7 @@ export const useWalletStore = defineStore('wallet', () => {
   const myWithdrawalsPagination = ref({ page: 1, pageSize: 10, total: 0, pages: 1 })
   const adminWithdrawals = ref([])
   const adminWithdrawalsLoading = ref(false)
-  const adminWithdrawalsPagination = ref({ page: 1, pageSize: 20, total: 0, pages: 1 })
+  const adminWithdrawalsPagination = ref({ page: 1, pageSize: 99, total: 0, pages: 1 })
   const rechargeConfig = ref({ enabled: false, pay_methods: [], min_amount: '1.00' })
   const rechargeConfigLoading = ref(false)
   const myRecharges = ref([])
@@ -293,6 +293,23 @@ export const useWalletStore = defineStore('wallet', () => {
       return { success: false, error: err.message }
     } finally {
       adminWithdrawalsLoading.value = false
+    }
+  }
+
+  // GET /admin/withdrawal-payout/selectable-withdrawals：
+  // 当前筛选（status/channel）下「可加入批次」的提现汇总，供「全选当前筛选」预览与一键勾选。
+  // 命中数超过单批上限时后端 items 为空、exceeded=true，前端据此禁用按钮。
+  async function fetchSelectableWithdrawals(options = {}) {
+    try {
+      const response = await api.get('/admin/withdrawal-payout/selectable-withdrawals', {
+        params: {
+          status: options.status || undefined,
+          channel: options.channel || undefined,
+        },
+      })
+      return { success: true, data: response.data }
+    } catch (err) {
+      return { success: false, error: err.message }
     }
   }
 
@@ -603,6 +620,7 @@ export const useWalletStore = defineStore('wallet', () => {
     uploadWithdrawalQrcode,
     fetchMyWithdrawals,
     fetchAdminWithdrawals,
+    fetchSelectableWithdrawals,
     reviewWithdrawal,
     markPaid,
     adjustWallet,

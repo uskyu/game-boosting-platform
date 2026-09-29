@@ -26,7 +26,7 @@ from decimal import ROUND_HALF_UP, Decimal
 import xlrd
 import xlwt
 from fastapi import HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 
 from app.core.product_time import PRODUCT_TIMEZONE, product_local_date
 from app.models.notification import NotificationType
@@ -262,6 +262,67 @@ class WithdrawalPayoutService:
             select(WithdrawalPayoutBatch).where(WithdrawalPayoutBatch.id == batch_id)
         )
         return result.scalar_one_or_none()
+
+    async def list_selectable(
+        self,
+        *,
+        status_filter: WithdrawalStatus | None = None,
+        channel_filter: WithdrawalChannel | None = None,
+    ) -> dict:
+        """当前筛选下可加入批次的提现汇总（待审核 / 待打款，按 id 升序）。
+
+        供后台「全选当前筛选」：命中笔数超过单批上限时只回汇总、不回明细，
+        前端据此禁用全选按钮并提示先缩小筛选范围分批创建。
+        """
+        conditions = [WithdrawalRequest.status.in_(_OPEN_STATUSES)]
+        if status_filter is not None:
+            conditions.append(WithdrawalRequest.status == status_filter)
+        if channel_filter is not None:
+            conditions.append(WithdrawalRequest.channel == channel_filter)
+        criteria = and_(*conditions)
+
+        count_result = await self._db.execute(
+            select(func.count(WithdrawalRequest.id)).where(criteria)
+        )
+        total_count = int(count_result.scalar() or 0)
+
+        # 超上限：明细不回（没有意义，前端也放不下一批），但合计金额仍是一个
+        # 便宜的 SQL 聚合，提示文案里要给得出总额
+        if total_count > MAX_BATCH_ITEMS:
+            sum_result = await self._db.execute(
+                select(func.coalesce(func.sum(WithdrawalRequest.amount), 0)).where(
+                    criteria
+                )
+            )
+            return {
+                "items": [],
+                "count": total_count,
+                "total_amount": _to_decimal(sum_result.scalar()).quantize(
+                    _CENT, rounding=ROUND_HALF_UP
+                ),
+                "max_items": MAX_BATCH_ITEMS,
+                "exceeded": True,
+            }
+
+        result = await self._db.execute(
+            select(WithdrawalRequest.id, WithdrawalRequest.amount)
+            .where(criteria)
+            .order_by(WithdrawalRequest.id.asc())
+        )
+        items = [
+            {"id": row_id, "amount": _to_decimal(amount)}
+            for row_id, amount in result.all()
+        ]
+        total_amount = sum(
+            (item["amount"] for item in items), Decimal("0.00")
+        ).quantize(_CENT, rounding=ROUND_HALF_UP)
+        return {
+            "items": items,
+            "count": len(items),
+            "total_amount": total_amount,
+            "max_items": MAX_BATCH_ITEMS,
+            "exceeded": False,
+        }
 
     async def _load_batch_items(self, batch_id: int) -> list[WithdrawalRequest]:
         """批次内全部提现（按 id 升序）。user 关系是 joined 加载。"""

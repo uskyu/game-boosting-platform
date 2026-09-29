@@ -24,12 +24,14 @@ from fastapi import (
 
 from app.api.deps import DatabaseSession, get_current_admin
 from app.models.user import User
+from app.models.withdrawal import WithdrawalChannel, WithdrawalStatus
 from app.schemas.withdrawal_payout import (
     ImportReceiptResultResponse,
     PayoutBatchCreateRequest,
     PayoutBatchDetailResponse,
     PayoutBatchListResponse,
     PayoutBatchSummaryResponse,
+    SelectableWithdrawalsResponse,
 )
 from app.services.withdrawal_payout_service import WithdrawalPayoutService
 
@@ -108,6 +110,30 @@ async def create_payout_batch(
     )
     detail = await svc.get_batch_detail(batch.id)
     return PayoutBatchDetailResponse.model_validate(detail)
+
+
+@router.get(
+    "/withdrawal-payout/selectable-withdrawals",
+    response_model=SelectableWithdrawalsResponse,
+    summary="可全选的提现汇总",
+    description=(
+        "按状态/渠道筛选，返回当前可加入打款批次的提现（待审核/待打款，id 升序）"
+        "与笔数、合计金额；命中数超过单批上限时只返回汇总，供后台「全选当前筛选」使用。"
+    ),
+)
+async def list_selectable_withdrawals(
+    db: DatabaseSession,
+    current_admin: Annotated[User, Depends(get_current_admin)],
+    status_filter: WithdrawalStatus | None = Query(default=None, alias="status"),
+    channel_filter: WithdrawalChannel | None = Query(default=None, alias="channel"),
+) -> SelectableWithdrawalsResponse:
+    svc = WithdrawalPayoutService(db)
+    return SelectableWithdrawalsResponse.model_validate(
+        await svc.list_selectable(
+            status_filter=status_filter,
+            channel_filter=channel_filter,
+        )
+    )
 
 
 @router.get(
