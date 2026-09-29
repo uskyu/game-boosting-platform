@@ -300,9 +300,11 @@ watch(() => chatStore.socketStatus, (status, previousStatus) => {
 async function startHallLifecycle() {
   if (hallUnmounted) return
   fetchOrders()
-  // 两个聊天请求互不依赖，并行发出，别串行拖慢大厅
+  // 两个聊天请求互不依赖，并行发出，别串行拖慢大厅。
+  // 会话列表只为订单卡片/大厅徽章服务，20 条即可（100 条服务端 ~310ms、
+  // 20 条 ~76ms，跨境链路上白拿一截首屏时间）。
   await Promise.allSettled([
-    chatStore.fetchConversations({ pageSize: 100 }),
+    chatStore.fetchConversations({ pageSize: 20 }),
     chatStore.fetchUnreadSummary(),
   ])
   // 页面可能在上面的弱网请求完成前已被卸载；卸载后绝不能复活大厅轮询，

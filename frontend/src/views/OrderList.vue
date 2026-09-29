@@ -149,7 +149,9 @@ async function fetchOrders() {
     status: selectedStatus.value,
     bossContact: searchBossContact.value.trim(),
   })
-  await ordersStore.fetchOrders({ minePublished: true })
+  // slim：列表卡片只用到 title/intro/ai_tags/首图，大字段（description/notes/
+  // 凭证等）详情页单独拿；跨境链路下响应体小一个量级，详情页不受影响。
+  await ordersStore.fetchOrders({ minePublished: true, slim: true })
 }
 
 async function fetchClaims(page = 1) {
@@ -275,12 +277,14 @@ watch(claimStatus, () => {
 onMounted(async () => {
   // 从 URL 恢复页码后再拉首屏，避免返回/刷新时搜索条件在但页码被重置
   ordersStore.setPage(Math.max(1, Number(route.query.page) || 1))
-  fetchOrders()
   if (!useAuthStore().isAdmin) fetchClaims()
-  // 管理员不拉报名列表；若用户信息晚到，watch 会切到"我的派单"
-  // 并行拉取：会话列表与未读数互不依赖
+  // 管理员不拉报名列表；若用户信息晚到，watch 会切到"我的派单"。
+  // 三个请求互不依赖，全部并行发出：跨境链路上每消掉一个串行 RTT，
+  // 首屏就快一秒（实测会话列表 100 条服务端 ~310ms、20 条 ~76ms，
+  // 且订单卡片仅用它做聊天未读徽章，20 条足够覆盖首屏订单）。
   await Promise.all([
-    chatStore.fetchConversations({ pageSize: 100 }),
+    fetchOrders(),
+    chatStore.fetchConversations({ pageSize: 20 }),
     chatStore.fetchUnreadSummary(),
   ])
 })
