@@ -702,6 +702,7 @@ class OrderClaimItem(BaseModel):
 
     @field_serializer(
         "created_at",
+        "delivery_rejected_at",
         "delivered_at",
         "approved_at",
         "settlement_due_at",
