@@ -1,7 +1,7 @@
 """后台「服务费设置」：全局费率与逐单设置开关的读取和保存。
 
-全局费率和订单逐单覆盖都在发单时固定到订单上；之后调整全局设置
-只影响新发订单，不改变已发布订单的服务费。
+逐单开关关闭时，新订单费率固定为 0；开启时全局费率作为默认值，
+逐单选项可以覆盖。之后调整全局设置只影响新发订单，不改变已发布订单。
 """
 
 from decimal import ROUND_HALF_UP, Decimal
@@ -39,7 +39,7 @@ async def get_service_fee_settings(
     "/settings",
     response_model=ServiceFeeSettingsResponse,
     summary="保存全局服务费设置",
-    description="保存全局费率与逐单设置开关；已发布订单不受影响，只对之后发布的订单生效。",
+    description="保存全局费率与逐单设置开关；逐单开关关闭时新订单费率为 0，开启时留空采用全局费率。已发布订单不受影响。",
 )
 async def update_service_fee_settings(
     payload: ServiceFeeSettingsUpdate,
