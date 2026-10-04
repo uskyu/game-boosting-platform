@@ -1,7 +1,44 @@
-// 来单 / 被接手声音提示：WebAudio Oscillator 短促 beep，无外部依赖，不加开关。
+// 来单 / 被接手声音提示：优先播放静态语音（老板提供的 wav），
+// 失败时回退 WebAudio 合成音。静态音频启动即预热（preload=auto），
+// 播放直接用已缓冲的 <audio> 元素——不再每播一次从网络拉一遍文件。
+
+// 静态语音缓存：src -> <audio>（整个模块生命周期复用同一个元素）
+const staticAudio = {}
+
+function getStaticAudio(src) {
+  if (staticAudio[src]) {
+    return staticAudio[src]
+  }
+  const audio = new Audio()
+  audio.preload = 'auto'
+  audio.src = src
+  staticAudio[src] = audio
+  return audio
+}
+
+// 预热两个播报语音：preload 不需要用户手势，页面加载即开始下载，
+// 等第一条订单到来时语音早已缓冲完毕（nginx 对 /sounds/ 另有 1 天强缓存）。
+if (typeof Audio !== 'undefined') {
+  getStaticAudio('/sounds/new-order.wav')
+  getStaticAudio('/sounds/order-claimed.wav')
+}
+
+function playStaticAudio(src) {
+  try {
+    const audio = getStaticAudio(src)
+    audio.currentTime = 0
+    const result = audio.play()
+    if (result && typeof result.catch === 'function') {
+      result.catch(() => {})
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+// WebAudio 合成音（静态语音播放失败时的兜底）
 let audioContext = null
-let newOrderAudio = null
-let claimedAudio = null
 
 function ensureContext() {
   try {
@@ -73,20 +110,6 @@ async function beep({ frequency = 880, duration = 0.15, delay = 0, type = 'sine'
   }
 }
 
-function playStaticAudio(src, currentAudio) {
-  try {
-    const audio = currentAudio || new Audio(src)
-    audio.currentTime = 0
-    const result = audio.play()
-    if (result && typeof result.catch === 'function') {
-      result.catch(() => {})
-    }
-    return { audio, played: true }
-  } catch {
-    return { audio: currentAudio, played: false }
-  }
-}
-
 function playNewOrderWebAudio() {
   beep({ frequency: 523, duration: 0.22, type: 'triangle' }).catch(() => {})
   beep({ frequency: 659, duration: 0.22, delay: 0.2, type: 'triangle' }).catch(() => {})
@@ -101,18 +124,14 @@ function playClaimedWebAudio() {
 
 // 来单：优先播放静态音频，失败时回退到 WebAudio 琶音
 export function playNewOrder() {
-  const result = playStaticAudio('/sounds/new-order.wav', newOrderAudio)
-  newOrderAudio = result.audio
-  if (!result.played) {
+  if (!playStaticAudio('/sounds/new-order.wav')) {
     playNewOrderWebAudio()
   }
 }
 
 // 被接手：优先播放静态音频，失败时回退到 WebAudio 下行双音
 export function playClaimed() {
-  const result = playStaticAudio('/sounds/order-claimed.wav', claimedAudio)
-  claimedAudio = result.audio
-  if (!result.played) {
+  if (!playStaticAudio('/sounds/order-claimed.wav')) {
     playClaimedWebAudio()
   }
 }
