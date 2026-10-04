@@ -1684,6 +1684,8 @@ class OrderService:
         """Auto-settle a due claim using its stored approval terms."""
         if claim.status != ClaimLifecycleStatus.DELIVERED:
             return False
+        if order.status == OrderStatus.DISPUTED:
+            return False
         if (
             claim.settlement_mode_snapshot in (None, SETTLEMENT_MODE_ORDER_DELAY)
             and not delay_from_tier
@@ -1867,6 +1869,11 @@ class OrderService:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="只有订单发布人或管理员才能审核交付记录",
+            )
+        if order.status == OrderStatus.DISPUTED and reviewer.role != UserRole.ADMIN:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="订单正在等待管理员裁决，暂不能审核交付记录",
             )
 
         claim_result = await self._db.execute(
