@@ -1753,6 +1753,10 @@ onMounted(async () => {
               </div>
             </div>
 
+            <div v-if="isAdmin && !individualServiceFeeEnabled" class="rounded-tile border border-line-1 bg-surface-2 p-4 text-sm text-ink-2">
+              后台已关闭单独服务费设置，本订单服务费率为 0。
+            </div>
+
             <div v-if="individualServiceFeeEnabled" class="rounded-tile border border-line-1 p-4">
               <div class="flex flex-wrap items-center justify-between gap-3">
                 <div>
