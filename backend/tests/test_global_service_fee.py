@@ -173,10 +173,10 @@ async def test_individual_fee_enabled_can_turn_fee_off_for_one_order(
     assert order["net_amount"] == "150.00"
 
 
-async def test_individual_fee_disabled_uses_global_rate_and_ignores_overrides(
+async def test_individual_fee_disabled_sets_no_fee_and_ignores_overrides(
     client: AsyncClient, admin_user: dict
 ):
-    """逐单设置功能关闭时，发单固定使用全局费率并忽略客户端逐单字段。"""
+    """逐单服务费总开关关闭时，新单不收服务费并忽略客户端逐单字段。"""
     await _set_global_rate(client, admin_user, "8")
 
     resp = await client.post(
@@ -186,9 +186,9 @@ async def test_individual_fee_disabled_uses_global_rate_and_ignores_overrides(
     )
     assert resp.status_code == 201
     order = resp.json()
-    assert order["service_fee_rate"] == "8.00"
-    assert order["service_fee_amount"] == "12.00"
-    assert order["net_amount"] == "138.00"
+    assert order["service_fee_rate"] == "0.00"
+    assert order["service_fee_amount"] == "0.00"
+    assert order["net_amount"] == "150.00"
 
 
 async def test_baked_order_unaffected_by_later_global_change(
@@ -196,6 +196,7 @@ async def test_baked_order_unaffected_by_later_global_change(
 ):
     """烙盘保护：全局费率改动不影响已发布订单的结算。"""
     await _set_global_rate(client, admin_user, "8")
+    await _set_individual_fee_enabled(client, admin_user, True)
 
     resp = await client.post(
         "/orders/create",
@@ -255,6 +256,7 @@ async def test_edit_order_refreshes_to_current_global(
 ):
     """编辑时开开关不填费率 → 按当前全局重新烙盘；关闭 → 清除。"""
     await _set_global_rate(client, admin_user, "8")
+    await _set_individual_fee_enabled(client, admin_user, True)
 
     resp = await client.post(
         "/orders/create",
@@ -274,7 +276,7 @@ async def test_edit_order_refreshes_to_current_global(
     assert resp.json()["service_fee_rate"] == "10.00"
     assert resp.json()["net_amount"] == "135.00"
 
-    # 逐单设置功能关闭时，单独关闭请求仍被忽略，沿用当前全局费率
+    # 后台总开关保持开启时，逐单显式关闭应清零
     resp = await client.put(
         f"/orders/{order_id}",
         json={"service_fee_enabled": False},
@@ -290,6 +292,7 @@ async def test_edit_order_keeps_rate_when_fee_fields_omitted(
 ):
     """编辑订单不带服务费字段时，原费率保持不变。"""
     await _set_global_rate(client, admin_user, "8")
+    await _set_individual_fee_enabled(client, admin_user, True)
 
     resp = await client.post(
         "/orders/create",
