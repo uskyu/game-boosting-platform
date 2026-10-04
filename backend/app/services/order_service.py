@@ -229,8 +229,8 @@ class OrderService:
             payout_delay_days=order_data.payout_delay_days,
             payout_delay_hours=order_data.payout_delay_hours,
             require_delivery_image=bool(order_data.require_delivery_image),
-            # 管理员新订单在服务端按逐单开关解析费率；逐单开关关闭时
-            # 忽略客户端覆盖并固定当前数据库全局费率。
+            # 管理员新订单在服务端按后台逐单服务费开关解析费率；
+            # 总开关关闭时强制为 0，开启时再读取逐单设置。
             service_fee_rate=await self._resolve_order_service_fee(
                 order_data.service_fee_enabled, order_data.service_fee_rate, user
             ),
@@ -705,9 +705,9 @@ class OrderService:
     ) -> Decimal | None:
         """Resolve and snapshot the effective fee for a newly published admin order.
 
-        When individual settings are disabled, client-provided per-order fields are
-        ignored and the current database global rate is fixed to this order. When
-        enabled, the old per-order switch and optional custom rate are honored.
+        When individual settings are disabled, every new admin order is fee-free
+        regardless of client-provided per-order fields. When enabled, the old
+        per-order switch and optional custom rate are honored.
         Non-admin publishers keep the existing no-per-order-fee behavior.
         """
         if user.role != UserRole.ADMIN:
@@ -718,7 +718,7 @@ class OrderService:
         setting = await service_fee_service.get_or_create_service_fee_setting(self._db)
         global_rate = _to_decimal(setting.service_fee_rate)
         if not setting.individual_service_fee_enabled:
-            return global_rate
+            return Decimal("0.00")
         if enabled is False:
             return Decimal("0.00")
         if requested is not None:
@@ -1848,7 +1848,8 @@ class OrderService:
         rejection_reason: str | None = None,
     ) -> dict[str, Any]:
         """
-        Admin approves one booster's delivered claim (名额审核).
+        The order publisher or an admin approves or rejects one booster's
+        delivered claim (名额审核).
 
         Settles the payout for that booster only; the order auto-completes
         when all claims are settled and the quota is exhausted. Returns the
@@ -2698,7 +2699,7 @@ class OrderService:
             update_data.pop("service_fee_enabled", None)
         elif "service_fee_enabled" in update_data or "service_fee_rate" in update_data:
             # 开关/费率组合解析（两个字段都不传时下方循环不会碰到费率）：
-            # 开+手填=手填值；开+未填=按当前全局服务费重新烙盘；关=不收取
+            # 后台总开关关闭=不收取；开启后开+手填=手填值、开+未填=全局、逐单关=不收取
             update_data["service_fee_rate"] = await self._resolve_order_service_fee(
                 update_data.get("service_fee_enabled"),
                 update_data.get("service_fee_rate"),
