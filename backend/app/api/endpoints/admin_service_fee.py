@@ -21,7 +21,7 @@ router = APIRouter(prefix="/admin/service-fee", tags=["admin-service-fee"])
     "/settings",
     response_model=ServiceFeeSettingsResponse,
     summary="获取全局服务费设置",
-    description="返回当前全局服务费费率（百分数）。",
+    description="返回当前全局服务费费率与订单逐单设置开关。",
 )
 async def get_service_fee_settings(
     db: DatabaseSession,
@@ -30,6 +30,7 @@ async def get_service_fee_settings(
     setting = await service_fee_service.get_or_create_service_fee_setting(db)
     return ServiceFeeSettingsResponse(
         service_fee_rate=setting.service_fee_rate,
+        individual_service_fee_enabled=setting.individual_service_fee_enabled,
         updated_at=setting.updated_at,
     )
 
@@ -46,9 +47,12 @@ async def update_service_fee_settings(
     current_admin: Annotated[User, Depends(get_current_admin)],
 ) -> ServiceFeeSettingsResponse:
     setting = await service_fee_service.get_or_create_service_fee_setting(db)
-    setting.service_fee_rate = Decimal(str(payload.service_fee_rate)).quantize(
-        Decimal("0.01"), rounding=ROUND_HALF_UP
-    )
+    if payload.service_fee_rate is not None:
+        setting.service_fee_rate = Decimal(str(payload.service_fee_rate)).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+    if payload.individual_service_fee_enabled is not None:
+        setting.individual_service_fee_enabled = payload.individual_service_fee_enabled
     setting.updated_by = current_admin.id
     await db.flush()
     await db.refresh(setting)
