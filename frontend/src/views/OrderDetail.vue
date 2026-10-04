@@ -110,7 +110,9 @@ const humanStatusSubtitle = computed(() => {
   // 打手视角有报名单时，副标题按 my_claim.status 描述审核流
   if (myClaim.value && viewRole.value === 'booster' && !isOwner.value) {
     const map = {
-      CLAIMED: '完成后点击「结束订单」提交汇报',
+      CLAIMED: myClaim.value.delivery_rejection_reason
+        ? '交付被驳回，请查看原因并重新上传后提交'
+        : '完成后点击「结束订单」提交汇报',
       DELIVERED: myClaim.value.approved_at
         ? `审核已通过，${myClaim.value.settlement_due_at ? `预计 ${formatDateTime(myClaim.value.settlement_due_at)} 自动入账` : '等待自动入账'}`
         : (formatDueCountdown(myClaim.value.settlement_due_at, now.value)
@@ -339,6 +341,10 @@ const pendingSettlementCount = computed(() => ownerClaims.value.filter((claim) =
 const showPayoutModal = ref(false)
 const payoutForm = ref({ claimId: null, amount: '', deduction: '', note: '' })
 const payoutSubmitting = ref(false)
+const showRejectionModal = ref(false)
+const rejectionForm = ref({ claimId: null, reason: '' })
+const rejectionSubmitting = ref(false)
+const rejectionError = ref('')
 
 function claimBoosterName(claim) {
   return claim?.booster_nickname || (claim?.booster_id != null ? `用户 #${claim.booster_id}` : '打手')
@@ -404,6 +410,39 @@ async function submitPayout() {
     // 必须复位：没有 finally 时，任何 await 链上的异常/挂起都会把按钮
     // 永久钉在"提交中..."（叠加防重入 guard，只能刷新页面）。
     payoutSubmitting.value = false
+  }
+}
+
+function openRejectionModal(claim) {
+  rejectionForm.value = { claimId: claim.id, reason: '' }
+  rejectionError.value = ''
+  showRejectionModal.value = true
+}
+
+async function submitRejection() {
+  if (rejectionSubmitting.value || rejectionForm.value.claimId == null) return
+  const reason = rejectionForm.value.reason.trim()
+  if (reason.length < 3) {
+    rejectionError.value = '请填写至少 3 个字符的驳回原因'
+    return
+  }
+  rejectionSubmitting.value = true
+  rejectionError.value = ''
+  try {
+    const result = await ordersStore.reviewClaim(
+      order.value.id,
+      rejectionForm.value.claimId,
+      { action: 'reject', reason },
+    )
+    if (result.success) {
+      showRejectionModal.value = false
+      successMessage.value = '已驳回交付，打手可按原因重新上传并提交'
+      await Promise.all([ordersStore.fetchOrder(order.value.id), ordersStore.fetchClaims(order.value.id)])
+    } else {
+      rejectionError.value = result.error || '驳回失败，请稍后重试'
+    }
+  } finally {
+    rejectionSubmitting.value = false
   }
 }
 
@@ -891,6 +930,7 @@ onUnmounted(() => {
               </p>
               <p class="mt-0.5 text-xs text-ink-3">接单时间：{{ formatDateTime(claim.created_at) }}</p>
               <p v-if="claim.delivered_at" class="mt-1 text-xs text-ink-3">提交时间：{{ formatDateTime(claim.delivered_at) }}</p>
+              <p v-if="claim.delivery_rejection_reason" class="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-danger">驳回原因：{{ claim.delivery_rejection_reason }}</p>
               <p v-if="claim.status !== 'CLAIMED'" class="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-ink-2">汇报：{{ claim.delivery_note || '未填写文字汇报' }}</p>
               <div v-if="claim.status !== 'CLAIMED' && claim.delivery_attachments?.length" class="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
                 <button v-for="(image, index) in claim.delivery_attachments" :key="image.url" type="button" class="overflow-hidden rounded-tile border border-line-1" @click="openClaimPreview(claim, index)">
@@ -910,7 +950,10 @@ onUnmounted(() => {
                   <span v-if="claim.settle_hours_snapshot != null">（{{ formatSettlementDelay(claim.settle_hours_snapshot) }}）</span>
                 </p>
               </div>
-              <button v-if="claim.status === 'DELIVERED' && !claim.approved_at" type="button" class="btn-primary !min-h-[36px] !px-4" @click="openPayoutModal(claim)">审核打款</button>
+              <div v-if="claim.status === 'DELIVERED' && !claim.approved_at" class="flex shrink-0 gap-2">
+                <button type="button" class="btn-secondary !min-h-[36px] !px-3" @click="openRejectionModal(claim)">驳回重传</button>
+                <button type="button" class="btn-primary !min-h-[36px] !px-4" @click="openPayoutModal(claim)">审核打款</button>
+              </div>
             </div>
           </div>
         </div>
@@ -931,6 +974,10 @@ onUnmounted(() => {
           </button>
         </div>
       </section>
+
+      <p v-if="!isOwner && myClaim?.status === 'CLAIMED' && myClaim.delivery_rejection_reason" class="message-warning text-sm leading-6">
+        交付已被驳回：{{ myClaim.delivery_rejection_reason }}。请重新上传正确的交付截图后再提交。
+      </p>
 
       <section v-if="isClaimDelivered && (deliveryNoteText || deliveryAttachments.length)" class="surface-card p-6 sm:p-8">
         <h2 class="text-lg font-semibold text-ink-1">结束汇报</h2>
@@ -1287,6 +1334,27 @@ onUnmounted(() => {
       <Lightbox :images="claimPreview" :visible="claimPreviewVisible" :start-index="claimPreviewIndex" @close="claimPreviewVisible = false" />
       <Lightbox :images="deliveryAttachments" :visible="deliveryLightboxVisible" :start-index="deliveryLightboxIndex" @close="deliveryLightboxVisible = false" />
     </template>
+
+    <teleport to="body">
+      <div v-if="showRejectionModal" class="modal-scrim" @click.self="!rejectionSubmitting && (showRejectionModal = false)">
+        <div class="modal-card" role="dialog" aria-modal="true" aria-label="驳回交付">
+          <h3 class="text-lg font-semibold text-ink-1">驳回交付并要求重传</h3>
+          <p class="mt-3 text-sm leading-6 text-ink-2">驳回后，本次交付截图会清除，打手可以重新上传并提交。请说明需要修改的内容。</p>
+          <div class="mt-4">
+            <label class="label" for="delivery-rejection-reason">驳回原因</label>
+            <textarea id="delivery-rejection-reason" v-model="rejectionForm.reason" rows="3" maxlength="500" class="input resize-none" :disabled="rejectionSubmitting" placeholder="请填写至少 3 个字符"></textarea>
+            <p class="mt-1 text-xs text-ink-3">{{ rejectionForm.reason.length }}/500</p>
+            <p v-if="rejectionError" class="mt-2 text-sm text-danger">{{ rejectionError }}</p>
+          </div>
+          <div class="mt-6 flex gap-3">
+            <button type="button" class="btn-secondary flex-1" :disabled="rejectionSubmitting" @click="showRejectionModal = false">取消</button>
+            <button type="button" class="btn-danger flex-1" :disabled="rejectionSubmitting" @click="submitRejection">
+              {{ rejectionSubmitting ? '提交中…' : '确认驳回并重传' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </teleport>
 
     <!-- 争议 / 申请取消弹窗挂在 loading 分支之外：store 的全局 loading
      （disputeOrder 等）翻转时骨架屏不会卸载弹窗、丢掉关闭事件与错误状态。
