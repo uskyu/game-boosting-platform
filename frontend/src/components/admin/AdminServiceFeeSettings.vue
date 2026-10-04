@@ -7,6 +7,7 @@ import { useServiceFeeStore } from '@/stores/serviceFee'
 const store = useServiceFeeStore()
 const form = reactive({
   service_fee_rate: '0',
+  individual_service_fee_enabled: false,
 })
 const notice = ref({ type: '', text: '' })
 const saving = ref(false)
@@ -18,6 +19,7 @@ function sync(data) {
   const settings = data || store.settings || {}
   currentRate.value = Number(settings.service_fee_rate ?? 0)
   form.service_fee_rate = String(settings.service_fee_rate ?? '0')
+  form.individual_service_fee_enabled = Boolean(settings.individual_service_fee_enabled)
 }
 
 // 以示例金额预览三段拆分，让老板保存前对“抽多少”有直观概念
@@ -38,7 +40,10 @@ async function save() {
     return
   }
   saving.value = true
-  const result = await store.updateSettings({ service_fee_rate: rate })
+  const result = await store.updateSettings({
+    service_fee_rate: rate,
+    individual_service_fee_enabled: form.individual_service_fee_enabled,
+  })
   saving.value = false
   if (result.success) {
     notice.value = { type: 'success', text: '服务费设置已保存' }
@@ -62,10 +67,10 @@ onMounted(async () => {
   <section class="surface-card p-4 sm:p-6">
     <h2 class="text-2xl font-semibold text-ink-1">服务费设置</h2>
     <p class="mt-2 text-sm text-ink-2">
-      设置全局服务费费率后，管理员发布订单时打开「服务费」开关即按此费率收取，无需每单手输；开关底下会显示当前费率。仍可为某单手输自定义费率。
+      全局费率作为新订单的默认服务费。下面的开关控制发单时能否对单个订单关闭服务费或填写自定义费率。
     </p>
     <p class="mt-1.5 text-xs leading-5 text-ink-3">
-      注意：订单发布瞬间费率即固定，之后调整全局费率只影响之后发布的订单，已发布订单的收费规则不变。
+      关闭时，发单页面不显示逐单选项，订单自动沿用全局费率。开启后，逐单选项可覆盖全局默认值。订单发布后费率固定，修改全局费率不会改变已发布订单。
     </p>
 
     <div v-if="notice.text" class="mt-4" :class="notice.type === 'success' ? 'message-success' : 'message-error'">{{ notice.text }}</div>
@@ -95,6 +100,26 @@ onMounted(async () => {
           </button>
         </div>
         <p class="mt-1.5 text-xs text-ink-3">填 0 表示不收取。打手实际到账 = 订单金额 × (1 - 费率)。</p>
+      </div>
+
+      <div class="rounded-tile border border-line-1 p-4">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p class="text-sm font-semibold text-ink-1">允许单独设置订单服务费</p>
+            <p class="mt-1 text-xs leading-5 text-ink-3">
+              {{ form.individual_service_fee_enabled ? '发单时可单独关闭服务费或自定义费率；留空时使用全局费率。' : '关闭后所有新订单统一沿用上方全局费率。' }}
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            :aria-checked="form.individual_service_fee_enabled"
+            :class="form.individual_service_fee_enabled ? 'filter-pill-active' : 'filter-pill'"
+            @click="form.individual_service_fee_enabled = !form.individual_service_fee_enabled"
+          >
+            {{ form.individual_service_fee_enabled ? '已开启' : '已关闭' }}
+          </button>
+        </div>
       </div>
 
       <div class="rounded-tile border border-line-1 p-4">
