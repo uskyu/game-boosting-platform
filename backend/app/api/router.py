@@ -22,6 +22,7 @@ from app.api.endpoints import (
     deposit_router,
     games_router,
     notifications_router,
+    order_hall_router,
     push_router,
     orders_router,
     order_templates_router,
@@ -42,6 +43,9 @@ api_router = APIRouter()
 # Include all endpoint routers
 api_router.include_router(auth_router)
 api_router.include_router(announcements_router)
+# order_hall_router 必须早于 orders_router 注册：/orders/recent-claims
+# 否则会被 /orders/{order_id}（int 路径参数）先行匹配成 422
+api_router.include_router(order_hall_router)
 api_router.include_router(orders_router)
 api_router.include_router(order_templates_router)
 api_router.include_router(users_router)

@@ -538,6 +538,31 @@ export const useOrdersStore = defineStore('orders', () => {
     }
   }
 
+  // 发单员对进行中订单申请取消（提交即生效，无审批流）：
+  // payload { reason: string, deduction_amount: number }
+  // 不切换全局 loading：详情页骨架屏会卸载申请取消弹窗，丢失其关闭/错误状态
+  async function applyCancel(orderId, payload) {
+    error.value = null
+
+    try {
+      const response = await api.post(`/orders/${orderId}/apply-cancel`, payload)
+
+      const index = orders.value.findIndex(o => o.id === orderId)
+      if (index !== -1) {
+        orders.value[index] = response.data
+      }
+
+      if (currentOrder.value?.id === orderId) {
+        currentOrder.value = response.data
+      }
+
+      return { success: true, data: response.data }
+    } catch (err) {
+      error.value = err.message
+      return { success: false, error: err.message }
+    }
+  }
+
   async function payOrder(orderId) {
     error.value = null
 
@@ -646,6 +671,7 @@ export const useOrdersStore = defineStore('orders', () => {
     confirmOrder,
     disputeOrder,
     cancelOrder,
+    applyCancel,
     payOrder,
     refundOrder,
     setFilters,

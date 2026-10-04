@@ -381,6 +381,27 @@ class ClaimReviewRequest(BaseModel):
     )
 
 
+class ApplyCancelRequest(BaseModel):
+    """发单员对进行中订单申请取消的请求体（提交即生效，无审批流）。
+
+    reason：取消原因（≥3 字，必填），随订单备注与打手通知留存；
+    deduction_amount：从每个活跃接单人保证金直扣的金额（默认 0 = 不扣），
+    等额补偿入发单员可用余额。
+    """
+
+    reason: str = Field(
+        ...,
+        min_length=3,
+        max_length=500,
+        description="取消原因（至少 3 个字）",
+    )
+    deduction_amount: Decimal = Field(
+        default=Decimal("0"),
+        ge=0,
+        description="扣除每个活跃接单人的保证金金额（0 ~ 接单人当前保证金，默认 0 不扣）",
+    )
+
+
 # =============================================================================
 # OUTPUT SCHEMAS (Response Bodies)
 # =============================================================================
@@ -647,6 +668,11 @@ class OrderClaimItem(BaseModel):
     )
     settled_at: datetime | None = Field(default=None, description="结算时间")
     is_first: bool = Field(default=False, description="是否首抢（该用户即订单当前接单人）")
+    # 报名打手当前保证金余额：仅「订单报名名单」接口返回（发单员据此计算
+    # 申请取消时的可扣款上限）；我的报名/列表路径为 null。
+    booster_deposit_balance: Decimal | None = Field(
+        default=None, description="报名打手当前保证金余额（仅报名名单返回）"
+    )
 
     @field_serializer(
         "created_at",

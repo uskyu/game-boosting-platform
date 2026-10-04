@@ -154,7 +154,11 @@ class DashboardService:
             )
             .outerjoin(revenue_sub, User.id == revenue_sub.c.booster_id)
             .where(User.role != UserRole.ADMIN)
-            .order_by(User.total_completed.desc(), User.credit_score.desc())
+            .order_by(
+                func.coalesce(revenue_sub.c.total_revenue, 0).desc(),
+                User.total_completed.desc(),
+                User.credit_score.desc(),
+            )
             .limit(limit)
         )
         rows = (await self.db.execute(query)).all()

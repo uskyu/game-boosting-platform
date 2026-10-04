@@ -32,7 +32,7 @@ from app.models.order import (
     PaymentStatus,
 )
 from app.models.user import User, UserRole
-from app.models.wallet import WalletTransaction, WalletTransactionType
+from app.models.wallet import Wallet, WalletTransaction, WalletTransactionType
 from app.schemas.booster_service import BoosterServiceOrderCreate
 from app.schemas.order import OrderCreate, OrderUpdate
 from app.services.ai_service import LLMService
@@ -519,8 +519,40 @@ class OrderService:
 
         # Apply status filter
         if status_filter:
-            query = query.where(Order.status == status_filter)
-            count_query = count_query.where(Order.status == status_filter)
+            if mine_published and user is not None and status_filter == OrderStatus.DELIVERED:
+                # 派单（我的发布）语义的「待确认」：名额制交付只把 claim 推到
+                # DELIVERED（OrderStatus.DELIVERED 无人写入），所以命中条件是
+                # 订单 LOCKED 且存在待审核交付的 claim；订单本身已是 DELIVERED
+                # 的（管理员干预遗留）也命中。
+                pending_review_claim_exists = exists(
+                    select(OrderClaim.id).where(
+                        OrderClaim.order_id == Order.id,
+                        OrderClaim.status == ClaimLifecycleStatus.DELIVERED,
+                    )
+                )
+                delivered_scope = or_(
+                    and_(Order.status == OrderStatus.LOCKED, pending_review_claim_exists),
+                    Order.status == OrderStatus.DELIVERED,
+                )
+                query = query.where(delivered_scope)
+                count_query = count_query.where(delivered_scope)
+            elif mine_published and user is not None and status_filter == OrderStatus.LOCKED:
+                # 派单语义的「进行中」：LOCKED 且不存在任何待审核交付的 claim。
+                pending_review_claim_exists = exists(
+                    select(OrderClaim.id).where(
+                        OrderClaim.order_id == Order.id,
+                        OrderClaim.status == ClaimLifecycleStatus.DELIVERED,
+                    )
+                )
+                locked_scope = and_(
+                    Order.status == OrderStatus.LOCKED,
+                    ~pending_review_claim_exists,
+                )
+                query = query.where(locked_scope)
+                count_query = count_query.where(locked_scope)
+            else:
+                query = query.where(Order.status == status_filter)
+                count_query = count_query.where(Order.status == status_filter)
 
         # Apply boss-contact fuzzy filter
         if boss_contact:
@@ -1081,17 +1113,34 @@ class OrderService:
             .where(OrderClaim.order_id == order_id)
             .order_by(OrderClaim.created_at.asc(), OrderClaim.id.asc())
         )
-        claims: list[dict[str, Any]] = []
-        for claim, username, email in rows.all():
-            claims.append(
-                self._serialize_claim(
-                    claim,
-                    order_booster_id=order_booster_id,
-                    order_status=order.status,
-                    booster_nickname=username,
-                    booster_email=email,
+        claim_rows = rows.all()
+        # 报名打手的保证金余额：一条 IN 查询批量取（禁止 N+1），供发单员在
+        # 「申请取消」弹窗里计算可扣款上限与保证金总额。
+        deposit_by_booster: dict[int, Decimal] = {}
+        booster_ids = sorted({claim.booster_id for claim, _username, _email in claim_rows})
+        if booster_ids:
+            wallet_rows = await self._db.execute(
+                select(Wallet.user_id, Wallet.deposit_balance).where(
+                    Wallet.user_id.in_(booster_ids)
                 )
             )
+            deposit_by_booster = {
+                wallet_user_id: _to_decimal(balance)
+                for wallet_user_id, balance in wallet_rows.all()
+            }
+        claims: list[dict[str, Any]] = []
+        for claim, username, email in claim_rows:
+            item = self._serialize_claim(
+                claim,
+                order_booster_id=order_booster_id,
+                order_status=order.status,
+                booster_nickname=username,
+                booster_email=email,
+            )
+            item["booster_deposit_balance"] = deposit_by_booster.get(
+                claim.booster_id, _ZERO
+            )
+            claims.append(item)
         return claims
 
     async def list_my_claims(
@@ -2163,6 +2212,178 @@ class OrderService:
                 f"\n{order.notes}" if order.notes else ""
             )
         return await self._cancel_order_locked(order, reason="订单取消，托管解冻")
+
+    async def publisher_cancel_with_compensation(
+        self,
+        order_id: int,
+        user: User,
+        reason: str,
+        deduction_amount: Decimal,
+    ) -> Order:
+        """发单员对进行中的订单申请取消：提交即生效（无审批流）。
+
+        产品语义（老板拍板）：发单员填理由（≥3 字）+ 接单人保证金扣除金额
+        （0 ~ 接单人当前保证金，默认 0），不需要打手同意。生效后订单取消、
+        托管与炸单赔偿金解冻，金额从每个活跃接单人的保证金直扣，等额补偿
+        入发单员可用余额，打手在自己的接单列表能看到被扣了多少钱。
+
+        Args:
+            order_id: Order ID to cancel.
+            user: 发单员本人（管理员不走本流程，走既有干预取消）。
+            reason: 取消原因（strip 后 ≥3 字）。
+            deduction_amount: 每个活跃接单人保证金的扣除金额（分位量化）。
+
+        Returns:
+            Updated Order instance.
+
+        Raises:
+            HTTPException: 404 订单不存在；403 非发单员本人；
+                400 状态不是进行中 / 原因太短 / 金额超过接单人保证金。
+        """
+        result = await self._db.execute(
+            select(Order)
+            .options(
+                selectinload(Order.user),
+                selectinload(Order.booster),
+            )
+            .where(Order.id == order_id)
+            .with_for_update()
+        )
+        order = result.scalar_one_or_none()
+        if order is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="订单不存在",
+            )
+
+        if user.id != order.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="只有订单发单人可以申请取消",
+            )
+
+        if order.status != OrderStatus.LOCKED:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="仅进行中的订单可申请取消；待接单请直接取消，其他状态不支持",
+            )
+
+        reason_text = (reason or "").strip()
+        if len(reason_text) < 3:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="取消原因至少 3 个字",
+            )
+
+        amount = _to_decimal(deduction_amount).quantize(_ZERO)
+        if amount < _ZERO:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="扣除金额不能为负数",
+            )
+
+        # 活跃接单名额（行锁，和 _cancel_order_locked 同一批对象）
+        claims_result = await self._db.execute(
+            select(OrderClaim)
+            .where(
+                OrderClaim.order_id == order.id,
+                OrderClaim.status.in_(
+                    (
+                        ClaimLifecycleStatus.CLAIMED,
+                        ClaimLifecycleStatus.DELIVERED,
+                    )
+                ),
+            )
+            .with_for_update()
+        )
+        active_claims = list(claims_result.scalars().all())
+
+        wallet_service = get_wallet_service(self._db)
+        # 先校验后变更：金额上限 = 所有活跃接单人保证金的最小值
+        max_deduction = _ZERO
+        if amount > _ZERO:
+            if not active_claims:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="该订单没有可扣除的接单人",
+                )
+            booster_wallets = await self._lock_boosters_wallets(
+                [claim.booster_id for claim in active_claims]
+            )
+            max_deduction = min(
+                (
+                    _to_decimal(booster_wallets[claim.booster_id].deposit_balance)
+                    if claim.booster_id in booster_wallets
+                    else _ZERO
+                )
+                for claim in active_claims
+            ).quantize(_ZERO)
+            if amount > max_deduction:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"接单人保证金不足（最高可扣 ¥{max_deduction}）",
+                )
+
+        # 复用既有取消清理：claims→CANCELLED、炸单赔偿金解冻、托管退回发布人
+        await self._cancel_order_locked(order, reason="发单员申请取消，托管解冻")
+
+        if amount > _ZERO:
+            # 每个活跃接单人的保证金直扣（uq_order_claim_booster 保证
+            # 同一打手在一单上只有一条名额，逐条扣不会重复）
+            # remark 列只有 255 字符，原因按前缀长度截断，避免超长原因写库失败
+            for claim in active_claims:
+                await wallet_service.adjust_deposit(
+                    booster_wallets[claim.booster_id],
+                    delta=-amount,
+                    tx_type=WalletTransactionType.CANCEL_COMPENSATION_DEDUCT,
+                    order_id=order.id,
+                    booster_id=claim.booster_id,
+                    remark=f"订单取消扣除保证金：{reason_text[:230]}",
+                )
+            # 等额补偿入发单员可用余额（按活跃接单人数放大）
+            publisher_wallet = await wallet_service.get_or_create_wallet(order.user_id)
+            await wallet_service.credit(
+                publisher_wallet,
+                amount=amount * len(active_claims),
+                tx_type=WalletTransactionType.CANCEL_COMPENSATION_IN,
+                order_id=order.id,
+                remark="订单取消赔偿入账",
+            )
+
+        # 扣款信息落到名额上：打手在「我的接单」列表据此展示被扣了多少
+        for claim in active_claims:
+            claim.approved_deduction = amount if amount > _ZERO else None
+            claim.approved_note = reason_text
+
+        note_line = f"取消原因: {reason_text}"
+        if amount > _ZERO:
+            note_line += f"；扣除接单人保证金 ¥{amount}"
+        order.notes = note_line + (f"\n{order.notes}" if order.notes else "")
+
+        await self._db.flush()
+        await self._db.refresh(order)
+
+        logger.info(
+            "Order %s cancelled by publisher %s with compensation %s (%s active claims)",
+            order.id,
+            user.id,
+            amount,
+            len(active_claims),
+        )
+
+        return order
+
+    async def _lock_boosters_wallets(self, booster_ids: list[int]) -> dict[int, Wallet]:
+        """按用户ID批量锁定钱包行（一条 IN 查询，禁止 N+1）。"""
+        unique_ids = sorted({int(booster_id) for booster_id in booster_ids})
+        if not unique_ids:
+            return {}
+        result = await self._db.execute(
+            select(Wallet)
+            .where(Wallet.user_id.in_(unique_ids))
+            .with_for_update()
+        )
+        return {wallet.user_id: wallet for wallet in result.scalars().all()}
 
     async def _cancel_order_locked(self, order: Order, *, reason: str) -> Order:
         """Apply cancellation cleanup to an order already locked by caller."""

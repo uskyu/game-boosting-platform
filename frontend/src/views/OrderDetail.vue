@@ -48,6 +48,14 @@ function goRechargeFromFail() {
   showClaimFailModal.value = false
   router.push({ name: 'wallet', query: { recharge: '1' } })
 }
+// 申请取消订单：发单员对进行中订单直接取消，可按约定金额扣接单人保证金（提交即生效）
+const showApplyCancelModal = ref(false)
+const applyCancelSubmitting = ref(false)
+const applyCancelError = ref('')
+const applyCancelForm = ref({ reason: '', deduction_amount: '0' })
+// 发起争议：正式弹窗替代 window.prompt（移动端 prompt 体验差且样式不统一）
+const showDisputeModal = ref(false)
+const disputeForm = ref({ reason: '' })
 // 灯箱：订单画廊 / 交付附件各自独立索引
 const orderLightboxVisible = ref(false)
 const orderLightboxIndex = ref(0)
@@ -472,20 +480,99 @@ async function handleConfirm() {
 }
 
 async function handleDispute() {
-  const reason = window.prompt('请输入争议原因（可选）：')
-  if (reason === null) {
+  disputeForm.value = { reason: '' }
+  showDisputeModal.value = true
+}
+
+async function submitDispute() {
+  if (actionLoading.value) {
     return
   }
   actionLoading.value = true
   errorMessage.value = ''
   successMessage.value = ''
-  const result = await ordersStore.disputeOrder(order.value.id, reason)
+  const result = await ordersStore.disputeOrder(order.value.id, disputeForm.value.reason)
   if (result.success) {
+    showDisputeModal.value = false
     successMessage.value = '已发起争议，平台将介入处理'
   } else {
     errorMessage.value = result.error
   }
   actionLoading.value = false
+}
+
+// ── 申请取消订单（发单员 · 进行中）────────────────────────────────
+// 可扣款上限来自活跃接单人的保证金（名单接口批量下发 booster_deposit_balance，
+// 一条 IN 查询；取不到时不设 max，由后端兜底校验）。
+const activeClaims = computed(() => {
+  const claims = Array.isArray(ordersStore.claims) ? ordersStore.claims : []
+  return claims.filter((claim) => ['CLAIMED', 'DELIVERED'].includes(claim?.status))
+})
+
+const boosterDepositBalances = computed(() => (
+  activeClaims.value
+    .map((claim) => Number(claim.booster_deposit_balance))
+    .filter((value) => Number.isFinite(value))
+))
+
+const minBoosterDeposit = computed(() => (
+  boosterDepositBalances.value.length ? Math.min(...boosterDepositBalances.value) : null
+))
+
+const totalBoosterDeposit = computed(() => (
+  boosterDepositBalances.value.reduce((sum, value) => sum + value, 0)
+))
+
+function openApplyCancelModal() {
+  if (actionLoading.value) {
+    return
+  }
+  errorMessage.value = ''
+  successMessage.value = ''
+  applyCancelError.value = ''
+  applyCancelForm.value = { reason: '', deduction_amount: '0' }
+  showApplyCancelModal.value = true
+}
+
+async function submitApplyCancel() {
+  if (applyCancelSubmitting.value) {
+    return
+  }
+  // 与后端 schema 对齐的前置校验：给出即时反馈，最终仍以后端为准
+  if (applyCancelForm.value.reason.trim().length < 3) {
+    applyCancelError.value = '取消原因至少 3 个字'
+    return
+  }
+  applyCancelSubmitting.value = true
+  applyCancelError.value = ''
+  errorMessage.value = ''
+  successMessage.value = ''
+  const result = await ordersStore.applyCancel(order.value.id, {
+    reason: applyCancelForm.value.reason.trim(),
+    deduction_amount: Number(applyCancelForm.value.deduction_amount) || 0,
+  })
+  if (result.success) {
+    showApplyCancelModal.value = false
+    successMessage.value = '订单已取消，款项已按约定划转'
+    // 刷新订单与报名名单：状态/徽标/扣款展示都要跟着变
+    await Promise.all([
+      ordersStore.fetchOrder(order.value.id),
+      loadClaims(),
+    ])
+  } else {
+    // 后端错误（保证金不足/状态不允许等）显示在弹窗里，方便就地改金额重试
+    applyCancelError.value = result.error || '取消失败，请稍后重试'
+  }
+  applyCancelSubmitting.value = false
+}
+
+// 重建 / 续单：带原单 ID 与模式进创建页预填（见 OrderCreate.vue）
+function rebuildOrder(orderId) {
+  router.push({ path: '/orders/create', query: { recycle: String(orderId), mode: 'rebuild' } })
+}
+
+function repeatOrder(orderId) {
+  router.push({ path: '/orders/create', query: { recycle: String(orderId), mode: 'repeat' } })
 }
 
 async function handleCancel() {
@@ -940,11 +1027,21 @@ onUnmounted(() => {
 
             <button
               v-if="(isOwner || isAssignedBooster) && ['LOCKED', 'DELIVERED'].includes(order.status)"
-              class="od-ops__desktop-only btn-danger w-full py-3"
+              class="od-ops__chip btn-danger w-full py-3"
               :disabled="actionLoading"
               @click="handleDispute"
             >
               发起争议
+            </button>
+
+            <!-- 申请取消：仅发单员本人 + 进行中；提交即生效，可按约定金额扣接单人保证金 -->
+            <button
+              v-if="isOwner && order.status === 'LOCKED'"
+              class="od-ops__primary btn-danger w-full py-3"
+              :disabled="actionLoading"
+              @click="openApplyCancelModal"
+            >
+              申请取消
             </button>
 
             <button
@@ -954,6 +1051,23 @@ onUnmounted(() => {
               @click="handleCancel"
             >
               取消订单
+            </button>
+
+            <!-- 已取消可一键重建、已完成可续单：都带原单进创建页预填 -->
+            <button
+              v-if="isOwner && order.status === 'CANCELLED'"
+              class="od-ops__chip btn-secondary w-full py-3"
+              @click="rebuildOrder(order.id)"
+            >
+              重建订单
+            </button>
+
+            <button
+              v-if="isOwner && order.status === 'COMPLETED'"
+              class="od-ops__chip btn-secondary w-full py-3"
+              @click="repeatOrder(order.id)"
+            >
+              续单
             </button>
 
             <!-- 争议状态：管理员跳转派单台，争议双方联系管理员 -->
@@ -1130,5 +1244,86 @@ onUnmounted(() => {
       <Lightbox :images="claimPreview" :visible="claimPreviewVisible" :start-index="claimPreviewIndex" @close="claimPreviewVisible = false" />
       <Lightbox :images="deliveryAttachments" :visible="deliveryLightboxVisible" :start-index="deliveryLightboxIndex" @close="deliveryLightboxVisible = false" />
     </template>
+
+    <!-- 争议 / 申请取消弹窗挂在 loading 分支之外：store 的全局 loading
+     （disputeOrder 等）翻转时骨架屏不会卸载弹窗、丢掉关闭事件与错误状态。
+     内容通过 Teleport 挂到 body，模板位置不影响视觉。 -->
+    <teleport to="body">
+      <div v-if="showDisputeModal" class="modal-scrim" @click.self="!actionLoading && (showDisputeModal = false)">
+        <div class="modal-card" role="dialog" aria-modal="true" aria-label="发起争议">
+          <h3 class="text-lg font-semibold text-ink-1">发起争议</h3>
+          <p class="mt-3 text-sm leading-6 text-ink-2">
+            发起后平台将介入处理，请简要说明情况（原因可选，最多 500 字）。
+          </p>
+          <div class="mt-4">
+            <label class="label" for="dispute-reason">争议原因（可选）</label>
+            <textarea
+              id="dispute-reason"
+              v-model="disputeForm.reason"
+              rows="3"
+              maxlength="500"
+              class="input resize-none"
+              placeholder="例如：打手未按约定完成，沟通无果"
+            ></textarea>
+            <p class="mt-1 text-xs text-ink-3">{{ disputeForm.reason.length }}/500</p>
+          </div>
+          <div class="mt-6 flex gap-3">
+            <button type="button" class="btn-secondary flex-1" :disabled="actionLoading" @click="showDisputeModal = false">取消</button>
+            <button type="button" class="btn-danger flex-1" :disabled="actionLoading" @click="submitDispute">
+              {{ actionLoading ? '提交中…' : '确认发起' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </teleport>
+
+    <teleport to="body">
+      <div v-if="showApplyCancelModal" class="modal-scrim" @click.self="!applyCancelSubmitting && (showApplyCancelModal = false)">
+        <div class="modal-card" role="dialog" aria-modal="true" aria-label="申请取消订单">
+          <h3 class="text-lg font-semibold text-ink-1">申请取消订单</h3>
+          <p class="mt-3 text-sm leading-6 text-ink-2">
+            申请后立即生效：订单将取消并从接单人保证金扣除约定金额（默认 0 = 不扣），款项补偿到你的可用余额；取消后可在订单卡片一键重建。
+          </p>
+          <div class="mt-4 space-y-4">
+            <div>
+              <label class="label" for="apply-cancel-reason">取消原因</label>
+              <textarea
+                id="apply-cancel-reason"
+                v-model="applyCancelForm.reason"
+                rows="3"
+                maxlength="500"
+                class="input resize-none"
+                placeholder="请说明取消原因（至少 3 个字）"
+              ></textarea>
+              <p class="mt-1 text-xs text-ink-3">{{ applyCancelForm.reason.length }}/500</p>
+            </div>
+            <div>
+              <label class="label" for="apply-cancel-deduction">扣除接单人保证金</label>
+              <input
+                id="apply-cancel-deduction"
+                v-model="applyCancelForm.deduction_amount"
+                type="number"
+                min="0"
+                step="0.01"
+                :max="minBoosterDeposit ?? undefined"
+                class="input"
+                placeholder="0"
+              />
+              <p class="mt-2 text-xs leading-5 text-ink-2">
+                接单人保证金总额 ¥{{ formatPrice(totalBoosterDeposit) }}<template v-if="minBoosterDeposit != null"> · 单人最高可扣 ¥{{ formatPrice(minBoosterDeposit) }}</template>
+              </p>
+              <p class="mt-1 text-xs text-ink-3">默认 0，表示不扣除</p>
+            </div>
+            <p v-if="applyCancelError" class="text-sm text-danger">{{ applyCancelError }}</p>
+          </div>
+          <div class="mt-6 flex gap-3">
+            <button type="button" class="btn-secondary flex-1" :disabled="applyCancelSubmitting" @click="showApplyCancelModal = false">再想想</button>
+            <button type="button" class="btn-danger flex-1" :disabled="applyCancelSubmitting" @click="submitApplyCancel">
+              {{ applyCancelSubmitting ? '提交中…' : '确认取消' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </teleport>
   </div>
 </template>

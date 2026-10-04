@@ -35,6 +35,9 @@ async def update_site_settings(
     setting = await get_or_create_site_setting(db)
     setting.site_name = payload.site_name
     setting.site_description = payload.site_description
+    # 大厅「今日已接单」区块全站开关：仅当显式传入时才覆盖（None=不改动）
+    if payload.hall_recent_claims_enabled is not None:
+        setting.hall_recent_claims_enabled = payload.hall_recent_claims_enabled
     setting.updated_by = current_admin.id
     await db.flush()
     await db.refresh(setting)

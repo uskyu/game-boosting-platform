@@ -67,7 +67,7 @@ const unreadMap = computed(() => {
 const claimStatusOptions = [
   { value: '', label: '全部状态' },
   { value: 'CLAIMED', label: '进行中' },
-  { value: 'DELIVERED', label: '待审核' },
+  { value: 'DELIVERED', label: '待确认' },
   { value: 'SETTLED', label: '已结算' },
   { value: 'CANCELLED', label: '已取消' },
   // 后端 GET /orders/claims/mine 的 status 支持 CLAIMED/DELIVERED/SETTLED/CANCELLED，
@@ -120,6 +120,19 @@ function getBoosterMetaText(order) {
   const name = order.booster?.username || (order.booster_id != null ? `用户 #${order.booster_id}` : '')
   if (!name) return ''
   return claimed > 1 ? `打手 ${name} 共 ${claimed} 人` : `打手 ${name}`
+}
+
+// 派单卡片状态徽标：名额制下交付只改 claim 状态、订单整体仍是 LOCKED，
+// 所以「有待审核交付的 LOCKED 单」按「待确认」展示（badge-review），
+// 其余状态（含本来就是 DELIVERED 的订单）沿用订单状态本身。
+function getPublisherStatusMeta(order) {
+  if (order?.status === 'LOCKED' && Number(order?.pending_review_count || 0) > 0) {
+    return { label: '待确认', badgeClass: 'badge-review' }
+  }
+  return {
+    label: getOrderStatusLabel(order?.status),
+    badgeClass: getOrderStatusBadgeClass(order?.status),
+  }
 }
 
 function buildSummary(order) {
@@ -247,6 +260,15 @@ function goToOrder(orderId) {
   router.push({ name: 'order-detail', params: { id: orderId } })
 }
 
+// 重建 / 续单：把原单 ID 与模式带进创建页预填（见 OrderCreate.vue onMounted）
+function rebuildOrder(orderId) {
+  router.push({ path: '/orders/create', query: { recycle: String(orderId), mode: 'rebuild' } })
+}
+
+function repeatOrder(orderId) {
+  router.push({ path: '/orders/create', query: { recycle: String(orderId), mode: 'repeat' } })
+}
+
 function handlePageChange(page) {
   if (page < 1 || page > pagination.value.pages || page === pagination.value.page) {
     return
@@ -341,13 +363,13 @@ onUnmounted(() => {
       <section class="surface-card p-4 sm:p-5">
         <div class="grid gap-4 lg:grid-cols-[1.4fr_220px_auto] lg:items-end">
           <div>
-            <label class="label" for="claim-search">搜索订单 / 接单记录</label>
+            <label class="label" for="claim-search">搜索订单</label>
             <input
               id="claim-search"
               v-model="claimSearch"
               type="search"
               class="input"
-              placeholder="订单号、接单记录号、标题或需求"
+              placeholder="订单号、标题或需求"
               @keyup.enter="handleClaimSearch"
             />
           </div>
@@ -362,7 +384,7 @@ onUnmounted(() => {
             <button type="button" class="btn-ghost !px-4 !py-2.5" @click="claimSearch = ''; handleClaimSearch()">重置</button>
           </div>
         </div>
-        <p class="mt-3 text-xs text-ink-3">订单号是老板和打手共用的主编号；接单记录号仅用于定位个人接单记录。</p>
+        <p class="mt-3 text-xs text-ink-3">订单号是老板和打手共用的主编号，联系对方时直接报订单号。</p>
       </section>
 
       <section v-if="claimsLoading" class="space-y-3" aria-busy="true">
@@ -391,9 +413,11 @@ onUnmounted(() => {
                 <div class="flex flex-wrap items-center gap-2">
                   <span :class="getClaimSettlementDisplayMeta(claim).tagClass">{{ getClaimSettlementDisplayMeta(claim).label }}</span>
                   <span v-if="claim.order?.status === 'DISPUTED'" class="tag !bg-danger-soft !text-danger">订单争议中</span>
+                  <!-- 发单员申请取消时直扣的保证金：打手在这里看到自己被扣了多少钱 -->
+                  <span v-if="Number(claim.approved_deduction) > 0" class="tag !bg-danger-soft !text-danger">扣款 ¥{{ formatPrice(claim.approved_deduction) }}</span>
                 </div>
                 <p class="mt-2 truncate text-[13px] text-ink-3">
-                  {{ claim.order?.game_name || '' }} · {{ formatShortDate(claim.created_at) }} · 接单 #{{ claim.id }} · 订单 #{{ claim.order?.id || claim.order_id }}<template v-if="claim.delivered_at"> · 交付于 {{ formatDateTime(claim.delivered_at) }}</template>
+                  {{ formatShortDate(claim.created_at) }} · 订单 #{{ claim.order?.id || claim.order_id }}<template v-if="claim.order?.boss_contact"> · 老板ID {{ claim.order.boss_contact }}</template><template v-if="claim.delivered_at"> · 交付于 {{ formatDateTime(claim.delivered_at) }}</template>
                 </p>
               </div>
               <div class="flex shrink-0 gap-2">
@@ -478,9 +502,9 @@ onUnmounted(() => {
             <div class="flex flex-wrap items-end justify-between gap-3">
               <div class="min-w-0">
                 <div class="flex flex-wrap items-center gap-2">
-                  <span :class="getOrderStatusBadgeClass(order.status)">{{ getOrderStatusLabel(order.status) }}</span>
+                  <span :class="getPublisherStatusMeta(order).badgeClass">{{ getPublisherStatusMeta(order).label }}</span>
                   <span v-if="Number(order.pending_review_count)" class="tag !bg-warning-soft !text-warning">
-                    {{ order.pending_review_count }} 人待审核
+                    {{ order.pending_review_count }} 人待确认
                   </span>
                   <span v-if="getOrderUnreadCount(order.id)" class="tag !bg-warning-soft !text-warning">
                     消息 {{ getOrderUnreadCount(order.id) }}
@@ -499,7 +523,24 @@ onUnmounted(() => {
                 </div>
               </div>
             </div>
-            <div class="mt-3 flex justify-end">
+            <div class="mt-3 flex flex-wrap justify-end gap-2">
+              <!-- 已取消可一键重建、已完成可续单：都带原单进创建页预填 -->
+              <button
+                v-if="order.status === 'CANCELLED'"
+                type="button"
+                class="btn-secondary !px-4 !py-2"
+                @click.stop="rebuildOrder(order.id)"
+              >
+                重建订单
+              </button>
+              <button
+                v-if="order.status === 'COMPLETED'"
+                type="button"
+                class="btn-secondary !px-4 !py-2"
+                @click.stop="repeatOrder(order.id)"
+              >
+                续单
+              </button>
               <button class="btn-secondary !px-4 !py-2" @click.stop="goToOrder(order.id)">
                 {{ Number(order.pending_review_count) ? '去审核' : '详情' }}
               </button>

@@ -4,6 +4,7 @@ Handles order creation, listing, and management operations.
 """
 
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Annotated
 
@@ -19,10 +20,11 @@ from app.api.deps import (
 from app.api.notification_utils import notify_boosters_new_order, notify_user
 from app.core.config import settings
 from app.models.notification import NotificationType
-from app.models.order import ClaimLifecycleStatus, ClaimStatus, Order, OrderStatus
+from app.models.order import ClaimLifecycleStatus, ClaimStatus, Order, OrderClaim, OrderStatus
 from app.models.user import User, UserRole
 from app.schemas.order import (
     AIAnalysisResponse,
+    ApplyCancelRequest,
     ClaimReviewRequest,
     OrderAttachment,
     OrderDeliveryAttachment,
@@ -965,6 +967,99 @@ async def cancel_order(
             type=NotificationType.ORDER_CANCELLED,
             title="订单已取消",
             content=f"订单「{order.game_name}」已被取消",
+            link=f"/orders/{order.id}",
+            ref_id=order.id,
+        )
+
+    await broadcast_order_state_changed(
+        order_id=order.id,
+        status=order.status,
+        claim_status=order.claim_status,
+        claimed_count=order.claimed_count,
+    )
+
+    return OrderResponse.model_validate(order)
+
+
+@router.post(
+    "/{order_id}/apply-cancel",
+    response_model=OrderResponse,
+    summary="申请取消订单",
+    description=(
+        "发单员对进行中的订单申请取消：提交即生效（无审批流）。"
+        "按 deduction_amount 从每个活跃接单人的保证金直扣，等额补偿到发单员可用余额。"
+    ),
+)
+async def apply_cancel_order(
+    order_id: int,
+    payload: ApplyCancelRequest,
+    current_user: CurrentUser,
+    db: DatabaseSession,
+) -> OrderResponse:
+    """
+    Publisher cancels an in-progress (LOCKED) order; effective immediately.
+
+    - Only the publisher (order owner) may apply; admins keep using the
+      existing intervention cancellation flow.
+    - reason is mandatory (>= 3 chars); deduction_amount (0 ~ each active
+      booster's deposit balance, default 0) is deducted from every active
+      booster's deposit and credited to the publisher's available balance.
+    - 打手无需同意：生效后其名额置为已结束，并在「我的接单」看到扣款金额。
+    """
+    order_service = get_order_service(db)
+
+    # 取消前先记下活跃接单人：生效后这些名额会被置为 CANCELLED，
+    # 通知只能按取消时刻的快照发（接单路径会锁订单行，不存在漏发/多发）。
+    active_claim_result = await db.execute(
+        select(OrderClaim.booster_id).where(
+            OrderClaim.order_id == order_id,
+            OrderClaim.status.in_(
+                (ClaimLifecycleStatus.CLAIMED, ClaimLifecycleStatus.DELIVERED)
+            ),
+        )
+    )
+    active_booster_ids = sorted(set(active_claim_result.scalars().all()))
+
+    order = await order_service.publisher_cancel_with_compensation(
+        order_id, current_user, payload.reason, payload.deduction_amount
+    )
+    await send_order_system_message(
+        db=db,
+        order_id=order.id,
+        content="发单员申请取消订单",
+        meta_json={
+            "event": "order_cancelled",
+            "order_id": order.id,
+            "operator_id": current_user.id,
+        },
+    )
+
+    # 每个活跃接单人实际被扣的保证金（0 元扣款时为 None）
+    deduction_by_booster: dict[int, Decimal | None] = {}
+    if active_booster_ids:
+        claim_result = await db.execute(
+            select(OrderClaim.booster_id, OrderClaim.approved_deduction).where(
+                OrderClaim.order_id == order.id,
+                OrderClaim.booster_id.in_(active_booster_ids),
+            )
+        )
+        deduction_by_booster = {
+            booster_id: deduction for booster_id, deduction in claim_result.all()
+        }
+
+    reason_text = payload.reason.strip()
+    for booster_id in active_booster_ids:
+        deduction = deduction_by_booster.get(booster_id)
+        deduction_text = f"，扣除保证金 ¥{deduction}" if deduction is not None else ""
+        await notify_user(
+            db,
+            user_id=booster_id,
+            type=NotificationType.ORDER_CANCELLED,
+            title="订单已被发单员取消",
+            content=(
+                f"订单「{order.game_name}」已被发单员取消，"
+                f"原因：{reason_text}{deduction_text}"
+            ),
             link=f"/orders/{order.id}",
             ref_id=order.id,
         )

@@ -223,7 +223,15 @@ class BoosterProfileResponse(BaseModel):
     completion_rate: float = Field(description="完成率")
     avg_rating: float = Field(description="平均评分")
     avg_response_minutes: int = Field(description="平均响应时间(分钟)")
-    badge_tags: list[str] = Field(default_factory=list, description="标签徽章")
+    # User.badge_tags 是可空 JSON 列：未重算过徽章的用户该列为 NULL，
+    # 直接按 list[str] 校验会 500，因此声明为可空 + 空列表兜底，
+    # 并用 before-validator 保证响应恒为 list。
+    badge_tags: list[str] | None = Field(default_factory=list, description="标签徽章")
+
+    @field_validator("badge_tags", mode="before")
+    @classmethod
+    def _coerce_badge_tags(cls, value: list[str] | None) -> list[str]:
+        return value if value is not None else []
 
     @field_serializer("created_at")
     def serialize_dt(self, value: datetime | None) -> str | None:

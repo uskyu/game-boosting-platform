@@ -229,6 +229,32 @@
     @apply shell-container py-8 sm:py-10;
   }
 
+  /* 创建页容器：底部固定操作栏占位后的呼吸空间（含安全区） */
+  .page-shell--create { padding-bottom: calc(1rem + env(safe-area-inset-bottom)); }
+
+  /* ── 创建页底部固定操作栏（#14）─────────────────────────────────
+     sticky 贴在视口底部：中间表单区照常滚动，取消/发布永远可见；
+     不透明背景 + 上边框 + 安全区 padding，移动端重点保障。 */
+  .create-actions-bar {
+    position: -webkit-sticky;
+    position: sticky;
+    bottom: 0;
+    z-index: 20;
+    /* 间距由外层 space-y-6 提供，这里只补上边框/背景/安全区 */
+    @apply flex flex-wrap items-center justify-between gap-4 border-t border-line-1 py-4;
+    background: var(--surface);
+    padding-bottom: calc(1rem + env(safe-area-inset-bottom));
+  }
+  @media (max-width: 767px) {
+    /* 移动端通栏：贴到视口两侧，像真正的底部操作栏 */
+    .create-actions-bar {
+      margin-left: -1rem;
+      margin-right: -1rem;
+      padding-left: 1rem;
+      padding-right: 1rem;
+    }
+  }
+
   /* ──────────────────────────────
      卡片体系（文档 5 节：--surface 底 + line-1 边 + 轻阴影，禁渐变）
   ────────────────────────────── */

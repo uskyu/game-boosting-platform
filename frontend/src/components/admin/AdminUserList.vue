@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useAdminUsersStore } from '@/stores/adminUsers'
 import { formatDateTime, formatPrice } from '@/utils/display'
+import { getClaimStatusMeta } from '@/utils/order'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -233,6 +234,81 @@ async function saveBalance() {
   }
 }
 
+// ── 调整保证金（正存入 / 负扣出，独立余额池）──
+
+const depositModal = ref(null)
+
+function openDeposit(user) {
+  depositModal.value = { user, delta: '', remark: '', error: '', submitting: false }
+}
+
+async function saveDeposit() {
+  const state = depositModal.value
+  if (!state || state.submitting) return
+  state.error = ''
+  const delta = Number(state.delta)
+  if (state.delta === '' || !Number.isFinite(delta) || delta === 0) {
+    state.error = '金额不能为 0（正数存入、负数扣出）'
+    return
+  }
+  if (!state.remark.trim()) {
+    state.error = '请填写调整备注'
+    return
+  }
+  state.submitting = true
+  const result = await store.adjustDeposit(state.user.id, delta, state.remark.trim())
+  state.submitting = false
+  if (result.success) {
+    depositModal.value = null
+    flash('success', `保证金已调整（${delta > 0 ? '+' : ''}${formatPrice(delta)}）`)
+    await load(store.pagination.page)
+  } else {
+    state.error = result.error
+  }
+}
+
+// ── 某用户的接单记录（按打手身份拉取）──
+
+const claimStatusFilterOptions = [
+  { value: '', label: '全部状态' },
+  { value: 'CLAIMED', label: '进行中' },
+  { value: 'DELIVERED', label: '待确认' },
+  { value: 'SETTLED', label: '已结算' },
+  { value: 'CANCELLED', label: '已取消' },
+]
+
+const userOrdersModal = ref(null) // { user, status, items, page, pages, total, loading, error }
+
+async function openUserOrders(user) {
+  userOrdersModal.value = { user, status: '', items: [], page: 1, pages: 0, total: 0, loading: true, error: '' }
+  await loadUserOrders(1)
+}
+
+async function loadUserOrders(page = 1) {
+  const state = userOrdersModal.value
+  if (!state) return
+  state.loading = true
+  state.error = ''
+  const result = await store.fetchUserOrders(state.user.id, { status: state.status, page })
+  const current = userOrdersModal.value
+  if (!current || current !== state) return
+  if (result.success) {
+    const data = result.data || {}
+    current.items = data.items || []
+    current.page = data.page || 1
+    current.pages = data.pages || 0
+    current.total = data.total || 0
+  } else {
+    current.error = result.error
+  }
+  current.loading = false
+}
+
+function claimOrderTitle(item) {
+  const order = item.order || {}
+  return order.title || `${order.game_name || '订单'} ${order.current_rank || ''}→${order.target_rank || ''}`.trim()
+}
+
 // ── 余额明细弹窗 ──
 
 const transactionsModal = ref(null) // { user, wallet, items, page, pages, total, loading, error }
@@ -393,6 +469,8 @@ onMounted(load)
                       @click="toggleAccept(user)"
                     >{{ (user.can_accept ?? true) ? '禁接单' : '解除禁接单' }}</button>
                     <button type="button" class="btn-ghost !px-3 !py-1.5" @click="openBalance(user)">调余额</button>
+                    <button type="button" class="btn-ghost !px-3 !py-1.5" @click="openDeposit(user)">调保证金</button>
+                    <button type="button" class="btn-ghost !px-3 !py-1.5" @click="openUserOrders(user)">订单</button>
                   </div>
                 </td>
               </tr>
@@ -441,6 +519,8 @@ onMounted(load)
                 @click="toggleAccept(user)"
               >{{ (user.can_accept ?? true) ? '禁接单' : '解除禁接单' }}</button>
               <button type="button" class="btn-ghost min-h-[44px] !px-4 !py-2" @click="openBalance(user)">调余额</button>
+              <button type="button" class="btn-ghost min-h-[44px] !px-4 !py-2" @click="openDeposit(user)">调保证金</button>
+              <button type="button" class="btn-ghost min-h-[44px] !px-4 !py-2" @click="openUserOrders(user)">订单</button>
             </div>
           </article>
         </div>
@@ -585,6 +665,41 @@ onMounted(load)
       </div>
     </div>
 
+    <!-- 调整保证金弹窗 -->
+    <div v-if="depositModal" class="modal-scrim modal-scrim--sheet">
+      <div class="absolute inset-0" aria-hidden="true" @click="depositModal = null"></div>
+      <div class="modal-card modal-sheet" role="dialog" aria-modal="true" aria-label="调整保证金">
+        <div class="relative z-10">
+          <h3 class="text-2xl font-semibold text-ink-1">调整保证金</h3>
+          <p class="mt-2 text-sm text-ink-2">
+            {{ depositModal.user.username }} · 当前保证金
+            <span class="font-semibold tabular-nums text-warning">{{ formatPrice(depositModal.user.wallet?.deposit_balance) }}</span>
+          </p>
+          <p class="mt-1 text-xs text-ink-3">保证金是独立余额池，与可用余额、冻结金额互不影响；调整记录会留在钱包流水中。</p>
+
+          <form class="mt-5 space-y-4" @submit.prevent="saveDeposit">
+            <div>
+              <label class="label" for="deposit-delta">金额（正数存入 / 负数扣出）</label>
+              <input id="deposit-delta" v-model="depositModal.delta" type="number" step="0.01" class="input" placeholder="例如 100 或 -50" :disabled="depositModal.submitting" />
+            </div>
+            <div>
+              <label class="label" for="deposit-remark">备注</label>
+              <input id="deposit-remark" v-model="depositModal.remark" type="text" class="input" maxlength="200" placeholder="请填写调整备注" :disabled="depositModal.submitting" />
+            </div>
+
+            <div v-if="depositModal.error" class="message-error">{{ depositModal.error }}</div>
+
+            <div class="flex justify-end gap-3 pt-2">
+              <button type="button" class="btn-ghost !px-4 !py-2" :disabled="depositModal.submitting" @click="depositModal = null">取消</button>
+              <button type="submit" class="btn-primary !px-5 !py-2" :disabled="depositModal.submitting">
+                {{ depositModal.submitting ? '提交中...' : '提交' }}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
     <!-- 余额明细弹窗 -->
     <div v-if="transactionsModal" class="modal-scrim modal-scrim--sheet">
       <div class="absolute inset-0" aria-hidden="true" @click="transactionsModal = null"></div>
@@ -678,6 +793,101 @@ onMounted(load)
                 class="btn-secondary !px-4 !py-2"
                 :disabled="transactionsModal.page >= transactionsModal.pages"
                 @click="loadTransactions(transactionsModal.page + 1)"
+              >
+                下一页
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 用户接单记录弹窗 -->
+    <div v-if="userOrdersModal" class="modal-scrim modal-scrim--sheet">
+      <div class="absolute inset-0" aria-hidden="true" @click="userOrdersModal = null"></div>
+      <div class="modal-card modal-sheet" role="dialog" aria-modal="true" aria-label="用户接单记录">
+        <div class="relative z-10">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <h3 class="text-2xl font-semibold text-ink-1">接单记录</h3>
+              <p class="mt-2 truncate text-sm text-ink-2">{{ userOrdersModal.user.username }} · #{{ userOrdersModal.user.id }}</p>
+            </div>
+            <button type="button" class="btn-ghost shrink-0 !px-4 !py-2" @click="userOrdersModal = null">关闭</button>
+          </div>
+
+          <!-- 状态筛选 -->
+          <div class="mt-4">
+            <select
+              v-model="userOrdersModal.status"
+              class="input min-h-[44px] sm:w-40"
+              aria-label="接单状态筛选"
+              @change="loadUserOrders(1)"
+            >
+              <option v-for="option in claimStatusFilterOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+            </select>
+          </div>
+
+          <!-- 加载骨架 -->
+          <div v-if="userOrdersModal.loading" class="mt-5 space-y-2" aria-busy="true">
+            <div v-for="n in 4" :key="`order-skeleton-${n}`" class="skeleton h-20 !rounded-tile"></div>
+          </div>
+          <div v-else-if="userOrdersModal.error" class="message-error mt-5">{{ userOrdersModal.error }}</div>
+          <div v-else-if="!userOrdersModal.items.length" class="empty-state mt-5">
+            <div class="empty-state__icon" aria-hidden="true">📦</div>
+            <h4 class="empty-state__title">暂无接单记录</h4>
+            <p class="empty-state__copy">该用户以打手身份接单后，记录会出现在这里。</p>
+          </div>
+          <ul v-else class="mt-5 space-y-2">
+            <li
+              v-for="item in userOrdersModal.items"
+              :key="item.id"
+              class="rounded-tile border border-line-1 bg-surface-2 p-3"
+            >
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <button
+                      v-if="item.order?.id"
+                      type="button"
+                      class="tag cursor-pointer tabular-nums transition-colors hover:border-primary hover:text-primary"
+                      :aria-label="`查看订单 ${item.order.id}`"
+                      @click="goOrder(item.order.id)"
+                    >
+                      #{{ item.order.id }}
+                    </button>
+                    <p class="truncate text-sm font-semibold text-ink-1">{{ claimOrderTitle(item) }}</p>
+                    <span :class="getClaimStatusMeta(item.status).tagClass">{{ getClaimStatusMeta(item.status).label }}</span>
+                  </div>
+                  <p class="mt-1 text-xs text-ink-3">
+                    {{ item.order?.game_name || '未知游戏' }}{{ item.order?.server ? ` · ${item.order.server}` : '' }} · 接单于 {{ formatDateTime(item.created_at) }}
+                  </p>
+                </div>
+                <div class="shrink-0 text-right">
+                  <p class="text-sm font-semibold tabular-nums text-price">{{ formatPrice(item.order?.price) }}</p>
+                </div>
+              </div>
+            </li>
+          </ul>
+
+          <!-- 分页 -->
+          <div v-if="!userOrdersModal.loading && userOrdersModal.pages > 1" class="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <p class="text-sm tabular-nums text-ink-2">
+              第 {{ userOrdersModal.page }} / {{ userOrdersModal.pages }} 页，共 {{ userOrdersModal.total }} 条
+            </p>
+            <div class="flex gap-2">
+              <button
+                type="button"
+                class="btn-secondary !px-4 !py-2"
+                :disabled="userOrdersModal.page <= 1"
+                @click="loadUserOrders(userOrdersModal.page - 1)"
+              >
+                上一页
+              </button>
+              <button
+                type="button"
+                class="btn-secondary !px-4 !py-2"
+                :disabled="userOrdersModal.page >= userOrdersModal.pages"
+                @click="loadUserOrders(userOrdersModal.page + 1)"
               >
                 下一页
               </button>

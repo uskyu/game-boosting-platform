@@ -6,25 +6,27 @@ import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import { useNotificationsStore } from '@/stores/notifications'
 import { useOrdersStore } from '@/stores/orders'
+import { useSiteStore } from '@/stores/site'
 import { formatCount, formatPayoutDelay, formatPrice, formatShortDate, getAcceptWaitMeta, serverNow } from '@/utils/display'
 import { ORDER_STATUS_OPTIONS, getOrderStatusBadgeClass, getOrderStatusLabel } from '@/utils/order'
+import api from '@/utils/api'
 
 /**
  * 订单大厅（IA v2：/ = 产品心脏）。
- * 顶部统计条（待接单 / 进行中 / 今日完成，大数字）→ 游戏/状态筛选一行
- * → 订单卡网格（桌面 2 列、移动 1 列）→ 空态。
+ * 顶部统计条（待接单 / 进行中 / 今日完成，大数字）→ 状态筛选一行
+ * → 订单卡网格（桌面 2 列、移动 1 列）→ 空态 → 今日已接单区块。
  * 卡片信息层级（减法）：价格最大最显眼 → 当前情况 X/Y
  * → 炸单赔偿 / 到账时效 chips → 底部次要信息行（需求摘要 · 游戏名 · 时间 · #id）+「查看详情 →」。
  * 接单两步走：整卡点击进详情，详情页内确认接单。
- * 挂载后每 30 秒静默刷新当前页（页面可见时），检测到新订单弹轻提示。
+ * 挂载后静默刷新当前页（页面可见时），检测到新订单弹轻提示。
  */
 const router = useRouter()
 const authStore = useAuthStore()
 const chatStore = useChatStore()
 const notificationsStore = useNotificationsStore()
 const ordersStore = useOrdersStore()
+const siteStore = useSiteStore()
 
-const searchKeyword = ref('')
 const selectedStatus = ref('')
 const showHistory = ref(false)
 // The hall starts in claimable-only mode so stale dispatch records are not
@@ -84,10 +86,74 @@ function getOrderDisplayBadgeClass(order) {
   return getOrderStatusBadgeClass(order.status)
 }
 const loading = computed(() => ordersStore.loading)
-const pagination = computed(() => ordersStore.pagination)
 const error = computed(() => ordersStore.error)
 const isAuthenticated = computed(() => authStore.isAuthenticated)
 const isAdmin = computed(() => authStore.isAdmin)
+
+// ── 今日已接单（大厅底部区块） ──
+// 全站开关：管理员在站点设置里控制所有人可见性（默认开）；开关关闭或未登录时不渲染。
+// 数据：GET /orders/recent-claims（登录可用），挂载拉一次 + silentRefresh 节流兜底。
+// 断线时大厅轮询压到 2s，这里至少 15s 才刷一次，避免双倍请求；失败静默不打扰大厅。
+const hallRecentClaimsVisible = computed(
+  () => siteStore.settings.hall_recent_claims_enabled !== false && isAuthenticated.value,
+)
+const RECENT_CLAIMS_PREVIEW = 5
+const RECENT_CLAIMS_PAGE_SIZE = 20
+const RECENT_CLAIMS_MAX = 100
+const RECENT_CLAIMS_REFRESH_INTERVAL = 15_000
+const recentClaims = ref([])
+const recentClaimsTotal = ref(0)
+const recentClaimsExpanded = ref(false)
+const recentClaimsLoading = ref(false)
+let lastRecentClaimsRefreshAt = 0
+
+const visibleRecentClaims = computed(() =>
+  recentClaimsExpanded.value ? recentClaims.value : recentClaims.value.slice(0, RECENT_CLAIMS_PREVIEW),
+)
+const recentClaimsCanExpand = computed(() => recentClaimsTotal.value > RECENT_CLAIMS_PREVIEW)
+
+function recentClaimsThrottleReady() {
+  const nowTs = Date.now()
+  if (nowTs - lastRecentClaimsRefreshAt < RECENT_CLAIMS_REFRESH_INTERVAL) return false
+  lastRecentClaimsRefreshAt = nowTs
+  return true
+}
+
+async function fetchRecentClaims(limit = RECENT_CLAIMS_PAGE_SIZE) {
+  if (!hallRecentClaimsVisible.value) return
+  recentClaimsLoading.value = true
+  try {
+    const response = await api.get('/orders/recent-claims', {
+      params: { scope: 'today', limit },
+      timeout: 10000,
+    })
+    recentClaims.value = response.data?.items ?? []
+    recentClaimsTotal.value = Number(response.data?.total ?? 0)
+  } catch {
+    // 失败静默：区块是附加信息，下一轮兜底刷新再试
+  } finally {
+    recentClaimsLoading.value = false
+  }
+}
+
+// 「查看」= 展开加载更多（最多 100 条）；再点一次收起回预览行数
+async function toggleRecentClaims() {
+  if (recentClaimsExpanded.value) {
+    recentClaimsExpanded.value = false
+    return
+  }
+  recentClaimsExpanded.value = true
+  if (recentClaims.value.length < recentClaimsTotal.value && recentClaims.value.length < RECENT_CLAIMS_MAX) {
+    await fetchRecentClaims(RECENT_CLAIMS_MAX)
+  }
+}
+
+function getRecentClaimMeta(claim) {
+  const summary = claim.order.intro
+    ? (claim.order.intro.length > 40 ? `${claim.order.intro.slice(0, 40)}...` : claim.order.intro)
+    : '未补充需求'
+  return `${claim.booster.username} · 已完成 ${formatCount(claim.booster.total_completed)} 单 · ${summary} · ${formatShortDate(claim.created_at)}`
+}
 
 const unreadMap = computed(() => {
   return chatStore.conversations.reduce((result, conversation) => {
@@ -173,18 +239,17 @@ async function fetchOrders() {
     gameName: '',
     bossContact: '',
     status: selectedStatus.value,
-    q: searchKeyword.value.trim() || undefined,
   })
-  await ordersStore.fetchOrders({ slim: true })
+  // 底部分页控件已下线：可抢订单集合很小，一次性拉全（pageSize=100，后端上限），
+  // 省掉翻页状态与额外请求；状态/仅看可抢/历史订单筛选仍走同一接口。
+  await ordersStore.fetchOrders({ slim: true, page: 1, pageSize: 100 })
 }
 
 function handleSearch() {
-  ordersStore.setPage(1)
   fetchOrders()
 }
 
 function resetFilters() {
-  searchKeyword.value = ''
   selectedStatus.value = ''
   openOnly.value = true
   showHistory.value = false
@@ -193,14 +258,6 @@ function resetFilters() {
 
 function goToOrder(orderId) {
   router.push({ name: 'order-detail', params: { id: orderId } })
-}
-
-function handlePageChange(page) {
-  if (page < 1 || page > pagination.value.pages || page === pagination.value.page) {
-    return
-  }
-  ordersStore.setPage(page)
-  fetchOrders()
 }
 
 watch(isAuthenticated, (loggedIn) => {
@@ -262,7 +319,11 @@ async function silentRefresh() {
   }
   hallRefreshing = true
   try {
-    await ordersStore.fetchOrders({ silent: true, slim: true })
+    await ordersStore.fetchOrders({ silent: true, slim: true, page: 1, pageSize: 100 })
+    // 「今日已接单」兜底刷新：与订单同源节流（≥15s），失败静默
+    if (hallRecentClaimsVisible.value && recentClaimsThrottleReady()) {
+      fetchRecentClaims(recentClaimsExpanded.value ? RECENT_CLAIMS_MAX : RECENT_CLAIMS_PAGE_SIZE).catch(() => {})
+    }
   } catch {
     // 静默失败等下一轮
   } finally {
@@ -295,11 +356,17 @@ watch(() => chatStore.socketStatus, (status, previousStatus) => {
   restartHallTimer()
 })
 
-// 登录后的大厅启动：拉订单、拉聊天摘要、开自动刷新。
+// 登录后的大厅启动：拉订单、拉站点开关与今日已接单、拉聊天摘要、开自动刷新。
 // 身份可能在挂载后才由后台 /auth/me 补全（守卫已不阻塞），挂载和补全两条路径都走这里。
 async function startHallLifecycle() {
   if (hallUnmounted) return
   fetchOrders()
+  // 站点设置决定「今日已接单」区块是否渲染；App 启动时已预取，这里基本直接命中缓存
+  await siteStore.fetchSettings()
+  if (hallRecentClaimsVisible.value) {
+    lastRecentClaimsRefreshAt = Date.now()
+    fetchRecentClaims().catch(() => {})
+  }
   // 两个聊天请求互不依赖，并行发出，别串行拖慢大厅。
   // 会话列表只为订单卡片/大厅徽章服务，20 条即可（100 条服务端 ~310ms、
   // 20 条 ~76ms，跨境链路上白拿一截首屏时间）。
@@ -355,11 +422,6 @@ onUnmounted(() => {
 
     <section class="surface-card p-4 sm:p-5">
       <form class="hall-filters flex min-w-0 flex-col gap-3 lg:flex-row lg:flex-wrap lg:items-end" @submit.prevent="handleSearch">
-        <div class="min-w-0 w-full lg:w-72">
-          <label class="label" for="hall-search">综合搜索</label>
-          <input id="hall-search" v-model="searchKeyword" type="text" class="input h-11" placeholder="订单号 / 标题 / 需求内容" />
-        </div>
-
         <div class="min-w-0 w-full lg:w-44">
           <label class="label" for="hall-status">状态</label>
           <select id="hall-status" v-model="selectedStatus" class="input h-11">
@@ -470,17 +532,46 @@ onUnmounted(() => {
       <p class="empty-state__copy">换个筛选条件试试，或者稍后回来看看新需求。</p>
     </section>
 
-    <section v-if="pagination.pages > 1" class="surface-card p-4 sm:p-5">
-      <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <p class="text-sm tabular-nums text-ink-2">
-          {{ pagination.page }} / {{ pagination.pages }} · 共 {{ formatCount(pagination.total) }} 单
-        </p>
-
-        <div class="flex items-center gap-2">
-          <button class="btn-secondary !px-4" :disabled="pagination.page <= 1" @click="handlePageChange(pagination.page - 1)">上一页</button>
-          <button class="btn-secondary !px-4" :disabled="pagination.page >= pagination.pages" @click="handlePageChange(pagination.page + 1)">下一页</button>
-        </div>
+    <!-- 今日已接单（原分页位置）：全站开关开启且已登录才渲染；最多展开展示 100 条 -->
+    <section v-if="hallRecentClaimsVisible" class="surface-card p-4 sm:p-5" aria-label="今日已接单">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <h2 class="text-base font-semibold text-ink-1">
+          今日已接单
+          <span class="tabular-nums text-ink-2">({{ formatCount(recentClaimsTotal) }})</span>
+        </h2>
+        <button
+          type="button"
+          class="btn-ghost !min-h-[36px] shrink-0 !px-4 !py-1.5"
+          :disabled="!recentClaimsExpanded && !recentClaimsCanExpand"
+          @click="toggleRecentClaims"
+        >
+          {{ recentClaimsExpanded ? '收起' : '查看' }}
+        </button>
       </div>
+
+      <div v-if="recentClaimsLoading && !recentClaims.length" class="mt-4 space-y-3" aria-busy="true">
+        <div v-for="n in 3" :key="`recent-claim-skeleton-${n}`" class="skeleton-line h-10 w-full"></div>
+      </div>
+      <div v-else-if="recentClaims.length" class="mt-4">
+        <article
+          v-for="claim in visibleRecentClaims"
+          :key="claim.id"
+          class="cursor-pointer border-t border-line-1 py-3 first:border-t-0 first:pt-0"
+          @click="goToOrder(claim.order.id)"
+        >
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0 flex-1">
+              <p class="truncate text-[15px] font-semibold text-ink-1">{{ claim.order.title || `订单 #${claim.order.id}` }}</p>
+              <p class="mt-1 truncate text-[13px] text-ink-2">{{ getRecentClaimMeta(claim) }}</p>
+            </div>
+            <div class="shrink-0 text-right">
+              <p class="text-[15px] font-semibold tabular-nums text-price">{{ formatPrice(claim.order.price) }}</p>
+              <p class="mt-1 text-xs tabular-nums text-ink-3" :title="`打手 ${claim.booster.username} 的保证金余额`">保证金 {{ formatPrice(claim.deposit_balance) }}</p>
+            </div>
+          </div>
+        </article>
+      </div>
+      <p v-else class="mt-4 text-[13px] text-ink-3">今天暂无接单记录</p>
     </section>
   </div>
 </template>

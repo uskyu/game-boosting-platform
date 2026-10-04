@@ -1,15 +1,18 @@
 """Administrator user management endpoints."""
 
+from decimal import Decimal, InvalidOperation
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, field_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import DatabaseSession, get_current_admin
 from app.core.security import ahash_password
+from app.models.order import ClaimLifecycleStatus
 from app.models.user import User, UserRole
-from app.models.wallet import Wallet
+from app.models.wallet import Wallet, WalletTransactionType
 from app.schemas.admin_users import (
     AdminAdjustBalanceRequest,
     AdminResetPasswordRequest,
@@ -23,7 +26,9 @@ from app.schemas.admin_users import (
     AdminUserStatusRequest,
     AdminUserUpdate,
 )
+from app.schemas.order import MyOrderClaimItem, MyOrderClaimListResponse
 from app.schemas.wallet import WalletTransactionListResponse, WalletTransactionResponse
+from app.services.order_service import get_order_service
 from app.services.user_service import get_user_service
 from app.services.wallet_service import get_wallet_service
 
@@ -214,6 +219,104 @@ async def adjust_admin_user_balance(
         total_income=wallet.total_income,
         total_withdrawn=wallet.total_withdrawn,
         transaction_id=transaction.id,
+    )
+
+
+class AdminAdjustDepositRequest(BaseModel):
+    """管理员调保证金请求：有符号金额（正存入 / 负扣出），备注必填。"""
+
+    delta: Decimal
+    remark: str
+
+    @field_validator("remark")
+    @classmethod
+    def validate_remark(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("请填写调整备注")
+        return value
+
+    @field_validator("delta", mode="before")
+    @classmethod
+    def validate_delta(cls, value: object) -> Decimal:
+        try:
+            amount = Decimal(str(value).replace("¥", "").replace("元", "").replace(",", "").strip())
+        except (InvalidOperation, ValueError) as exc:
+            raise ValueError("调整金额必须是有效数字") from exc
+        if not amount.is_finite():
+            raise ValueError("调整金额必须是有效数字")
+        return amount
+
+
+@router.post("/{user_id}/adjust-deposit", response_model=AdminUserBalanceResponse)
+async def adjust_admin_user_deposit(
+    user_id: int,
+    payload: AdminAdjustDepositRequest,
+    db: DatabaseSession,
+    current_admin: Annotated[User, Depends(get_current_admin)],
+) -> AdminUserBalanceResponse:
+    """管理员调整用户保证金（独立余额池，不动可用余额）。
+
+    delta 为正存入、为负扣出；扣出后保证金不得为负（否则 400），
+    每次调整都会落一条 WalletTransaction 流水。
+    """
+    await _load_user(user_id, db)
+    wallet_service = get_wallet_service(db)
+    wallet = await wallet_service.get_or_create_wallet(user_id)
+    transaction = await wallet_service.adjust_deposit(
+        wallet,
+        delta=payload.delta,
+        tx_type=(
+            WalletTransactionType.DEPOSIT_TRANSFER_IN
+            if payload.delta > 0
+            else WalletTransactionType.DEPOSIT_TRANSFER_OUT
+        ),
+        operator_id=current_admin.id,
+        remark=payload.remark,
+    )
+    await db.refresh(wallet)
+    return AdminUserBalanceResponse(
+        available=wallet.available_balance,
+        frozen=wallet.frozen_balance,
+        deposit_balance=wallet.deposit_balance,
+        total_income=wallet.total_income,
+        total_withdrawn=wallet.total_withdrawn,
+        transaction_id=transaction.id,
+    )
+
+
+@router.get("/{user_id}/orders", response_model=MyOrderClaimListResponse)
+async def list_admin_user_orders(
+    user_id: int,
+    db: DatabaseSession,
+    current_admin: Annotated[User, Depends(get_current_admin)],
+    status_filter: Annotated[
+        ClaimLifecycleStatus | None,
+        Query(alias="status", description="按接单状态筛选：CLAIMED/DELIVERED/SETTLED/CANCELLED"),
+    ] = None,
+    page: Annotated[int, Query(ge=1, description="页码")] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100, description="每页数量")] = 20,
+    q: Annotated[
+        str | None,
+        Query(max_length=100, description="搜索订单号、接单记录号、标题、游戏或需求内容"),
+    ] = None,
+) -> MyOrderClaimListResponse:
+    """管理员查看某用户（打手身份）的全部接单记录，支持状态筛选与搜索。"""
+    await _load_user(user_id, db)
+    items, total = await get_order_service(db).list_my_claims(
+        user_id,
+        status_filter=status_filter,
+        page=page,
+        page_size=page_size,
+        q=q,
+    )
+    pages = (total + page_size - 1) // page_size if total > 0 else 0
+    return MyOrderClaimListResponse(
+        items=[MyOrderClaimItem.model_validate(item) for item in items],
+        total=total,
+        page=page,
+        page_size=page_size,
+        pages=pages,
     )
 
 

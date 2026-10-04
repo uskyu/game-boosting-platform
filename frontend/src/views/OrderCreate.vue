@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 import { useGamesStore } from '@/stores/games'
 import { useOrdersStore } from '@/stores/orders'
@@ -13,6 +13,7 @@ import { getPublishButtonLabel } from '@/utils/humanCopy'
 import { cleanTemplatePayload, resetOrderForm } from '@/utils/orderTemplates'
 
 const router = useRouter()
+const route = useRoute()
 const gamesStore = useGamesStore()
 const ordersStore = useOrdersStore()
 const templatesStore = useOrderTemplatesStore()
@@ -69,8 +70,14 @@ const maxAttachmentCount = 5
 const maxAttachmentSize = 10 * 1024 * 1024
 const uploadProgress = ref('')
 
+// 真正待上传的图片只有 File 对象；从原单带过来的附件是 {url,name,...} 对象，
+// 直接进 payload.attachments（OrderCreate schema 本就支持），不再走创建后上传。
+function isUploadFile(item) {
+  return typeof File !== 'undefined' && item instanceof File
+}
+
 function validateAttachments(files) {
-  const selected = Array.from(files || [])
+  const selected = Array.from(files || []).filter(isUploadFile)
   if (selected.length > maxAttachmentCount) return '订单最多上传5张图片'
   const invalid = selected.find((file) => !attachmentTypes.includes((file.type || '').toLowerCase()))
   if (invalid) return `仅支持 PNG、JPEG、WebP 图片：${invalid.name}`
@@ -79,8 +86,15 @@ function validateAttachments(files) {
   return ''
 }
 
+// 从原单带过来的附件条目（非 File）：URL 形状见 schemas/order.py 的 OrderAttachment
+// （{url,name,size,content_type}），OrderCreate.attachments 接受的正是这个形态。
+function carriedAttachments() {
+  return Array.from(formData.value.attachments || [])
+    .filter((item) => !isUploadFile(item) && item && typeof item === 'object' && typeof item.url === 'string')
+}
+
 async function uploadAttachments(orderId, files) {
-  const selected = Array.from(files || [])
+  const selected = Array.from(files || []).filter(isUploadFile)
   for (let index = 0; index < selected.length; index += 1) {
     const body = new FormData()
     body.append('attachment', selected[index])
@@ -173,6 +187,7 @@ const escrowHint = computed(() => {
 const canPublish = computed(() => {
   return Boolean(
     selectedGame.value
+    && !gameOffline.value
     && formData.value.description_raw.trim()
     && Number(formData.value.price) > 0
   )
@@ -182,6 +197,60 @@ function handleGameChange() {
   formData.value.service_type = '陪玩'
   const game = selectedGame.value
   formData.value.game_name = game?.name || ''
+}
+
+// ── 重建 / 续单预填（URL: /orders/create?recycle=<orderId>&mode=rebuild|repeat）──
+// 原游戏已下架时保留 game_id/game_name 并告警，发布被 canPublish 拦截
+const recycleOrderId = ref(null)
+const recycleMode = ref('')
+const gameOffline = computed(() => (
+  Boolean(formData.value.game_id)
+  && !catalogGames.value.some((game) => Number(game.id) === Number(formData.value.game_id))
+))
+
+async function prefillFromOrder(orderId, mode) {
+  recycleOrderId.value = orderId
+  recycleMode.value = mode
+  const result = await ordersStore.fetchOrder(orderId)
+  const order = result?.data || ordersStore.currentOrder
+  if (!order) {
+    errorMessage.value = result?.error || '原订单读取失败，请手动填写后发布'
+    return
+  }
+  const price = order.price != null ? String(order.price) : ''
+  const compensation = Number(order.compensation_amount || 0)
+  formData.value = {
+    ...formData.value,
+    game_id: order.game_id ?? null,
+    game_name: order.game_name || '',
+    // 续单默认指定同一位打手；重建沿用原标题
+    title: mode === 'repeat'
+      ? `指定${order.booster?.username || '打手'}`
+      : (order.title || ''),
+    price,
+    description_raw: order.description_raw || '',
+    notes: order.notes || '',
+    boss_contact: order.boss_contact || '',
+    max_claims: Number(order.max_claims) || 1,
+    compensation_enabled: compensation > 0,
+    compensation_amount: compensation > 0 ? String(order.compensation_amount) : '',
+    payout_delay_days: order.payout_delay_days ?? '',
+    payout_delay_hours: order.payout_delay_hours ?? '',
+    require_delivery_image: Boolean(order.require_delivery_image),
+    // 原单附件以对象形态直接进 payload.attachments（含 /uploads/orders/ URL），
+    // 用户仍可继续选新图一起发布
+    attachments: Array.isArray(order.attachments) ? [...order.attachments] : [],
+  }
+  if (isAdmin.value) {
+    // 原单在收服务费时按原费率预填（费率留空 = 按后台全局）
+    const feeRate = Number(order.service_fee_rate || 0)
+    formData.value.service_fee_enabled = feeRate > 0
+    formData.value.service_fee_rate = feeRate > 0 ? String(order.service_fee_rate) : ''
+  }
+  // 游戏仍在架时同步 catalog 里的最新名称；已下架则保留原值并告警
+  if (selectedGame.value) {
+    handleGameChange()
+  }
 }
 
 async function publishOrder() {
@@ -256,6 +325,11 @@ async function publishOrder() {
   if (compensationAmount != null) {
     payload.compensation_amount = compensationAmount
   }
+  // 从原单带过来的附件（URL 条目）直接进 payload；File 仍走创建后上传
+  const keptAttachments = carriedAttachments()
+  if (keptAttachments.length) {
+    payload.attachments = keptAttachments
+  }
   if (isAdmin.value) {
     // 显式传开关：开+手填=逐单费率；开+留空=后台全局费率；关=不收
     payload.service_fee_enabled = formData.value.service_fee_enabled
@@ -310,11 +384,16 @@ onMounted(async () => {
       }
     }
   }
+  // 重建 / 续单：等 catalog 就绪后再拉原单，避免游戏下拉还没渲染
+  const recycleId = Number(route.query.recycle)
+  if (Number.isInteger(recycleId) && recycleId > 0) {
+    await prefillFromOrder(recycleId, route.query.mode === 'repeat' ? 'repeat' : 'rebuild')
+  }
 })
 </script>
 
 <template>
-  <div class="page-shell space-y-6">
+  <div class="page-shell page-shell--create space-y-6">
     <section class="hero-panel p-6 sm:p-8">
       <p class="eyebrow">发布订单</p>
       <h1 class="section-title">填好需求，直接发布</h1>
@@ -323,6 +402,11 @@ onMounted(async () => {
       </p>
       <div class="message-info mt-5 !mb-0">{{ escrowHint }}</div>
     </section>
+
+    <!-- 重建 / 续单：按原单预填后的提示横幅 -->
+    <div v-if="recycleOrderId" class="message-info">
+      已根据订单 #{{ recycleOrderId }} 预填（{{ recycleMode === 'repeat' ? '续单' : '重建' }}），可修改后发布
+    </div>
 
     <div v-if="errorMessage" class="message-error">{{ errorMessage }}</div>
     <div v-if="successMessage" class="message-success">{{ successMessage }}</div>
@@ -361,6 +445,8 @@ onMounted(async () => {
             <option v-for="game in catalogGames" :key="game.id" :value="game.id">{{ game.name }}</option>
           </select>
           <p class="mt-1 text-xs text-ink-3">只能选择管理员上架的游戏</p>
+          <!-- 原单游戏已被下架：保留原值但禁止发布，逼用户重新选 -->
+          <p v-if="gameOffline" class="mt-1 text-xs font-semibold text-warning">原游戏已下架，请重新选择</p>
         </div>
         <div>
           <label class="label" for="create-service-type">服务类型</label>
@@ -504,6 +590,8 @@ onMounted(async () => {
           <label class="label" for="create-attachments">图片附件（可选）</label>
           <input id="create-attachments" type="file" accept="image/png,image/jpeg,image/webp" multiple class="input min-h-[44px]" @change="formData.attachments = $event.target.files" />
           <p class="mt-1 text-xs text-ink-3">最多5张，支持 PNG、JPEG、WebP，单张不超过10MB。</p>
+          <!-- 重建/续单带入的原单图片：走 payload.attachments 直接发布，不再重复上传 -->
+          <p v-if="carriedAttachments().length" class="mt-1 text-xs text-ink-2">已带入原单 {{ carriedAttachments().length }} 张图片，可直接发布；重新选择图片会替换它们。</p>
           <p v-if="uploadProgress" class="mt-2 text-sm text-primary">图片上传中：{{ uploadProgress }}</p>
         </div>
 
@@ -512,13 +600,17 @@ onMounted(async () => {
           <textarea id="create-notes" v-model="formData.notes" rows="3" class="input resize-none" placeholder="例如：希望晚上 8 点后开打，全程语音沟通。"></textarea>
         </div>
       </div>
+    </section>
 
-      <div class="mt-8 flex items-center justify-between gap-4">
-        <p class="text-xs text-ink-3">发布后金额进入托管，打手完结并经你审核后打款</p>
-        <button type="button" class="btn-primary shrink-0" :disabled="isSubmitting || !canPublish" @click="publishOrder">
+    <!-- 底部固定操作栏（sticky）：表单区照常滚动，取消/发布永远可见 -->
+    <div class="create-actions-bar">
+      <p class="hidden text-xs text-ink-3 sm:block">发布后金额进入托管，打手完结并经你审核后打款</p>
+      <div class="flex w-full gap-3 sm:w-auto">
+        <button type="button" class="btn-secondary flex-1 sm:flex-none" @click="router.push({ name: 'orders' })">取消</button>
+        <button type="button" class="btn-primary flex-1 sm:flex-none" :disabled="isSubmitting || !canPublish" @click="publishOrder">
           {{ isSubmitting ? '正在发布...' : getPublishButtonLabel(formData.service_type) }}
         </button>
       </div>
-    </section>
+    </div>
   </div>
 </template>
