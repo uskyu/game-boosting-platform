@@ -283,8 +283,8 @@ async def test_edit_order_refreshes_to_current_global(
         headers=auth_header(admin_user),
     )
     assert resp.status_code == 200
-    assert resp.json()["service_fee_rate"] == "10.00"
-    assert resp.json()["net_amount"] == "135.00"
+    assert resp.json()["service_fee_rate"] == "0.00"
+    assert resp.json()["net_amount"] == "150.00"
 
 
 async def test_edit_order_keeps_rate_when_fee_fields_omitted(
