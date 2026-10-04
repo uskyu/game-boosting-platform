@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -23,6 +23,10 @@ class SiteSetting(Base):
     site_description: Mapped[str | None] = mapped_column(Text, nullable=True)
     site_logo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     favicon_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # 大厅「今日已接单」区块全站开关：默认开，管理员可在站点设置里整体关闭
+    hall_recent_claims_enabled: Mapped[bool] = mapped_column(
+        Boolean(), nullable=False, default=True, server_default="1"
+    )
     updated_by: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

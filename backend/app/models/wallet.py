@@ -47,6 +47,9 @@ class WalletTransactionType(str, PyEnum):
     # 保证金（可用余额 ⇄ 保证金余额 划转，保证金不可消费、不可提现）
     DEPOSIT_TRANSFER_IN = "DEPOSIT_TRANSFER_IN"    # 余额转入保证金，可用扣减 (-)，保证金增加
     DEPOSIT_TRANSFER_OUT = "DEPOSIT_TRANSFER_OUT"  # 保证金转回余额，可用回补 (+)，保证金减少
+    # 取消订单赔偿（发单员对进行中订单发起取消时直扣打手保证金，无需对方同意）
+    CANCEL_COMPENSATION_IN = "CANCEL_COMPENSATION_IN"        # 取消赔偿入账，发单员可用余额 (+)
+    CANCEL_COMPENSATION_DEDUCT = "CANCEL_COMPENSATION_DEDUCT"  # 取消赔偿扣除，打手保证金扣减 (-)
 
 
 class Wallet(Base):

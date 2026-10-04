@@ -459,10 +459,48 @@ class WalletService:
             remark=reason,
         )
 
+    async def adjust_deposit(
+        self,
+        wallet: Wallet,
+        *,
+        delta: Decimal,
+        tx_type: WalletTransactionType,
+        operator_id: int | None = None,
+        order_id: int | None = None,
+        booster_id: int | None = None,
+        remark: str | None = None,
+    ) -> WalletTransaction:
+        """调整保证金余额：正数存入、负数扣出（管理员调保证金 / 取消单扣赔偿金）。
+
+        保证金是独立余额池：只动 deposit_balance，可用余额不受影响；
+        扣出后余额不得为负。流水 amount 与 delta 同号。
+        """
+        delta = _to_decimal(delta).quantize(_CENT, rounding=ROUND_HALF_UP)
+        if delta == _ZERO:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="调整金额不能为0",
+            )
+        if delta < _ZERO and _to_decimal(wallet.deposit_balance) + delta < _ZERO:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="保证金余额不足",
+            )
+        return await self._apply(
+            wallet,
+            tx_type=tx_type,
+            amount=delta,
+            available_delta=_ZERO,
+            deposit_delta=delta,
+            order_id=order_id,
+            booster_id=booster_id,
+            operator_id=operator_id,
+            remark=remark,
+        )
+
     # ------------------------------------------------------------------
     # Self-service recharge (易支付)
     # ------------------------------------------------------------------
-
     async def complete_recharge(
         self,
         trade_no: str,
