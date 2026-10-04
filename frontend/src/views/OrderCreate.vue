@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { useGamesStore } from '@/stores/games'
@@ -21,6 +21,7 @@ const templateName = ref('')
 const templateMessage = ref('')
 const errorMessage = ref('')
 const submitting = ref(false)
+const createActionsBar = ref(null)
 
 function templateFields() {
   const fields = cleanTemplatePayload(formData.value)
@@ -323,7 +324,14 @@ onMounted(async () => {
   // 重建 / 续单：等 catalog 就绪后再拉原单，避免游戏下拉还没渲染
   const recycleId = Number(route.query.recycle)
   if (Number.isInteger(recycleId) && recycleId > 0) {
-    await prefillFromOrder(recycleId, route.query.mode === 'repeat' ? 'repeat' : 'rebuild')
+    const mode = route.query.mode === 'repeat' ? 'repeat' : 'rebuild'
+    await prefillFromOrder(recycleId, mode)
+    if (mode === 'rebuild' && !errorMessage.value) {
+      await nextTick()
+      window.requestAnimationFrame(() => {
+        createActionsBar.value?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+      })
+    }
   }
 })
 </script>
@@ -496,7 +504,7 @@ onMounted(async () => {
     </section>
 
     <!-- 底部固定操作栏（sticky）：表单区照常滚动，取消/发布永远可见 -->
-    <div class="create-actions-bar">
+    <div ref="createActionsBar" class="create-actions-bar">
       <p class="hidden text-xs text-ink-3 sm:block">发布后金额进入托管，打手完结并经你审核后打款</p>
       <div class="flex w-full gap-3 sm:w-auto">
         <button type="button" class="btn-secondary flex-1 sm:flex-none" @click="router.push({ name: 'orders' })">取消</button>
