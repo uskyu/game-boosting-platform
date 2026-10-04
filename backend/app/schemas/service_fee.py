@@ -16,7 +16,7 @@ class ServiceFeeSettingsResponse(BaseModel):
     )
     individual_service_fee_enabled: bool = Field(
         default=False,
-        description="是否允许在发布订单时单独开关或自定义服务费费率",
+        description="是否允许新订单逐单开关或自定义费率；关闭时新订单费率为 0",
     )
     updated_at: datetime
 
@@ -36,7 +36,7 @@ class ServiceFeeSettingsUpdate(BaseModel):
     )
     individual_service_fee_enabled: bool | None = Field(
         default=None,
-        description="是否允许订单单独设置服务费；未提供时保持原值",
+        description="是否允许新订单逐单设置服务费；关闭时新订单费率为 0，未提供时保持原值",
     )
 
     model_config = ConfigDict(extra="forbid")
