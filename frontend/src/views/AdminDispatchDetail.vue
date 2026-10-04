@@ -1006,6 +1006,15 @@ onMounted(async () => {
               {{ actionKey === 'intervene-CANCELLED' ? '处理中…' : '取消订单退款' }}
             </button>
           </template>
+          <button
+            v-if="['PENDING', 'LOCKED', 'DELIVERED'].includes(order.status)"
+            type="button"
+            class="btn-danger min-h-[44px] !px-4 !py-2"
+            :disabled="actionKey === 'intervene-CANCELLED'"
+            @click="interveneOrder('CANCELLED')"
+          >
+            {{ actionKey === 'intervene-CANCELLED' ? '处理中…' : '管理员直接取消' }}
+          </button>
           <button type="button" class="btn-danger min-h-[44px] !px-4 !py-2" :disabled="actionKey === 'delete'" @click="deleteThisOrder">
             {{ actionKey === 'delete' ? '删除中…' : '删除订单' }}
           </button>

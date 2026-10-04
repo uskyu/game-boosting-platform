@@ -381,6 +381,17 @@ class ClaimReviewRequest(BaseModel):
     )
 
 
+class BoosterCancelRequest(BaseModel):
+    """打手申请取消进行中订单；仅提交原因，取消与裁决由管理员处理。"""
+
+    reason: str = Field(
+        ...,
+        min_length=3,
+        max_length=500,
+        description="取消原因（至少 3 个字）",
+    )
+
+
 class ApplyCancelRequest(BaseModel):
     """发单员对进行中订单申请取消的请求体（提交即生效，无审批流）。
 
