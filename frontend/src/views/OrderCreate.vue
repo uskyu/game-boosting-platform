@@ -319,6 +319,10 @@ async function publishOrder() {
     payload.compensation_amount = compensationAmount
   }
   // 从原单带过来的附件（URL 条目）直接进 payload；File 仍走创建后上传
+  if (isAdmin.value && individualServiceFeeEnabled.value) {
+    payload.service_fee_enabled = formData.value.service_fee_enabled
+    if (serviceFeeRate != null) payload.service_fee_rate = serviceFeeRate
+  }
   const keptAttachments = carriedAttachments()
   if (keptAttachments.length) {
     payload.attachments = keptAttachments
@@ -512,6 +516,10 @@ onMounted(async () => {
               {{ formData.require_delivery_image ? '已开启' : '未开启' }}
             </button>
           </div>
+        </div>
+
+        <div v-if="isAdmin && !individualServiceFeeEnabled" class="sm:col-span-2 rounded-tile border border-line-1 bg-surface-2 p-4 text-sm text-ink-2">
+          后台已关闭单独服务费设置，本订单服务费率为 0。
         </div>
 
         <!-- 逐单服务费由后台总开关控制 -->
