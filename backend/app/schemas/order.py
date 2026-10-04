@@ -676,7 +676,7 @@ class OrderClaimItem(BaseModel):
     )
     delivery_rejection_reason: str | None = Field(default=None, description="最近一次交付驳回原因")
     delivery_rejected_at: datetime | None = Field(default=None, description="最近一次交付驳回时间")
-    created_at = Field(description="报名时间")
+    created_at: datetime = Field(description="报名时间")
     delivered_at: datetime | None = Field(default=None, description="交付时间")
     approved_at: datetime | None = Field(default=None, description="审核通过时间")
     approved_payout_amount: Decimal | None = Field(default=None, description="审核确定的打款金额")
