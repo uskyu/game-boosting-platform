@@ -367,7 +367,7 @@ class OrderConfirmRequest(BaseModel):
 class ClaimReviewRequest(BaseModel):
     """管理员审核某个名额（claim）交付记录的请求体。"""
 
-    action: str = Field(default="approve", pattern="^approve$", description="审核动作，当前仅支持 approve")
+    action: str = Field(default="approve", pattern="^(approve|reject)$", description="审核动作：approve 通过，reject 驳回")
     amount: Decimal | None = Field(
         default=None,
         ge=0,
@@ -379,6 +379,19 @@ class ClaimReviewRequest(BaseModel):
         ge=0,
         description="炸单赔偿扣除金额（0 ~ compensation_amount，缺省 0 不扣除）",
     )
+    reason: str | None = Field(
+        default=None,
+        max_length=500,
+        description="驳回原因；action=reject 时必填，至少 3 个字符",
+    )
+
+    @model_validator(mode="after")
+    def validate_rejection_reason(self) -> "ClaimReviewRequest":
+        if self.reason is not None:
+            self.reason = self.reason.strip()
+        if self.action == "reject" and (self.reason is None or len(self.reason) < 3):
+            raise ValueError("驳回原因至少需要 3 个字符")
+        return self
 
 
 class BoosterCancelRequest(BaseModel):
@@ -661,7 +674,9 @@ class OrderClaimItem(BaseModel):
     delivery_attachments: DeliveryAttachmentList | None = Field(
         default=None, max_length=5, description="交付附件"
     )
-    created_at: datetime = Field(description="报名时间")
+    delivery_rejection_reason: str | None = Field(default=None, description="最近一次交付驳回原因")
+    delivery_rejected_at: datetime | None = Field(default=None, description="最近一次交付驳回时间")
+    created_at = Field(description="报名时间")
     delivered_at: datetime | None = Field(default=None, description="交付时间")
     approved_at: datetime | None = Field(default=None, description="审核通过时间")
     approved_payout_amount: Decimal | None = Field(default=None, description="审核确定的打款金额")
