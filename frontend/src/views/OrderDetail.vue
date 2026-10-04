@@ -53,6 +53,10 @@ const showApplyCancelModal = ref(false)
 const applyCancelSubmitting = ref(false)
 const applyCancelError = ref('')
 const applyCancelForm = ref({ reason: '', deduction_amount: '0' })
+const showBoosterCancelModal = ref(false)
+const boosterCancelSubmitting = ref(false)
+const boosterCancelError = ref('')
+const boosterCancelForm = ref({ reason: '' })
 // 发起争议：正式弹窗替代 window.prompt（移动端 prompt 体验差且样式不统一）
 const showDisputeModal = ref(false)
 const disputeForm = ref({ reason: '' })
@@ -566,6 +570,35 @@ async function submitApplyCancel() {
   applyCancelSubmitting.value = false
 }
 
+function openBoosterCancelModal() {
+  if (actionLoading.value) return
+  boosterCancelError.value = ''
+  boosterCancelForm.value = { reason: '' }
+  showBoosterCancelModal.value = true
+}
+
+async function submitBoosterCancel() {
+  if (boosterCancelSubmitting.value) return
+  const reason = boosterCancelForm.value.reason.trim()
+  if (reason.length < 3) {
+    boosterCancelError.value = '取消原因至少 3 个字'
+    return
+  }
+  boosterCancelSubmitting.value = true
+  boosterCancelError.value = ''
+  errorMessage.value = ''
+  successMessage.value = ''
+  const result = await ordersStore.requestCancel(order.value.id, { reason })
+  if (result.success) {
+    showBoosterCancelModal.value = false
+    successMessage.value = '取消申请已提交，等待管理员处理'
+    await Promise.all([ordersStore.fetchOrder(order.value.id), loadClaims()])
+  } else {
+    boosterCancelError.value = result.error || '申请失败，请稍后重试'
+  }
+  boosterCancelSubmitting.value = false
+}
+
 // 重建 / 续单：带原单 ID 与模式进创建页预填（见 OrderCreate.vue）
 function rebuildOrder(orderId) {
   router.push({ path: '/orders/create', query: { recycle: String(orderId), mode: 'rebuild' } })
@@ -1045,6 +1078,16 @@ onUnmounted(() => {
             </button>
 
             <button
+              v-if="isBooster && myClaim && ['LOCKED', 'DELIVERED'].includes(order.status)"
+              type="button"
+              class="od-ops__primary btn-danger w-full py-3"
+              :disabled="actionLoading"
+              @click="openBoosterCancelModal"
+            >
+              申请取消（管理员处理）
+            </button>
+
+            <button
               v-if="isOwner && order.status === 'PENDING'"
               class="od-ops__primary btn-danger w-full py-3"
               :disabled="actionLoading"
@@ -1320,6 +1363,36 @@ onUnmounted(() => {
             <button type="button" class="btn-secondary flex-1" :disabled="applyCancelSubmitting" @click="showApplyCancelModal = false">再想想</button>
             <button type="button" class="btn-danger flex-1" :disabled="applyCancelSubmitting" @click="submitApplyCancel">
               {{ applyCancelSubmitting ? '提交中…' : '确认取消' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </teleport>
+
+    <teleport to="body">
+      <div v-if="showBoosterCancelModal" class="modal-scrim" @click.self="!boosterCancelSubmitting && (showBoosterCancelModal = false)">
+        <div class="modal-card" role="dialog" aria-modal="true" aria-label="申请取消订单">
+          <h3 class="text-lg font-semibold text-ink-1">申请取消订单</h3>
+          <p class="mt-3 text-sm leading-6 text-ink-2">
+            提交后订单将进入管理员处理流程。管理员会直接裁决是否取消；无需填写或承诺赔偿金额。
+          </p>
+          <div class="mt-4">
+            <label class="label" for="booster-cancel-reason">申请原因</label>
+            <textarea
+              id="booster-cancel-reason"
+              v-model="boosterCancelForm.reason"
+              rows="3"
+              maxlength="500"
+              class="input resize-none"
+              placeholder="请说明取消原因（至少 3 个字）"
+            ></textarea>
+            <p class="mt-1 text-xs text-ink-3">{{ boosterCancelForm.reason.length }}/500</p>
+            <p v-if="boosterCancelError" class="mt-2 text-sm text-danger">{{ boosterCancelError }}</p>
+          </div>
+          <div class="mt-6 flex gap-3">
+            <button type="button" class="btn-secondary flex-1" :disabled="boosterCancelSubmitting" @click="showBoosterCancelModal = false">返回</button>
+            <button type="button" class="btn-danger flex-1" :disabled="boosterCancelSubmitting" @click="submitBoosterCancel">
+              {{ boosterCancelSubmitting ? '提交中…' : '提交申请' }}
             </button>
           </div>
         </div>
