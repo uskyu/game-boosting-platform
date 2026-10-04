@@ -9,7 +9,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "045_fee_toggle_delivery_rejection"
+revision = "045_fee_toggle_delivery_reject"
 down_revision = "044_cancel_compensation_ledger"
 branch_labels = None
 depends_on = None
