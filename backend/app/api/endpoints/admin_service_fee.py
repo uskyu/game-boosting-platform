@@ -58,5 +58,6 @@ async def update_service_fee_settings(
     await db.refresh(setting)
     return ServiceFeeSettingsResponse(
         service_fee_rate=setting.service_fee_rate,
+        individual_service_fee_enabled=setting.individual_service_fee_enabled,
         updated_at=setting.updated_at,
     )
