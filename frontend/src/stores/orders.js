@@ -563,6 +563,27 @@ export const useOrdersStore = defineStore('orders', () => {
     }
   }
 
+  // 打手申请取消：只提交原因，管理员在派单详情页裁决。
+  async function requestCancel(orderId, payload) {
+    error.value = null
+
+    try {
+      const response = await api.post(`/orders/${orderId}/request-cancel`, payload)
+
+      const index = orders.value.findIndex(o => o.id === orderId)
+      if (index !== -1) {
+        orders.value[index] = response.data
+      }
+      if (currentOrder.value?.id === orderId) {
+        currentOrder.value = response.data
+      }
+      return { success: true, data: response.data }
+    } catch (err) {
+      error.value = err.message
+      return { success: false, error: err.message }
+    }
+  }
+
   async function payOrder(orderId) {
     error.value = null
 
@@ -672,6 +693,7 @@ export const useOrdersStore = defineStore('orders', () => {
     disputeOrder,
     cancelOrder,
     applyCancel,
+    requestCancel,
     payOrder,
     refundOrder,
     setFilters,
