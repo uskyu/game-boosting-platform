@@ -25,6 +25,7 @@ from app.models.user import User, UserRole
 from app.schemas.order import (
     AIAnalysisResponse,
     ApplyCancelRequest,
+    BoosterCancelRequest,
     ClaimReviewRequest,
     OrderAttachment,
     OrderDeliveryAttachment,
@@ -1071,6 +1072,69 @@ async def apply_cancel_order(
         claimed_count=order.claimed_count,
     )
 
+    return OrderResponse.model_validate(order)
+
+
+@router.post(
+    "/{order_id}/request-cancel",
+    response_model=OrderResponse,
+    summary="打手申请取消订单",
+    description="打手提交取消原因后由管理员处理；订单进入争议处理状态。",
+)
+async def request_cancel_order(
+    order_id: int,
+    payload: BoosterCancelRequest,
+    current_user: CurrentUser,
+    db: DatabaseSession,
+) -> OrderResponse:
+    order = await get_order_service(db).request_cancel_by_booster(
+        order_id, current_user, payload.reason
+    )
+    reason_text = payload.reason.strip()
+    await send_order_system_message(
+        db=db,
+        order_id=order.id,
+        content=f"{current_user.username} 申请取消订单，等待管理员处理",
+        meta_json={
+            "event": "order_cancel_requested",
+            "order_id": order.id,
+            "operator_id": current_user.id,
+            "reason": reason_text,
+        },
+    )
+    if order.user_id != current_user.id:
+        await notify_user(
+            db,
+            user_id=order.user_id,
+            type=NotificationType.ORDER_DISPUTED,
+            title="打手申请取消订单",
+            content=f"订单 #{order.id}「{order.game_name}」有打手申请取消，等待管理员处理",
+            link=f"/orders/{order.id}",
+            ref_id=order.id,
+        )
+
+    admin_result = await db.execute(
+        select(User.id).where(User.role == UserRole.ADMIN, User.is_active.is_(True))
+    )
+    for (admin_id,) in admin_result.all():
+        if admin_id in (current_user.id, order.user_id):
+            continue
+        await notify_user(
+            db,
+            user_id=admin_id,
+            type=NotificationType.ORDER_DISPUTED,
+            title="打手申请取消待裁决",
+            content=f"订单 #{order.id}「{order.game_name}」：{reason_text}",
+            link=f"/admin/dispatch/{order.id}",
+            ref_id=order.id,
+        )
+
+    await broadcast_order_state_changed(
+        order_id=order.id,
+        status=order.status,
+        claim_status=order.claim_status,
+        claimed_count=order.claimed_count,
+    )
     return OrderResponse.model_validate(order)
 
 
