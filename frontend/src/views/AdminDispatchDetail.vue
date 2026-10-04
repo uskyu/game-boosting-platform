@@ -371,7 +371,7 @@ function claimAttachments(claim) {
 const reviewModal = ref(null) // { claim, payout: { mode, amount, note, deduction }, submitting }
 
 function openReviewModal(claim) {
-  reviewModal.value = { claim, payout: { mode: 'full', amount: '', note: '', deduction: '0' }, submitting: false }
+  reviewModal.value = { claim, payout: { mode: 'full', amount: '', note: '', deduction: '0' }, rejectReason: '', submitting: false }
 }
 
 function closeReviewModal() {
@@ -449,6 +449,26 @@ async function submitPayout() {
     await Promise.all([fetchOrder(), ordersStore.fetchClaims(order.value.id)])
   } else {
     message.value = { type: 'error', text: formatApiError(result.error) || '审核失败' }
+  }
+}
+
+async function submitRejection() {
+  if (!reviewModal.value || reviewModal.value.submitting) return
+  const reason = reviewModal.value.rejectReason.trim()
+  if (reason.length < 3) {
+    message.value = { type: 'error', text: '请填写至少 3 个字符的驳回原因' }
+    return
+  }
+  const claim = reviewModal.value.claim
+  reviewModal.value.submitting = true
+  const result = await ordersStore.reviewClaim(order.value.id, claim.id, { action: 'reject', reason })
+  if (reviewModal.value) reviewModal.value.submitting = false
+  if (result.success) {
+    message.value = { type: 'success', text: `已驳回单 #${claim.id} 的交付，打手可重新上传` }
+    closeReviewModal()
+    await Promise.all([fetchOrder(), ordersStore.fetchClaims(order.value.id)])
+  } else {
+    message.value = { type: 'error', text: formatApiError(result.error) || '驳回失败' }
   }
 }
 
@@ -1123,8 +1143,31 @@ onMounted(async () => {
             </div>
           </div>
 
-          <div class="mt-6 flex justify-end gap-3">
+          <div v-if="reviewModal.claim.status === 'DELIVERED' && !reviewModal.claim.approved_at" class="mt-5">
+            <label class="label" for="admin-delivery-rejection-reason">驳回原因（至少 3 个字符）</label>
+            <textarea
+              id="admin-delivery-rejection-reason"
+              v-model="reviewModal.rejectReason"
+              rows="3"
+              maxlength="500"
+              class="input resize-none"
+              :disabled="reviewModal.submitting"
+              placeholder="说明截图需要修改的内容"
+            ></textarea>
+            <p class="mt-1 text-xs text-ink-3">{{ reviewModal.rejectReason.length }}/500</p>
+          </div>
+
+          <div class="mt-6 flex flex-wrap justify-end gap-3">
             <button type="button" class="btn-secondary !px-5 !py-2" @click="closeReviewModal">关闭</button>
+            <button
+              v-if="reviewModal.claim.status === 'DELIVERED' && !reviewModal.claim.approved_at"
+              type="button"
+              class="btn-danger !px-5 !py-2"
+              :disabled="reviewModal.submitting || reviewModal.rejectReason.trim().length < 3"
+              @click="submitRejection"
+            >
+              {{ reviewModal.submitting ? '提交中…' : '驳回并要求重传' }}
+            </button>
             <button v-if="reviewModal.claim.status === 'DELIVERED' && !reviewModal.claim.approved_at" type="button" class="btn-success !px-5 !py-2" :disabled="reviewModal.submitting" @click="submitPayout">
               {{ reviewModal.submitting ? '确认中…' : (reviewModal.payout.mode === 'full' ? '审核通过（全额到账）' : '确认部分到账') }}
             </button>

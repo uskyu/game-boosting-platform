@@ -16,6 +16,7 @@ import AdminAnnouncements from '@/components/admin/AdminAnnouncements.vue'
 import Lightbox from '@/components/Lightbox.vue'
 import { useOrdersStore } from '@/stores/orders'
 import { useGamesStore } from '@/stores/games'
+import { useServiceFeeStore } from '@/stores/serviceFee'
 import {
   useWalletStore,
   WITHDRAWAL_STATUS_OPTIONS,
@@ -24,7 +25,7 @@ import {
   getWithdrawalStatusTagClass,
 } from '@/stores/wallet'
 import api from '@/utils/api'
-import { formatDateTime, formatOrderPrice, formatPayoutDelay, formatPrice, parsePayoutDelay } from '@/utils/display'
+import { formatDateTime, formatFeeRate, formatMoneyFixed, formatOrderPrice, formatPayoutDelay, formatPrice, parsePayoutDelay, serviceFeeBreakdown } from '@/utils/display'
 import {
   getOrderStatusBadgeClass,
   getOrderStatusLabel,
@@ -44,6 +45,9 @@ const router = useRouter()
 const authStore = useAuthStore()
 const isAdmin = computed(() => authStore.isAdmin)
 const gamesStore = useGamesStore()
+const serviceFeeStore = useServiceFeeStore()
+const globalServiceFeeRate = ref(0)
+const individualServiceFeeEnabled = ref(false)
 const ordersStore = useOrdersStore()
 const walletStore = useWalletStore()
 const withdrawalPayoutStore = useWithdrawalPayoutStore()
@@ -561,6 +565,27 @@ const publishPayoutDelayShortcuts = [
   { label: '1天12小时', days: 1, hours: 12 },
 ]
 
+const publishServiceFeeShortcuts = [
+  { label: '5%', rate: '5' },
+  { label: '8%', rate: '8' },
+  { label: '10%', rate: '10' },
+]
+
+const publishServiceFeePreview = computed(() => {
+  const state = publishModal.value
+  if (!state || !state.service_fee_enabled) return null
+  const price = Number(state.price)
+  if (!Number.isFinite(price) || price <= 0) return null
+  const typed = Number(state.service_fee_rate)
+  const rate = state.service_fee_rate === '' ? globalServiceFeeRate.value : typed
+  const breakdown = serviceFeeBreakdown(price, Number.isFinite(rate) ? rate : 0)
+  return { price, ratePercent: breakdown.ratePercent, fee: breakdown.fee, net: breakdown.net }
+})
+
+function applyPublishServiceFeeShortcut(shortcut) {
+  if (publishModal.value) publishModal.value.service_fee_rate = shortcut.rate
+}
+
 function applyPublishPayoutDelayShortcut(shortcut) {
   if (!publishModal.value) return
   publishModal.value.payout_delay_days = shortcut.days
@@ -575,6 +600,11 @@ const selectedPublishGame = computed(() => {
 })
 
 async function openPublishModal() {
+  const feeResult = await serviceFeeStore.fetchSettings(true)
+  if (feeResult.success) {
+    globalServiceFeeRate.value = Number(feeResult.data?.service_fee_rate ?? 0)
+    individualServiceFeeEnabled.value = Boolean(feeResult.data?.individual_service_fee_enabled)
+  }
   publishModal.value = {
     game_id: '',
     title: '',
@@ -589,6 +619,8 @@ async function openPublishModal() {
     boss_contact: '',
     compensation_enabled: false,
     compensation_amount: '',
+    service_fee_enabled: globalServiceFeeRate.value > 0,
+    service_fee_rate: '',
     payout_delay_days: '',
     payout_delay_hours: '',
     error: '',
@@ -660,9 +692,16 @@ async function submitPublishModal() {
     return
   }
 
+  let serviceFeeRate = null
+  if (individualServiceFeeEnabled.value && state.service_fee_enabled && state.service_fee_rate !== '') {
+    serviceFeeRate = Number(state.service_fee_rate)
+    if (!Number.isFinite(serviceFeeRate) || serviceFeeRate < 0 || serviceFeeRate > 100) {
+      state.error = '服务费费率需为 0-100 之间的数值'
+      return
+    }
+  }
+
   state.submitting = true
-  // 服务费：2026-10 起不再逐单设置，全部沿用后台全局服务费
-  // （不传 service_fee_enabled / service_fee_rate，结算时按全局费率烙盘）
   const payload = {
     game_id: game.id,
     game_name: game.name,
@@ -680,6 +719,10 @@ async function submitPublishModal() {
   }
   if (state.compensation_enabled) {
     payload.compensation_amount = compensationAmount
+  }
+  if (individualServiceFeeEnabled.value) {
+    payload.service_fee_enabled = state.service_fee_enabled
+    if (serviceFeeRate != null) payload.service_fee_rate = serviceFeeRate
   }
   const result = await ordersStore.createOrder(payload)
   if (!result.success) {
@@ -1707,6 +1750,47 @@ onMounted(async () => {
                   maxlength="64"
                   placeholder="接单后打手可见，用于添加你为好友"
                 />
+              </div>
+            </div>
+
+            <div v-if="isAdmin && !individualServiceFeeEnabled" class="rounded-tile border border-line-1 bg-surface-2 p-4 text-sm text-ink-2">
+              后台已关闭单独服务费设置，本订单服务费率为 0。
+            </div>
+
+            <div v-if="individualServiceFeeEnabled" class="rounded-tile border border-line-1 p-4">
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p class="text-sm font-semibold text-ink-1">本单服务费</p>
+                  <p class="mt-1 text-xs leading-5 text-ink-3">开启后按全局费率收取；也可为本单自定义费率或关闭。</p>
+                </div>
+                <button
+                  type="button"
+                  :class="publishModal.service_fee_enabled ? 'filter-pill-active' : 'filter-pill'"
+                  :aria-pressed="publishModal.service_fee_enabled"
+                  @click="publishModal.service_fee_enabled = !publishModal.service_fee_enabled"
+                >
+                  {{ publishModal.service_fee_enabled ? '已开启' : '未开启' }}
+                </button>
+              </div>
+              <p class="mt-2 text-xs leading-5 text-ink-2">
+                <template v-if="globalServiceFeeRate > 0">当前全局服务费 {{ globalServiceFeeRate }}%；自定义费率留空时按此收取。</template>
+                <template v-else>后台全局服务费为 0%；如需收取，请填写自定义费率。</template>
+              </p>
+              <div v-if="publishModal.service_fee_enabled" class="mt-3">
+                <label class="label" for="publish-service-fee-rate">自定义费率（%，留空 = 按全局）</label>
+                <div class="flex flex-wrap items-center gap-2">
+                  <input id="publish-service-fee-rate" v-model="publishModal.service_fee_rate" type="number" min="0" max="100" step="0.1" class="input max-w-[140px]" placeholder="例如：8" />
+                  <button
+                    v-for="shortcut in publishServiceFeeShortcuts"
+                    :key="shortcut.label"
+                    type="button"
+                    class="filter-pill"
+                    @click="applyPublishServiceFeeShortcut(shortcut)"
+                  >{{ shortcut.label }}</button>
+                </div>
+                <p v-if="publishServiceFeePreview" class="mt-2 text-xs leading-5 text-ink-2">
+                  订单金额 {{ formatMoneyFixed(publishServiceFeePreview.price) }} · 服务费 {{ formatFeeRate(publishServiceFeePreview.ratePercent) }} -{{ formatMoneyFixed(publishServiceFeePreview.fee) }} · 打手实际到账 <span class="font-semibold text-price">{{ formatMoneyFixed(publishServiceFeePreview.net) }}</span>
+                </p>
               </div>
             </div>
 

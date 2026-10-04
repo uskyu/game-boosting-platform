@@ -338,7 +338,7 @@ export const useOrdersStore = defineStore('orders', () => {
     }
   }
 
-  // 审核打款（发布人或管理员）：payload { action: 'approve', amount?, note?, deduction? }
+  // 审核/驳回交付（发布人或管理员）：payload { action: 'approve' | 'reject', amount?, note?, deduction?, reason? }
   // deduction：炸单扣除的赔偿金（0 ≤ deduction ≤ compensation_amount，缺省不扣）
   async function reviewClaim(orderId, claimId, payload) {
     loading.value = true

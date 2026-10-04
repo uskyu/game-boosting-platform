@@ -5,8 +5,10 @@ import { useRoute, useRouter } from 'vue-router'
 import { useGamesStore } from '@/stores/games'
 import { useOrdersStore } from '@/stores/orders'
 import { useOrderTemplatesStore } from '@/stores/orderTemplates'
+import { useAuthStore } from '@/stores/auth'
+import { useServiceFeeStore } from '@/stores/serviceFee'
 import api from '@/utils/api'
-import { parsePayoutDelay } from '@/utils/display'
+import { formatFeeRate, formatMoneyFixed, parsePayoutDelay, serviceFeeBreakdown } from '@/utils/display'
 import { getPublishButtonLabel } from '@/utils/humanCopy'
 import { cleanTemplatePayload, resetOrderForm } from '@/utils/orderTemplates'
 
@@ -15,6 +17,11 @@ const route = useRoute()
 const gamesStore = useGamesStore()
 const ordersStore = useOrdersStore()
 const templatesStore = useOrderTemplatesStore()
+const authStore = useAuthStore()
+const serviceFeeStore = useServiceFeeStore()
+const isAdmin = computed(() => authStore.isAdmin)
+const globalServiceFeeRate = ref(0)
+const individualServiceFeeEnabled = ref(false)
 const templateSheetOpen = ref(false)
 const saveTemplateOpen = ref(false)
 const templateName = ref('')
@@ -45,6 +52,9 @@ function applyTemplate(template) {
     attachments: formData.value.attachments,
   }, template)
   handleGameChange()
+  if (individualServiceFeeEnabled.value && globalServiceFeeRate.value > 0) {
+    formData.value.service_fee_enabled = true
+  }
   templateSheetOpen.value = false
   templateMessage.value = `已应用模板：${template.name}`
 }
@@ -118,7 +128,8 @@ const formData = ref({
   payout_delay_hours: '',
   // 老板开关：必须上传完成截图才能申请结单（默认开启）
   require_delivery_image: true,
-  // 服务费：2026-10 起取消逐单设置，全部沿用后台全局服务费（结算时按全局费率烙盘）
+  service_fee_enabled: false,
+  service_fee_rate: '',
 })
 
 // 到账时效快捷选项：点选后填入天/小时输入框
@@ -134,6 +145,22 @@ function applyPayoutDelayShortcut(shortcut) {
   formData.value.payout_delay_days = shortcut.days
   formData.value.payout_delay_hours = shortcut.hours
 }
+
+const serviceFeeShortcuts = [
+  { label: '5%', rate: '5' },
+  { label: '8%', rate: '8' },
+  { label: '10%', rate: '10' },
+]
+
+const serviceFeePreview = computed(() => {
+  if (!formData.value.service_fee_enabled) return null
+  const price = Number(formData.value.price)
+  if (!Number.isFinite(price) || price <= 0) return null
+  const typed = Number(formData.value.service_fee_rate)
+  const rate = formData.value.service_fee_rate === '' ? globalServiceFeeRate.value : typed
+  const breakdown = serviceFeeBreakdown(price, Number.isFinite(rate) ? rate : 0)
+  return { price, ratePercent: breakdown.ratePercent, fee: breakdown.fee, net: breakdown.net }
+})
 
 // 游戏下拉：只列管理员上架的游戏；仅有一个时默认选中
 const catalogGames = computed(() => gamesStore.games)
@@ -209,6 +236,11 @@ async function prefillFromOrder(orderId, mode) {
     // 用户仍可继续选新图一起发布
     attachments: Array.isArray(order.attachments) ? [...order.attachments] : [],
   }
+  if (isAdmin.value && individualServiceFeeEnabled.value) {
+    const feeRate = Number(order.service_fee_rate || 0)
+    formData.value.service_fee_enabled = feeRate > 0
+    formData.value.service_fee_rate = feeRate > 0 ? String(order.service_fee_rate) : ''
+  }
   // 游戏仍在架时同步 catalog 里的最新名称；已下架则保留原值并告警
   if (selectedGame.value) {
     handleGameChange()
@@ -259,9 +291,16 @@ async function publishOrder() {
     return
   }
 
+  let serviceFeeRate = null
+  if (isAdmin.value && individualServiceFeeEnabled.value && formData.value.service_fee_enabled && formData.value.service_fee_rate !== '') {
+    serviceFeeRate = Number(formData.value.service_fee_rate)
+    if (!Number.isFinite(serviceFeeRate) || serviceFeeRate < 0 || serviceFeeRate > 100) {
+      errorMessage.value = '服务费费率需为 0-100 之间的数值'
+      return
+    }
+  }
+
   const title = formData.value.title.trim()
-  // 服务费：2026-10 起不再逐单设置，全部沿用后台全局服务费
-  // （不传 service_fee_enabled / service_fee_rate，结算时按全局费率烙盘）
   const payload = {
     game_id: selectedGame.value.id,
     game_name: selectedGame.value.name,
@@ -280,6 +319,10 @@ async function publishOrder() {
     payload.compensation_amount = compensationAmount
   }
   // 从原单带过来的附件（URL 条目）直接进 payload；File 仍走创建后上传
+  if (isAdmin.value && individualServiceFeeEnabled.value) {
+    payload.service_fee_enabled = formData.value.service_fee_enabled
+    if (serviceFeeRate != null) payload.service_fee_rate = serviceFeeRate
+  }
   const keptAttachments = carriedAttachments()
   if (keptAttachments.length) {
     payload.attachments = keptAttachments
@@ -321,6 +364,16 @@ watch(
 
 onMounted(async () => {
   await Promise.all([gamesStore.ensureCatalog(), templatesStore.fetchTemplates()])
+  if (isAdmin.value) {
+    const feeResult = await serviceFeeStore.fetchSettings(true)
+    if (feeResult.success) {
+      globalServiceFeeRate.value = Number(feeResult.data?.service_fee_rate ?? 0)
+      individualServiceFeeEnabled.value = Boolean(feeResult.data?.individual_service_fee_enabled)
+      if (individualServiceFeeEnabled.value && globalServiceFeeRate.value > 0) {
+        formData.value.service_fee_enabled = true
+      }
+    }
+  }
   // 重建 / 续单：等 catalog 就绪后再拉原单，避免游戏下拉还没渲染
   const recycleId = Number(route.query.recycle)
   if (Number.isInteger(recycleId) && recycleId > 0) {
@@ -462,6 +515,44 @@ onMounted(async () => {
             >
               {{ formData.require_delivery_image ? '已开启' : '未开启' }}
             </button>
+          </div>
+        </div>
+
+        <div v-if="isAdmin && !individualServiceFeeEnabled" class="sm:col-span-2 rounded-tile border border-line-1 bg-surface-2 p-4 text-sm text-ink-2">
+          后台已关闭单独服务费设置，本订单服务费率为 0。
+        </div>
+
+        <!-- 逐单服务费由后台总开关控制 -->
+        <div v-if="isAdmin && individualServiceFeeEnabled" class="sm:col-span-2 rounded-tile border border-line-1 p-4">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p class="text-sm font-semibold text-ink-1">本单服务费</p>
+              <p class="mt-1 text-xs leading-5 text-ink-3">开启后按全局费率收取；也可为本单自定义费率或关闭。</p>
+            </div>
+            <button
+              type="button"
+              :class="formData.service_fee_enabled ? 'filter-pill-active' : 'filter-pill'"
+              :aria-pressed="formData.service_fee_enabled"
+              @click="formData.service_fee_enabled = !formData.service_fee_enabled"
+            >
+              {{ formData.service_fee_enabled ? '已开启' : '未开启' }}
+            </button>
+          </div>
+          <p class="mt-2 text-xs leading-5 text-ink-2">
+            <template v-if="globalServiceFeeRate > 0">当前全局服务费 {{ globalServiceFeeRate }}%；自定义费率留空时按此收取。</template>
+            <template v-else>后台全局服务费为 0%；如需收取，请填写自定义费率。</template>
+          </p>
+          <div v-if="formData.service_fee_enabled" class="mt-3">
+            <label class="label" for="create-service-fee-rate">自定义费率（%，留空 = 按全局）</label>
+            <div class="flex flex-wrap items-center gap-2">
+              <input id="create-service-fee-rate" v-model="formData.service_fee_rate" type="number" min="0" max="100" step="0.1" class="input max-w-[140px]" placeholder="例如：8" />
+              <button v-for="shortcut in serviceFeeShortcuts" :key="shortcut.label" type="button" class="filter-pill" @click="formData.service_fee_rate = shortcut.rate">
+                {{ shortcut.label }}
+              </button>
+            </div>
+            <p v-if="serviceFeePreview" class="mt-2 text-xs leading-5 text-ink-2">
+              订单金额 {{ formatMoneyFixed(serviceFeePreview.price) }} · 服务费 {{ formatFeeRate(serviceFeePreview.ratePercent) }} -{{ formatMoneyFixed(serviceFeePreview.fee) }} · 打手实际到账 <span class="font-semibold text-price">{{ formatMoneyFixed(serviceFeePreview.net) }}</span>
+            </p>
           </div>
         </div>
 

@@ -34,10 +34,21 @@ def _order_payload(**overrides) -> dict:
     return payload
 
 
+async def _enable_individual_service_fee(client: AsyncClient, admin_user: dict) -> None:
+    response = await client.put(
+        "/admin/service-fee/settings",
+        json={"individual_service_fee_enabled": True},
+        headers=auth_header(admin_user),
+    )
+    assert response.status_code == 200
+    assert response.json()["individual_service_fee_enabled"] is True
+
+
 async def test_admin_create_order_with_service_fee(
     client: AsyncClient, admin_user: dict
 ):
     """管理员设 8%：三段拆分与截图一致（150 / -12.00 / 138.00）。"""
+    await _enable_individual_service_fee(client, admin_user)
     resp = await client.post(
         "/orders/create",
         json=_order_payload(service_fee_rate="8"),
@@ -124,6 +135,7 @@ async def test_service_fee_settlement_lifecycle(
     booster_user: dict,
 ):
     """完整链路：设 8% → 接单 → 结单 → 审核通过，打手入账 = 净额 138.00。"""
+    await _enable_individual_service_fee(client, admin_user)
     resp = await client.post(
         "/orders/create",
         json=_order_payload(service_fee_rate="8"),
@@ -173,6 +185,7 @@ async def test_review_explicit_amount_overrides_fee(
     client: AsyncClient, admin_user: dict, booster_user: dict
 ):
     """审核显式到账金额优先于服务费（老板可按全额打款）。"""
+    await _enable_individual_service_fee(client, admin_user)
     resp = await client.post(
         "/orders/create",
         json=_order_payload(service_fee_rate="8"),
@@ -242,7 +255,8 @@ async def test_non_admin_cannot_set_or_edit_service_fee(
     assert resp.status_code == 200
     assert resp.json()["service_fee_rate"] == "0.00"
 
-    # 管理员可以改
+    # 启用逐单设置后，管理员可以为订单覆盖全局费率
+    await _enable_individual_service_fee(client, admin_user)
     resp = await client.put(
         f"/orders/{order_id}",
         json={"service_fee_rate": "10"},
@@ -258,6 +272,7 @@ async def test_admin_can_edit_service_fee(
     client: AsyncClient, admin_user: dict
 ):
     """管理员编辑费率：从 8% 改为 0 后展示随之更新。"""
+    await _enable_individual_service_fee(client, admin_user)
     resp = await client.post(
         "/orders/create",
         json=_order_payload(service_fee_rate="8"),
@@ -318,6 +333,7 @@ async def test_fee_rounding_matrix(
     expected_net,
 ):
     """分位 ROUND_HALF_UP 舍入矩阵（与结算同一函数口径）。"""
+    await _enable_individual_service_fee(client, admin_user)
     resp = await client.post(
         "/orders/create",
         json=_order_payload(price=price, service_fee_rate=rate),

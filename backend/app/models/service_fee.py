@@ -1,16 +1,13 @@
 """全局服务费设置（单行，id=1）。
 
-老板在后台设置一个全局服务费费率（百分数，如 8.00 表示 8%）：
-- 管理员发布/编辑订单开启「服务费」但未手输费率时，发布瞬间把全局
-  费率烙进 orders.service_fee_rate。之后调整全局费率只影响新发的
-  订单，已发布订单的收费规则不变（钱的规则不能悄悄变）。
-- 逐单手输费率优先于全局（某单要特例就特例）。
+全局费率应用于新发布的管理员订单，并在创建时固定到订单上。逐单设置开关
+仅控制发布表单是否允许单独关闭服务费或自定义费率。
 """
 
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Numeric, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Numeric
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -31,6 +28,13 @@ class ServiceFeeSetting(Base):
         default=Decimal("0.00"),
         server_default="0.00",
     )
+    # 是否允许发布订单时单独开关服务费或覆盖全局费率。默认关闭，继续统一使用全局费率。
+    individual_service_fee_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="0",
+    )
 
     updated_by: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
@@ -49,4 +53,4 @@ class ServiceFeeSetting(Base):
     )
 
     def __repr__(self) -> str:
-        return f"<ServiceFeeSetting rate={self.service_fee_rate}>"
+        return f"<ServiceFeeSetting rate={self.service_fee_rate} individual={self.individual_service_fee_enabled}>"

@@ -3,6 +3,8 @@ Orders API endpoints.
 Handles order creation, listing, and management operations.
 """
 
+import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -19,6 +21,7 @@ from app.api.deps import (
 )
 from app.api.notification_utils import notify_boosters_new_order, notify_user
 from app.core.config import settings
+from app.core.post_commit import run_after_commit
 from app.models.notification import NotificationType
 from app.models.order import ClaimLifecycleStatus, ClaimStatus, Order, OrderClaim, OrderStatus
 from app.models.user import User, UserRole
@@ -49,6 +52,22 @@ from app.services.file_service import save_image_bytes, validate_image_upload
 from app.services.order_service import get_order_service
 
 router = APIRouter(prefix="/orders", tags=["订单"])
+logger = logging.getLogger(__name__)
+
+
+async def _cleanup_rejected_delivery_files(urls: list[str]) -> None:
+    """Remove rejected proof images only after the transaction commits."""
+    upload_root = Path(settings.UPLOAD_DIR).resolve()
+    for url in urls:
+        if not isinstance(url, str) or not url.startswith("/uploads/deliveries/"):
+            continue
+        file_path = (upload_root / url.removeprefix("/uploads/")).resolve()
+        if upload_root not in file_path.parents:
+            continue
+        try:
+            await asyncio.to_thread(file_path.unlink, missing_ok=True)
+        except OSError:
+            logger.warning("Failed to remove rejected delivery image %s", file_path)
 
 
 def _attachment_items(order) -> list[OrderAttachment]:
@@ -688,7 +707,7 @@ async def list_order_claims(
     "/{order_id}/claims/{claim_id}/review",
     response_model=OrderClaimItem,
     summary="审核交付记录",
-    description="管理员审核某个名额的交付记录（action=approve 通过并结算该打手）",
+    description="订单发布人或管理员可通过交付，或驳回并要求打手重新上传",
 )
 async def review_order_claim(
     order_id: int,
@@ -700,8 +719,9 @@ async def review_order_claim(
     """
     Review one booster's delivered claim (名额审核).
 
-    - Order publisher or ADMIN can review; action must be 'approve'
-    - The claim must belong to the order and be DELIVERED
+    - Order publisher or ADMIN can review a DELIVERED claim
+    - action=approve settles the payout; action=reject requires a reason and lets
+      the booster replace the rejected submission
     - amount（可选）：部分到账金额，缺省按订单全额结算（上限 max(price, price_max)）
     - note（可选）：打款备注，随钱包流水留存
     - The order auto-completes when every claim is settled and the quota is
@@ -716,7 +736,23 @@ async def review_order_claim(
         payout_amount=payload.amount,
         note=payload.note,
         deduction=payload.deduction,
+        rejection_reason=payload.reason,
     )
+    rejected_urls = claim.pop("_rejected_attachment_urls", [])
+    if rejected_urls:
+        await run_after_commit(
+            lambda: _cleanup_rejected_delivery_files(rejected_urls)
+        )
+    if payload.action == "reject":
+        await notify_user(
+            db,
+            user_id=claim["booster_id"],
+            type=NotificationType.ORDER_DELIVERED,
+            title="订单交付被驳回",
+            content=f"交付内容被驳回：{payload.reason}。请按原因修改后重新提交。",
+            link=f"/orders/{order_id}",
+            ref_id=order_id,
+        )
     return OrderClaimItem.model_validate(claim)
 
 

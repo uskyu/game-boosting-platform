@@ -4,8 +4,8 @@ import api from '@/utils/api'
 
 /**
  * 全局服务费设置（后台）。
- * 管理员发布订单开启「服务费」但未手输费率时，按发布瞬间的全局费率收取；
- * 已发布订单不受影响。
+ * 逐单设置关闭时，新订单统一快照后台全局费率；
+ * 开启后可在订单发布时单独关闭或覆盖费率。
  */
 export const useServiceFeeStore = defineStore('serviceFee', {
   state: () => ({
@@ -14,6 +14,7 @@ export const useServiceFeeStore = defineStore('serviceFee', {
   }),
   getters: {
     rate: (state) => Number(state.settings?.service_fee_rate ?? 0),
+    individualEnabled: (state) => Boolean(state.settings?.individual_service_fee_enabled),
   },
   actions: {
     async fetchSettings(force = false) {

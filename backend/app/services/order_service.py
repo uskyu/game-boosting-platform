@@ -229,9 +229,8 @@ class OrderService:
             payout_delay_days=order_data.payout_delay_days,
             payout_delay_hours=order_data.payout_delay_hours,
             require_delivery_image=bool(order_data.require_delivery_image),
-            # 服务费仅管理员可设：非管理员发布时强制落空（按平台默认费率），
-            # 防止用户发布人抽成打手报酬。管理员开启但未手输费率时，按发布
-            # 瞬间的全局服务费烙盘（见 _resolve_order_service_fee）。
+            # 管理员新订单在服务端按后台逐单服务费开关解析费率；
+            # 总开关关闭时强制为 0，开启时再读取逐单设置。
             service_fee_rate=await self._resolve_order_service_fee(
                 order_data.service_fee_enabled, order_data.service_fee_rate, user
             ),
@@ -704,29 +703,28 @@ class OrderService:
         requested: Decimal | None,
         user: User,
     ) -> Decimal | None:
-        """发布/编辑时解析本单服务费费率（百分数，None = 不收取）。
+        """Resolve and snapshot the effective fee for a newly published admin order.
 
-        - 非管理员：一律 None（不可设，按平台默认费率），防止用户发布人
-          抽成打手报酬；
-        - 显式关闭开关：None；
-        - 手填了费率：逐单值优先（某单要特例就特例；仅传 rate 不传开关
-          的旧调用方也走这条，保持兼容）；
-        - 开启但未手输：按发布瞬间的「全局服务费」烙盘——之后全局调整
-          只影响新发的订单，已发布订单的收费规则不变；
-        - 开关与费率都不传：None（历史默认，不收）。
+        When individual settings are disabled, every new admin order is fee-free
+        regardless of client-provided per-order fields. When enabled, the old
+        per-order switch and optional custom rate are honored.
+        Non-admin publishers keep the existing no-per-order-fee behavior.
         """
         if user.role != UserRole.ADMIN:
             return None
+
+        from app.services import service_fee_service
+
+        setting = await service_fee_service.get_or_create_service_fee_setting(self._db)
+        global_rate = _to_decimal(setting.service_fee_rate)
+        if not setting.individual_service_fee_enabled:
+            return Decimal("0.00")
         if enabled is False:
-            return None
+            return Decimal("0.00")
         if requested is not None:
             return requested
-        if enabled is True:
-            from app.services import service_fee_service
-
-            setting = await service_fee_service.get_or_create_service_fee_setting(self._db)
-            return _to_decimal(setting.service_fee_rate)
-        return None
+        # An enabled switch, or an older caller without fee fields, inherits global.
+        return global_rate
 
     async def _deposit_gate(self, booster_id: int) -> tuple[int, bool]:
         """返回打手的 (接单等待秒数, 是否免除炸单赔付金)。
@@ -938,6 +936,8 @@ class OrderService:
             "status": self._effective_claim_status(claim.status, order_status),
             "delivery_note": claim.delivery_note,
             "delivery_attachments": claim.delivery_attachments or None,
+            "delivery_rejection_reason": claim.delivery_rejection_reason,
+            "delivery_rejected_at": claim.delivery_rejected_at,
             "created_at": claim.created_at,
             "delivered_at": claim.delivered_at,
             "approved_at": claim.approved_at,
@@ -1490,6 +1490,8 @@ class OrderService:
 
         claim.status = ClaimLifecycleStatus.DELIVERED
         claim.delivered_at = datetime.now(timezone.utc)
+        claim.delivery_rejection_reason = None
+        claim.delivery_rejected_at = None
         if delivery_note is not None:
             claim.delivery_note = delivery_note.strip() or None
         await self._snapshot_claim_settlement(claim, order, claim.delivered_at)
@@ -1522,10 +1524,10 @@ class OrderService:
         order_id: int,
         user: User,
     ) -> tuple[Order, OrderClaim]:
-        """Fetch the order plus the caller's claim for delivery attachments.
+        """Fetch the order plus a CLAIMED claim for draft delivery attachments.
 
-        The claim must exist and must not be settled yet; attachments are
-        stored on the claim, not on the order.
+        Submitted claims are immutable until reviewed. A rejected claim returns
+        to CLAIMED so its booster can replace the submitted evidence and retry.
         """
         order = await self.get_order_by_id(order_id, user)
 
@@ -1549,6 +1551,11 @@ class OrderService:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="该报名记录已结算，不能修改交付附件",
+            )
+        if claim.status != ClaimLifecycleStatus.CLAIMED:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="交付已提交，审核前不能修改附件",
             )
         return order, claim
 
@@ -1838,9 +1845,11 @@ class OrderService:
         payout_amount: Decimal | None = None,
         note: str | None = None,
         deduction: Decimal | None = None,
+        rejection_reason: str | None = None,
     ) -> dict[str, Any]:
         """
-        Admin approves one booster's delivered claim (名额审核).
+        The order publisher or an admin approves or rejects one booster's
+        delivered claim (名额审核).
 
         Settles the payout for that booster only; the order auto-completes
         when all claims are settled and the quota is exhausted. Returns the
@@ -1850,7 +1859,7 @@ class OrderService:
         扣除部分 COMPENSATION_DEDUCT 不返还打手，剩余部分解冻回补。
         """
         # 审核权：发单用户审核自己的单（人人可发单模式），管理员兜底
-        if action != "approve":
+        if action not in ("approve", "reject"):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="不支持的审核操作",
@@ -1897,6 +1906,51 @@ class OrderService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="该记录已审核通过，等待自动结算",
             )
+        if claim.settled_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="该记录已结算，不能驳回",
+            )
+
+        if action == "reject":
+            reason = (rejection_reason or "").strip()
+            if len(reason) < 3:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="驳回原因至少需要 3 个字符",
+                )
+            # Clear only the rejected submission. Old proof files are removed
+            # after commit so the booster can upload a fresh set safely.
+            rejected_attachment_urls = [
+                str(item.get("url"))
+                for item in (claim.delivery_attachments or [])
+                if isinstance(item, dict) and item.get("url")
+            ]
+            claim.status = ClaimLifecycleStatus.CLAIMED
+            claim.delivery_attachments = None
+            claim.delivery_note = None
+            claim.delivered_at = None
+            claim.delivery_rejection_reason = reason[:500]
+            claim.delivery_rejected_at = datetime.now(timezone.utc)
+            claim.approved_payout_amount = None
+            claim.approved_deduction = None
+            claim.approved_note = None
+            claim.settlement_mode_snapshot = None
+            claim.settle_hours_snapshot = None
+            claim.settlement_due_at = None
+            if order.booster_id == claim.booster_id:
+                order.delivery_attachments = None
+                order.delivery_note = None
+            # Compatibility with legacy single-claim orders whose aggregate
+            # order status was DELIVERED; the booster must be able to redeliver.
+            if order.status == OrderStatus.DELIVERED:
+                order.status = OrderStatus.LOCKED
+
+            await self._db.flush()
+            await self._db.refresh(claim)
+            result = await self._claim_view_with_user(claim, order)
+            result["_rejected_attachment_urls"] = rejected_attachment_urls
+            return result
 
         if payout_amount is not None:
             cap = await self._payout_cap(order)
@@ -2645,7 +2699,7 @@ class OrderService:
             update_data.pop("service_fee_enabled", None)
         elif "service_fee_enabled" in update_data or "service_fee_rate" in update_data:
             # 开关/费率组合解析（两个字段都不传时下方循环不会碰到费率）：
-            # 开+手填=手填值；开+未填=按当前全局服务费重新烙盘；关=不收取
+            # 后台总开关关闭=不收取；开启后开+手填=手填值、开+未填=全局、逐单关=不收取
             update_data["service_fee_rate"] = await self._resolve_order_service_fee(
                 update_data.get("service_fee_enabled"),
                 update_data.get("service_fee_rate"),
