@@ -719,8 +719,9 @@ async def review_order_claim(
     """
     Review one booster's delivered claim (名额审核).
 
-    - Order publisher or ADMIN can review; action must be 'approve'
-    - The claim must belong to the order and be DELIVERED
+    - Order publisher or ADMIN can review a DELIVERED claim
+    - action=approve settles the payout; action=reject requires a reason and lets
+      the booster replace the rejected submission
     - amount（可选）：部分到账金额，缺省按订单全额结算（上限 max(price, price_max)）
     - note（可选）：打款备注，随钱包流水留存
     - The order auto-completes when every claim is settled and the quota is
