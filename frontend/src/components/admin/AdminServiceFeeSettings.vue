@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 
 import { formatFeeRate, formatMoneyFixed, serviceFeeBreakdown } from '@/utils/display'
 import { useServiceFeeStore } from '@/stores/serviceFee'
@@ -23,14 +23,15 @@ function sync(data) {
 }
 
 // 以示例金额预览三段拆分，让老板保存前对“抽多少”有直观概念
-const preview = () => {
-  const breakdown = serviceFeeBreakdown(previewPrice.value, Number(form.service_fee_rate))
+const preview = computed(() => {
+  const rate = form.individual_service_fee_enabled ? Number(form.service_fee_rate) : 0
+  const breakdown = serviceFeeBreakdown(previewPrice.value, rate)
   return {
     rate: formatFeeRate(breakdown.ratePercent),
     fee: formatMoneyFixed(breakdown.fee),
     net: formatMoneyFixed(breakdown.net),
   }
-}
+})
 
 async function save() {
   notice.value = { type: '', text: '' }
@@ -67,10 +68,10 @@ onMounted(async () => {
   <section class="surface-card p-4 sm:p-6">
     <h2 class="text-2xl font-semibold text-ink-1">服务费设置</h2>
     <p class="mt-2 text-sm text-ink-2">
-      全局费率作为新订单的默认服务费。下面的开关控制发单时能否对单个订单关闭服务费或填写自定义费率。
+      全局费率仅作为逐单服务费功能开启时的新订单默认费率；下方开关控制是否允许新订单收取服务费。
     </p>
     <p class="mt-1.5 text-xs leading-5 text-ink-3">
-      关闭时，发单页面不显示逐单选项，订单自动沿用全局费率。开启后，逐单选项可覆盖全局默认值。订单发布后费率固定，修改全局费率不会改变已发布订单。
+      关闭时，新发布订单费率为 0，不收取服务费。开启后，发单页面可逐单关闭服务费或自定义费率，留空时使用全局费率。已发布订单费率固定，不受后续设置变化影响。
     </p>
 
     <div v-if="notice.text" class="mt-4" :class="notice.type === 'success' ? 'message-success' : 'message-error'">{{ notice.text }}</div>
@@ -107,7 +108,7 @@ onMounted(async () => {
           <div>
             <p class="text-sm font-semibold text-ink-1">允许单独设置订单服务费</p>
             <p class="mt-1 text-xs leading-5 text-ink-3">
-              {{ form.individual_service_fee_enabled ? '发单时可单独关闭服务费或自定义费率；留空时使用全局费率。' : '关闭后所有新订单统一沿用上方全局费率。' }}
+              {{ form.individual_service_fee_enabled ? '发单时可单独关闭服务费或自定义费率；留空时使用全局费率。' : '关闭后所有新订单不收服务费，费率为 0。' }}
             </p>
           </div>
           <button
