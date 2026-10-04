@@ -20,7 +20,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.order import Order, OrderClaim
+from app.models.order import ClaimLifecycleStatus, Order, OrderClaim
 from app.models.user import User
 from app.models.wallet import Wallet
 
@@ -57,6 +57,16 @@ class RecentClaimsService:
         )
         total = int(total_result.scalar() or 0)
 
+        paid_claim_counts = (
+            select(
+                OrderClaim.booster_id.label("booster_id"),
+                func.count(OrderClaim.id).label("paid_order_count"),
+            )
+            .where(OrderClaim.status == ClaimLifecycleStatus.SETTLED)
+            .group_by(OrderClaim.booster_id)
+            .subquery()
+        )
+
         result = await self.db.execute(
             select(
                 OrderClaim.id.label("claim_id"),
@@ -67,12 +77,15 @@ class RecentClaimsService:
                 Order.price.label("order_price"),
                 User.id.label("booster_id"),
                 User.username.label("booster_username"),
-                User.total_completed.label("booster_total_completed"),
+                func.coalesce(
+                    paid_claim_counts.c.paid_order_count, 0
+                ).label("booster_total_completed"),
                 func.coalesce(Wallet.deposit_balance, 0).label("deposit_balance"),
             )
             .select_from(OrderClaim)
             .join(Order, OrderClaim.order_id == Order.id)
             .join(User, OrderClaim.booster_id == User.id)
+            .outerjoin(paid_claim_counts, paid_claim_counts.c.booster_id == User.id)
             .outerjoin(Wallet, Wallet.user_id == User.id)
             .where(*conditions)
             .order_by(OrderClaim.id.desc())
