@@ -332,8 +332,9 @@ class Order(Base):
 class OrderClaim(Base):
     """A booster claim (名额), retained separately so multi-claim orders remain auditable.
 
-    Each claim walks its own lifecycle CLAIMED -> DELIVERED -> SETTLED; the
-    order itself only completes once every claim is settled and the quota is
+    Each claim walks its own lifecycle CLAIMED -> DELIVERED -> SETTLED; rejected
+    delivery submissions return to CLAIMED and retain the last rejection reason.
+    The order itself completes once every claim is settled and the quota is
     exhausted (or claiming was closed).
     """
     __tablename__ = "order_claims"
@@ -354,6 +355,8 @@ class OrderClaim(Base):
     )
     delivery_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     delivery_attachments: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
+    delivery_rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    delivery_rejected_at: Mapped[datetime | None] = mapped_column(nullable=True)
     delivered_at: Mapped[datetime | None] = mapped_column(nullable=True)
     # 老板审核通过时间。保证金模式选择「通过后计时」时，审核通过只记录时间，
     # 由调度器在 approved_at + 档位结账时效 到期后完成结算。
