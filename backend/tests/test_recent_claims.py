@@ -10,7 +10,7 @@ from decimal import Decimal
 from httpx import AsyncClient
 from sqlalchemy import text, update
 
-from app.models.order import OrderClaim
+from app.models.order import ClaimLifecycleStatus, OrderClaim
 from tests.conftest import auth_header
 
 
@@ -65,7 +65,7 @@ async def test_recent_claims_empty_when_no_claims_today(client: AsyncClient, reg
 
 
 async def test_recent_claims_fields_and_newest_first(
-    client: AsyncClient, admin_user: dict
+    client: AsyncClient, admin_user: dict, db_session
 ):
     """字段完整；按接单时间倒序（后接单的排在前）。"""
     order = await _create_order(client, admin_user, max_claims=2)
@@ -77,6 +77,19 @@ async def test_recent_claims_fields_and_newest_first(
     assert resp.status_code == 200
     resp = await client.put(f"/orders/{order['id']}/accept", headers=auth_header(booster_b))
     assert resp.status_code == 200
+
+    # Multi-claim orders attribute completed work to each settled claim, including
+    # boosters who are not stored as the parent order's primary booster.
+    booster_b_id = booster_b["user"]["id"]
+    await db_session.execute(
+        update(OrderClaim)
+        .where(
+            OrderClaim.order_id == order["id"],
+            OrderClaim.booster_id == booster_b_id,
+        )
+        .values(status=ClaimLifecycleStatus.SETTLED)
+    )
+    await db_session.commit()
 
     resp = await client.get("/orders/recent-claims", headers=auth_header(booster_a))
     assert resp.status_code == 200
@@ -90,7 +103,7 @@ async def test_recent_claims_fields_and_newest_first(
     # —— 字段完整：claim / order / booster / 保证金 ——
     assert latest["booster"]["id"] == booster_b["user"]["id"]
     assert latest["booster"]["username"] == "ClaimerB"
-    assert latest["booster"]["total_completed"] == 0
+    assert latest["booster"]["total_completed"] == 1
     assert Decimal(str(latest["deposit_balance"])) == Decimal("0")
 
     assert latest["order"]["id"] == order["id"]
