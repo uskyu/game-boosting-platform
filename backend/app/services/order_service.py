@@ -2373,6 +2373,67 @@ class OrderService:
 
         return order
 
+    async def request_cancel_by_booster(
+        self,
+        order_id: int,
+        user: User,
+        reason: str,
+    ) -> Order:
+        """Put a booster cancellation request into the existing admin dispute queue."""
+        if user.role != UserRole.BOOSTER:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="只有打手可以申请取消订单",
+            )
+
+        result = await self._db.execute(
+            select(Order).where(Order.id == order_id).with_for_update()
+        )
+        order = result.scalar_one_or_none()
+        if order is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="订单不存在",
+            )
+        if order.status not in (OrderStatus.LOCKED, OrderStatus.DELIVERED):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="仅进行中的订单可以申请取消",
+            )
+
+        reason_text = (reason or "").strip()
+        if len(reason_text) < 3:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="取消原因至少 3 个字",
+            )
+
+        claim_result = await self._db.execute(
+            select(OrderClaim)
+            .where(
+                OrderClaim.order_id == order.id,
+                OrderClaim.booster_id == user.id,
+                OrderClaim.status.in_(
+                    (ClaimLifecycleStatus.CLAIMED, ClaimLifecycleStatus.DELIVERED)
+                ),
+            )
+            .with_for_update()
+        )
+        if claim_result.scalar_one_or_none() is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="只有当前订单的进行中打手才能申请取消",
+            )
+
+        order.status = OrderStatus.DISPUTED
+        order.notes = f"打手取消申请（{user.username}）：{reason_text}" + (
+            f"\n{order.notes}" if order.notes else ""
+        )
+        await self._db.flush()
+        await self._db.refresh(order)
+        logger.info("Order %s cancellation requested by booster %s", order.id, user.id)
+        return order
+
     async def _lock_boosters_wallets(self, booster_ids: list[int]) -> dict[int, Wallet]:
         """按用户ID批量锁定钱包行（一条 IN 查询，禁止 N+1）。"""
         unique_ids = sorted({int(booster_id) for booster_id in booster_ids})
