@@ -39,6 +39,18 @@ async def _set_global_rate(client: AsyncClient, admin_user: dict, rate: str) -> 
     assert resp.json()["service_fee_rate"] == f"{Decimal(rate):.2f}"
 
 
+async def _set_individual_fee_enabled(
+    client: AsyncClient, admin_user: dict, enabled: bool
+) -> None:
+    resp = await client.put(
+        "/admin/service-fee/settings",
+        json={"individual_service_fee_enabled": enabled},
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["individual_service_fee_enabled"] is enabled
+
+
 async def test_global_service_fee_settings_crud(
     client: AsyncClient, admin_user: dict
 ):
@@ -48,14 +60,17 @@ async def test_global_service_fee_settings_crud(
     )
     assert resp.status_code == 200
     assert resp.json()["service_fee_rate"] == "0.00"
+    assert resp.json()["individual_service_fee_enabled"] is False
 
     await _set_global_rate(client, admin_user, "8")
+    await _set_individual_fee_enabled(client, admin_user, True)
 
     resp = await client.get(
         "/admin/service-fee/settings", headers=auth_header(admin_user)
     )
     assert resp.status_code == 200
     assert resp.json()["service_fee_rate"] == "8.00"
+    assert resp.json()["individual_service_fee_enabled"] is True
 
 
 async def test_global_service_fee_settings_non_admin_forbidden(
@@ -70,6 +85,12 @@ async def test_global_service_fee_settings_non_admin_forbidden(
     resp = await client.put(
         "/admin/service-fee/settings",
         json={"service_fee_rate": "50"},
+        headers=auth_header(registered_user),
+    )
+    assert resp.status_code == 403
+    resp = await client.put(
+        "/admin/service-fee/settings",
+        json={"individual_service_fee_enabled": True},
         headers=auth_header(registered_user),
     )
     assert resp.status_code == 403
@@ -92,6 +113,7 @@ async def test_publish_uses_global_rate_when_enabled_without_manual_rate(
 ):
     """开关开启 + 不填费率 → 按全局费率烙盘（150 × 8% → 138）。"""
     await _set_global_rate(client, admin_user, "8")
+    await _set_individual_fee_enabled(client, admin_user, True)
 
     resp = await client.post(
         "/orders/create",
@@ -108,8 +130,9 @@ async def test_publish_uses_global_rate_when_enabled_without_manual_rate(
 async def test_publish_manual_rate_overrides_global(
     client: AsyncClient, admin_user: dict
 ):
-    """开关开启 + 手填费率 → 逐单值优先于全局。"""
+    """逐单设置开启后，手填费率优先于全局。"""
     await _set_global_rate(client, admin_user, "8")
+    await _set_individual_fee_enabled(client, admin_user, True)
 
     resp = await client.post(
         "/orders/create",
@@ -123,22 +146,22 @@ async def test_publish_manual_rate_overrides_global(
     assert order["net_amount"] == "142.50"
 
 
-async def test_publish_disabled_switch_never_charges(
+async def test_individual_fee_disabled_uses_global_rate_and_ignores_overrides(
     client: AsyncClient, admin_user: dict
 ):
-    """开关关闭（默认）→ 不收服务费，即使全局费率已设置。"""
+    """逐单设置功能关闭时，发单固定使用全局费率并忽略客户端逐单字段。"""
     await _set_global_rate(client, admin_user, "8")
 
     resp = await client.post(
         "/orders/create",
-        json=_order_payload(),
+        json=_order_payload(service_fee_enabled=False, service_fee_rate="5"),
         headers=auth_header(admin_user),
     )
     assert resp.status_code == 201
     order = resp.json()
-    assert order["service_fee_rate"] == "0.00"
-    assert order["service_fee_amount"] == "0.00"
-    assert order["net_amount"] == "150.00"
+    assert order["service_fee_rate"] == "8.00"
+    assert order["service_fee_amount"] == "12.00"
+    assert order["net_amount"] == "138.00"
 
 
 async def test_baked_order_unaffected_by_later_global_change(
@@ -224,15 +247,15 @@ async def test_edit_order_refreshes_to_current_global(
     assert resp.json()["service_fee_rate"] == "10.00"
     assert resp.json()["net_amount"] == "135.00"
 
-    # 关闭开关 → 不收取
+    # 逐单设置功能关闭时，单独关闭请求仍被忽略，沿用当前全局费率
     resp = await client.put(
         f"/orders/{order_id}",
         json={"service_fee_enabled": False},
         headers=auth_header(admin_user),
     )
     assert resp.status_code == 200
-    assert resp.json()["service_fee_rate"] == "0.00"
-    assert resp.json()["net_amount"] == "150.00"
+    assert resp.json()["service_fee_rate"] == "10.00"
+    assert resp.json()["net_amount"] == "135.00"
 
 
 async def test_edit_order_keeps_rate_when_fee_fields_omitted(
