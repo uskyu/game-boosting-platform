@@ -72,6 +72,14 @@ async def test_global_service_fee_settings_crud(
     assert resp.json()["service_fee_rate"] == "8.00"
     assert resp.json()["individual_service_fee_enabled"] is True
 
+    # Updating the rate alone must preserve the existing toggle.
+    await _set_global_rate(client, admin_user, "9")
+    resp = await client.get(
+        "/admin/service-fee/settings", headers=auth_header(admin_user)
+    )
+    assert resp.json()["service_fee_rate"] == "9.00"
+    assert resp.json()["individual_service_fee_enabled"] is True
+
 
 async def test_global_service_fee_settings_non_admin_forbidden(
     client: AsyncClient, registered_user: dict
@@ -144,6 +152,25 @@ async def test_publish_manual_rate_overrides_global(
     assert order["service_fee_rate"] == "5.00"
     assert order["service_fee_amount"] == "7.50"
     assert order["net_amount"] == "142.50"
+
+
+async def test_individual_fee_enabled_can_turn_fee_off_for_one_order(
+    client: AsyncClient, admin_user: dict
+):
+    """逐单设置开启时，仍可对单个订单关闭服务费。"""
+    await _set_global_rate(client, admin_user, "8")
+    await _set_individual_fee_enabled(client, admin_user, True)
+
+    resp = await client.post(
+        "/orders/create",
+        json=_order_payload(service_fee_enabled=False),
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 201
+    order = resp.json()
+    assert order["service_fee_rate"] == "0.00"
+    assert order["service_fee_amount"] == "0.00"
+    assert order["net_amount"] == "150.00"
 
 
 async def test_individual_fee_disabled_uses_global_rate_and_ignores_overrides(
