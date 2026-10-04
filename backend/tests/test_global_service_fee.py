@@ -181,7 +181,7 @@ async def test_individual_fee_disabled_sets_no_fee_and_ignores_overrides(
 
     resp = await client.post(
         "/orders/create",
-        json=_order_payload(service_fee_enabled=False, service_fee_rate="5"),
+        json=_order_payload(service_fee_enabled=True, service_fee_rate="5"),
         headers=auth_header(admin_user),
     )
     assert resp.status_code == 201
