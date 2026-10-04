@@ -257,7 +257,6 @@ async def test_non_admin_cannot_set_or_edit_service_fee(
 
     # 启用逐单设置后，管理员可以为订单覆盖全局费率
     await _enable_individual_service_fee(client, admin_user)
-    await _enable_individual_service_fee(client, admin_user)
     resp = await client.put(
         f"/orders/{order_id}",
         json={"service_fee_rate": "10"},
