@@ -3,10 +3,12 @@ Dashboard analytics service.
 Aggregation queries for admin data visualization.
 """
 
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.product_time import PRODUCT_TIMEZONE, product_day_bounds, product_local_date
 
 from app.models.order import Order, OrderStatus, PaymentStatus
 from app.models.user import User, UserRole
@@ -21,6 +23,12 @@ from app.schemas.dashboard import (
     UserGrowthPoint,
     UserGrowthResponse,
 )
+
+
+def _product_date_start_utc(day: date) -> datetime:
+    """北京时间自然日 00:00 对应的 naive UTC（与 DB DATETIME 列比较）。"""
+    local_midnight = datetime.combine(day, time.min, tzinfo=PRODUCT_TIMEZONE)
+    return product_day_bounds(local_midnight)[0]
 
 
 class DashboardService:
@@ -74,17 +82,24 @@ class DashboardService:
         )
 
     async def get_order_trend(self, period: str = "day", days: int = 30) -> OrderTrendResponse:
-        """Order creation trend grouped by day/week/month."""
-        start_date = date.today() - timedelta(days=days)
+        """Order creation trend grouped by Asia/Shanghai calendar day/week/month."""
+        start_date = product_local_date(datetime.now(timezone.utc)) - timedelta(days=days)
+        start_utc = _product_date_start_utc(start_date)
+        # DB timestamps are naive UTC. Shift only for calendar labels; filter on the
+        # raw column so the created_at index remains usable.
+        local_created_at = func.date_add(Order.created_at, text("INTERVAL 8 HOUR"))
 
         if period == "month":
-            date_label = func.date_format(Order.created_at, "%Y-%m")
+            date_label = func.date_format(local_created_at, "%Y-%m")
         elif period == "week":
-            date_label = func.date_format(
-                Order.created_at - func.weekday(Order.created_at), "%Y-%m-%d"
+            # MySQL Monday-based week start, calculated after converting to Beijing wall time.
+            week_start = text(
+                "DATE_SUB(DATE_ADD(orders.created_at, INTERVAL 8 HOUR), "
+                "INTERVAL WEEKDAY(DATE_ADD(orders.created_at, INTERVAL 8 HOUR)) DAY)"
             )
+            date_label = func.date_format(week_start, "%Y-%m-%d")
         else:
-            date_label = func.date_format(Order.created_at, "%Y-%m-%d")
+            date_label = func.date_format(local_created_at, "%Y-%m-%d")
 
         query = (
             select(
@@ -92,7 +107,7 @@ class DashboardService:
                 func.count().label("cnt"),
                 func.coalesce(func.sum(Order.price), 0).label("revenue"),
             )
-            .where(func.date(Order.created_at) >= start_date)
+            .where(Order.created_at >= start_utc)
             .group_by("date_label")
             .order_by("date_label")
         )
@@ -179,24 +194,24 @@ class DashboardService:
         return BoosterRankingResponse(items=items)
 
     async def get_user_growth(self, days: int = 30) -> UserGrowthResponse:
-        """Daily new user registration trend."""
-        start_date = date.today() - timedelta(days=days)
+        """Daily new-user trend grouped by Asia/Shanghai calendar date."""
+        start_date = product_local_date(datetime.now(timezone.utc)) - timedelta(days=days)
+        start_utc = _product_date_start_utc(start_date)
+        local_created_at = func.date_add(User.created_at, text("INTERVAL 8 HOUR"))
 
         query = (
             select(
-                func.date_format(User.created_at, "%Y-%m-%d").label("date_label"),
+                func.date_format(local_created_at, "%Y-%m-%d").label("date_label"),
                 func.count().label("new_users"),
             )
-            .where(func.date(User.created_at) >= start_date)
+            .where(User.created_at >= start_utc)
             .group_by("date_label")
             .order_by("date_label")
         )
         rows = (await self.db.execute(query)).all()
 
-        # Get cumulative count before the start_date
-        base_count_q = select(func.count()).where(
-            func.date(User.created_at) < start_date
-        )
+        # Get cumulative count before the Beijing-day start boundary.
+        base_count_q = select(func.count()).where(User.created_at < start_utc)
         base_count = (await self.db.execute(base_count_q)).scalar_one()
 
         cumulative = base_count

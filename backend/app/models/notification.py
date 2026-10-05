@@ -26,6 +26,8 @@ class NotificationType(str, PyEnum):
     APPLICATION_REJECTED = "APPLICATION_REJECTED"  # 代练申请拒绝
     REVIEW_RECEIVED = "REVIEW_RECEIVED"          # 收到评价
     SYSTEM_ANNOUNCEMENT = "SYSTEM_ANNOUNCEMENT"  # 系统公告
+    ORDER_CANCEL_REQUESTED = "ORDER_CANCEL_REQUESTED"  # 对方发起取消申请，待我处理
+    ORDER_CANCEL_REQUEST_RESOLVED = "ORDER_CANCEL_REQUEST_RESOLVED"  # 取消申请已同意/拒绝
 
 
 class Notification(Base):

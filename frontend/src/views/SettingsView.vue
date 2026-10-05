@@ -26,6 +26,8 @@ const NOTIFICATION_TYPES = [
   { key: 'ORDER_CONFIRMED', label: '订单完成', description: '客户确认了订单完成' },
   { key: 'ORDER_DISPUTED', label: '订单争议', description: '订单被发起争议' },
   { key: 'ORDER_CANCELLED', label: '订单取消', description: '订单被取消' },
+  { key: 'ORDER_CANCEL_REQUESTED', label: '取消申请待确认', description: '对方发起取消协商，等待你确认' },
+  { key: 'ORDER_CANCEL_REQUEST_RESOLVED', label: '取消协商结果', description: '对方已同意或拒绝取消申请' },
   { key: 'NEW_MESSAGE', label: '新消息', description: '收到新的聊天消息' },
   { key: 'REVIEW_RECEIVED', label: '收到评价', description: '有人对您的服务进行了评价' },
   { key: 'SYSTEM_ANNOUNCEMENT', label: '系统公告', description: '平台发布了新的公告' },

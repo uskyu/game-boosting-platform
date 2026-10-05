@@ -9,17 +9,18 @@
     JOIN users        ON order_claims.booster_id = users.id   （打手）
     LEFT JOIN wallets ON wallets.user_id        = users.id
 
-「今天」的口径与 dashboard_service 现有按日统计保持一致：用数据库函数
-取 created_at 的日期（func.date），与 Python 进程本地今天的日期比较。
-（MySQL DATETIME 约定存上海墙钟时间，服务端进程按该时区运行，两侧同源。）
+「今天」按产品时区 Asia/Shanghai 的自然日计算；created_at 在 DB 中存 naive UTC，
+先用 product_day_bounds 换算成 UTC 的 [start, end) 区间，再对原始列做范围查询。
+这样北京时间 00:00 切日，且保留 created_at 索引可用。
 """
 
-from datetime import date
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.product_time import product_day_bounds
 from app.models.order import ClaimLifecycleStatus, Order, OrderClaim
 from app.models.user import User
 from app.models.wallet import Wallet
@@ -35,9 +36,13 @@ class RecentClaimsService:
         self.db = db
 
     def _conditions(self, scope: str) -> list[Any]:
-        """按 scope 生成过滤条件；口径与 dashboard_service 按日统计一致。"""
+        """按产品时区的自然日生成 UTC 范围过滤条件。"""
         if scope == SCOPE_TODAY:
-            return [func.date(OrderClaim.created_at) >= date.today()]
+            start_utc, end_utc = product_day_bounds(datetime.now(timezone.utc))
+            return [
+                OrderClaim.created_at >= start_utc,
+                OrderClaim.created_at < end_utc,
+            ]
         raise ValueError(f"不支持的时间范围: {scope}")
 
     async def list_recent_claims(

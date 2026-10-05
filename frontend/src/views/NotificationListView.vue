@@ -17,6 +17,8 @@ const NOTIFICATION_TYPE_META = {
   ORDER_CONFIRMED: { icon: '✅', label: '完成通知' },
   ORDER_DISPUTED: { icon: '⚠️', label: '争议通知' },
   ORDER_CANCELLED: { icon: '❌', label: '取消通知' },
+  ORDER_CANCEL_REQUESTED: { icon: '🤝', label: '取消申请待确认' },
+  ORDER_CANCEL_REQUEST_RESOLVED: { icon: '🤝', label: '取消协商结果' },
   NEW_MESSAGE: { icon: '💬', label: '消息通知' },
   APPLICATION_APPROVED: { icon: '🎉', label: '申请通过' },
   APPLICATION_REJECTED: { icon: '😞', label: '申请拒绝' },

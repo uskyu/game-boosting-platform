@@ -24,11 +24,14 @@ from app.core.config import settings
 from app.core.post_commit import run_after_commit
 from app.models.notification import NotificationType
 from app.models.order import ClaimLifecycleStatus, ClaimStatus, Order, OrderClaim, OrderStatus
+from app.models.order_cancel_request import OrderCancelRequestStatus
 from app.models.user import User, UserRole
 from app.schemas.order import (
     AIAnalysisResponse,
-    ApplyCancelRequest,
-    BoosterCancelRequest,
+    CreateOrderCancelRequest,
+    DecideOrderCancelRequest,
+    OrderCancelRequestItem,
+    OrderCancelRequestListResponse,
     ClaimReviewRequest,
     OrderAttachment,
     OrderDeliveryAttachment,
@@ -1019,159 +1022,214 @@ async def cancel_order(
 
 
 @router.post(
-    "/{order_id}/apply-cancel",
-    response_model=OrderResponse,
-    summary="申请取消订单",
-    description=(
-        "发单员对进行中的订单申请取消：提交即生效（无审批流）。"
-        "按 deduction_amount 从每个活跃接单人的保证金直扣，等额补偿到发单员可用余额。"
-    ),
+    "/{order_id}/cancel-requests",
+    response_model=OrderCancelRequestItem,
+    summary="发起单名额取消协商",
+    description="发单员或该名额打手提出理由与保证金赔偿金额，等待对方同意或拒绝；不经过管理员。",
 )
-async def apply_cancel_order(
+async def create_order_cancel_request(
     order_id: int,
-    payload: ApplyCancelRequest,
+    payload: CreateOrderCancelRequest,
     current_user: CurrentUser,
     db: DatabaseSession,
-) -> OrderResponse:
-    """
-    Publisher cancels an in-progress (LOCKED) order; effective immediately.
+) -> OrderCancelRequestItem:
+    service = get_order_service(db)
+    request = await service.create_cancel_request(
+        order_id,
+        current_user,
+        claim_id=payload.claim_id,
+        reason=payload.reason,
+        compensation_amount=payload.compensation_amount,
+    )
+    order = await service.get_order_by_id(order_id, current_user)
+    visible_items = await service.list_cancel_requests(order_id, current_user)
+    item = next((entry for entry in visible_items if int(entry["id"]) == request.id), None)
+    if item is None:
+        raise HTTPException(status_code=500, detail="取消申请已创建但读取失败，请重新打开订单")
 
-    - Only the publisher (order owner) may apply; admins keep using the
-      existing intervention cancellation flow.
-    - reason is mandatory (>= 3 chars); deduction_amount (0 ~ each active
-      booster's deposit balance, default 0) is deducted from every active
-      booster's deposit and credited to the publisher's available balance.
-    - 打手无需同意：生效后其名额置为已结束，并在「我的接单」看到扣款金额。
-    """
-    order_service = get_order_service(db)
-
-    # 取消前先记下活跃接单人：生效后这些名额会被置为 CANCELLED，
-    # 通知只能按取消时刻的快照发（接单路径会锁订单行，不存在漏发/多发）。
-    active_claim_result = await db.execute(
-        select(OrderClaim.booster_id).where(
-            OrderClaim.order_id == order_id,
-            OrderClaim.status.in_(
-                (ClaimLifecycleStatus.CLAIMED, ClaimLifecycleStatus.DELIVERED)
-            ),
+    if request.requester_role == "PUBLISHER":
+        title = "发单员申请取消待你确认"
+        content = (
+            f"发单员对订单「{order.game_name}」的该接单名额提出取消协商，"
+            f"拟扣除保证金 ¥{request.compensation_amount} 补偿发单员。原因：{request.reason}"
         )
-    )
-    active_booster_ids = sorted(set(active_claim_result.scalars().all()))
-
-    order = await order_service.publisher_cancel_with_compensation(
-        order_id, current_user, payload.reason, payload.deduction_amount
-    )
+    else:
+        title = "打手申请取消待你确认"
+        content = (
+            f"打手对订单「{order.game_name}」提出取消协商，"
+            f"愿意从保证金赔偿 ¥{request.compensation_amount}。原因：{request.reason}"
+        )
     await send_order_system_message(
         db=db,
         order_id=order.id,
-        content="发单员申请取消订单",
+        content=f"{current_user.username} 发起了取消协商，等待对方同意或拒绝",
         meta_json={
-            "event": "order_cancelled",
+            "event": "order_cancel_requested",
             "order_id": order.id,
+            "claim_id": request.claim_id,
+            "cancel_request_id": request.id,
             "operator_id": current_user.id,
+            "reason": request.reason,
+            "compensation_amount": str(request.compensation_amount),
         },
     )
+    await notify_user(
+        db,
+        user_id=request.recipient_id,
+        type=NotificationType.ORDER_CANCEL_REQUESTED,
+        title=title,
+        content=content,
+        link=f"/orders/{order.id}",
+        ref_id=order.id,
+    )
+    return OrderCancelRequestItem.model_validate(item)
 
-    # 每个活跃接单人实际被扣的保证金（0 元扣款时为 None）
-    deduction_by_booster: dict[int, Decimal | None] = {}
-    if active_booster_ids:
-        claim_result = await db.execute(
-            select(OrderClaim.booster_id, OrderClaim.approved_deduction).where(
-                OrderClaim.order_id == order.id,
-                OrderClaim.booster_id.in_(active_booster_ids),
+
+@router.get(
+    "/{order_id}/cancel-requests",
+    response_model=OrderCancelRequestListResponse,
+    summary="查看订单取消协商",
+)
+async def list_order_cancel_requests(
+    order_id: int,
+    current_user: CurrentUser,
+    db: DatabaseSession,
+) -> OrderCancelRequestListResponse:
+    items = await get_order_service(db).list_cancel_requests(order_id, current_user)
+    return OrderCancelRequestListResponse(
+        items=[OrderCancelRequestItem.model_validate(item) for item in items]
+    )
+
+
+@router.post(
+    "/{order_id}/cancel-requests/{request_id}/decision",
+    response_model=OrderCancelRequestItem,
+    summary="同意或拒绝取消协商",
+    description="仅申请的另一方可以同意或拒绝；同意只取消该接单名额。",
+)
+async def decide_order_cancel_request(
+    order_id: int,
+    request_id: int,
+    payload: DecideOrderCancelRequest,
+    current_user: CurrentUser,
+    db: DatabaseSession,
+) -> OrderCancelRequestItem:
+    service = get_order_service(db)
+    request = await service.decide_cancel_request(
+        order_id,
+        request_id,
+        current_user,
+        action=payload.action,
+        decision_reason=payload.decision_reason,
+    )
+    order = await service.get_order_by_id(order_id, current_user)
+    visible_items = await service.list_cancel_requests(order_id, current_user)
+    item = next((entry for entry in visible_items if int(entry["id"]) == request.id), None)
+    if item is None:
+        raise HTTPException(status_code=500, detail="取消协商处理成功但读取失败，请重新打开订单")
+
+    if request.status == OrderCancelRequestStatus.APPROVED:
+        outcome = "双方已同意取消该接单名额"
+        if request.compensation_amount > Decimal("0"):
+            outcome += f"，保证金赔偿 ¥{request.compensation_amount} 已划转"
+        for user_id in sorted({request.requester_id, request.recipient_id}):
+            await notify_user(
+                db,
+                user_id=user_id,
+                type=NotificationType.ORDER_CANCEL_REQUEST_RESOLVED,
+                title="取消协商已同意",
+                content=f"订单「{order.game_name}」：{outcome}",
+                link=f"/orders/{order.id}",
+                ref_id=order.id,
             )
+        await send_order_system_message(
+            db=db,
+            order_id=order.id,
+            content=f"取消协商已同意：订单名额 #{request.claim_id} 已取消",
+            meta_json={
+                "event": "order_cancel_request_approved",
+                "order_id": order.id,
+                "claim_id": request.claim_id,
+                "cancel_request_id": request.id,
+                "operator_id": current_user.id,
+                "compensation_amount": str(request.compensation_amount),
+            },
         )
-        deduction_by_booster = {
-            booster_id: deduction for booster_id, deduction in claim_result.all()
-        }
-
-    reason_text = payload.reason.strip()
-    for booster_id in active_booster_ids:
-        deduction = deduction_by_booster.get(booster_id)
-        deduction_text = f"，扣除保证金 ¥{deduction}" if deduction is not None else ""
+        await broadcast_order_state_changed(
+            order_id=order.id,
+            status=order.status,
+            claim_status=order.claim_status,
+            claimed_count=order.claimed_count,
+        )
+    elif request.status == OrderCancelRequestStatus.REJECTED:
+        reason_text = f"；对方备注：{request.decision_reason}" if request.decision_reason else ""
         await notify_user(
             db,
-            user_id=booster_id,
-            type=NotificationType.ORDER_CANCELLED,
-            title="订单已被发单员取消",
-            content=(
-                f"订单「{order.game_name}」已被发单员取消，"
-                f"原因：{reason_text}{deduction_text}"
-            ),
+            user_id=request.requester_id,
+            type=NotificationType.ORDER_CANCEL_REQUEST_RESOLVED,
+            title="取消申请被拒绝",
+            content=f"订单「{order.game_name}」的取消协商被对方拒绝{reason_text}，订单状态未改变",
             link=f"/orders/{order.id}",
             ref_id=order.id,
         )
+        await send_order_system_message(
+            db=db,
+            order_id=order.id,
+            content="取消协商被对方拒绝，订单与名额维持原状态",
+            meta_json={
+                "event": "order_cancel_request_rejected",
+                "order_id": order.id,
+                "claim_id": request.claim_id,
+                "cancel_request_id": request.id,
+                "operator_id": current_user.id,
+                "decision_reason": request.decision_reason,
+            },
+        )
+    else:
+        await notify_user(
+            db,
+            user_id=request.requester_id,
+            type=NotificationType.ORDER_CANCEL_REQUEST_RESOLVED,
+            title="取消申请已关闭",
+            content=f"订单「{order.game_name}」状态已变化，该取消申请已关闭",
+            link=f"/orders/{order.id}",
+            ref_id=order.id,
+        )
+    return OrderCancelRequestItem.model_validate(item)
 
-    await broadcast_order_state_changed(
-        order_id=order.id,
-        status=order.status,
-        claim_status=order.claim_status,
-        claimed_count=order.claimed_count,
+
+@router.post(
+    "/{order_id}/apply-cancel",
+    response_model=OrderResponse,
+    summary="旧版发单员直接取消接口（已停用）",
+    description="取消流程已升级为双方协商，请刷新页面后重新发起。",
+)
+async def apply_cancel_order(
+    order_id: int,
+    current_user: CurrentUser,
+    db: DatabaseSession,
+) -> OrderResponse:
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="取消流程已升级为双方同意/拒绝，请刷新页面后重新发起",
     )
-
-    return OrderResponse.model_validate(order)
 
 
 @router.post(
     "/{order_id}/request-cancel",
     response_model=OrderResponse,
-    summary="打手申请取消订单",
-    description="打手提交取消原因后由管理员处理；订单进入争议处理状态。",
+    summary="旧版打手管理员裁决取消接口（已停用）",
+    description="取消流程已升级为双方协商，不再经过管理员；请刷新页面。",
 )
 async def request_cancel_order(
     order_id: int,
-    payload: BoosterCancelRequest,
     current_user: CurrentUser,
     db: DatabaseSession,
 ) -> OrderResponse:
-    order = await get_order_service(db).request_cancel_by_booster(
-        order_id, current_user, payload.reason
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="取消流程已升级为双方同意/拒绝，请刷新页面后重新发起",
     )
-    reason_text = payload.reason.strip()
-    await send_order_system_message(
-        db=db,
-        order_id=order.id,
-        content=f"{current_user.username} 申请取消订单，等待管理员处理",
-        meta_json={
-            "event": "order_cancel_requested",
-            "order_id": order.id,
-            "operator_id": current_user.id,
-            "reason": reason_text,
-        },
-    )
-    if order.user_id != current_user.id:
-        await notify_user(
-            db,
-            user_id=order.user_id,
-            type=NotificationType.ORDER_DISPUTED,
-            title="打手申请取消订单",
-            content=f"订单 #{order.id}「{order.game_name}」有打手申请取消，等待管理员处理",
-            link=f"/orders/{order.id}",
-            ref_id=order.id,
-        )
-
-    admin_result = await db.execute(
-        select(User.id).where(User.role == UserRole.ADMIN, User.is_active.is_(True))
-    )
-    for (admin_id,) in admin_result.all():
-        if admin_id in (current_user.id, order.user_id):
-            continue
-        await notify_user(
-            db,
-            user_id=admin_id,
-            type=NotificationType.ORDER_DISPUTED,
-            title="打手申请取消待裁决",
-            content=f"订单 #{order.id}「{order.game_name}」：{reason_text}",
-            link=f"/admin/dispatch/{order.id}",
-            ref_id=order.id,
-        )
-
-    await broadcast_order_state_changed(
-        order_id=order.id,
-        status=order.status,
-        claim_status=order.claim_status,
-        claimed_count=order.claimed_count,
-    )
-    return OrderResponse.model_validate(order)
 
 
 @router.put(

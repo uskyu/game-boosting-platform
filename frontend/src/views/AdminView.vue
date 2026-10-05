@@ -758,7 +758,7 @@ function buildOrderSummary(order) {
   const requirements = Array.isArray(detail.requirements) ? detail.requirements.filter(Boolean) : []
   const pieces = [order.service_type, order.server, detail.role, requirements[0]].filter(Boolean)
   if (pieces.length) return pieces.join(' · ')
-  const raw = order.description_raw || order.description || '未补充需求'
+  const raw = order.description_raw || order.description || ''
   return raw.length > 28 ? `${raw.slice(0, 28)}...` : raw
 }
 
@@ -1113,7 +1113,7 @@ onMounted(async () => {
               <span v-if="orderPublisher(order)">发布人：{{ orderPublisher(order) }}</span>
               <span v-if="orderEscrowLabel(order)" class="tag tabular-nums !px-2 !py-0.5">{{ orderEscrowLabel(order) }}</span>
             </p>
-            <p class="mt-1.5 truncate text-sm text-ink-2">{{ buildOrderSummary(order) }}</p>
+            <p v-if="buildOrderSummary(order)" class="mt-1.5 truncate text-sm text-ink-2">{{ buildOrderSummary(order) }}</p>
           </div>
 
           <!-- 数据行：红色价格 + 当前情况 X/Y 胶囊 + 审核计数 -->

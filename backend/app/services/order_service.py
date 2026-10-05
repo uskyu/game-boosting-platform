@@ -13,7 +13,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import Text, and_, case, cast, exists, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import aliased, selectinload
 
 from app.core.security import encrypt_text, escape_like
 from app.models.booster_service import BoosterService
@@ -31,6 +31,7 @@ from app.models.order import (
     OrderStatus,
     PaymentStatus,
 )
+from app.models.order_cancel_request import OrderCancelRequest, OrderCancelRequestStatus
 from app.models.user import User, UserRole
 from app.models.wallet import Wallet, WalletTransaction, WalletTransactionType
 from app.schemas.booster_service import BoosterServiceOrderCreate
@@ -928,6 +929,7 @@ class OrderService:
         order_status: OrderStatus | None = None,
         booster_nickname: str | None = None,
         booster_email: str | None = None,
+        booster_deposit_balance: Decimal | None = None,
     ) -> dict[str, Any]:
         """Serialize a claim into the public API contract shape."""
         return {
@@ -952,6 +954,7 @@ class OrderService:
             "settlement_due_at": claim.settlement_due_at,
             "settled_at": claim.settled_at,
             "is_first": order_booster_id == claim.booster_id,
+            "booster_deposit_balance": booster_deposit_balance,
         }
 
     async def _claim_view_with_user(
@@ -964,12 +967,19 @@ class OrderService:
         row = user_result.one_or_none()
         username = row.username if row is not None else None
         email = row.email if row is not None else None
+        wallet_result = await self._db.execute(
+            select(Wallet.deposit_balance).where(Wallet.user_id == claim.booster_id)
+        )
+        deposit_balance = wallet_result.scalar_one_or_none()
         return self._serialize_claim(
             claim,
             order_booster_id=order.booster_id,
             order_status=order.status,
             booster_nickname=username,
             booster_email=email,
+            booster_deposit_balance=(
+                _to_decimal(deposit_balance) if deposit_balance is not None else _ZERO
+            ),
         )
 
     async def get_order_claim_view(
@@ -983,12 +993,19 @@ class OrderService:
         claim = result.scalar_one_or_none()
         if claim is None:
             return None
+        wallet_result = await self._db.execute(
+            select(Wallet.deposit_balance).where(Wallet.user_id == booster.id)
+        )
+        deposit_balance = wallet_result.scalar_one_or_none()
         return self._serialize_claim(
             claim,
             order_booster_id=order.booster_id,
             order_status=order.status,
             booster_nickname=booster.username,
             booster_email=booster.email,
+            booster_deposit_balance=(
+                _to_decimal(deposit_balance) if deposit_balance is not None else _ZERO
+            ),
         )
 
     async def claims_view_for_booster(
@@ -1005,6 +1022,11 @@ class OrderService:
             )
         )
         claims = {claim.order_id: claim for claim in result.scalars().all()}
+        wallet_result = await self._db.execute(
+            select(Wallet.deposit_balance).where(Wallet.user_id == booster.id)
+        )
+        deposit_balance = wallet_result.scalar_one_or_none()
+        deposit_amount = _to_decimal(deposit_balance) if deposit_balance is not None else _ZERO
         views: dict[int, dict[str, Any]] = {}
         for order in orders:
             claim = claims.get(order.id)
@@ -1016,6 +1038,7 @@ class OrderService:
                 order_status=order.status,
                 booster_nickname=booster.username,
                 booster_email=booster.email,
+                booster_deposit_balance=deposit_amount,
             )
         return views
 
@@ -1466,6 +1489,11 @@ class OrderService:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="只有已报名的打手才能交付",
             )
+        if await self._has_pending_cancel_request(order_id=order.id, claim_id=claim.id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="该名额有待处理的取消协商，请先由对方同意或拒绝",
+            )
         if claim.status == ClaimLifecycleStatus.CANCELLED:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -1696,6 +1724,8 @@ class OrderService:
             return False
         if order.status == OrderStatus.DISPUTED:
             return False
+        if await self._has_pending_cancel_request(order_id=order.id, claim_id=claim.id):
+            return False
         if (
             claim.settlement_mode_snapshot in (None, SETTLEMENT_MODE_ORDER_DELAY)
             and not delay_from_tier
@@ -1899,6 +1929,11 @@ class OrderService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="交付记录不存在",
             )
+        if await self._has_pending_cancel_request(order_id=order.id, claim_id=claim.id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="该名额有待处理的取消协商，请先由对方同意或拒绝",
+            )
         if claim.status != ClaimLifecycleStatus.DELIVERED:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -2066,6 +2101,11 @@ class OrderService:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="只有下单用户才能确认完成",
+            )
+        if await self._has_pending_cancel_request(order_id=order.id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="该订单有待处理的取消协商，请先完成协商后再确认",
             )
 
         delivered_result = await self._db.execute(
@@ -2277,238 +2317,361 @@ class OrderService:
             )
         return await self._cancel_order_locked(order, reason="订单取消，托管解冻")
 
-    async def publisher_cancel_with_compensation(
+    async def _has_pending_cancel_request(
+        self, *, order_id: int, claim_id: int | None = None
+    ) -> bool:
+        query = select(OrderCancelRequest.id).where(
+            OrderCancelRequest.order_id == order_id,
+            OrderCancelRequest.status == OrderCancelRequestStatus.PENDING,
+        )
+        if claim_id is not None:
+            query = query.where(OrderCancelRequest.claim_id == claim_id)
+        result = await self._db.execute(query.limit(1))
+        return result.scalar_one_or_none() is not None
+
+    async def list_cancel_requests(self, order_id: int, user: User) -> list[dict[str, Any]]:
+        """List cancellation negotiation records visible to this order participant."""
+        order = await self.get_order_by_id(order_id, user)
+        requester = aliased(User)
+        recipient = aliased(User)
+        booster = aliased(User)
+        query = (
+            select(
+                OrderCancelRequest,
+                OrderClaim.booster_id,
+                requester.username,
+                recipient.username,
+                booster.username,
+            )
+            .join(OrderClaim, OrderClaim.id == OrderCancelRequest.claim_id)
+            .join(requester, requester.id == OrderCancelRequest.requester_id)
+            .join(recipient, recipient.id == OrderCancelRequest.recipient_id)
+            .join(booster, booster.id == OrderClaim.booster_id)
+            .where(OrderCancelRequest.order_id == order_id)
+        )
+        if user.role != UserRole.ADMIN and user.id != order.user_id:
+            own_claim_ids = await self._db.execute(
+                select(OrderClaim.id).where(
+                    OrderClaim.order_id == order_id,
+                    OrderClaim.booster_id == user.id,
+                )
+            )
+            ids = list(own_claim_ids.scalars().all())
+            if not ids:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="只有订单参与方可以查看取消协商",
+                )
+            query = query.where(OrderCancelRequest.claim_id.in_(ids))
+        query = query.order_by(OrderCancelRequest.created_at.desc(), OrderCancelRequest.id.desc())
+        rows = (await self._db.execute(query)).all()
+        return [
+            {
+                "id": request.id,
+                "order_id": request.order_id,
+                "claim_id": request.claim_id,
+                "requester_id": request.requester_id,
+                "recipient_id": request.recipient_id,
+                "requester_role": request.requester_role,
+                "requester_name": requester_name,
+                "recipient_name": recipient_name,
+                "booster_id": booster_id,
+                "booster_username": booster_name,
+                "reason": request.reason,
+                "compensation_amount": request.compensation_amount,
+                "status": self._enum_value(request.status),
+                "decision_reason": request.decision_reason,
+                "created_at": request.created_at,
+                "resolved_at": request.resolved_at,
+            }
+            for request, booster_id, requester_name, recipient_name, booster_name in rows
+        ]
+
+    async def create_cancel_request(
         self,
         order_id: int,
         user: User,
+        *,
+        claim_id: int,
         reason: str,
-        deduction_amount: Decimal,
-    ) -> Order:
-        """发单员对进行中的订单申请取消：提交即生效（无审批流）。
-
-        产品语义（老板拍板）：发单员填理由（≥3 字）+ 接单人保证金扣除金额
-        （0 ~ 接单人当前保证金，默认 0），不需要打手同意。生效后订单取消、
-        托管与炸单赔偿金解冻，金额从每个活跃接单人的保证金直扣，等额补偿
-        入发单员可用余额，打手在自己的接单列表能看到被扣了多少钱。
-
-        Args:
-            order_id: Order ID to cancel.
-            user: 发单员本人（管理员不走本流程，走既有干预取消）。
-            reason: 取消原因（strip 后 ≥3 字）。
-            deduction_amount: 每个活跃接单人保证金的扣除金额（分位量化）。
-
-        Returns:
-            Updated Order instance.
-
-        Raises:
-            HTTPException: 404 订单不存在；403 非发单员本人；
-                400 状态不是进行中 / 原因太短 / 金额超过接单人保证金。
-        """
-        result = await self._db.execute(
-            select(Order)
-            .options(
-                selectinload(Order.user),
-                selectinload(Order.booster),
-            )
-            .where(Order.id == order_id)
-            .with_for_update()
-        )
-        order = result.scalar_one_or_none()
-        if order is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="订单不存在",
-            )
-
-        if user.id != order.user_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="只有订单发单人可以申请取消",
-            )
-
-        if order.status != OrderStatus.LOCKED:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="仅进行中的订单可申请取消；待接单请直接取消，其他状态不支持",
-            )
-
-        reason_text = (reason or "").strip()
-        if len(reason_text) < 3:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="取消原因至少 3 个字",
-            )
-
-        amount = _to_decimal(deduction_amount).quantize(_ZERO)
-        if amount < _ZERO:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="扣除金额不能为负数",
-            )
-
-        # 活跃接单名额（行锁，和 _cancel_order_locked 同一批对象）
-        claims_result = await self._db.execute(
-            select(OrderClaim)
-            .where(
-                OrderClaim.order_id == order.id,
-                OrderClaim.status.in_(
-                    (
-                        ClaimLifecycleStatus.CLAIMED,
-                        ClaimLifecycleStatus.DELIVERED,
-                    )
-                ),
-            )
-            .with_for_update()
-        )
-        active_claims = list(claims_result.scalars().all())
-
-        wallet_service = get_wallet_service(self._db)
-        # 先校验后变更：金额上限 = 所有活跃接单人保证金的最小值
-        max_deduction = _ZERO
-        if amount > _ZERO:
-            if not active_claims:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="该订单没有可扣除的接单人",
-                )
-            booster_wallets = await self._lock_boosters_wallets(
-                [claim.booster_id for claim in active_claims]
-            )
-            max_deduction = min(
-                (
-                    _to_decimal(booster_wallets[claim.booster_id].deposit_balance)
-                    if claim.booster_id in booster_wallets
-                    else _ZERO
-                )
-                for claim in active_claims
-            ).quantize(_ZERO)
-            if amount > max_deduction:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"接单人保证金不足（最高可扣 ¥{max_deduction}）",
-                )
-
-        # 复用既有取消清理：claims→CANCELLED、炸单赔偿金解冻、托管退回发布人
-        await self._cancel_order_locked(order, reason="发单员申请取消，托管解冻")
-
-        if amount > _ZERO:
-            # 每个活跃接单人的保证金直扣（uq_order_claim_booster 保证
-            # 同一打手在一单上只有一条名额，逐条扣不会重复）
-            # remark 列只有 255 字符，原因按前缀长度截断，避免超长原因写库失败
-            for claim in active_claims:
-                await wallet_service.adjust_deposit(
-                    booster_wallets[claim.booster_id],
-                    delta=-amount,
-                    tx_type=WalletTransactionType.CANCEL_COMPENSATION_DEDUCT,
-                    order_id=order.id,
-                    booster_id=claim.booster_id,
-                    remark=f"订单取消扣除保证金：{reason_text[:230]}",
-                )
-            # 等额补偿入发单员可用余额（按活跃接单人数放大）
-            publisher_wallet = await wallet_service.get_or_create_wallet(order.user_id)
-            await wallet_service.credit(
-                publisher_wallet,
-                amount=amount * len(active_claims),
-                tx_type=WalletTransactionType.CANCEL_COMPENSATION_IN,
-                order_id=order.id,
-                remark="订单取消赔偿入账",
-            )
-
-        # 扣款信息落到名额上：打手在「我的接单」列表据此展示被扣了多少
-        for claim in active_claims:
-            claim.approved_deduction = amount if amount > _ZERO else None
-            claim.approved_note = reason_text
-
-        note_line = f"取消原因: {reason_text}"
-        if amount > _ZERO:
-            note_line += f"；扣除接单人保证金 ¥{amount}"
-        order.notes = note_line + (f"\n{order.notes}" if order.notes else "")
-
-        await self._db.flush()
-        await self._db.refresh(order)
-
-        logger.info(
-            "Order %s cancelled by publisher %s with compensation %s (%s active claims)",
-            order.id,
-            user.id,
-            amount,
-            len(active_claims),
-        )
-
-        return order
-
-    async def request_cancel_by_booster(
-        self,
-        order_id: int,
-        user: User,
-        reason: str,
-    ) -> Order:
-        """Put a booster cancellation request into the existing admin dispute queue."""
-        if user.role != UserRole.BOOSTER:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="只有打手可以申请取消订单",
-            )
-
-        result = await self._db.execute(
+        compensation_amount: Decimal,
+    ) -> OrderCancelRequest:
+        """Create a pending cancellation proposal for exactly one active claim."""
+        order_result = await self._db.execute(
             select(Order).where(Order.id == order_id).with_for_update()
         )
-        order = result.scalar_one_or_none()
+        order = order_result.scalar_one_or_none()
         if order is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="订单不存在",
-            )
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="订单不存在")
         if order.status not in (OrderStatus.LOCKED, OrderStatus.DELIVERED):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="仅进行中的订单可以申请取消",
-            )
-
-        reason_text = (reason or "").strip()
-        if len(reason_text) < 3:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="取消原因至少 3 个字",
+                detail="仅进行中或待确认订单可以申请协商取消",
             )
 
         claim_result = await self._db.execute(
             select(OrderClaim)
-            .where(
-                OrderClaim.order_id == order.id,
-                OrderClaim.booster_id == user.id,
-                OrderClaim.status.in_(
-                    (ClaimLifecycleStatus.CLAIMED, ClaimLifecycleStatus.DELIVERED)
-                ),
-            )
+            .where(OrderClaim.id == claim_id, OrderClaim.order_id == order.id)
             .with_for_update()
         )
-        if claim_result.scalar_one_or_none() is None:
+        claim = claim_result.scalar_one_or_none()
+        if claim is None or claim.status not in (
+            ClaimLifecycleStatus.CLAIMED,
+            ClaimLifecycleStatus.DELIVERED,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="该接单名额已结束，不能申请取消",
+            )
+
+        reason_text = (reason or "").strip()
+        if len(reason_text) < 3:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="取消原因至少 3 个字",
+            )
+        amount = _to_decimal(compensation_amount).quantize(_ZERO)
+        if amount < _ZERO:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="赔偿金额不能为负数",
+            )
+
+        if user.id == order.user_id:
+            requester_role = "PUBLISHER"
+            recipient_id = claim.booster_id
+        elif user.id == claim.booster_id and user.role != UserRole.ADMIN:
+            requester_role = "BOOSTER"
+            recipient_id = order.user_id
+        else:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="只有当前订单的进行中打手才能申请取消",
+                detail="只有发单员或该名额打手可以发起取消协商",
             )
 
-        order.status = OrderStatus.DISPUTED
-        order.notes = f"打手取消申请（{user.username}）：{reason_text}" + (
-            f"\n{order.notes}" if order.notes else ""
+        pending_result = await self._db.execute(
+            select(OrderCancelRequest.id)
+            .where(
+                OrderCancelRequest.claim_id == claim.id,
+                OrderCancelRequest.status == OrderCancelRequestStatus.PENDING,
+            )
+            .with_for_update()
+            .limit(1)
         )
-        await self._db.flush()
-        await self._db.refresh(order)
-        logger.info("Order %s cancellation requested by booster %s", order.id, user.id)
-        return order
+        if pending_result.scalar_one_or_none() is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="该接单名额已有待处理的取消申请",
+            )
 
-    async def _lock_boosters_wallets(self, booster_ids: list[int]) -> dict[int, Wallet]:
-        """按用户ID批量锁定钱包行（一条 IN 查询，禁止 N+1）。"""
-        unique_ids = sorted({int(booster_id) for booster_id in booster_ids})
-        if not unique_ids:
-            return {}
-        result = await self._db.execute(
-            select(Wallet)
-            .where(Wallet.user_id.in_(unique_ids))
+        wallet_service = get_wallet_service(self._db)
+        booster_wallet = await wallet_service.get_or_create_wallet(claim.booster_id)
+        booster_wallet = await wallet_service._lock_wallet(booster_wallet.id)
+        available_compensation = _to_decimal(booster_wallet.deposit_balance)
+        if amount > available_compensation:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"接单人保证金不足（最高可提议 ¥{available_compensation}）",
+            )
+
+        request = OrderCancelRequest(
+            order_id=order.id,
+            claim_id=claim.id,
+            requester_id=user.id,
+            recipient_id=recipient_id,
+            requester_role=requester_role,
+            reason=reason_text[:500],
+            compensation_amount=amount,
+            status=OrderCancelRequestStatus.PENDING,
+        )
+        self._db.add(request)
+        await self._db.flush()
+        await self._db.refresh(request)
+        logger.info(
+            "Order %s claim %s cancellation requested by %s",
+            order.id,
+            claim.id,
+            user.id,
+        )
+        return request
+
+    async def decide_cancel_request(
+        self,
+        order_id: int,
+        request_id: int,
+        user: User,
+        *,
+        action: str,
+        decision_reason: str | None = None,
+    ) -> OrderCancelRequest:
+        """Only the request recipient may accept/reject; approval cancels one claim."""
+        order_result = await self._db.execute(
+            select(Order).where(Order.id == order_id).with_for_update()
+        )
+        order = order_result.scalar_one_or_none()
+        if order is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="订单不存在")
+
+        request_result = await self._db.execute(
+            select(OrderCancelRequest)
+            .where(
+                OrderCancelRequest.id == request_id,
+                OrderCancelRequest.order_id == order_id,
+            )
             .with_for_update()
         )
-        return {wallet.user_id: wallet for wallet in result.scalars().all()}
+        request = request_result.scalar_one_or_none()
+        if request is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="取消申请不存在")
+        if user.id != request.recipient_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="只有申请的对方可以同意或拒绝",
+            )
+        if request.status != OrderCancelRequestStatus.PENDING:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="该取消申请已处理",
+            )
+        if action not in ("approve", "reject"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="操作仅支持 approve 或 reject",
+            )
+
+        claim_result = await self._db.execute(
+            select(OrderClaim)
+            .where(OrderClaim.id == request.claim_id, OrderClaim.order_id == order_id)
+            .with_for_update()
+        )
+        claim = claim_result.scalar_one_or_none()
+        now = datetime.now(timezone.utc)
+        decision_note = (decision_reason or "").strip()[:500] or None
+
+        if action == "reject":
+            request.status = OrderCancelRequestStatus.REJECTED
+            request.decision_reason = decision_note
+            request.resolved_at = now
+            await self._db.flush()
+            await self._db.refresh(request)
+            return request
+
+        if (
+            order.status not in (OrderStatus.LOCKED, OrderStatus.DELIVERED)
+            or claim is None
+            or claim.status not in (ClaimLifecycleStatus.CLAIMED, ClaimLifecycleStatus.DELIVERED)
+        ):
+            request.status = OrderCancelRequestStatus.CANCELLED
+            request.decision_reason = "订单或接单名额状态已变化，申请已关闭"
+            request.resolved_at = now
+            await self._db.flush()
+            await self._db.refresh(request)
+            return request
+
+        amount = _to_decimal(request.compensation_amount).quantize(_ZERO)
+        wallet_service = get_wallet_service(self._db)
+        booster_wallet = await wallet_service.get_or_create_wallet(claim.booster_id)
+        booster_wallet = await wallet_service._lock_wallet(booster_wallet.id)
+        if amount > _to_decimal(booster_wallet.deposit_balance):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="接单人保证金已不足以履行该赔偿金额，请拒绝并重新协商",
+            )
+
+        # Accepted requests only cancel the selected slot: release its scoped
+        # compensation hold and one unit of publisher escrow, then keep other
+        # boosters and claims untouched.
+        await wallet_service.release_all_compensation_hold(
+            booster_wallet,
+            order_id=order.id,
+            booster_id=claim.booster_id,
+            note="取消协商同意，赔偿金解冻",
+        )
+        if amount > _ZERO:
+            await wallet_service.adjust_deposit(
+                booster_wallet,
+                delta=-amount,
+                tx_type=WalletTransactionType.CANCEL_COMPENSATION_DEDUCT,
+                order_id=order.id,
+                booster_id=claim.booster_id,
+                remark=f"双方同意取消名额，扣除保证金：{request.reason[:200]}",
+            )
+            publisher_wallet = await wallet_service.get_or_create_wallet(order.user_id)
+            await wallet_service.credit(
+                publisher_wallet,
+                amount=amount,
+                tx_type=WalletTransactionType.CANCEL_COMPENSATION_IN,
+                order_id=order.id,
+                booster_id=claim.booster_id,
+                remark=f"取消名额赔偿入账（打手 #{claim.booster_id}）",
+            )
+
+        await self.release_escrow(
+            order,
+            requested=_to_decimal(order.price),
+            reason="取消名额，托管退回",
+        )
+        claim.status = ClaimLifecycleStatus.CANCELLED
+        claim.approved_at = None
+        claim.approved_payout_amount = None
+        claim.approved_deduction = amount if amount > _ZERO else None
+        claim.approved_note = request.reason[:500]
+        claim.settlement_mode_snapshot = None
+        claim.settle_hours_snapshot = None
+        claim.settlement_due_at = None
+        if int(order.max_claims or 1) <= 1:
+            order.status = OrderStatus.CANCELLED
+            order.claim_status = ClaimStatus.CLOSED
+        else:
+            order.claimed_count = max(int(order.claimed_count or 0) - 1, 0)
+            if order.deadline is not None:
+                deadline = order.deadline
+                if deadline.tzinfo is None:
+                    deadline = deadline.replace(tzinfo=timezone.utc)
+                if deadline <= now:
+                    order.claim_status = ClaimStatus.CLOSED
+            if order.claim_status == ClaimStatus.FULL:
+                order.claim_status = ClaimStatus.OPEN
+            if order.status == OrderStatus.DELIVERED:
+                order.status = OrderStatus.LOCKED
+            remaining_result = await self._db.execute(
+                select(func.count(OrderClaim.id)).where(
+                    OrderClaim.order_id == order.id,
+                    OrderClaim.status.in_(
+                        (ClaimLifecycleStatus.CLAIMED, ClaimLifecycleStatus.DELIVERED)
+                    ),
+                )
+            )
+            remaining_active = int(remaining_result.scalar() or 0)
+            if remaining_active == 0 and order.claim_status == ClaimStatus.CLOSED:
+                settled_result = await self._db.execute(
+                    select(func.count(OrderClaim.id)).where(
+                        OrderClaim.order_id == order.id,
+                        OrderClaim.status == ClaimLifecycleStatus.SETTLED,
+                    )
+                )
+                if int(settled_result.scalar() or 0) > 0:
+                    order.status = OrderStatus.COMPLETED
+                    order.completed_at = now
+                else:
+                    order.status = OrderStatus.CANCELLED
+            elif order.status not in (OrderStatus.CANCELLED, OrderStatus.COMPLETED):
+                order.status = OrderStatus.LOCKED
+
+        request.status = OrderCancelRequestStatus.APPROVED
+        request.decision_reason = decision_note
+        request.resolved_at = now
+        await self._db.flush()
+        await self._db.refresh(request)
+        await self._db.refresh(order)
+        logger.info(
+            "Cancel request %s accepted for order %s claim %s by user %s",
+            request.id,
+            order.id,
+            claim.id,
+            user.id,
+        )
+        return request
 
     async def _cancel_order_locked(self, order: Order, *, reason: str) -> Order:
         """Apply cancellation cleanup to an order already locked by caller."""
@@ -2552,6 +2715,21 @@ class OrderService:
             ):
                 claim.status = ClaimLifecycleStatus.CANCELLED
 
+        # 整单经管理员/旧路径取消时，关闭所有尚未处理的名额取消协商，
+        # 避免收件方后来对一条已结束订单做出过期裁决。
+        await self._db.execute(
+            update(OrderCancelRequest)
+            .where(
+                OrderCancelRequest.order_id == order.id,
+                OrderCancelRequest.status == OrderCancelRequestStatus.PENDING,
+            )
+            .values(
+                status=OrderCancelRequestStatus.CANCELLED,
+                decision_reason="订单已通过其他流程取消，申请自动关闭",
+                resolved_at=datetime.now(timezone.utc),
+            )
+        )
+
         # 取消订单：发布人当前持有的托管全额退回（已接单未结算名额的
         # 打款在其后结算时按剩余冻结尽力扣减——老板兜底）
         released = await self.release_all_escrow(order, reason=reason)
@@ -2589,6 +2767,11 @@ class OrderService:
             HTTPException: If order cannot be disputed.
         """
         order = await self.get_order_by_id(order_id)
+        if await self._has_pending_cancel_request(order_id=order.id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="订单有待处理的取消协商，请先由对方同意或拒绝",
+            )
 
         if order.status not in (OrderStatus.LOCKED, OrderStatus.DELIVERED, OrderStatus.COMPLETED):
             raise HTTPException(

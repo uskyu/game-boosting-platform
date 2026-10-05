@@ -150,10 +150,13 @@ async function toggleRecentClaims() {
 }
 
 function getRecentClaimMeta(claim) {
-  const summary = claim.order.intro
-    ? (claim.order.intro.length > 40 ? `${claim.order.intro.slice(0, 40)}...` : claim.order.intro)
-    : '未补充需求'
-  return `${claim.booster.username} · 已完成 ${formatCount(claim.booster.total_completed)} 单 · ${summary} · ${formatShortDate(claim.created_at)}`
+  // 简介选填，没填就整段省略——占位文案「未补充需求」会被用户当成异常数据
+  const pieces = [claim.booster.username, `已完成 ${formatCount(claim.booster.total_completed)} 单`]
+  if (claim.order.intro) {
+    pieces.push(claim.order.intro.length > 40 ? `${claim.order.intro.slice(0, 40)}...` : claim.order.intro)
+  }
+  pieces.push(formatShortDate(claim.created_at))
+  return pieces.join(' · ')
 }
 
 const unreadMap = computed(() => {
@@ -230,7 +233,7 @@ function buildSummary(order) {
     return pieces.join(' · ')
   }
 
-  const raw = order.description_raw || '未补充需求'
+  const raw = order.description_raw || ''
   return raw.length > 28 ? `${raw.slice(0, 28)}...` : raw
 }
 
@@ -487,7 +490,7 @@ onUnmounted(() => {
 
         <!-- 层级 3：底部次要信息行（需求摘要 + 游戏名 + 时间）与「查看详情 →」入口 -->
         <div class="mt-4 border-t border-line-1 pt-3.5 text-[13px]">
-          <p class="truncate text-ink-2">{{ buildSummary(order) }}</p>
+          <p v-if="buildSummary(order)" class="truncate text-ink-2">{{ buildSummary(order) }}</p>
           <div class="mt-2 flex items-center justify-between gap-3">
             <div class="flex min-w-0 items-center gap-2 text-ink-2">
               <span class="truncate font-medium">{{ order.game_name }}</span>

@@ -34,6 +34,10 @@ export const useOrdersStore = defineStore('orders', () => {
   const myClaims = ref([])
   const myClaimsLoading = ref(false)
   const myClaimsPagination = ref({ page: 1, pageSize: 20, total: 0, pages: 0 })
+  // 取消协商（双方同意/拒绝，无管理员）：当前订单的协商请求列表
+  const cancelRequests = ref([])
+  const cancelRequestsOrderId = ref(null)
+  const cancelRequestsLoading = ref(false)
 
   // Getters
   const hasOrders = computed(() => orders.value.length > 0)
@@ -53,6 +57,7 @@ export const useOrdersStore = defineStore('orders', () => {
   // 详情/报名请求序号：组件复用或快速切换页面时，旧响应不得覆盖当前数据。
   let orderDetailRequestSeq = 0
   let claimsRequestSeq = 0
+  let cancelRequestsRequestSeq = 0
 
   // Actions
   async function analyzeRequirement(description) {
@@ -538,24 +543,41 @@ export const useOrdersStore = defineStore('orders', () => {
     }
   }
 
-  // 发单员对进行中订单申请取消（提交即生效，无审批流）：
-  // payload { reason: string, deduction_amount: number }
-  // 不切换全局 loading：详情页骨架屏会卸载申请取消弹窗，丢失其关闭/错误状态
-  async function applyCancel(orderId, payload) {
+  // ── 取消协商（双方直接同意/拒绝，无管理员裁决）───────────────────
+  // 请求序号 + 独立 loading：详情页每次加载都会拉，不能用全局 loading
+  // （会把协商弹窗连同骨架屏一起卸载）。
+  async function fetchCancelRequests(orderId) {
+    const requestSeq = ++cancelRequestsRequestSeq
+    cancelRequestsLoading.value = true
     error.value = null
-
     try {
-      const response = await api.post(`/orders/${orderId}/apply-cancel`, payload)
-
-      const index = orders.value.findIndex(o => o.id === orderId)
-      if (index !== -1) {
-        orders.value[index] = response.data
+      const response = await api.get(`/orders/${orderId}/cancel-requests`)
+      if (requestSeq !== cancelRequestsRequestSeq) {
+        return { success: true, stale: true, data: [] }
       }
-
-      if (currentOrder.value?.id === orderId) {
-        currentOrder.value = response.data
+      const items = response.data?.items ?? []
+      cancelRequests.value = items
+      cancelRequestsOrderId.value = Number(orderId)
+      return { success: true, data: items }
+    } catch (err) {
+      if (requestSeq !== cancelRequestsRequestSeq) {
+        return { success: false, stale: true, error: err.message }
       }
+      error.value = err.message
+      return { success: false, error: err.message }
+    } finally {
+      if (requestSeq === cancelRequestsRequestSeq) {
+        cancelRequestsLoading.value = false
+      }
+    }
+  }
 
+  // 发起取消协商：payload { claim_id, reason, compensation_amount }
+  // 发单员必须选 claim_id；打手只能为自己的名额提交。
+  async function createCancelRequest(orderId, payload) {
+    error.value = null
+    try {
+      const response = await api.post(`/orders/${orderId}/cancel-requests`, payload)
       return { success: true, data: response.data }
     } catch (err) {
       error.value = err.message
@@ -563,21 +585,23 @@ export const useOrdersStore = defineStore('orders', () => {
     }
   }
 
-  // 打手申请取消：只提交原因，管理员在派单详情页裁决。
-  async function requestCancel(orderId, payload) {
+  // 处理取消协商：payload { action: 'approve'|'reject', decision_reason? }
+  // 仅收件方可操作；approve 会取消该名额并按约定金额划转资金。
+  async function decideCancelRequest(orderId, requestId, payload) {
     error.value = null
-
     try {
-      const response = await api.post(`/orders/${orderId}/request-cancel`, payload)
-
-      const index = orders.value.findIndex(o => o.id === orderId)
+      const response = await api.post(
+        `/orders/${orderId}/cancel-requests/${requestId}/decision`,
+        payload,
+      )
+      const updated = response.data
+      const index = cancelRequests.value.findIndex(
+        (item) => Number(item.id) === Number(requestId),
+      )
       if (index !== -1) {
-        orders.value[index] = response.data
+        cancelRequests.value.splice(index, 1, updated)
       }
-      if (currentOrder.value?.id === orderId) {
-        currentOrder.value = response.data
-      }
-      return { success: true, data: response.data }
+      return { success: true, data: updated }
     } catch (err) {
       error.value = err.message
       return { success: false, error: err.message }
@@ -647,6 +671,10 @@ export const useOrdersStore = defineStore('orders', () => {
     claims.value = []
     claimsOrderId.value = null
     claimsLoading.value = false
+    cancelRequestsRequestSeq += 1
+    cancelRequests.value = []
+    cancelRequestsOrderId.value = null
+    cancelRequestsLoading.value = false
   }
 
   function clearError() {
@@ -669,6 +697,9 @@ export const useOrdersStore = defineStore('orders', () => {
     myClaims,
     myClaimsLoading,
     myClaimsPagination,
+    cancelRequests,
+    cancelRequestsOrderId,
+    cancelRequestsLoading,
     // Getters
     hasOrders,
     pendingOrders,
@@ -692,8 +723,9 @@ export const useOrdersStore = defineStore('orders', () => {
     confirmOrder,
     disputeOrder,
     cancelOrder,
-    applyCancel,
-    requestCancel,
+    fetchCancelRequests,
+    createCancelRequest,
+    decideCancelRequest,
     payOrder,
     refundOrder,
     setFilters,

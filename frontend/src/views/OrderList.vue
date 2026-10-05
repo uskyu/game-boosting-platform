@@ -150,7 +150,7 @@ function buildSummary(order) {
     return pieces.join(' · ')
   }
 
-  const raw = order.description_raw || '未补充需求'
+  const raw = order.description_raw || ''
   return raw.length > 28 ? `${raw.slice(0, 28)}...` : raw
 }
 
@@ -405,7 +405,7 @@ onUnmounted(() => {
         >
           <h2 class="truncate text-[15px] font-semibold text-ink-1">{{ claim.order?.title || claim.order?.game_name || '代练订单' }}</h2>
           <p v-if="claim.order && getMetaLine(claim.order)" class="mt-1.5 truncate text-[13px] tabular-nums text-ink-2">{{ getMetaLine(claim.order) }}</p>
-          <p v-if="claim.order" class="mt-1.5 truncate text-sm text-ink-2">{{ buildSummary(claim.order) }}</p>
+          <p v-if="claim.order && buildSummary(claim.order)" class="mt-1.5 truncate text-sm text-ink-2">{{ buildSummary(claim.order) }}</p>
           <div v-if="claim.order && getAttachment(claim.order)" class="mt-3 overflow-hidden rounded-tile"><img :src="getAttachment(claim.order)" alt="订单附件" loading="lazy" class="max-h-40 w-full rounded object-cover" /></div>
           <div class="mt-4 border-t border-line-1 pt-3.5">
             <div class="flex flex-wrap items-end justify-between gap-3">
@@ -495,7 +495,7 @@ onUnmounted(() => {
         >
           <h2 class="truncate text-[15px] font-semibold text-ink-1">{{ order.title || order.game_name }}</h2>
           <p v-if="getMetaLine(order)" class="mt-1.5 truncate text-[13px] tabular-nums text-ink-2">{{ getMetaLine(order) }}</p>
-          <p class="mt-1.5 truncate text-sm text-ink-2">{{ buildSummary(order) }}</p>
+          <p v-if="buildSummary(order)" class="mt-1.5 truncate text-sm text-ink-2">{{ buildSummary(order) }}</p>
           <div v-if="getAttachment(order)" class="mt-3 overflow-hidden rounded-tile"><img :src="getAttachment(order)" alt="订单附件" loading="lazy" class="max-h-40 w-full rounded object-cover" /></div>
 
           <div class="mt-4 border-t border-line-1 pt-3.5">

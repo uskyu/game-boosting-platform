@@ -5,12 +5,13 @@ Pydantic models for order-related API request/response validation.
 
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 
 from app.core.money import resolve_service_fee_rate
 from app.models.order import PaymentStatus, ClaimStatus
+from app.models.order_cancel_request import OrderCancelRequestStatus
 from app.schemas.serializers import serialize_datetime_utc
 
 _FEE_CENT = Decimal("0.01")
@@ -394,36 +395,66 @@ class ClaimReviewRequest(BaseModel):
         return self
 
 
-class BoosterCancelRequest(BaseModel):
-    """打手申请取消进行中订单；仅提交原因，取消与裁决由管理员处理。"""
+class CreateOrderCancelRequest(BaseModel):
+    """发单员或该名额打手提出双边取消申请。"""
 
-    reason: str = Field(
-        ...,
-        min_length=3,
-        max_length=500,
-        description="取消原因（至少 3 个字）",
-    )
-
-
-class ApplyCancelRequest(BaseModel):
-    """发单员对进行中订单申请取消的请求体（提交即生效，无审批流）。
-
-    reason：取消原因（≥3 字，必填），随订单备注与打手通知留存；
-    deduction_amount：从每个活跃接单人保证金直扣的金额（默认 0 = 不扣），
-    等额补偿入发单员可用余额。
-    """
-
-    reason: str = Field(
-        ...,
-        min_length=3,
-        max_length=500,
-        description="取消原因（至少 3 个字）",
-    )
-    deduction_amount: Decimal = Field(
-        default=Decimal("0"),
+    claim_id: int = Field(ge=1, description="本次协商取消的接单名额 ID")
+    reason: str = Field(..., min_length=3, max_length=500, description="取消原因（至少 3 个字）")
+    compensation_amount: Decimal = Field(
+        default=Decimal("0.00"),
         ge=0,
-        description="扣除每个活跃接单人的保证金金额（0 ~ 接单人当前保证金，默认 0 不扣）",
+        description="从该打手保证金扣除并补偿发单员的金额；默认 0",
     )
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_cancel_reason(cls, value: str) -> str:
+        reason = value.strip()
+        if len(reason) < 3:
+            raise ValueError("取消原因至少 3 个字")
+        return reason
+
+
+class DecideOrderCancelRequest(BaseModel):
+    """接收方同意或拒绝某个名额的取消申请。"""
+
+    action: Literal["approve", "reject"]
+    decision_reason: str | None = Field(default=None, max_length=500)
+
+    @field_validator("decision_reason")
+    @classmethod
+    def normalize_decision_reason(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        reason = value.strip()
+        return reason or None
+
+
+class OrderCancelRequestItem(BaseModel):
+    id: int
+    order_id: int
+    claim_id: int
+    requester_id: int
+    recipient_id: int
+    requester_role: Literal["PUBLISHER", "BOOSTER"]
+    requester_name: str
+    recipient_name: str
+    booster_id: int
+    booster_username: str
+    reason: str
+    compensation_amount: Decimal
+    status: OrderCancelRequestStatus
+    decision_reason: str | None = None
+    created_at: datetime
+    resolved_at: datetime | None = None
+
+    @field_serializer("created_at", "resolved_at")
+    def serialize_cancel_request_datetime(self, value: datetime | None) -> str | None:
+        return serialize_datetime_utc(value)
+
+
+class OrderCancelRequestListResponse(BaseModel):
+    items: list[OrderCancelRequestItem]
 
 
 # =============================================================================

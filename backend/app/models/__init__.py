@@ -25,6 +25,7 @@ from app.models.notification import Notification, NotificationType, UserPreferen
 from app.models.payment_setting import PaymentSetting
 from app.models.push_subscription import PushSubscription
 from app.models.order import Order, OrderStatus, PaymentStatus
+from app.models.order_cancel_request import OrderCancelRequest, OrderCancelRequestStatus
 from app.models.order_template import OrderTemplate
 from app.models.recharge import RechargeOrder, RechargeStatus
 from app.models.review import Review
@@ -64,6 +65,8 @@ __all__ = [
     "Notification",
     "NotificationType",
     "Order",
+    "OrderCancelRequest",
+    "OrderCancelRequestStatus",
     "OrderStatus",
     "OrderTemplate",
     "PaymentSetting",

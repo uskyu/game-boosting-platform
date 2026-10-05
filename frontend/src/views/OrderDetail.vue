@@ -48,15 +48,14 @@ function goRechargeFromFail() {
   showClaimFailModal.value = false
   router.push({ name: 'wallet', query: { recharge: '1' } })
 }
-// 申请取消订单：发单员对进行中订单直接取消，可按约定金额扣接单人保证金（提交即生效）
-const showApplyCancelModal = ref(false)
-const applyCancelSubmitting = ref(false)
-const applyCancelError = ref('')
-const applyCancelForm = ref({ reason: '', deduction_amount: '0' })
-const showBoosterCancelModal = ref(false)
-const boosterCancelSubmitting = ref(false)
-const boosterCancelError = ref('')
-const boosterCancelForm = ref({ reason: '' })
+// 取消协商（双方直接同意/拒绝，无管理员）：发起弹窗 + 收件方处理状态
+const cancelRequestModalOpen = ref(false)
+const cancelRequestSubmitting = ref(false)
+const cancelRequestError = ref('')
+const cancelRequestForm = ref({ claim_id: null, reason: '', compensation_amount: '0' })
+const decisionSubmittingId = ref(null)
+const decisionError = ref('')
+const rejectDraft = ref({ requestId: null, reason: '' })
 // 发起争议：正式弹窗替代 window.prompt（移动端 prompt 体验差且样式不统一）
 const showDisputeModal = ref(false)
 const disputeForm = ref({ reason: '' })
@@ -311,7 +310,7 @@ function compactSummary() {
     order.value?.description_raw,
   ].filter(Boolean)
 
-  const summary = items[0] || '未补充需求'
+  const summary = items[0] || ''
   return summary.length > 36 ? `${summary.slice(0, 36)}...` : summary
 }
 
@@ -544,98 +543,237 @@ async function submitDispute() {
   actionLoading.value = false
 }
 
-// ── 申请取消订单（发单员 · 进行中）────────────────────────────────
-// 可扣款上限来自活跃接单人的保证金（名单接口批量下发 booster_deposit_balance，
-// 一条 IN 查询；取不到时不设 max，由后端兜底校验）。
+// ── 取消协商（双方直接同意/拒绝，无管理员）──────────────────────────
+// 契约：POST/GET /orders/{id}/cancel-requests、POST .../{request_id}/decision
+// 发单员从活跃名额里选一个名额发起；打手只能为自己的名额发起。
+// 同意后只取消该名额并按约定金额划转；拒绝后订单/名额状态不变，可重提。
 const activeClaims = computed(() => {
   const claims = Array.isArray(ordersStore.claims) ? ordersStore.claims : []
   return claims.filter((claim) => ['CLAIMED', 'DELIVERED'].includes(claim?.status))
 })
 
-const boosterDepositBalances = computed(() => (
-  activeClaims.value
-    .map((claim) => Number(claim.booster_deposit_balance))
-    .filter((value) => Number.isFinite(value))
+// 打手自己的进行中名额（打手端发起入口固定用它）
+const myNegotiableClaim = computed(() => {
+  const claim = myClaim.value
+  return claim && ['CLAIMED', 'DELIVERED'].includes(claim.status) ? claim : null
+})
+
+const cancelRequests = computed(() => (
+  Array.isArray(ordersStore.cancelRequests) ? ordersStore.cancelRequests : []
 ))
 
-const minBoosterDeposit = computed(() => (
-  boosterDepositBalances.value.length ? Math.min(...boosterDepositBalances.value) : null
-))
+const isCancelRequestPending = (request) => String(request?.status || '').toUpperCase() === 'PENDING'
 
-const totalBoosterDeposit = computed(() => (
-  boosterDepositBalances.value.reduce((sum, value) => sum + value, 0)
-))
+const isCancelRequestRejected = (request) => String(request?.status || '').toUpperCase() === 'REJECTED'
 
-function openApplyCancelModal() {
-  if (actionLoading.value) {
-    return
-  }
-  errorMessage.value = ''
-  successMessage.value = ''
-  applyCancelError.value = ''
-  applyCancelForm.value = { reason: '', deduction_amount: '0' }
-  showApplyCancelModal.value = true
+// 被拒绝后的结果文案：发起方看到"对方拒绝了…"，收件方看到"你已拒绝…"
+const cancelRequestRejectedOutcome = (request) => {
+  const role = cancelRequestRole(request)
+  if (role === 'requester') return '对方拒绝了取消申请'
+  if (role === 'recipient') return '你已拒绝该申请'
+  return '该申请已被拒绝'
 }
 
-async function submitApplyCancel() {
-  if (applyCancelSubmitting.value) {
-    return
+// 我方在某条协商里的角色：requester=发起方 / recipient=收件方 / ''=与本人无关
+function cancelRequestRole(request) {
+  if (!request || !currentUser.value) return ''
+  const userId = Number(currentUser.value.id)
+  if (Number(request.requester_id) === userId) return 'requester'
+  if (Number(request.recipient_id) === userId) return 'recipient'
+  return ''
+}
+
+// 与本人相关的待处理协商（自己发起的或等自己处理的）
+const myPendingCancelRequest = computed(() => (
+  cancelRequests.value.find(
+    (request) => isCancelRequestPending(request) && cancelRequestRole(request) !== ''
+  ) || null
+))
+
+// 名额粒度防重：没有任何待处理协商的活跃名额。一个名额在谈时，
+// 多打手订单的其他名额仍可继续发起、其他打手继续接单。
+const requestableClaims = computed(() => {
+  const pendingClaimIds = new Set(
+    cancelRequests.value
+      .filter((request) => isCancelRequestPending(request))
+      .map((request) => Number(request.claim_id))
+  )
+  return activeClaims.value.filter((claim) => !pendingClaimIds.has(Number(claim.id)))
+})
+
+// 打手自己的可协商名额：自己的名额没有待处理协商时才能发起
+const myRequestableClaim = computed(() => {
+  const claim = myNegotiableClaim.value
+  if (!claim) return null
+  const hasPending = cancelRequests.value.some(
+    (request) => isCancelRequestPending(request) && Number(request.claim_id) === Number(claim.id)
+  )
+  return hasPending ? null : claim
+})
+
+// 本人能否发起：进行中/待确认 + 有可协商名额（按名额防重，不是整单一刀切）
+const canInitiateCancelRequest = computed(() => {
+  if (!order.value) return false
+  if (!['LOCKED', 'DELIVERED'].includes(order.value.status)) return false
+  if (isOwner.value) return requestableClaims.value.length > 0
+  return Boolean(myRequestableClaim.value)
+})
+
+// 取消协商区只对订单参与方展示（发单员 / 有自己的名额的打手）
+const canSeeCancelNegotiation = computed(() => (
+  Boolean(order.value) && (isOwner.value || Boolean(myClaim.value))
+))
+
+const CANCEL_REQUEST_STATUS_META = {
+  PENDING: { label: '待处理', tagClass: 'tag !bg-warning-soft !text-warning' },
+  APPROVED: { label: '已同意', tagClass: 'tag !bg-success-soft !text-success' },
+  REJECTED: { label: '已拒绝', tagClass: 'tag !bg-danger-soft !text-danger' },
+  // 管理员另行取消订单时，旧的待处理协商会被关掉
+  CANCELLED: { label: '已关闭', tagClass: 'tag !bg-surface-3 !text-ink-2' },
+}
+
+function cancelRequestStatusMeta(request) {
+  const key = String(request?.status || '').toUpperCase()
+  return CANCEL_REQUEST_STATUS_META[key] || {
+    label: request?.status || '未知',
+    tagClass: 'tag !bg-surface-3 !text-ink-2',
   }
-  // 与后端 schema 对齐的前置校验：给出即时反馈，最终仍以后端为准
-  if (applyCancelForm.value.reason.trim().length < 3) {
-    applyCancelError.value = '取消原因至少 3 个字'
-    return
+}
+
+function cancelRequestRoleLabel(request) {
+  const role = String(request?.requester_role || '').toUpperCase()
+  if (role.includes('PUBLISHER') || role === 'OWNER') return '发单员'
+  if (role.includes('BOOSTER') || role === 'CLAIMANT') return '打手'
+  return request?.requester_role || '发起方'
+}
+
+// 发起方是发单员 → 金额是「扣打手保证金」；发起方是打手 → 是打手自愿赔偿
+const isPublisherCancelRequest = (request) => cancelRequestRoleLabel(request) === '发单员'
+
+// 名额维度的协商状态：该 claim 最新一条（有待处理则优先展示待处理），
+// 用于报名名单行上标注，发单员一眼看到哪个名额正在谈取消。
+function cancelRequestForClaim(claimId) {
+  const rows = cancelRequests.value.filter((request) => Number(request?.claim_id) === Number(claimId))
+  if (!rows.length) return null
+  return rows.find((request) => isCancelRequestPending(request))
+    || rows.reduce((latest, request) => (
+      String(request?.created_at || '') > String(latest?.created_at || '') ? request : latest
+    ))
+}
+
+// 表单作用的名额：发单员取选中项，打手固定为自己的名额
+const cancelRequestClaim = computed(() => {
+  if (isOwner.value) {
+    const selectedId = Number(cancelRequestForm.value.claim_id)
+    return requestableClaims.value.find((claim) => Number(claim.id) === selectedId) || null
   }
-  applyCancelSubmitting.value = true
-  applyCancelError.value = ''
+  return myNegotiableClaim.value
+})
+
+// 金额上限：报名名单带了该打手保证金时才设 max，其余情况交给后端校验
+const cancelRequestMaxAmount = computed(() => {
+  const balance = Number(cancelRequestClaim.value?.booster_deposit_balance)
+  return Number.isFinite(balance) && balance > 0 ? balance : null
+})
+
+function openCancelRequestModal() {
+  if (actionLoading.value) return
   errorMessage.value = ''
   successMessage.value = ''
-  const result = await ordersStore.applyCancel(order.value.id, {
-    reason: applyCancelForm.value.reason.trim(),
-    deduction_amount: Number(applyCancelForm.value.deduction_amount) || 0,
+  cancelRequestError.value = ''
+  cancelRequestForm.value = {
+    claim_id: isOwner.value
+      ? (requestableClaims.value[0]?.id ?? null)
+      : (myRequestableClaim.value?.id ?? myNegotiableClaim.value?.id ?? null),
+    reason: '',
+    compensation_amount: '0',
+  }
+  cancelRequestModalOpen.value = true
+}
+
+async function submitCancelRequest() {
+  if (cancelRequestSubmitting.value) return
+  const reason = cancelRequestForm.value.reason.trim()
+  if (reason.length < 3) {
+    cancelRequestError.value = '取消原因至少 3 个字'
+    return
+  }
+  const claimId = Number(cancelRequestForm.value.claim_id)
+  if (!Number.isInteger(claimId) || claimId <= 0) {
+    cancelRequestError.value = '请选择要取消的接单名额'
+    return
+  }
+  cancelRequestSubmitting.value = true
+  cancelRequestError.value = ''
+  errorMessage.value = ''
+  successMessage.value = ''
+  const result = await ordersStore.createCancelRequest(order.value.id, {
+    claim_id: claimId,
+    reason,
+    compensation_amount: Number(cancelRequestForm.value.compensation_amount) || 0,
   })
   if (result.success) {
-    showApplyCancelModal.value = false
-    successMessage.value = '订单已取消，款项已按约定划转'
-    // 刷新订单与报名名单：状态/徽标/扣款展示都要跟着变
-    await Promise.all([
-      ordersStore.fetchOrder(order.value.id),
-      loadClaims(),
-    ])
+    cancelRequestModalOpen.value = false
+    successMessage.value = '取消协商已发起，等待对方处理'
+    await loadCancelRequests()
   } else {
-    // 后端错误（保证金不足/状态不允许等）显示在弹窗里，方便就地改金额重试
-    applyCancelError.value = result.error || '取消失败，请稍后重试'
+    // 保证金不足 / 名额状态不允许等：就地改金额或换名额重试
+    cancelRequestError.value = result.error || '发起失败，请稍后重试'
   }
-  applyCancelSubmitting.value = false
+  cancelRequestSubmitting.value = false
 }
 
-function openBoosterCancelModal() {
-  if (actionLoading.value) return
-  boosterCancelError.value = ''
-  boosterCancelForm.value = { reason: '' }
-  showBoosterCancelModal.value = true
+function startRejectCancelRequest(request) {
+  rejectDraft.value = { requestId: request.id, reason: '' }
+  decisionError.value = ''
 }
 
-async function submitBoosterCancel() {
-  if (boosterCancelSubmitting.value) return
-  const reason = boosterCancelForm.value.reason.trim()
-  if (reason.length < 3) {
-    boosterCancelError.value = '取消原因至少 3 个字'
-    return
-  }
-  boosterCancelSubmitting.value = true
-  boosterCancelError.value = ''
+function cancelRejectDraft() {
+  rejectDraft.value = { requestId: null, reason: '' }
+}
+
+async function decideCancelRequest(request, action) {
+  if (decisionSubmittingId.value) return
+  decisionSubmittingId.value = request.id
+  decisionError.value = ''
   errorMessage.value = ''
   successMessage.value = ''
-  const result = await ordersStore.requestCancel(order.value.id, { reason })
-  if (result.success) {
-    showBoosterCancelModal.value = false
-    successMessage.value = '取消申请已提交，等待管理员处理'
-    await Promise.all([ordersStore.fetchOrder(order.value.id), loadClaims()])
-  } else {
-    boosterCancelError.value = result.error || '申请失败，请稍后重试'
+  const payload = { action }
+  const note = rejectDraft.value.requestId === request.id ? rejectDraft.value.reason.trim() : ''
+  if (action === 'reject' && note) {
+    payload.decision_reason = note
   }
-  boosterCancelSubmitting.value = false
+  const result = await ordersStore.decideCancelRequest(order.value.id, request.id, payload)
+  if (result.success) {
+    rejectDraft.value = { requestId: null, reason: '' }
+    if (action === 'approve') {
+      successMessage.value = '已同意取消，该名额已结束并完成划转'
+      // 名额取消会改变订单状态与报名名单：一起刷新
+      await Promise.all([
+        ordersStore.fetchOrder(order.value.id),
+        loadClaims(),
+        loadCancelRequests(),
+      ])
+    } else {
+      successMessage.value = '已拒绝，订单与名额保持不变'
+      await loadCancelRequests()
+    }
+  } else {
+    decisionError.value = result.error || '操作失败，请稍后重试'
+  }
+  decisionSubmittingId.value = null
+}
+
+// 取消协商记录：仅订单参与方（发单员 / 已接单打手）会拉，其他人不打扰后端
+async function loadCancelRequests(orderId = order.value?.id, loadSeq = detailLoadSeq) {
+  if (!orderId || !currentUser.value || (!isOwner.value && !myClaim.value)) {
+    return { success: true, skipped: true }
+  }
+  const result = await ordersStore.fetchCancelRequests(orderId)
+  if (loadSeq !== detailLoadSeq || String(props.id) !== String(orderId)) {
+    return { ...result, stale: true }
+  }
+  return result
 }
 
 // 重建 / 续单：带原单 ID 与模式进创建页预填（见 OrderCreate.vue）
@@ -747,6 +885,11 @@ async function loadDetail(orderId) {
     fetchReviews(orderId, loadSeq),
     loadClaims(orderId, loadSeq),
   ])
+  if (loadSeq !== detailLoadSeq || String(props.id) !== String(orderId)) {
+    return
+  }
+  // 报名名单就绪后再拉协商记录：myClaim 的回退来源此时才可用
+  await loadCancelRequests(orderId, loadSeq)
 }
 
 watch(
@@ -811,7 +954,7 @@ onUnmounted(() => {
             </div>
             <p v-if="humanStatusSubtitle" class="mt-1 text-sm text-ink-2">{{ humanStatusSubtitle }}</p>
             <h1 class="section-title break-words">{{ order.title || order.game_name || '代练订单' }}</h1>
-            <p class="break-words text-sm text-ink-2">{{ order.intro || compactSummary() }}</p>
+            <p v-if="order.intro || compactSummary()" class="break-words text-sm text-ink-2">{{ order.intro || compactSummary() }}</p>
           </div>
 
           <!-- 统计卡：只显示已填写参数（未填不占位），移动端不再纵向堆叠占屏 -->
@@ -911,6 +1054,101 @@ onUnmounted(() => {
         </div>
       </section>
 
+      <!-- 取消协商：双方直接同意/拒绝，无管理员介入；按名额维度处理 -->
+      <section v-if="canSeeCancelNegotiation" class="surface-card p-6 sm:p-8">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <h2 class="text-lg font-semibold text-ink-1">取消协商</h2>
+          <button
+            v-if="canInitiateCancelRequest"
+            type="button"
+            class="btn-secondary !px-4 !py-2"
+            :disabled="actionLoading"
+            @click="openCancelRequestModal"
+          >
+            发起取消协商
+          </button>
+        </div>
+        <p class="mt-1 text-xs text-ink-3">
+          双方直接协商：发起方填原因与金额，另一方同意或拒绝。同意后只结束该名额；拒绝后订单与名额状态不变，可修改后重提。
+        </p>
+
+        <div v-if="ordersStore.cancelRequestsLoading" class="mt-4 space-y-2" aria-busy="true">
+          <div class="skeleton-line h-12 w-full"></div>
+        </div>
+        <template v-else>
+          <div v-for="request in cancelRequests" :key="request.id" class="mt-4 stat-card">
+            <div class="flex flex-wrap items-center gap-2">
+              <span :class="cancelRequestStatusMeta(request).tagClass">{{ cancelRequestStatusMeta(request).label }}</span>
+              <span class="text-sm font-semibold text-ink-1">{{ request.requester_name || `用户 #${request.requester_id}` }}</span>
+              <span class="text-xs text-ink-3">{{ cancelRequestRoleLabel(request) }} → {{ request.recipient_name || `用户 #${request.recipient_id}` }}</span>
+              <span class="text-xs text-ink-3">· 名额 #{{ request.claim_id }}</span>
+            </div>
+            <p class="mt-2 text-sm text-ink-2">原因：{{ request.reason }}</p>
+            <p class="mt-1 text-sm text-ink-2">
+              <template v-if="isPublisherCancelRequest(request)">发单员提议扣除该打手保证金赔偿：</template>
+              <template v-else>打手愿意从自己保证金赔偿发单员：</template>
+              <span class="font-semibold tabular-nums text-price">¥{{ formatPrice(request.compensation_amount) }}</span>
+            </p>
+            <p class="mt-1 text-xs text-ink-3">
+              发起于 {{ formatDateTime(request.created_at) }}<template v-if="request.resolved_at"> · 处理于 {{ formatDateTime(request.resolved_at) }}</template>
+            </p>
+            <p v-if="request.decision_reason" class="mt-1 text-xs text-ink-2">处理意见：{{ request.decision_reason }}</p>
+            <!-- 结果文案：拒绝要说清是谁拒绝的，避免只看到一个「已拒绝」标签 -->
+            <p v-if="isCancelRequestRejected(request)" class="mt-1 text-sm font-semibold text-danger">
+              {{ cancelRequestRejectedOutcome(request) }}，可修改后重新发起。
+            </p>
+
+            <!-- 收件方：同意 / 拒绝（拒绝理由选填） -->
+            <div v-if="isCancelRequestPending(request) && cancelRequestRole(request) === 'recipient'" class="mt-3 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                class="btn-primary !px-4 !py-2"
+                :disabled="decisionSubmittingId === request.id"
+                @click="decideCancelRequest(request, 'approve')"
+              >
+                {{ decisionSubmittingId === request.id ? '处理中…' : '同意取消' }}
+              </button>
+              <button
+                type="button"
+                class="btn-secondary !px-4 !py-2"
+                :disabled="decisionSubmittingId === request.id"
+                @click="startRejectCancelRequest(request)"
+              >
+                拒绝
+              </button>
+            </div>
+            <div v-if="rejectDraft.requestId === request.id" class="mt-2">
+              <label class="label" :for="`reject-reason-${request.id}`">拒绝理由（选填）</label>
+              <textarea
+                :id="`reject-reason-${request.id}`"
+                v-model="rejectDraft.reason"
+                rows="2"
+                maxlength="500"
+                class="input resize-none"
+                placeholder="可选，告诉对方为什么拒绝"
+              ></textarea>
+              <div class="mt-2 flex gap-2">
+                <button
+                  type="button"
+                  class="btn-danger !px-4 !py-2"
+                  :disabled="decisionSubmittingId === request.id"
+                  @click="decideCancelRequest(request, 'reject')"
+                >
+                  确认拒绝
+                </button>
+                <button type="button" class="btn-ghost !px-4 !py-2" @click="cancelRejectDraft">再想想</button>
+              </div>
+            </div>
+            <!-- 发起方：等待对方处理 -->
+            <p v-if="isCancelRequestPending(request) && cancelRequestRole(request) === 'requester'" class="mt-2 text-xs font-semibold text-warning">
+              已发起，等待对方处理…
+            </p>
+            <p v-if="decisionError && cancelRequestRole(request) === 'recipient'" class="mt-2 text-sm text-danger">{{ decisionError }}</p>
+          </div>
+          <p v-if="!cancelRequests.length" class="mt-4 text-sm text-ink-3">暂无取消协商记录。</p>
+        </template>
+      </section>
+
       <!-- 发布人审核区：打手提交汇报后由发布人审核打款（管理员也可在派单台处理） -->
       <section v-if="isOwner && ownerClaims.length" class="surface-card p-6 sm:p-8">
         <div class="flex flex-wrap items-center justify-between gap-2">
@@ -928,6 +1166,14 @@ onUnmounted(() => {
                 {{ claimBoosterName(claim) }}
                 <span v-if="claim.is_first" class="ml-1 text-xs font-semibold text-primary">首抢</span>
               </p>
+              <!-- 取消协商待处理摘要：这名额正在谈取消时，一眼看出谁在等谁 -->
+              <p
+                v-if="cancelRequestForClaim(claim.id)"
+                class="mt-0.5 text-xs font-semibold"
+                :class="isCancelRequestPending(cancelRequestForClaim(claim.id)) ? 'text-warning' : 'text-ink-2'"
+              >
+                取消协商{{ cancelRequestStatusMeta(cancelRequestForClaim(claim.id)).label }}<template v-if="isCancelRequestPending(cancelRequestForClaim(claim.id))">：{{ cancelRequestRole(cancelRequestForClaim(claim.id)) === 'recipient' ? '待你处理' : '等待对方处理' }}</template>
+              </p>
               <p class="mt-0.5 text-xs text-ink-3">接单时间：{{ formatDateTime(claim.created_at) }}</p>
               <p v-if="claim.delivered_at" class="mt-1 text-xs text-ink-3">提交时间：{{ formatDateTime(claim.delivered_at) }}</p>
               <p v-if="claim.delivery_rejection_reason" class="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-danger">驳回原因：{{ claim.delivery_rejection_reason }}</p>
@@ -944,6 +1190,13 @@ onUnmounted(() => {
               <div class="text-right">
                 <span :class="getClaimSettlementMeta(claim, now.value).tagClass">
                   {{ getClaimSettlementMeta(claim, now.value).label }}
+                </span>
+                <!-- 名额维度的取消协商状态徽标 -->
+                <span
+                  v-if="cancelRequestForClaim(claim.id)"
+                  :class="[cancelRequestStatusMeta(cancelRequestForClaim(claim.id)).tagClass, 'ml-1']"
+                >
+                  取消协商·{{ cancelRequestStatusMeta(cancelRequestForClaim(claim.id)).label }}
                 </span>
                 <p v-if="claim.approved_at && claim.settlement_due_at" class="mt-1 text-xs text-ink-3">
                   {{ formatDateTime(claim.settlement_due_at) }} 入账
@@ -1114,25 +1367,23 @@ onUnmounted(() => {
               发起争议
             </button>
 
-            <!-- 申请取消：仅发单员本人 + 进行中；提交即生效，可按约定金额扣接单人保证金 -->
+            <!-- 协商取消：双方直接谈，无管理员介入；名额/我方名额在弹窗里选 -->
             <button
-              v-if="isOwner && order.status === 'LOCKED'"
-              class="od-ops__primary btn-danger w-full py-3"
+              v-if="canInitiateCancelRequest"
+              class="od-ops__chip btn-secondary w-full py-3"
               :disabled="actionLoading"
-              @click="openApplyCancelModal"
+              @click="openCancelRequestModal"
             >
-              申请取消
+              协商取消
             </button>
 
-            <button
-              v-if="isBooster && myClaim && ['LOCKED', 'DELIVERED'].includes(order.status)"
-              type="button"
-              class="od-ops__primary btn-danger w-full py-3"
-              :disabled="actionLoading"
-              @click="openBoosterCancelModal"
+            <!-- 有待处理的取消协同时，提示进详情区处理（同意/拒绝） -->
+            <span
+              v-if="myPendingCancelRequest"
+              class="tag !bg-warning-soft !text-warning"
             >
-              申请取消（管理员处理）
-            </button>
+              取消协商{{ cancelRequestRole(myPendingCancelRequest) === 'recipient' ? '待你处理' : '进行中' }}
+            </span>
 
             <button
               v-if="isOwner && order.status === 'PENDING'"
@@ -1389,79 +1640,67 @@ onUnmounted(() => {
       </div>
     </teleport>
 
+    <!-- 取消协商发起弹窗：发单员选名额 / 打手用自己的名额，填原因 + 金额（默认 0） -->
     <teleport to="body">
-      <div v-if="showApplyCancelModal" class="modal-scrim" @click.self="!applyCancelSubmitting && (showApplyCancelModal = false)">
-        <div class="modal-card" role="dialog" aria-modal="true" aria-label="申请取消订单">
-          <h3 class="text-lg font-semibold text-ink-1">申请取消订单</h3>
+      <div v-if="cancelRequestModalOpen" class="modal-scrim" @click.self="!cancelRequestSubmitting && (cancelRequestModalOpen = false)">
+        <div class="modal-card" role="dialog" aria-modal="true" aria-label="发起取消协商">
+          <h3 class="text-lg font-semibold text-ink-1">发起取消协商</h3>
           <p class="mt-3 text-sm leading-6 text-ink-2">
-            申请后立即生效：订单将取消并从接单人保证金扣除约定金额（默认 0 = 不扣），款项补偿到你的可用余额；取消后可在订单卡片一键重建。
+            双方直接协商，无需管理员介入：{{ isOwner ? '选择一位打手的名额' : '使用你自己的接单名额' }}，对方同意后仅该名额结束；{{ isOwner ? '约定金额从该打手保证金扣除，等额补偿到你的可用余额' : '约定金额从你的保证金扣除，等额补偿给发单员' }}。拒绝后订单与名额状态不变，你可以修改后重提。
           </p>
           <div class="mt-4 space-y-4">
+            <div v-if="isOwner">
+              <label class="label" for="cancel-request-claim">接单名额</label>
+              <select id="cancel-request-claim" v-model="cancelRequestForm.claim_id" class="input">
+                <option v-for="claim in requestableClaims" :key="claim.id" :value="claim.id">
+                  {{ claimBoosterName(claim) }}<template v-if="claim.booster_deposit_balance != null">（保证金 ¥{{ formatPrice(claim.booster_deposit_balance) }}）</template>
+                </option>
+              </select>
+              <p class="mt-1 text-xs text-ink-3">只列出可协商的名额（进行中且没有待处理的协商）；已在谈的名额要等对方处理，其他打手的名额不受影响。</p>
+            </div>
+            <div v-else>
+              <label class="label">接单名额</label>
+              <p class="input !bg-surface-2">你的名额 · {{ claimBoosterName(myNegotiableClaim) }}</p>
+            </div>
             <div>
-              <label class="label" for="apply-cancel-reason">取消原因</label>
+              <label class="label" for="cancel-request-reason">取消原因</label>
               <textarea
-                id="apply-cancel-reason"
-                v-model="applyCancelForm.reason"
+                id="cancel-request-reason"
+                v-model="cancelRequestForm.reason"
                 rows="3"
                 maxlength="500"
                 class="input resize-none"
                 placeholder="请说明取消原因（至少 3 个字）"
               ></textarea>
-              <p class="mt-1 text-xs text-ink-3">{{ applyCancelForm.reason.length }}/500</p>
+              <p class="mt-1 text-xs text-ink-3">{{ cancelRequestForm.reason.length }}/500</p>
             </div>
             <div>
-              <label class="label" for="apply-cancel-deduction">扣除接单人保证金</label>
+              <label class="label" for="cancel-request-amount">
+                {{ isOwner ? '扣除接单人保证金' : '愿意赔偿发单员' }}（默认 0 = 不扣）
+              </label>
               <input
-                id="apply-cancel-deduction"
-                v-model="applyCancelForm.deduction_amount"
+                id="cancel-request-amount"
+                v-model="cancelRequestForm.compensation_amount"
                 type="number"
                 min="0"
                 step="0.01"
-                :max="minBoosterDeposit ?? undefined"
+                :max="cancelRequestMaxAmount ?? undefined"
                 class="input"
                 placeholder="0"
               />
               <p class="mt-2 text-xs leading-5 text-ink-2">
-                接单人保证金总额 ¥{{ formatPrice(totalBoosterDeposit) }}<template v-if="minBoosterDeposit != null"> · 单人最高可扣 ¥{{ formatPrice(minBoosterDeposit) }}</template>
+                <template v-if="cancelRequestMaxAmount != null">
+                  该打手当前保证金 ¥{{ formatPrice(cancelRequestMaxAmount) }}，最高可扣该金额；等额补偿到发单员可用余额。
+                </template>
+                <template v-else>金额从该打手保证金扣除，余额不足时对方会看到提示。</template>
               </p>
-              <p class="mt-1 text-xs text-ink-3">默认 0，表示不扣除</p>
             </div>
-            <p v-if="applyCancelError" class="text-sm text-danger">{{ applyCancelError }}</p>
+            <p v-if="cancelRequestError" class="text-sm text-danger">{{ cancelRequestError }}</p>
           </div>
           <div class="mt-6 flex gap-3">
-            <button type="button" class="btn-secondary flex-1" :disabled="applyCancelSubmitting" @click="showApplyCancelModal = false">再想想</button>
-            <button type="button" class="btn-danger flex-1" :disabled="applyCancelSubmitting" @click="submitApplyCancel">
-              {{ applyCancelSubmitting ? '提交中…' : '确认取消' }}
-            </button>
-          </div>
-        </div>
-      </div>
-    </teleport>
-
-    <teleport to="body">
-      <div v-if="showBoosterCancelModal" class="modal-scrim" @click.self="!boosterCancelSubmitting && (showBoosterCancelModal = false)">
-        <div class="modal-card" role="dialog" aria-modal="true" aria-label="申请取消订单">
-          <h3 class="text-lg font-semibold text-ink-1">申请取消订单</h3>
-          <p class="mt-3 text-sm leading-6 text-ink-2">
-            提交后订单将进入管理员处理流程。管理员会直接裁决是否取消；无需填写或承诺赔偿金额。
-          </p>
-          <div class="mt-4">
-            <label class="label" for="booster-cancel-reason">申请原因</label>
-            <textarea
-              id="booster-cancel-reason"
-              v-model="boosterCancelForm.reason"
-              rows="3"
-              maxlength="500"
-              class="input resize-none"
-              placeholder="请说明取消原因（至少 3 个字）"
-            ></textarea>
-            <p class="mt-1 text-xs text-ink-3">{{ boosterCancelForm.reason.length }}/500</p>
-            <p v-if="boosterCancelError" class="mt-2 text-sm text-danger">{{ boosterCancelError }}</p>
-          </div>
-          <div class="mt-6 flex gap-3">
-            <button type="button" class="btn-secondary flex-1" :disabled="boosterCancelSubmitting" @click="showBoosterCancelModal = false">返回</button>
-            <button type="button" class="btn-danger flex-1" :disabled="boosterCancelSubmitting" @click="submitBoosterCancel">
-              {{ boosterCancelSubmitting ? '提交中…' : '提交申请' }}
+            <button type="button" class="btn-secondary flex-1" :disabled="cancelRequestSubmitting" @click="cancelRequestModalOpen = false">再想想</button>
+            <button type="button" class="btn-primary flex-1" :disabled="cancelRequestSubmitting" @click="submitCancelRequest">
+              {{ cancelRequestSubmitting ? '提交中…' : '发起协商' }}
             </button>
           </div>
         </div>
