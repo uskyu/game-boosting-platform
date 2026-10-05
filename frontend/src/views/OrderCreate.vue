@@ -49,6 +49,8 @@ function applyTemplate(template) {
     description_raw: '', boss_contact: '', max_claims: 1, compensation_enabled: false,
     compensation_amount: '', payout_delay_days: '', payout_delay_hours: '',
     require_delivery_image: true,
+    // 模板不存服务费字段，必须在此补默认值，否则留下 undefined 会被提交校验当成非法费率
+    service_fee_enabled: false, service_fee_rate: '',
     attachments: formData.value.attachments,
   }, template)
   handleGameChange()
@@ -293,7 +295,8 @@ async function publishOrder() {
   }
 
   let serviceFeeRate = null
-  if (isAdmin.value && individualServiceFeeEnabled.value && formData.value.service_fee_enabled && formData.value.service_fee_rate !== '') {
+  // null/undefined 视同留空（走全局费率），只有显式填了值才校验
+  if (isAdmin.value && individualServiceFeeEnabled.value && formData.value.service_fee_enabled && formData.value.service_fee_rate != null && formData.value.service_fee_rate !== '') {
     serviceFeeRate = Number(formData.value.service_fee_rate)
     if (!Number.isFinite(serviceFeeRate) || serviceFeeRate < 0 || serviceFeeRate > 100) {
       errorMessage.value = '服务费费率需为 0-100 之间的数值'
