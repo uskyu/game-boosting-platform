@@ -519,7 +519,7 @@ onMounted(async () => {
         </div>
 
         <div v-if="isAdmin && !individualServiceFeeEnabled" class="sm:col-span-2 rounded-tile border border-line-1 bg-surface-2 p-4 text-sm text-ink-2">
-          后台已关闭单独服务费设置，本订单服务费率为 0。
+          后台已关闭单独服务费设置，本单按全局服务费收取{{ globalServiceFeeRate > 0 ? `（当前 ${globalServiceFeeRate}%）` : '（当前全局为 0%，不收取）' }}。
         </div>
 
         <!-- 逐单服务费由后台总开关控制 -->

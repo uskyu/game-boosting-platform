@@ -173,10 +173,10 @@ async def test_individual_fee_enabled_can_turn_fee_off_for_one_order(
     assert order["net_amount"] == "150.00"
 
 
-async def test_individual_fee_disabled_sets_no_fee_and_ignores_overrides(
+async def test_individual_fee_disabled_uses_global_and_ignores_overrides(
     client: AsyncClient, admin_user: dict
 ):
-    """逐单服务费总开关关闭时，新单不收服务费并忽略客户端逐单字段。"""
+    """逐单设置总开关关闭：新单按全局费率烙盘，客户端逐单字段被忽略。"""
     await _set_global_rate(client, admin_user, "8")
 
     resp = await client.post(
@@ -186,9 +186,37 @@ async def test_individual_fee_disabled_sets_no_fee_and_ignores_overrides(
     )
     assert resp.status_code == 201
     order = resp.json()
-    assert order["service_fee_rate"] == "0.00"
-    assert order["service_fee_amount"] == "0.00"
-    assert order["net_amount"] == "150.00"
+    assert order["service_fee_rate"] == "8.00"
+    assert order["service_fee_amount"] == "12.00"
+    assert order["net_amount"] == "138.00"
+
+
+async def test_individual_fee_disabled_bakes_current_global(
+    client: AsyncClient, admin_user: dict
+):
+    """总开关关闭时同样烙盘：全局改动只影响之后发布的订单。"""
+    await _set_global_rate(client, admin_user, "8")
+
+    resp = await client.post(
+        "/orders/create",
+        json=_order_payload(),
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 201
+    first_id = resp.json()["id"]
+    assert resp.json()["service_fee_rate"] == "8.00"
+
+    await _set_global_rate(client, admin_user, "50")
+    resp = await client.post(
+        "/orders/create",
+        json=_order_payload(),
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 201
+    assert resp.json()["service_fee_rate"] == "50.00"
+
+    resp = await client.get(f"/orders/{first_id}", headers=auth_header(admin_user))
+    assert resp.json()["service_fee_rate"] == "8.00"
 
 
 async def test_baked_order_unaffected_by_later_global_change(

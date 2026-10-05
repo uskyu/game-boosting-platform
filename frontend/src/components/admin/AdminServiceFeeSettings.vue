@@ -22,10 +22,11 @@ function sync(data) {
   form.individual_service_fee_enabled = Boolean(settings.individual_service_fee_enabled)
 }
 
-// 以示例金额预览三段拆分，让老板保存前对“抽多少”有直观概念
+// 以示例金额预览三段拆分，让老板保存前对“抽多少”有直观概念。
+// 预览始终按全局费率：总开关关闭时新订单就是按全局收，开启时留空也按全局收。
 const preview = computed(() => {
-  const rate = form.individual_service_fee_enabled ? Number(form.service_fee_rate) : 0
-  const breakdown = serviceFeeBreakdown(previewPrice.value, rate)
+  const rate = Number(form.service_fee_rate)
+  const breakdown = serviceFeeBreakdown(previewPrice.value, Number.isFinite(rate) ? rate : 0)
   return {
     rate: formatFeeRate(breakdown.ratePercent),
     fee: formatMoneyFixed(breakdown.fee),
@@ -68,10 +69,10 @@ onMounted(async () => {
   <section class="surface-card p-4 sm:p-6">
     <h2 class="text-2xl font-semibold text-ink-1">服务费设置</h2>
     <p class="mt-2 text-sm text-ink-2">
-      全局费率仅作为逐单服务费功能开启时的新订单默认费率；下方开关控制是否允许新订单收取服务费。
+      全局服务费费率作用于所有新发布订单（发布瞬间固定到订单上）；下方开关控制是否允许发单时单独设置。
     </p>
     <p class="mt-1.5 text-xs leading-5 text-ink-3">
-      关闭时，新发布订单费率为 0，不收取服务费。开启后，发单页面可逐单关闭服务费或自定义费率，留空时使用全局费率。已发布订单费率固定，不受后续设置变化影响。
+      关闭「允许单独设置」时，所有新订单统一按全局费率收取，发单页不可单独调整。开启后，发单页面可逐单关闭服务费或自定义费率，留空时使用全局费率。已发布订单费率固定，不受后续设置变化影响。
     </p>
 
     <div v-if="notice.text" class="mt-4" :class="notice.type === 'success' ? 'message-success' : 'message-error'">{{ notice.text }}</div>
@@ -108,7 +109,7 @@ onMounted(async () => {
           <div>
             <p class="text-sm font-semibold text-ink-1">允许单独设置订单服务费</p>
             <p class="mt-1 text-xs leading-5 text-ink-3">
-              {{ form.individual_service_fee_enabled ? '发单时可单独关闭服务费或自定义费率；留空时使用全局费率。' : '关闭后所有新订单不收服务费，费率为 0。' }}
+              {{ form.individual_service_fee_enabled ? '发单时可单独关闭服务费或自定义费率；留空时使用全局费率。' : '关闭后所有新订单统一按全局费率收取，不可单独设置。' }}
             </p>
           </div>
           <button
