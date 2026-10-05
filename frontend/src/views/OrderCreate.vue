@@ -218,9 +218,10 @@ async function prefillFromOrder(orderId, mode) {
     ...formData.value,
     game_id: order.game_id ?? null,
     game_name: order.game_name || '',
-    // 续单默认指定同一位打手；重建沿用原标题
-    title: mode === 'repeat'
-      ? `指定${order.booster?.username || '打手'}`
+    // 续单：指定同一位打手（标题「指定<打手名>」）；无人接过的单没有打手可指定，
+    // 沿用原标题（此时续单与重建等价）；重建一律沿用原标题
+    title: mode === 'repeat' && order.booster?.username
+      ? `指定${order.booster.username}`
       : (order.title || ''),
     price,
     description_raw: order.description_raw || '',

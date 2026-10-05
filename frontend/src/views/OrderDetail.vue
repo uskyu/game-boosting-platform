@@ -1143,9 +1143,10 @@ onUnmounted(() => {
               取消订单
             </button>
 
-            <!-- 已取消可一键重建、已完成可续单：都带原单进创建页预填 -->
+            <!-- 重建 / 续单：老板要求所有订单都可操作（不限状态，打手交全部单/
+                 进行中单争议无回应时先派再谈），带原单进创建页预填 -->
             <button
-              v-if="isOwner && order.status === 'CANCELLED'"
+              v-if="isOwner"
               class="od-ops__chip btn-secondary w-full py-3"
               @click="rebuildOrder(order.id)"
             >
@@ -1153,7 +1154,7 @@ onUnmounted(() => {
             </button>
 
             <button
-              v-if="isOwner && order.status === 'COMPLETED'"
+              v-if="isOwner"
               class="od-ops__chip btn-secondary w-full py-3"
               @click="repeatOrder(order.id)"
             >

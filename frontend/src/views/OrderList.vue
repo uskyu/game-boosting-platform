@@ -523,10 +523,10 @@ onUnmounted(() => {
                 </div>
               </div>
             </div>
+            <!-- 重建/续单：老板要求所有订单都可操作（打手一次性交全部单、进行中单
+                 争议无回应时先派再谈），不再限状态；都带原单进创建页预填 -->
             <div class="mt-3 flex flex-wrap justify-end gap-2">
-              <!-- 已取消可一键重建、已完成可续单：都带原单进创建页预填 -->
               <button
-                v-if="order.status === 'CANCELLED'"
                 type="button"
                 class="btn-secondary !px-4 !py-2"
                 @click.stop="rebuildOrder(order.id)"
@@ -534,7 +534,6 @@ onUnmounted(() => {
                 重建订单
               </button>
               <button
-                v-if="order.status === 'COMPLETED'"
                 type="button"
                 class="btn-secondary !px-4 !py-2"
                 @click.stop="repeatOrder(order.id)"
