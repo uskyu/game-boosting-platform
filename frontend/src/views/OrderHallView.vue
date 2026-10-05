@@ -97,8 +97,9 @@ const isAdmin = computed(() => authStore.isAdmin)
 const hallRecentClaimsVisible = computed(
   () => siteStore.settings.hall_recent_claims_enabled !== false && isAuthenticated.value,
 )
-const RECENT_CLAIMS_PREVIEW = 5
-const RECENT_CLAIMS_PAGE_SIZE = 20
+// 收起时完全隐藏列表，只保留标题/查看按钮；查询 1 条即可拿 total。
+// 查看后最多展示 100 条，避免把“收起”做成仍残留多行的假收起。
+const RECENT_CLAIMS_COLLAPSED_LIMIT = 1
 const RECENT_CLAIMS_MAX = 100
 const RECENT_CLAIMS_REFRESH_INTERVAL = 15_000
 const recentClaims = ref([])
@@ -107,10 +108,10 @@ const recentClaimsExpanded = ref(false)
 const recentClaimsLoading = ref(false)
 let lastRecentClaimsRefreshAt = 0
 
-const visibleRecentClaims = computed(() =>
-  recentClaimsExpanded.value ? recentClaims.value : recentClaims.value.slice(0, RECENT_CLAIMS_PREVIEW),
-)
-const recentClaimsCanExpand = computed(() => recentClaimsTotal.value > RECENT_CLAIMS_PREVIEW)
+const visibleRecentClaims = computed(() => (
+  recentClaimsExpanded.value ? recentClaims.value : []
+))
+const recentClaimsCanExpand = computed(() => recentClaimsTotal.value > 0)
 
 function recentClaimsThrottleReady() {
   const nowTs = Date.now()
@@ -119,7 +120,7 @@ function recentClaimsThrottleReady() {
   return true
 }
 
-async function fetchRecentClaims(limit = RECENT_CLAIMS_PAGE_SIZE) {
+async function fetchRecentClaims(limit = RECENT_CLAIMS_COLLAPSED_LIMIT) {
   if (!hallRecentClaimsVisible.value) return
   recentClaimsLoading.value = true
   try {
@@ -136,7 +137,7 @@ async function fetchRecentClaims(limit = RECENT_CLAIMS_PAGE_SIZE) {
   }
 }
 
-// 「查看」= 展开加载更多（最多 100 条）；再点一次收起回预览行数
+// 「查看」展开完整列表（最多 100 条）；「收起」后列表完全隐藏，只保留标题栏。
 async function toggleRecentClaims() {
   if (recentClaimsExpanded.value) {
     recentClaimsExpanded.value = false
@@ -322,7 +323,7 @@ async function silentRefresh() {
     await ordersStore.fetchOrders({ silent: true, slim: true, page: 1, pageSize: 100 })
     // 「今日已接单」兜底刷新：与订单同源节流（≥15s），失败静默
     if (hallRecentClaimsVisible.value && recentClaimsThrottleReady()) {
-      fetchRecentClaims(recentClaimsExpanded.value ? RECENT_CLAIMS_MAX : RECENT_CLAIMS_PAGE_SIZE).catch(() => {})
+      fetchRecentClaims(recentClaimsExpanded.value ? RECENT_CLAIMS_MAX : RECENT_CLAIMS_COLLAPSED_LIMIT).catch(() => {})
     }
   } catch {
     // 静默失败等下一轮
@@ -532,7 +533,7 @@ onUnmounted(() => {
       <p class="empty-state__copy">换个筛选条件试试，或者稍后回来看看新需求。</p>
     </section>
 
-    <!-- 今日已接单（原分页位置）：全站开关开启且已登录才渲染；最多展开展示 100 条 -->
+    <!-- 今日已接单（原分页位置）：收起时只留标题栏，查看后最多展开 100 条 -->
     <section v-if="hallRecentClaimsVisible" class="surface-card p-4 sm:p-5" aria-label="今日已接单">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <h2 class="text-base font-semibold text-ink-1">
@@ -543,16 +544,17 @@ onUnmounted(() => {
           type="button"
           class="btn-ghost !min-h-[36px] shrink-0 !px-4 !py-1.5"
           :disabled="!recentClaimsExpanded && !recentClaimsCanExpand"
+          :aria-expanded="recentClaimsExpanded"
           @click="toggleRecentClaims"
         >
           {{ recentClaimsExpanded ? '收起' : '查看' }}
         </button>
       </div>
 
-      <div v-if="recentClaimsLoading && !recentClaims.length" class="mt-4 space-y-3" aria-busy="true">
+      <div v-if="recentClaimsExpanded && recentClaimsLoading && !recentClaims.length" class="mt-4 space-y-3" aria-busy="true">
         <div v-for="n in 3" :key="`recent-claim-skeleton-${n}`" class="skeleton-line h-10 w-full"></div>
       </div>
-      <div v-else-if="recentClaims.length" class="mt-4">
+      <div v-else-if="recentClaimsExpanded && visibleRecentClaims.length" class="mt-4">
         <article
           v-for="claim in visibleRecentClaims"
           :key="claim.id"
@@ -571,7 +573,7 @@ onUnmounted(() => {
           </div>
         </article>
       </div>
-      <p v-else class="mt-4 text-[13px] text-ink-3">今天暂无接单记录</p>
+      <p v-else-if="recentClaimsExpanded && !recentClaimsLoading" class="mt-4 text-[13px] text-ink-3">今天暂无接单记录</p>
     </section>
   </div>
 </template>
