@@ -175,9 +175,9 @@ async function handleSubmit() {
 <template>
   <teleport to="body">
     <div v-if="modelValue" class="modal-scrim modal-scrim--sheet" @click.self="onClose">
-      <div class="modal-card modal-sheet !max-w-[560px]" role="dialog" aria-modal="true" aria-label="结束订单">
+      <div class="modal-card modal-sheet !max-w-[560px]" role="dialog" aria-modal="true" aria-label="提交结单">
         <div class="flex items-center justify-between gap-3">
-          <h3 class="text-lg font-semibold text-ink-1">结束订单</h3>
+          <h3 class="text-lg font-semibold text-ink-1">提交结单</h3>
           <button type="button" class="btn-ghost !min-h-[44px] !px-3" :disabled="submitting" @click="onClose">关闭</button>
         </div>
 
@@ -242,7 +242,7 @@ async function handleSubmit() {
 
         <div class="mt-6 flex gap-3">
           <button type="button" class="btn-secondary flex-1" :disabled="submitting" @click="onClose">取消</button>
-          <button type="button" class="btn-success flex-1" :disabled="!canSubmit" @click="handleSubmit">{{ submitting ? '提交中…' : needImage ? '先上传截图' : '提交并结束订单' }}</button>
+          <button type="button" class="btn-success flex-1" :disabled="!canSubmit" @click="handleSubmit">{{ submitting ? '提交中…' : needImage ? '先上传截图' : '提交结单' }}</button>
         </div>
       </div>
     </div>

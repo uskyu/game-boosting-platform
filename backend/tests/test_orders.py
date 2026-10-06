@@ -1,8 +1,10 @@
 """Order lifecycle and payment tests."""
 
-from httpx import AsyncClient
+import pytest
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
+from app.main import app
 from app.models.user import User
 from tests.conftest import auth_header
 
@@ -39,6 +41,52 @@ async def test_create_order_no_auth(client: AsyncClient):
         "price": "500.00",
     })
     assert resp.status_code == 401
+
+
+# ── 老板ID必填契约（2026-10-05 老板拍板）：用 raw_client 绕过 conftest 注入垫片 ──
+
+
+async def test_create_order_requires_boss_contact(raw_client: AsyncClient, admin_user: dict):
+    resp = await raw_client.post(
+        "/orders/create",
+        json={
+            "game_name": "王者荣耀",
+            "price": "500.00",
+        },
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 422
+    errors = resp.json()["errors"]
+    assert any(e["message"] == "请填写老板ID" for e in errors)
+
+
+async def test_create_order_rejects_blank_boss_contact(raw_client: AsyncClient, admin_user: dict):
+    resp = await raw_client.post(
+        "/orders/create",
+        json={
+            "game_name": "王者荣耀",
+            "price": "500.00",
+            "boss_contact": "   ",
+        },
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 422
+    errors = resp.json()["errors"]
+    assert any(e["message"] == "请填写老板ID" for e in errors)
+
+
+async def test_create_order_strips_boss_contact(raw_client: AsyncClient, admin_user: dict):
+    resp = await raw_client.post(
+        "/orders/create",
+        json={
+            "game_name": "王者荣耀",
+            "price": "500.00",
+            "boss_contact": "  boss-001  ",
+        },
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 201
+    assert resp.json()["boss_contact"] == "boss-001"
 
 
 async def test_accept_order(

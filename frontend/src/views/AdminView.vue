@@ -670,8 +670,12 @@ async function submitPublishModal() {
     return
   }
 
-  // 新增字段校验：老板ID ≤64 字；赔偿金开启后必须 >0；到账时效 1-5 天
+  // 新增字段校验：老板ID 必填且 ≤64 字；赔偿金开启后必须 >0；到账时效 1-5 天
   const bossContact = state.boss_contact.trim()
+  if (!bossContact) {
+    state.error = '请填写老板ID'
+    return
+  }
   if (bossContact.length > 64) {
     state.error = '老板ID不能超过 64 个字符'
     return
@@ -1741,7 +1745,7 @@ onMounted(async () => {
                 </div>
               </div>
               <div class="sm:col-span-2">
-                <label class="label" for="publish-boss-contact">老板ID（可选）</label>
+                <label class="label" for="publish-boss-contact">老板ID <span class="text-danger">*</span></label>
                 <input
                   id="publish-boss-contact"
                   v-model="publishModal.boss_contact"

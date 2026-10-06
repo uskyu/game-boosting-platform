@@ -111,7 +111,7 @@ const humanStatusSubtitle = computed(() => {
     const map = {
       CLAIMED: myClaim.value.delivery_rejection_reason
         ? '交付被驳回，请查看原因并重新上传后提交'
-        : '完成后点击「结束订单」提交汇报',
+        : '完成后点击「提交结单」提交汇报',
       DELIVERED: myClaim.value.approved_at
         ? `审核已通过，${myClaim.value.settlement_due_at ? `预计 ${formatDateTime(myClaim.value.settlement_due_at)} 自动入账` : '等待自动入账'}`
         : (formatDueCountdown(myClaim.value.settlement_due_at, now.value)
@@ -536,7 +536,7 @@ async function submitDispute() {
   const result = await ordersStore.disputeOrder(order.value.id, disputeForm.value.reason)
   if (result.success) {
     showDisputeModal.value = false
-    successMessage.value = '已发起争议，平台将介入处理'
+    successMessage.value = '已申请平台介入，平台会尽快处理'
   } else {
     errorMessage.value = result.error
   }
@@ -1065,7 +1065,7 @@ onUnmounted(() => {
             :disabled="actionLoading"
             @click="openCancelRequestModal"
           >
-            发起取消协商
+            申请取消
           </button>
         </div>
         <p class="mt-1 text-xs text-ink-3">
@@ -1256,7 +1256,7 @@ onUnmounted(() => {
           </template>
         </p>
         <p v-if="isDelivered && isOwner" class="message-warning mt-4 text-xs leading-6">
-          打手已结束订单，请核实汇报与结果。如有问题可发起争议。
+          打手已提交结单，请核实汇报与结果。如有问题可申请平台介入。
         </p>
       </section>
 
@@ -1267,7 +1267,7 @@ onUnmounted(() => {
             <p v-if="isLocked && isBoostOrder && isOwner" class="message-warning mt-4 text-xs leading-6">
               打手正在进行你的订单，请耐心等待，有疑问可随时联系打手。
             </p>
-            <p class="mt-4 text-sm leading-6 text-ink-2">如有疑问可联系对方沟通，或对进行中/待确认订单发起争议。</p>
+            <p class="mt-4 text-sm leading-6 text-ink-2">如有疑问可联系对方沟通，或对进行中/待确认订单申请平台介入。</p>
             <button
               v-if="canStartChat"
               class="btn-secondary mt-4 w-full py-2.5"
@@ -1327,7 +1327,7 @@ onUnmounted(() => {
               :disabled="actionLoading"
               @click="openDeliverModal"
             >
-              结束订单
+              提交结单
             </button>
 
             <button
@@ -1358,23 +1358,24 @@ onUnmounted(() => {
               确认完成
             </button>
 
+            <!-- 申请平台介入：原「发起争议」，老板 2026-10-05 要求改中性样式与名称 -->
             <button
               v-if="(isOwner || isAssignedBooster) && ['LOCKED', 'DELIVERED'].includes(order.status)"
-              class="od-ops__chip btn-danger w-full py-3"
+              class="od-ops__chip btn-secondary w-full py-3"
               :disabled="actionLoading"
               @click="handleDispute"
             >
-              发起争议
+              申请平台介入
             </button>
 
-            <!-- 协商取消：双方直接谈，无管理员介入；名额/我方名额在弹窗里选 -->
+            <!-- 申请取消（原协商取消）：双方直接谈，无管理员介入；名额/我方名额在弹窗里选 -->
             <button
               v-if="canInitiateCancelRequest"
-              class="od-ops__chip btn-secondary w-full py-3"
+              class="od-ops__chip btn-danger w-full py-3"
               :disabled="actionLoading"
               @click="openCancelRequestModal"
             >
-              协商取消
+              申请取消
             </button>
 
             <!-- 有待处理的取消协同时，提示进详情区处理（同意/拒绝） -->
@@ -1516,7 +1517,7 @@ onUnmounted(() => {
             <p class="mt-3 text-sm leading-6 text-ink-2">
               即将接手订单「{{ claimSubject }}」，报酬
               <span class="font-semibold tabular-nums text-price">{{ formatOrderPrice(order) }}</span>
-              ，接手后开始进行，完成后点击「结束订单」提交汇报。
+              ，接手后开始进行，完成后点击「提交结单」提交汇报。
             </p>
             <div class="mt-6 flex gap-3">
               <button type="button" class="btn-secondary flex-1" :disabled="actionLoading" @click="closeClaimModal">取消</button>
@@ -1613,10 +1614,10 @@ onUnmounted(() => {
      内容通过 Teleport 挂到 body，模板位置不影响视觉。 -->
     <teleport to="body">
       <div v-if="showDisputeModal" class="modal-scrim" @click.self="!actionLoading && (showDisputeModal = false)">
-        <div class="modal-card" role="dialog" aria-modal="true" aria-label="发起争议">
-          <h3 class="text-lg font-semibold text-ink-1">发起争议</h3>
+        <div class="modal-card" role="dialog" aria-modal="true" aria-label="申请平台介入">
+          <h3 class="text-lg font-semibold text-ink-1">申请平台介入</h3>
           <p class="mt-3 text-sm leading-6 text-ink-2">
-            发起后平台将介入处理，请简要说明情况（原因可选，最多 500 字）。
+            提交后平台将介入处理，请简要说明情况（原因可选，最多 500 字）。
           </p>
           <div class="mt-4">
             <label class="label" for="dispute-reason">争议原因（可选）</label>
@@ -1643,8 +1644,8 @@ onUnmounted(() => {
     <!-- 取消协商发起弹窗：发单员选名额 / 打手用自己的名额，填原因 + 金额（默认 0） -->
     <teleport to="body">
       <div v-if="cancelRequestModalOpen" class="modal-scrim" @click.self="!cancelRequestSubmitting && (cancelRequestModalOpen = false)">
-        <div class="modal-card" role="dialog" aria-modal="true" aria-label="发起取消协商">
-          <h3 class="text-lg font-semibold text-ink-1">发起取消协商</h3>
+        <div class="modal-card" role="dialog" aria-modal="true" aria-label="申请取消">
+          <h3 class="text-lg font-semibold text-ink-1">申请取消</h3>
           <p class="mt-3 text-sm leading-6 text-ink-2">
             双方直接协商，无需管理员介入：{{ isOwner ? '选择一位打手的名额' : '使用你自己的接单名额' }}，对方同意后仅该名额结束；{{ isOwner ? '约定金额从该打手保证金扣除，等额补偿到你的可用余额' : '约定金额从你的保证金扣除，等额补偿给发单员' }}。拒绝后订单与名额状态不变，你可以修改后重提。
           </p>

@@ -268,6 +268,11 @@ async function publishOrder() {
   }
 
   const bossContact = formData.value.boss_contact.trim()
+  // 老板 2026-10-05 拍板：老板ID必填（打手接单后凭此添加老板好友）
+  if (!bossContact) {
+    errorMessage.value = '请填写老板ID'
+    return
+  }
   if (bossContact.length > 64) {
     errorMessage.value = '老板ID不能超过 64 个字符'
     return
@@ -480,7 +485,7 @@ onMounted(async () => {
         </div>
 
         <div>
-          <label class="label" for="create-boss-contact">老板ID（可选）</label>
+          <label class="label" for="create-boss-contact">老板ID <span class="text-danger">*</span></label>
           <input id="create-boss-contact" v-model="formData.boss_contact" type="text" class="input" maxlength="64" placeholder="接单后打手可见，用于添加你为好友" />
         </div>
         <div>

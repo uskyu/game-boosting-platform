@@ -143,10 +143,11 @@ class OrderCreate(BaseModel):
     deadline: datetime | None = None
     attachments: AttachmentList | None = Field(default=None, max_length=5)
 
-    boss_contact: str | None = Field(
-        default=None,
+    # 老板 2026-10-05 拍板：发布订单必填老板ID（打手接单后凭此添加老板好友）
+    boss_contact: str = Field(
+        min_length=1,
         max_length=64,
-        description="老板联系 ID（仅发布人、管理员与已接单打手可见）",
+        description="老板联系 ID（必填，仅发布人、管理员与已接单打手可见）",
     )
     compensation_amount: Decimal | None = Field(
         default=None,
@@ -252,6 +253,14 @@ class OrderCreate(BaseModel):
             # Remove currency symbols
             v = v.replace("¥", "").replace("元", "").replace(",", "").strip()
         return Decimal(str(v))
+
+    @field_validator("boss_contact")
+    @classmethod
+    def boss_contact_not_blank(cls, value: str) -> str:
+        """纯空白视同未填；返回去空白后的值，避免「 」这种脏数据入库。"""
+        if not value.strip():
+            raise ValueError("请填写老板ID")
+        return value.strip()
 
     @model_validator(mode="after")
     def validate_price_range(self) -> "OrderCreate":

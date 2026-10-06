@@ -185,6 +185,7 @@ FIELD_LABELS_ZH = {
     "content": "内容",
     "current_rank": "当前段位",
     "target_rank": "目标段位",
+    "boss_contact": "老板ID",
     "proof_url": "证明材料",
     "name": "名称",
     "days": "天数",

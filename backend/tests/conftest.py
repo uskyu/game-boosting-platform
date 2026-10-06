@@ -119,7 +119,35 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
 
 @pytest.fixture
 async def client() -> AsyncGenerator[AsyncClient, None]:
-    """Async HTTP test client."""
+    """Async HTTP test client.
+
+    发布订单自 2026-10-05 起要求 boss_contact（老板ID 必填）。绝大多数建单
+    payload 是在验证结算/托管/取消等其他行为，这里统一注入默认值，避免
+    二十多个测试文件逐处补字段；必填契约本身由 test_orders.py 的专项用例
+    通过 raw_client（无垫片）覆盖。
+    """
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test/api/v1") as ac:
+        original_post = ac.post
+
+        async def post_with_boss_contact_default(url, **kwargs):
+            json_body = kwargs.get("json")
+            if (
+                isinstance(json_body, dict)
+                and str(url).split("?")[0].rstrip("/") == "/orders/create"
+                and "boss_contact" not in json_body
+            ):
+                kwargs = dict(kwargs)
+                kwargs["json"] = {"boss_contact": "B0001", **json_body}
+            return await original_post(url, **kwargs)
+
+        ac.post = post_with_boss_contact_default
+        yield ac
+
+
+@pytest.fixture
+async def raw_client() -> AsyncGenerator[AsyncClient, None]:
+    """不带 boss_contact 注入垫片的裸客户端：验证发布契约本身时使用。"""
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test/api/v1") as ac:
         yield ac

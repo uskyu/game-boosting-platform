@@ -913,7 +913,7 @@ onMounted(async () => {
         <div v-else-if="!pendingReviewClaims.length && !settledClaims.length" class="empty-state mt-4">
           <div class="empty-state__icon" aria-hidden="true">📭</div>
           <h4 class="empty-state__title">暂无提交</h4>
-          <p class="empty-state__copy">打手点击「结束订单」提交汇报后，会出现在这里等待审核。</p>
+          <p class="empty-state__copy">打手点击「提交结单」提交汇报后，会出现在这里等待审核。</p>
         </div>
 
         <template v-else>
