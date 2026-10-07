@@ -963,6 +963,9 @@
     @apply mt-3 border-y py-2.5;
     border-color: var(--line-1);
   }
+  /* 派单管理搜索/筛选条：关键词 + 状态 + 按钮，窄屏换行 */
+  .admin-orders-filters { @apply mt-3 flex flex-wrap items-center gap-2; }
+  .admin-orders-filters .input { @apply min-w-0 flex-1; min-width: 220px; }
   .admin-bulk-actions { @apply flex flex-wrap items-center justify-end gap-2; }
   .admin-order-card { min-width: 0; }
   .admin-order-card--ended { opacity: .58; filter: grayscale(.8); }

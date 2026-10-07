@@ -104,16 +104,39 @@ async def review_user_application(
 async def list_all_orders_for_admin(
     db: DatabaseSession,
     current_admin: Annotated[User, Depends(get_current_admin)],
-    status_filter: OrderStatus | None = Query(default=None, alias="status"),
+    status_filter: Annotated[
+        str | None,
+        Query(alias="status", description="按订单状态筛选；CANCELLING=申请取消中（有待处理的取消协商）"),
+    ] = None,
+    game_name: Annotated[
+        str | None,
+        Query(description="按游戏名称筛选", max_length=100),
+    ] = None,
+    boss_contact: Annotated[
+        str | None,
+        Query(description="按老板ID模糊筛选", max_length=64),
+    ] = None,
+    q: Annotated[
+        str | None,
+        Query(max_length=100, description="综合搜索：订单号精确命中优先，其次标题/游戏/需求内容"),
+    ] = None,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
 ) -> OrderListResponse:
+    """后台派单管理列表：全站订单 + 与用户端一致的搜索/筛选/分页。"""
+    from app.api.endpoints.orders import _resolve_order_status_filter
+
     order_service = get_order_service(db)
+    resolved_status, cancel_pending_only = _resolve_order_status_filter(status_filter)
     orders, total = await order_service.list_orders(
         user=current_admin,
-        status_filter=status_filter,
+        game_name=game_name,
+        status_filter=resolved_status,
         page=page,
         page_size=page_size,
+        boss_contact=boss_contact,
+        q=q,
+        cancel_pending_only=cancel_pending_only,
     )
     pages = (total + page_size - 1) // page_size if total > 0 else 0
 

@@ -27,6 +27,7 @@ import {
 import api from '@/utils/api'
 import { formatDateTime, formatFeeRate, formatMoneyFixed, formatOrderPrice, formatPayoutDelay, formatPrice, parsePayoutDelay, serviceFeeBreakdown } from '@/utils/display'
 import {
+  ORDER_STATUS_OPTIONS,
   getOrderDisplayStatus,
   getOrderStatusBadgeClass,
   getOrderStatusLabel,
@@ -75,6 +76,13 @@ watch(
 
 const orders = ref([])
 const loadingOrders = ref(false)
+// 派单管理筛选：关键词（订单号/游戏/标题/需求，走后端 q）+ 状态下拉；
+// 分页信息来自响应（此前只拉前 50 条且无翻页，第 51 条起的订单后台看不到）。
+const orderSearch = ref('')
+const orderStatusFilter = ref('')
+const ordersPagination = ref({ page: 1, pages: 0, total: 0 })
+// 顶部汇总条的数字不受当前筛选影响：page_size=1 只取 total（两条轻量请求）
+const ordersOverview = ref({ total: 0, pendingReview: 0 })
 const loadingGames = computed(() => gamesStore.adminLoading)
 const loadingWithdrawals = computed(() => walletStore.adminWithdrawalsLoading)
 const message = ref({ type: '', text: '' })
@@ -95,8 +103,8 @@ const adjustMessage = ref({ type: '', text: '' })
 const modal = ref(null)
 
 const dashboardStats = computed(() => [
-  { label: '待审核', value: orders.value.filter((order) => order.status === 'DELIVERED').length },
-  { label: '派单', value: orders.value.length },
+  { label: '待审核', value: ordersOverview.value.pendingReview },
+  { label: '派单', value: ordersOverview.value.total },
   { label: '游戏', value: gamesStore.adminGames.length },
 ])
 
@@ -106,15 +114,51 @@ function messageClass(type) {
   return 'message-info'
 }
 
-async function fetchOrders() {
+async function fetchOrders(page = 1) {
   loadingOrders.value = true
+  // 换筛选/翻页后清空勾选，避免把上一页的选择混进下一批操作
+  selectedOrderIds.value = []
   try {
-    const res = await api.get('/admin/orders', { params: { page: 1, page_size: 50 } })
+    const params = { page, page_size: 50 }
+    if (orderSearch.value.trim()) params.q = orderSearch.value.trim()
+    if (orderStatusFilter.value) params.status = orderStatusFilter.value
+    const res = await api.get('/admin/orders', { params })
     orders.value = res.data.items
+    ordersPagination.value = {
+      page: res.data.page || 1,
+      pages: res.data.pages || 0,
+      total: res.data.total || 0,
+    }
   } catch (error) {
     message.value = { type: 'error', text: error.message || '加载失败' }
   } finally {
     loadingOrders.value = false
+  }
+}
+
+function handleOrderSearch() {
+  fetchOrders(1)
+}
+
+function resetOrderFilters() {
+  orderSearch.value = ''
+  orderStatusFilter.value = ''
+  fetchOrders(1)
+}
+
+// 汇总条总数：不带筛选各拉一页（page_size=1），避免被当前搜索/状态过滤带偏
+async function fetchOrdersOverview() {
+  try {
+    const [all, pending] = await Promise.all([
+      api.get('/admin/orders', { params: { page: 1, page_size: 1 } }),
+      api.get('/admin/orders', { params: { page: 1, page_size: 1, status: 'DELIVERED' } }),
+    ])
+    ordersOverview.value = {
+      total: all.data.total || 0,
+      pendingReview: pending.data.total || 0,
+    }
+  } catch {
+    // 汇总条失败不打扰主流程，保留上一次数字
   }
 }
 
@@ -133,7 +177,7 @@ async function bulkOrderAction(action) {
   if (!selectedOrderIds.value.length) return
   for (const id of selectedOrderIds.value) await controlOrder(id, action)
   selectedOrderIds.value = []
-  await fetchOrders()
+  await fetchOrders(ordersPagination.value.page)
 }
 
 // 卡片点击进入派单处理详情页（编辑 / 接单名单 / 审核 / 退款 / 干预均已迁移）
@@ -748,7 +792,7 @@ async function submitPublishModal() {
   state.submitting = false
   message.value = { type: 'success', text: `订单 #${result.data?.id ?? ''} 已发布到大厅，等待打手接单` }
   closePublishModal()
-  await fetchOrders()
+  await Promise.all([fetchOrders(), fetchOrdersOverview()])
 }
 
 // ── 订单卡片展示（标题 / 简介 / 价格 / 名额 / 附件缩略图 + Lightbox）──
@@ -1022,7 +1066,7 @@ watch(activeTab, (tab) => {
 })
 
 async function refreshDashboard() {
-  await Promise.all([fetchOrders(), fetchGamesWithFilter(), fetchWithdrawals(1)])
+  await Promise.all([fetchOrders(), fetchOrdersOverview(), fetchGamesWithFilter(), fetchWithdrawals(1)])
 }
 
 onMounted(async () => {
@@ -1081,8 +1125,24 @@ onMounted(async () => {
         <h2 class="text-xl font-semibold text-ink-1">派单列表</h2>
         <button v-if="isAdmin" class="btn-primary shrink-0 !px-5 !py-2" @click="openPublishModal">发布订单</button>
       </div>
+      <!-- 搜索/筛选：订单号精确命中优先，其次标题/游戏/需求内容；状态与用户端同口径 -->
+      <div class="admin-orders-filters">
+        <input
+          v-model="orderSearch"
+          type="search"
+          class="input"
+          placeholder="订单号、游戏名或需求内容"
+          aria-label="搜索订单"
+          @keyup.enter="handleOrderSearch"
+        />
+        <select v-model="orderStatusFilter" class="input" aria-label="订单状态筛选">
+          <option v-for="option in ORDER_STATUS_OPTIONS" :key="option.value" :value="option.value">{{ option.label }}</option>
+        </select>
+        <button type="button" class="btn-secondary !px-4 !py-2" @click="handleOrderSearch">筛选</button>
+        <button type="button" class="btn-ghost !px-4 !py-2" @click="resetOrderFilters">重置</button>
+      </div>
       <div class="admin-orders-toolbar">
-        <span class="text-sm text-ink-2">共 {{ orders.length }} 条记录</span>
+        <span class="text-sm text-ink-2">共 {{ ordersPagination.total }} 条记录</span>
         <div class="admin-bulk-actions" :class="{ 'is-empty': !selectedOrderIds.length }">
           <span v-if="selectedOrderIds.length" class="text-sm text-ink-2">已选 {{ selectedOrderIds.length }} 条</span>
           <button v-if="selectedOrderIds.length" class="btn-secondary !px-4 !py-2" @click="bulkOrderAction('pause')">批量暂停</button>
@@ -1097,8 +1157,8 @@ onMounted(async () => {
 
       <div v-else-if="!orders.length" class="empty-state mt-6">
         <div class="empty-state__icon" aria-hidden="true">📦</div>
-        <h3 class="empty-state__title">暂无订单</h3>
-        <p class="empty-state__copy">有新订单进来后，会出现在这里等待处理。</p>
+        <h3 class="empty-state__title">{{ orderSearch || orderStatusFilter ? '没有符合条件的订单' : '暂无订单' }}</h3>
+        <p class="empty-state__copy">{{ orderSearch || orderStatusFilter ? '换个关键词或状态试试。' : '有新订单进来后，会出现在这里等待处理。' }}</p>
       </div>
 
       <div v-else class="mt-6 grid gap-4 xl:grid-cols-2">
@@ -1152,6 +1212,17 @@ onMounted(async () => {
             <button type="button" class="btn-secondary min-h-[44px] !px-4 !py-2" @click.stop="goDispatchDetail(order)">进入处理 →</button>
           </div>
         </article>
+      </div>
+
+      <!-- 分页：此前只拉前 50 条且无翻页，第 51 条起的订单后台看不到 -->
+      <div v-if="ordersPagination.pages > 1" class="mt-5 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <p class="text-sm text-ink-2">
+          第 {{ ordersPagination.page }} / {{ ordersPagination.pages }} 页 · 共 {{ ordersPagination.total }} 条
+        </p>
+        <div class="flex items-center gap-2">
+          <button class="btn-secondary !px-4 !py-2" :disabled="ordersPagination.page <= 1 || loadingOrders" @click="fetchOrders(ordersPagination.page - 1)">上一页</button>
+          <button class="btn-secondary !px-4 !py-2" :disabled="ordersPagination.page >= ordersPagination.pages || loadingOrders" @click="fetchOrders(ordersPagination.page + 1)">下一页</button>
+        </div>
       </div>
     </section>
 
