@@ -930,8 +930,11 @@ class WalletService:
                         WalletTransactionType.DEPOSIT_HOLD,
                         WalletTransactionType.DEPOSIT_RELEASE,
                         WalletTransactionType.COMPENSATION_DEDUCT,
+                        # 取消协商的赔偿扣除同样消耗该名额的冻结赔付，
+                        # 不纳入统计会让解冻逻辑重复释放已扣掉的部分。
+                        WalletTransactionType.CANCEL_COMPENSATION_DEDUCT,
                     )
-                ),
+                )
             )
             .group_by(WalletTransaction.type)
         )
@@ -943,7 +946,7 @@ class WalletService:
                 hold += max(-total, _ZERO)
             elif tx_type == WalletTransactionType.DEPOSIT_RELEASE:
                 hold -= max(total, _ZERO)
-            elif tx_type == WalletTransactionType.COMPENSATION_DEDUCT:
+            else:
                 deductions += max(-total, _ZERO)
         return max(hold - deductions, _ZERO)
 
@@ -1113,6 +1116,74 @@ class WalletService:
             frozen_delta=-from_frozen,
             deposit_delta=-from_deposit,
         )
+
+    async def consume_cancel_compensation(
+        self,
+        wallet: Wallet,
+        *,
+        amount: Decimal,
+        order_id: int,
+        booster_id: int,
+        note: str | None = None,
+    ) -> Decimal:
+        """取消协商赔偿划扣：先冻结的炸单赔偿金，再可用余额，最后保证金。
+
+        老板 2026-10-07 口径：无押金打手没有保证金可扣，但不能因此无法参与
+        取消赔偿。按「该名额仍在冻结的炸单赔偿金 → 可用余额 → 保证金」的
+        顺序凑齐约定金额，返回实际扣出金额（调用方据此等额补偿发单员，
+        不会多赔）。单一 CANCEL_COMPENSATION_DEDUCT 流水记录合计扣款，
+        保持 (order_id, booster_id, type) 唯一键；frozen_delta 同步扣减
+        冻结余额，剩余冻结部分由调用方另行解冻。
+        """
+        amount = _to_decimal(amount).quantize(_CENT, rounding=ROUND_HALF_UP)
+        if amount <= _ZERO:
+            return _ZERO
+        locked = await self._lock_wallet(wallet.id)
+
+        outstanding = await self._outstanding_compensation_hold(
+            locked.id, order_id=order_id, booster_id=booster_id
+        )
+        from_frozen = min(amount, outstanding)
+        shortfall = amount - from_frozen
+        available = _to_decimal(locked.available_balance)
+        from_available = min(shortfall, available)
+        shortfall -= from_available
+        deposit = _to_decimal(locked.deposit_balance)
+        from_deposit = min(shortfall, deposit)
+        actual = (from_frozen + from_available + from_deposit).quantize(_CENT)
+        if actual <= _ZERO:
+            logger.warning(
+                "Order %s cancel compensation for booster %s skipped: no scoped hold, balance or deposit",
+                order_id,
+                booster_id,
+            )
+            return _ZERO
+        if actual < amount:
+            logger.warning(
+                "Order %s cancel compensation for booster %s capped: requested %s, scoped hold %s, available %s, deposit %s",
+                order_id,
+                booster_id,
+                amount,
+                outstanding,
+                available,
+                deposit,
+            )
+
+        remark = f"订单 #{order_id} 取消名额赔偿扣除"
+        if note:
+            remark = f"{remark}：{note}"
+        await self._apply(
+            wallet,
+            tx_type=WalletTransactionType.CANCEL_COMPENSATION_DEDUCT,
+            amount=-actual,
+            available_delta=-from_available,
+            order_id=order_id,
+            booster_id=booster_id,
+            remark=remark,
+            frozen_delta=-from_frozen,
+            deposit_delta=-from_deposit,
+        )
+        return actual
 
     # ------------------------------------------------------------------
     # 保证金（可用余额 ⇄ 保证金余额）

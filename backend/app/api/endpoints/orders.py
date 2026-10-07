@@ -142,6 +142,45 @@ async def _apply_accept_window(
             response.accept_available_at = created + timedelta(seconds=wait_seconds)
 
 
+# 「申请取消中」筛选值：与 OrderStatus / ClaimLifecycleStatus 正交，
+# 表示订单（或名额）存在待处理的取消协商（老板 2026-10-07 要求单独可筛）。
+CANCEL_PENDING_FILTER = "CANCELLING"
+
+
+def _resolve_order_status_filter(value: str | None) -> tuple[OrderStatus | None, bool]:
+    """把 status 查询参数解析成 (订单状态, 是否仅看待处理取消协商)。
+
+    CANCELLING 不是订单状态枚举值，用第二个返回值单独表达；其余取值仍按
+    OrderStatus 严格校验，非法值返回中文 422（替代枚举自带的 422）。
+    """
+    if not value:
+        return None, False
+    if value == CANCEL_PENDING_FILTER:
+        return None, True
+    try:
+        return OrderStatus(value), False
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"订单状态筛选值无效：{value}",
+        )
+
+
+def _resolve_claim_status_filter(value: str | None) -> tuple[ClaimLifecycleStatus | None, bool]:
+    """名额状态筛选解析：CANCELLING=该名额有取消协商挂起，其余按枚举校验。"""
+    if not value:
+        return None, False
+    if value == CANCEL_PENDING_FILTER:
+        return None, True
+    try:
+        return ClaimLifecycleStatus(value), False
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"接单状态筛选值无效：{value}",
+        )
+
+
 def _apply_slim_list_payload(response: OrderResponse) -> OrderResponse:
     """大厅轮询瘦身：剥掉列表卡片用不到的大字段，降低 JSON 体积与前端重绘成本。
 
@@ -204,6 +243,8 @@ async def _enrich_order_response(db, response: OrderResponse, order, viewer: Use
         elif order.user_id != viewer.id:
             # Reset even if the incoming response was not serialized defensively.
             response.boss_contact = None
+    pending_cancel_ids = await order_service.pending_cancel_order_ids([order.id])
+    response.cancel_pending = order.id in pending_cancel_ids
     await _apply_accept_window(db, [response], [order], viewer)
     return response
 
@@ -244,6 +285,13 @@ async def _enrich_order_responses(
                     response.boss_contact = orders_by_id[response.id].boss_contact
             elif orders_by_id[response.id].user_id != viewer.id:
                 response.boss_contact = None
+    # 「申请取消中」标记：整页一条 IN 查询，供前端把徽标/接单状态从
+    # 进行中改显为申请取消中（取消协商挂起期间订单状态本身不变）。
+    pending_cancel_ids = await order_service.pending_cancel_order_ids(
+        [response.id for response in responses]
+    )
+    for response in responses:
+        response.cancel_pending = response.id in pending_cancel_ids
     await _apply_accept_window(db, responses, orders, viewer)
     return responses
 
@@ -348,8 +396,11 @@ async def list_orders(
         Query(description="按游戏名称筛选", max_length=100),
     ] = None,
     status_filter: Annotated[
-        OrderStatus | None,
-        Query(alias="status", description="按订单状态筛选"),
+        str | None,
+        Query(
+            alias="status",
+            description="按订单状态筛选；CANCELLING=申请取消中（有待处理的取消协商）",
+        ),
     ] = None,
     page: Annotated[
         int,
@@ -402,15 +453,17 @@ async def list_orders(
         else None
     )
 
+    resolved_status, cancel_pending_only = _resolve_order_status_filter(status_filter)
     orders, total = await order_service.list_orders(
         user=current_user,
         game_name=game_name,
-        status_filter=status_filter,
+        status_filter=resolved_status,
         page=page,
         page_size=page_size,
         mine_published=mine_published,
         boss_contact=effective_boss_contact,
         q=q,
+        cancel_pending_only=cancel_pending_only,
     )
 
     # Calculate total pages
@@ -588,8 +641,11 @@ async def list_my_claims(
     current_user: CurrentUser,
     db: DatabaseSession,
     status_filter: Annotated[
-        ClaimLifecycleStatus | None,
-        Query(alias="status", description="按名额状态筛选：CLAIMED/DELIVERED/SETTLED/CANCELLED"),
+        str | None,
+        Query(
+            alias="status",
+            description="按名额状态筛选：CLAIMED/DELIVERED/SETTLED/CANCELLED；CANCELLING=该名额有取消协商挂起（申请取消中）",
+        ),
     ] = None,
     page: Annotated[
         int,
@@ -620,12 +676,16 @@ async def list_my_claims(
         )
 
     order_service = get_order_service(db)
+    resolved_claim_status, cancel_pending_only = _resolve_claim_status_filter(
+        status_filter
+    )
     items, total = await order_service.list_my_claims(
         current_user.id,
-        status_filter=status_filter,
+        status_filter=resolved_claim_status,
         page=page,
         page_size=page_size,
         q=q,
+        cancel_pending_only=cancel_pending_only,
     )
     pages = (total + page_size - 1) // page_size if total > 0 else 0
     return MyOrderClaimListResponse(
@@ -1025,7 +1085,7 @@ async def cancel_order(
     "/{order_id}/cancel-requests",
     response_model=OrderCancelRequestItem,
     summary="发起单名额取消协商",
-    description="发单员或该名额打手提出理由与保证金赔偿金额，等待对方同意或拒绝；不经过管理员。",
+    description="发单员或该名额打手提出理由与赔偿金额，等待对方同意或拒绝；不经过管理员。",
 )
 async def create_order_cancel_request(
     order_id: int,
@@ -1051,13 +1111,15 @@ async def create_order_cancel_request(
         title = "发单员申请取消待你确认"
         content = (
             f"发单员对订单「{order.game_name}」的该接单名额提出取消协商，"
-            f"拟扣除保证金 ¥{request.compensation_amount} 补偿发单员。原因：{request.reason}"
+            f"拟从该打手扣除 ¥{request.compensation_amount} 补偿发单员"
+            f"（按冻结赔付→可用余额→保证金顺序）。原因：{request.reason}"
         )
     else:
         title = "打手申请取消待你确认"
         content = (
             f"打手对订单「{order.game_name}」提出取消协商，"
-            f"愿意从保证金赔偿 ¥{request.compensation_amount}。原因：{request.reason}"
+            f"愿意赔偿发单员 ¥{request.compensation_amount}"
+            f"（按冻结赔付→可用余额→保证金顺序）。原因：{request.reason}"
         )
     await send_order_system_message(
         db=db,
@@ -1131,7 +1193,7 @@ async def decide_order_cancel_request(
     if request.status == OrderCancelRequestStatus.APPROVED:
         outcome = "双方已同意取消该接单名额"
         if request.compensation_amount > Decimal("0"):
-            outcome += f"，保证金赔偿 ¥{request.compensation_amount} 已划转"
+            outcome += f"，赔偿 ¥{request.compensation_amount} 已划转"
         for user_id in sorted({request.requester_id, request.recipient_id}):
             await notify_user(
                 db,

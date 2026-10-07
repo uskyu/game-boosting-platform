@@ -6,7 +6,7 @@ import { useChatStore } from '@/stores/chat'
 import { useAuthStore } from '@/stores/auth'
 import { useOrdersStore } from '@/stores/orders'
 import { formatCount, formatDateTime, formatOrderPrice, formatPayoutDelay, formatPrice, formatShortDate } from '@/utils/display'
-import { ORDER_STATUS_OPTIONS, getClaimSettlementMeta, getOrderStatusBadgeClass, getOrderStatusLabel } from '@/utils/order'
+import { ORDER_STATUS_OPTIONS, CANCEL_PENDING_CLAIM_META, getClaimSettlementMeta, getOrderDisplayStatus, getOrderStatusBadgeClass, getOrderStatusLabel, isClaimCancelPending } from '@/utils/order'
 
 const route = useRoute()
 const router = useRouter()
@@ -25,6 +25,11 @@ const claimStatus = ref(String(route.query.claim_status || ''))
 const claimSearch = ref(String(route.query.claim_q || ''))
 
 function getClaimSettlementDisplayMeta(claim) {
+  // 取消协商挂起：徽标与「接单状态」都改显申请取消中，不再显示进行中
+  // （老板 2026-10-07：取消也显示进行中，看不出在谈取消）。
+  if (isClaimCancelPending(claim)) {
+    return { ...CANCEL_PENDING_CLAIM_META, isPendingReview: false, isPendingSettlement: false }
+  }
   const isLegacyCancelledClaim = claim?.order?.status === 'CANCELLED'
     && ['CLAIMED', 'DELIVERED'].includes(claim?.status)
   return getClaimSettlementMeta(
@@ -67,11 +72,13 @@ const unreadMap = computed(() => {
 const claimStatusOptions = [
   { value: '', label: '全部状态' },
   { value: 'CLAIMED', label: '进行中' },
+  { value: 'CANCELLING', label: '申请取消中' },
   { value: 'DELIVERED', label: '待确认' },
   { value: 'SETTLED', label: '已结算' },
   { value: 'CANCELLED', label: '已取消' },
   // 后端 GET /orders/claims/mine 的 status 支持 CLAIMED/DELIVERED/SETTLED/CANCELLED，
-  // DISPUTED 走本地过滤（按 claim.order.status === 'DISPUTED'），不调服务端过滤
+  // DISPUTED 走本地过滤（按 claim.order.status === 'DISPUTED'），不调服务端过滤；
+  // CANCELLING 由服务端按「该名额有取消协商挂起」过滤。
   { value: 'DISPUTED', label: '争议中' },
 ]
 
@@ -125,7 +132,15 @@ function getBoosterMetaText(order) {
 // 派单卡片状态徽标：名额制下交付只改 claim 状态、订单整体仍是 LOCKED，
 // 所以「有待审核交付的 LOCKED 单」按「待确认」展示（badge-review），
 // 其余状态（含本来就是 DELIVERED 的订单）沿用订单状态本身。
+// 取消协商挂起时优先显「申请取消中」（订单状态此时并未变化）。
 function getPublisherStatusMeta(order) {
+  const displayStatus = getOrderDisplayStatus(order)
+  if (displayStatus === 'CANCELLING') {
+    return {
+      label: getOrderStatusLabel('CANCELLING'),
+      badgeClass: getOrderStatusBadgeClass('CANCELLING'),
+    }
+  }
   if (order?.status === 'LOCKED' && Number(order?.pending_review_count || 0) > 0) {
     return { label: '待确认', badgeClass: 'badge-review' }
   }
@@ -414,7 +429,7 @@ onUnmounted(() => {
                   <span :class="getClaimSettlementDisplayMeta(claim).tagClass">{{ getClaimSettlementDisplayMeta(claim).label }}</span>
                   <span v-if="claim.order?.status === 'DISPUTED'" class="tag !bg-danger-soft !text-danger">订单争议中</span>
                   <!-- 发单员申请取消时直扣的保证金：打手在这里看到自己被扣了多少钱 -->
-                  <span v-if="Number(claim.approved_deduction) > 0" class="tag !bg-danger-soft !text-danger">扣款 ¥{{ formatPrice(claim.approved_deduction) }}</span>
+                  <span v-if="Number(claim.approved_deduction) > 0" class="tag !bg-danger-soft !text-danger">扣款 {{ formatPrice(claim.approved_deduction) }}</span>
                 </div>
                 <p class="mt-2 truncate text-[13px] text-ink-3">
                   {{ formatShortDate(claim.created_at) }} · 订单 #{{ claim.order?.id || claim.order_id }}<template v-if="claim.order?.boss_contact"> · 老板ID {{ claim.order.boss_contact }}</template><template v-if="claim.delivered_at"> · 交付于 {{ formatDateTime(claim.delivered_at) }}</template>

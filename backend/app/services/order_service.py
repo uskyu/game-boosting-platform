@@ -450,6 +450,7 @@ class OrderService:
         mine_published: bool = False,
         boss_contact: str | None = None,
         q: str | None = None,
+        cancel_pending_only: bool = False,
     ) -> tuple[list[Order], int]:
         """
         List orders with filtering and pagination.
@@ -463,6 +464,8 @@ class OrderService:
             boss_contact: Optional boss-contact fuzzy filter (ilike); typically
                 combined with mine_published=true so publishers can find their
                 own orders by the boss ID they filled in.
+            cancel_pending_only: When true, return only orders with a pending
+                cancellation negotiation (「申请取消中」筛选).
             page: Page number (1-indexed).
             page_size: Items per page.
 
@@ -518,7 +521,18 @@ class OrderService:
             count_query = count_query.where(Order.game_name.ilike(pattern))
 
         # Apply status filter
-        if status_filter:
+        if cancel_pending_only:
+            # 「申请取消中」：有待处理取消协商的订单（与订单状态正交，
+            # 挂起期间订单本身仍处于 LOCKED/DELIVERED）。
+            pending_cancel_exists = exists(
+                select(OrderCancelRequest.id).where(
+                    OrderCancelRequest.order_id == Order.id,
+                    OrderCancelRequest.status == OrderCancelRequestStatus.PENDING,
+                )
+            )
+            query = query.where(pending_cancel_exists)
+            count_query = count_query.where(pending_cancel_exists)
+        elif status_filter:
             if mine_published and user is not None and status_filter == OrderStatus.DELIVERED:
                 # 派单（我的发布）语义的「待确认」：名额制交付只把 claim 推到
                 # DELIVERED（OrderStatus.DELIVERED 无人写入），所以命中条件是
@@ -1140,20 +1154,27 @@ class OrderService:
             .order_by(OrderClaim.created_at.asc(), OrderClaim.id.asc())
         )
         claim_rows = rows.all()
-        # 报名打手的保证金余额：一条 IN 查询批量取（禁止 N+1），供发单员在
+        # 报名打手的钱包：一条 IN 查询批量取（禁止 N+1），供发单员在
         # 「申请取消」弹窗里计算可扣款上限与保证金总额。
-        deposit_by_booster: dict[int, Decimal] = {}
+        wallet_service = get_wallet_service(self._db)
+        wallet_by_booster: dict[int, Wallet] = {}
         booster_ids = sorted({claim.booster_id for claim, _username, _email in claim_rows})
         if booster_ids:
             wallet_rows = await self._db.execute(
-                select(Wallet.user_id, Wallet.deposit_balance).where(
-                    Wallet.user_id.in_(booster_ids)
-                )
+                select(Wallet).where(Wallet.user_id.in_(booster_ids))
             )
-            deposit_by_booster = {
-                wallet_user_id: _to_decimal(balance)
-                for wallet_user_id, balance in wallet_rows.all()
-            }
+            wallet_by_booster = {wallet.user_id: wallet for wallet in wallet_rows.scalars().all()}
+        pending_claim_ids: set[int] = set()
+        if claim_rows:
+            pending_result = await self._db.execute(
+                select(OrderCancelRequest.claim_id)
+                .where(
+                    OrderCancelRequest.order_id == order_id,
+                    OrderCancelRequest.status == OrderCancelRequestStatus.PENDING,
+                )
+                .distinct()
+            )
+            pending_claim_ids = {row[0] for row in pending_result.all()}
         claims: list[dict[str, Any]] = []
         for claim, username, email in claim_rows:
             item = self._serialize_claim(
@@ -1163,9 +1184,24 @@ class OrderService:
                 booster_nickname=username,
                 booster_email=email,
             )
-            item["booster_deposit_balance"] = deposit_by_booster.get(
-                claim.booster_id, _ZERO
+            wallet = wallet_by_booster.get(claim.booster_id)
+            item["cancel_pending"] = claim.id in pending_claim_ids
+            item["booster_deposit_balance"] = (
+                _to_decimal(wallet.deposit_balance) if wallet is not None else _ZERO
             )
+            # 可扣款项上限（冻结赔付+可用余额+保证金）：取消协商的实际可扣范围，
+            # 无押金打手也能靠冻结赔付/余额参与赔偿（老板 2026-10-07）。
+            if wallet is None:
+                item["booster_compensation_available"] = _ZERO
+            else:
+                item["booster_compensation_available"] = (
+                    await self._cancel_compensation_collectible(
+                        wallet_service,
+                        wallet,
+                        order_id=order.id,
+                        booster_id=claim.booster_id,
+                    )
+                )
             claims.append(item)
         return claims
 
@@ -1176,6 +1212,7 @@ class OrderService:
         page: int = 1,
         page_size: int = 20,
         q: str | None = None,
+        cancel_pending_only: bool = False,
     ) -> tuple[list[dict[str, Any]], int]:
         """
         Paginated claims of one booster (我的报名), newest first.
@@ -1184,6 +1221,10 @@ class OrderService:
         Search accepts the parent order ID as the canonical identifier and the
         claim record ID as a compatibility alias, so both sides can locate the
         same order from either number shown in older UI versions.
+
+        ``cancel_pending_only`` restricts the page to claims with a pending
+        cancellation negotiation; every item also carries a ``cancel_pending``
+        flag so the 我的接单 cards can show 「申请取消中」 instead of 进行中.
         """
         from app.services import deposit_service
 
@@ -1192,7 +1233,16 @@ class OrderService:
             booster_id,
         )
         conditions = [OrderClaim.booster_id == booster_id]
-        if status_filter is not None:
+        if cancel_pending_only:
+            conditions.append(
+                exists(
+                    select(OrderCancelRequest.id).where(
+                        OrderCancelRequest.claim_id == OrderClaim.id,
+                        OrderCancelRequest.status == OrderCancelRequestStatus.PENDING,
+                    )
+                )
+            )
+        elif status_filter is not None:
             if status_filter in (
                 ClaimLifecycleStatus.CLAIMED,
                 ClaimLifecycleStatus.DELIVERED,
@@ -1296,6 +1346,21 @@ class OrderService:
                 "payout_delay_hours": order.payout_delay_hours,
             }
             items.append(item)
+
+        # 一条 IN 查询给整页名额打上「取消协商挂起」标记（禁止 N+1）。
+        pending_claim_ids: set[int] = set()
+        if items:
+            pending_result = await self._db.execute(
+                select(OrderCancelRequest.claim_id)
+                .where(
+                    OrderCancelRequest.claim_id.in_([item["id"] for item in items]),
+                    OrderCancelRequest.status == OrderCancelRequestStatus.PENDING,
+                )
+                .distinct()
+            )
+            pending_claim_ids = {row[0] for row in pending_result.all()}
+        for item in items:
+            item["cancel_pending"] = item["id"] in pending_claim_ids
         return items, total
 
     async def assign_order(
@@ -2329,6 +2394,47 @@ class OrderService:
         result = await self._db.execute(query.limit(1))
         return result.scalar_one_or_none() is not None
 
+    async def _cancel_compensation_collectible(
+        self,
+        wallet_service,
+        wallet: Wallet,
+        *,
+        order_id: int,
+        booster_id: int,
+    ) -> Decimal:
+        """取消协商里该打手可扣出的款项合计（发起提议与同意裁决共用）。
+
+        顺序（老板 2026-10-07 口径）：该名额仍在冻结的炸单赔偿金 →
+        钱包可用余额 → 保证金。无押金打手的保证金为 0，但冻结赔付与
+        可用余额照样可扣，不能再出现「没有保证金就无法参与取消赔偿」。
+        """
+        frozen_hold = await wallet_service.outstanding_compensation_hold(
+            wallet, order_id=order_id, booster_id=booster_id
+        )
+        return (
+            frozen_hold
+            + _to_decimal(wallet.available_balance)
+            + _to_decimal(wallet.deposit_balance)
+        ).quantize(_ZERO)
+
+    async def pending_cancel_order_ids(self, order_ids: list[int]) -> set[int]:
+        """返回这批订单中仍存在待处理取消协商的订单 ID 集合。
+
+        列表/详情接口据此给前端打「申请取消中」标记：取消申请挂起期间
+        订单仍显示进行中会让老板以为没起作用（2026-10-07 反馈）。
+        """
+        if not order_ids:
+            return set()
+        result = await self._db.execute(
+            select(OrderCancelRequest.order_id)
+            .where(
+                OrderCancelRequest.order_id.in_(order_ids),
+                OrderCancelRequest.status == OrderCancelRequestStatus.PENDING,
+            )
+            .distinct()
+        )
+        return {row[0] for row in result.all()}
+
     async def list_cancel_requests(self, order_id: int, user: User) -> list[dict[str, Any]]:
         """List cancellation negotiation records visible to this order participant."""
         order = await self.get_order_by_id(order_id, user)
@@ -2467,11 +2573,19 @@ class OrderService:
         wallet_service = get_wallet_service(self._db)
         booster_wallet = await wallet_service.get_or_create_wallet(claim.booster_id)
         booster_wallet = await wallet_service._lock_wallet(booster_wallet.id)
-        available_compensation = _to_decimal(booster_wallet.deposit_balance)
-        if amount > available_compensation:
+        # 可扣款项 = 该名额仍在冻结的炸单赔偿金 + 可用余额 + 保证金。
+        # 老板 2026-10-07：无押金打手没有保证金可扣，但不能因此无法参与
+        # 取消赔偿；接单时冻结的赔付、钱包余额都应可扣。
+        collectible = await self._cancel_compensation_collectible(
+            wallet_service,
+            booster_wallet,
+            order_id=order.id,
+            booster_id=claim.booster_id,
+        )
+        if amount > collectible:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"接单人保证金不足（最高可提议 ¥{available_compensation}）",
+                detail=f"接单人可扣款项不足（冻结赔付+可用余额+保证金最高 ¥{collectible}）",
             )
 
         request = OrderCancelRequest(
@@ -2572,39 +2686,50 @@ class OrderService:
         wallet_service = get_wallet_service(self._db)
         booster_wallet = await wallet_service.get_or_create_wallet(claim.booster_id)
         booster_wallet = await wallet_service._lock_wallet(booster_wallet.id)
-        if amount > _to_decimal(booster_wallet.deposit_balance):
+        collectible = await self._cancel_compensation_collectible(
+            wallet_service,
+            booster_wallet,
+            order_id=order.id,
+            booster_id=claim.booster_id,
+        )
+        if amount > collectible:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="接单人保证金已不足以履行该赔偿金额，请拒绝并重新协商",
+                detail="接单人可扣款项已不足以履行该赔偿金额（冻结赔付+可用余额+保证金不足），请拒绝并重新协商",
             )
 
-        # Accepted requests only cancel the selected slot: release its scoped
-        # compensation hold and one unit of publisher escrow, then keep other
-        # boosters and claims untouched.
+        # Accepted requests only cancel the selected slot.  The agreed
+        # compensation is taken from the booster in the order
+        # 冻结赔付 → 可用余额 → 保证金 and credited to the publisher at the
+        # same amount; any remaining scoped hold is released back.  Other
+        # boosters and claims are untouched.
+        if amount > _ZERO:
+            actual = await wallet_service.consume_cancel_compensation(
+                booster_wallet,
+                amount=amount,
+                order_id=order.id,
+                booster_id=claim.booster_id,
+                note=f"双方同意取消名额：{request.reason[:200]}",
+            )
+            if actual > _ZERO:
+                publisher_wallet = await wallet_service.get_or_create_wallet(
+                    order.user_id
+                )
+                await wallet_service.credit(
+                    publisher_wallet,
+                    amount=actual,
+                    tx_type=WalletTransactionType.CANCEL_COMPENSATION_IN,
+                    order_id=order.id,
+                    booster_id=claim.booster_id,
+                    remark=f"取消名额赔偿入账（打手 #{claim.booster_id}）",
+                )
+        # 未纳入赔偿的剩余冻结赔付原样解冻，归还打手可用余额（无剩余时为 no-op）。
         await wallet_service.release_all_compensation_hold(
             booster_wallet,
             order_id=order.id,
             booster_id=claim.booster_id,
-            note="取消协商同意，赔偿金解冻",
+            note="取消协商同意，剩余赔偿金解冻",
         )
-        if amount > _ZERO:
-            await wallet_service.adjust_deposit(
-                booster_wallet,
-                delta=-amount,
-                tx_type=WalletTransactionType.CANCEL_COMPENSATION_DEDUCT,
-                order_id=order.id,
-                booster_id=claim.booster_id,
-                remark=f"双方同意取消名额，扣除保证金：{request.reason[:200]}",
-            )
-            publisher_wallet = await wallet_service.get_or_create_wallet(order.user_id)
-            await wallet_service.credit(
-                publisher_wallet,
-                amount=amount,
-                tx_type=WalletTransactionType.CANCEL_COMPENSATION_IN,
-                order_id=order.id,
-                booster_id=claim.booster_id,
-                remark=f"取消名额赔偿入账（打手 #{claim.booster_id}）",
-            )
 
         await self.release_escrow(
             order,

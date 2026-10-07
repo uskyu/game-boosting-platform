@@ -120,10 +120,15 @@ async def list_all_orders_for_admin(
     responses = [OrderResponse.model_validate(order) for order in orders]
     # Per-order claim counters for the admin review workflow.
     status_counts = await order_service.claim_status_counts([order.id for order in orders])
+    pending_cancel_ids = await order_service.pending_cancel_order_ids(
+        [order.id for order in orders]
+    )
     for response in responses:
         counts = status_counts.get(response.id, {})
         response.pending_review_count = counts.get("PENDING_REVIEW", 0)
         response.settled_count = counts.get("SETTLED", 0)
+        # 「申请取消中」：取消协商挂起期间徽标不再显示进行中
+        response.cancel_pending = response.id in pending_cancel_ids
 
     return OrderListResponse(
         items=responses,

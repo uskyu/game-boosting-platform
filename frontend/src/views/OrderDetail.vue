@@ -11,7 +11,7 @@ import { useOrdersStore } from '@/stores/orders'
 import { getGameImage } from '@/data/gameImages'
 import api from '@/utils/api'
 import { formatDateTime, formatDueCountdown, formatFeeRate, formatMoneyFixed, formatOrderPrice, formatPayoutDelay, formatPrice, formatSettlementDelay, formatShortDate, getAcceptWaitMeta, serverNow } from '@/utils/display'
-import { getClaimSettlementMeta, getOrderStatusBadgeClass, getOrderStatusLabel, getOrderStatusMeta, getHumanStatusLabel, getHumanStatusSubtitle } from '@/utils/order'
+import { CANCEL_PENDING_CLAIM_META, getClaimSettlementMeta, getOrderStatusBadgeClass, getOrderStatusLabel, getOrderStatusMeta, getHumanStatusLabel, getHumanStatusSubtitle } from '@/utils/order'
 
 const props = defineProps({
   id: {
@@ -102,7 +102,7 @@ const chatTargetUserId = computed(() => {
   return null
 })
 const canStartChat = computed(() => chatTargetUserId.value != null)
-const statusMeta = computed(() => getOrderStatusMeta(order.value?.status))
+const statusMeta = computed(() => getOrderStatusMeta(viewCancelPending.value ? 'CANCELLING' : order.value?.status))
 const viewRole = computed(() => isAssignedBooster.value || (isBooster.value && !isOwner.value) ? 'booster' : 'owner')
 const humanStatusLabel = computed(() => getHumanStatusLabel(order.value?.status, order.value?.service_type, viewRole.value))
 const humanStatusSubtitle = computed(() => {
@@ -247,8 +247,28 @@ async function copyBossContact() {
   window.setTimeout(() => { bossContactCopied.value = false }, 2000)
 }
 
+// 取消协商挂起中的展示状态（老板 2026-10-07：申请取消后要自动显示「申请取消中」，
+// 不能仍显示进行中）。订单级用服务端 cancel_pending 标记 + 本地已加载协商兜底
+// （发起申请后不刷新订单也要立刻变色）；名额级只看自己的名额。
+const orderCancelPending = computed(() => (
+  Boolean(order.value?.cancel_pending) || cancelRequests.value.some(isCancelRequestPending)
+))
+const myClaimCancelPending = computed(() => {
+  if (!myClaim.value) return false
+  return cancelRequests.value.some(
+    (request) => isCancelRequestPending(request) && Number(request.claim_id) === Number(myClaim.value.id)
+  )
+})
+// 发单员看订单级（任一名额在谈取消），打手看自己的名额
+const viewCancelPending = computed(() => (
+  isOwner.value ? orderCancelPending.value : myClaimCancelPending.value
+))
+
 // 打手自己的状态标签按 my_claim.status 显示
 const heroStatusClass = computed(() => {
+  if (viewCancelPending.value && ['LOCKED', 'DELIVERED'].includes(order.value?.status)) {
+    return getOrderStatusBadgeClass('CANCELLING')
+  }
   if (myClaim.value && viewRole.value === 'booster' && !isOwner.value) {
     return getClaimSettlementMeta(myClaim.value, now.value).tagClass
   }
@@ -256,6 +276,9 @@ const heroStatusClass = computed(() => {
 })
 
 const heroStatusLabel = computed(() => {
+  if (viewCancelPending.value && ['LOCKED', 'DELIVERED'].includes(order.value?.status)) {
+    return getOrderStatusLabel('CANCELLING')
+  }
   if (myClaim.value && viewRole.value === 'booster' && !isOwner.value) {
     return getClaimSettlementMeta(myClaim.value, now.value).label
   }
@@ -647,7 +670,8 @@ function cancelRequestRoleLabel(request) {
   return request?.requester_role || '发起方'
 }
 
-// 发起方是发单员 → 金额是「扣打手保证金」；发起方是打手 → 是打手自愿赔偿
+// 发起方是发单员 → 金额是「从该打手处扣除」；发起方是打手 → 是打手自愿赔偿
+// （扣除顺序统一为 冻结赔付 → 可用余额 → 保证金，无押金打手也可参与）
 const isPublisherCancelRequest = (request) => cancelRequestRoleLabel(request) === '发单员'
 
 // 名额维度的协商状态：该 claim 最新一条（有待处理则优先展示待处理），
@@ -661,6 +685,19 @@ function cancelRequestForClaim(claimId) {
     ))
 }
 
+// 报名名单行的主状态徽标：该名额有取消协商挂起时显「申请取消中」
+function claimRowStatusMeta(claim) {
+  const request = cancelRequestForClaim(claim.id)
+  if (
+    request
+    && isCancelRequestPending(request)
+    && ['CLAIMED', 'DELIVERED'].includes(claim?.status)
+  ) {
+    return CANCEL_PENDING_CLAIM_META
+  }
+  return getClaimSettlementMeta(claim, now.value)
+}
+
 // 表单作用的名额：发单员取选中项，打手固定为自己的名额
 const cancelRequestClaim = computed(() => {
   if (isOwner.value) {
@@ -670,10 +707,13 @@ const cancelRequestClaim = computed(() => {
   return myNegotiableClaim.value
 })
 
-// 金额上限：报名名单带了该打手保证金时才设 max，其余情况交给后端校验
+// 金额上限：报名名单带了该打手可扣款项（冻结赔付+可用余额+保证金）时才设 max，
+// 其余情况交给后端校验。无押金打手也能靠冻结赔付/可用余额参与赔偿。
 const cancelRequestMaxAmount = computed(() => {
-  const balance = Number(cancelRequestClaim.value?.booster_deposit_balance)
-  return Number.isFinite(balance) && balance > 0 ? balance : null
+  const available = Number(cancelRequestClaim.value?.booster_compensation_available)
+  if (Number.isFinite(available) && available > 0) return available
+  const deposit = Number(cancelRequestClaim.value?.booster_deposit_balance)
+  return Number.isFinite(deposit) && deposit > 0 ? deposit : null
 })
 
 function openCancelRequestModal() {
@@ -1085,9 +1125,9 @@ onUnmounted(() => {
             </div>
             <p class="mt-2 text-sm text-ink-2">原因：{{ request.reason }}</p>
             <p class="mt-1 text-sm text-ink-2">
-              <template v-if="isPublisherCancelRequest(request)">发单员提议扣除该打手保证金赔偿：</template>
-              <template v-else>打手愿意从自己保证金赔偿发单员：</template>
-              <span class="font-semibold tabular-nums text-price">¥{{ formatPrice(request.compensation_amount) }}</span>
+              <template v-if="isPublisherCancelRequest(request)">发单员提议从该打手处扣除赔偿（冻结赔付→余额→保证金）：</template>
+              <template v-else>打手愿意从自己处赔偿发单员（冻结赔付→余额→保证金）：</template>
+              <span class="font-semibold tabular-nums text-price">{{ formatPrice(request.compensation_amount) }}</span>
             </p>
             <p class="mt-1 text-xs text-ink-3">
               发起于 {{ formatDateTime(request.created_at) }}<template v-if="request.resolved_at"> · 处理于 {{ formatDateTime(request.resolved_at) }}</template>
@@ -1188,12 +1228,12 @@ onUnmounted(() => {
             </div>
             <div class="flex shrink-0 items-center gap-3">
               <div class="text-right">
-                <span :class="getClaimSettlementMeta(claim, now.value).tagClass">
-                  {{ getClaimSettlementMeta(claim, now.value).label }}
+                <span :class="claimRowStatusMeta(claim).tagClass">
+                  {{ claimRowStatusMeta(claim).label }}
                 </span>
-                <!-- 名额维度的取消协商状态徽标 -->
+                <!-- 名额维度的取消协商状态徽标（待处理时主徽标已是「申请取消中」，不再重复） -->
                 <span
-                  v-if="cancelRequestForClaim(claim.id)"
+                  v-if="cancelRequestForClaim(claim.id) && !isCancelRequestPending(cancelRequestForClaim(claim.id))"
                   :class="[cancelRequestStatusMeta(cancelRequestForClaim(claim.id)).tagClass, 'ml-1']"
                 >
                   取消协商·{{ cancelRequestStatusMeta(cancelRequestForClaim(claim.id)).label }}
@@ -1647,14 +1687,14 @@ onUnmounted(() => {
         <div class="modal-card" role="dialog" aria-modal="true" aria-label="申请取消">
           <h3 class="text-lg font-semibold text-ink-1">申请取消</h3>
           <p class="mt-3 text-sm leading-6 text-ink-2">
-            双方直接协商，无需管理员介入：{{ isOwner ? '选择一位打手的名额' : '使用你自己的接单名额' }}，对方同意后仅该名额结束；{{ isOwner ? '约定金额从该打手保证金扣除，等额补偿到你的可用余额' : '约定金额从你的保证金扣除，等额补偿给发单员' }}。拒绝后订单与名额状态不变，你可以修改后重提。
+            双方直接协商，无需管理员介入：{{ isOwner ? '选择一位打手的名额' : '使用你自己的接单名额' }}，对方同意后仅该名额结束；{{ isOwner ? '约定金额从该打手处扣除（按冻结赔付→可用余额→保证金顺序），等额补偿到你的可用余额' : '约定金额从你处扣除（按冻结赔付→可用余额→保证金顺序），等额补偿给发单员' }}。拒绝后订单与名额状态不变，你可以修改后重提。
           </p>
           <div class="mt-4 space-y-4">
             <div v-if="isOwner">
               <label class="label" for="cancel-request-claim">接单名额</label>
               <select id="cancel-request-claim" v-model="cancelRequestForm.claim_id" class="input">
                 <option v-for="claim in requestableClaims" :key="claim.id" :value="claim.id">
-                  {{ claimBoosterName(claim) }}<template v-if="claim.booster_deposit_balance != null">（保证金 ¥{{ formatPrice(claim.booster_deposit_balance) }}）</template>
+                  {{ claimBoosterName(claim) }}<template v-if="claim.booster_compensation_available != null">（可扣 {{ formatPrice(claim.booster_compensation_available) }}）</template>
                 </option>
               </select>
               <p class="mt-1 text-xs text-ink-3">只列出可协商的名额（进行中且没有待处理的协商）；已在谈的名额要等对方处理，其他打手的名额不受影响。</p>
@@ -1677,7 +1717,7 @@ onUnmounted(() => {
             </div>
             <div>
               <label class="label" for="cancel-request-amount">
-                {{ isOwner ? '扣除接单人保证金' : '愿意赔偿发单员' }}（默认 0 = 不扣）
+                {{ isOwner ? '从该打手扣除赔偿' : '愿意赔偿发单员' }}（默认 0 = 不扣）
               </label>
               <input
                 id="cancel-request-amount"
@@ -1691,9 +1731,9 @@ onUnmounted(() => {
               />
               <p class="mt-2 text-xs leading-5 text-ink-2">
                 <template v-if="cancelRequestMaxAmount != null">
-                  该打手当前保证金 ¥{{ formatPrice(cancelRequestMaxAmount) }}，最高可扣该金额；等额补偿到发单员可用余额。
+                  该打手当前可扣款项 {{ formatPrice(cancelRequestMaxAmount) }}（冻结赔付+可用余额+保证金），最高可扣该金额；等额补偿到发单员可用余额。
                 </template>
-                <template v-else>金额从该打手保证金扣除，余额不足时对方会看到提示。</template>
+                <template v-else>金额按冻结赔付→可用余额→保证金顺序从该打手处扣除，不足时对方会看到提示。</template>
               </p>
             </div>
             <p v-if="cancelRequestError" class="text-sm text-danger">{{ cancelRequestError }}</p>

@@ -27,6 +27,7 @@ import {
 import api from '@/utils/api'
 import { formatDateTime, formatFeeRate, formatMoneyFixed, formatOrderPrice, formatPayoutDelay, formatPrice, parsePayoutDelay, serviceFeeBreakdown } from '@/utils/display'
 import {
+  getOrderDisplayStatus,
   getOrderStatusBadgeClass,
   getOrderStatusLabel,
   getUserRoleLabel,
@@ -803,8 +804,9 @@ function openOrderLightbox(order, index) {
   orderLightbox.value = { visible: true, images: normalizeOrderAttachments(order.attachments), index }
 }
 
-// DELIVERED 在派单语境下是"待老板审核"
+// DELIVERED 在派单语境下是"待老板审核"；取消协商挂起时显「申请取消中」
 function dispatchStatusLabel(order) {
+  if (getOrderDisplayStatus(order) === 'CANCELLING') return '申请取消中'
   return order.status === 'DELIVERED' ? '待审核' : getOrderStatusLabel(order.status)
 }
 
@@ -1105,7 +1107,7 @@ onMounted(async () => {
           <div class="min-w-0">
             <div class="flex flex-wrap items-center gap-2">
               <h3 class="min-w-0 truncate text-lg font-semibold text-ink-1">{{ orderCardTitle(order) }}</h3>
-              <span :class="getOrderStatusBadgeClass(order.status)">{{ dispatchStatusLabel(order) }}</span>
+              <span :class="getOrderStatusBadgeClass(getOrderDisplayStatus(order))">{{ dispatchStatusLabel(order) }}</span>
             </div>
             <p class="mt-1 truncate text-xs text-ink-3">
               #{{ order.id }} · {{ order.game_name }}

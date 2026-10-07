@@ -412,7 +412,10 @@ class CreateOrderCancelRequest(BaseModel):
     compensation_amount: Decimal = Field(
         default=Decimal("0.00"),
         ge=0,
-        description="从该打手保证金扣除并补偿发单员的金额；默认 0",
+        description=(
+            "从该打手处扣除并补偿发单员的金额；默认 0。"
+            "按冻结的炸单赔偿金→可用余额→保证金顺序扣，无押金打手也可参与。"
+        ),
     )
 
     @field_validator("reason")
@@ -621,6 +624,11 @@ class OrderResponse(BaseModel):
     my_claim: "OrderClaimItem | None" = Field(default=None, description="当前用户在此订单的报名记录（未报名时为 null）")
     pending_review_count: int = Field(default=0, description="待审核（DELIVERED）名额数（管理员或订单发布人）")
     settled_count: int = Field(default=0, description="已结算（SETTLED）名额数（管理员或订单发布人）")
+    # 有待处理的取消协商（申请取消中）：挂起期间订单状态本身仍是
+    # LOCKED/DELIVERED，前端据此把徽标/接单状态改显「申请取消中」。
+    cancel_pending: bool = Field(
+        default=False, description="是否存在待处理的取消协商（申请取消中）"
+    )
 
     @field_serializer("deadline", "created_at", "updated_at", "locked_at", "delivered_at", "completed_at", "paid_at", "accept_available_at")
     def serialize_datetime(self, value: datetime | None) -> str | None:
@@ -738,6 +746,17 @@ class OrderClaimItem(BaseModel):
     # 申请取消时的可扣款上限）；我的报名/列表路径为 null。
     booster_deposit_balance: Decimal | None = Field(
         default=None, description="报名打手当前保证金余额（仅报名名单返回）"
+    )
+    # 取消协商挂起中：该名额有对方未处理的取消申请，界面按「申请取消中」展示，
+    # 不再显示进行中（老板 2026-10-07 要求）。
+    cancel_pending: bool = Field(
+        default=False, description="该名额是否有待处理的取消协商"
+    )
+    # 该打手在取消协商里可扣出的款项合计（冻结赔付+可用余额+保证金），
+    # 仅报名名单返回；发单员据此设赔偿金额上限，无押金打手也能参与。
+    booster_compensation_available: Decimal | None = Field(
+        default=None,
+        description="报名打手可扣赔款项合计（冻结赔付+可用余额+保证金，仅报名名单返回）",
     )
 
     @field_serializer(

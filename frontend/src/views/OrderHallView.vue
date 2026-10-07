@@ -77,12 +77,19 @@ function getOrderDisplayStatus(order) {
   if (order.claim_status === 'FULL' || Number(order.claimed_count ?? 0) >= Number(order.max_claims ?? 0)) return '已满员'
   if (order.claim_status === 'CLOSED') return '已截止'
   if (order.deadline && new Date(order.deadline).getTime() <= serverNow()) return '已截止'
+  // 取消协商挂起：大厅里也不再显示进行中
+  if (order.cancel_pending && (order.status === 'LOCKED' || order.status === 'DELIVERED')) {
+    return getOrderStatusLabel('CANCELLING')
+  }
   return getOrderStatusLabel(order.status)
 }
 
 function getOrderDisplayBadgeClass(order) {
   if (order.is_archived || order.claim_status === 'CLOSED' || (order.deadline && new Date(order.deadline).getTime() <= serverNow())) return 'badge-cancelled'
   if (order.claim_status === 'PAUSED' || order.claim_status === 'FULL') return 'badge-review'
+  if (order.cancel_pending && (order.status === 'LOCKED' || order.status === 'DELIVERED')) {
+    return getOrderStatusBadgeClass('CANCELLING')
+  }
   return getOrderStatusBadgeClass(order.status)
 }
 const loading = computed(() => ordersStore.loading)

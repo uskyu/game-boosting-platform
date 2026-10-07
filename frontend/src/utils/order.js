@@ -9,6 +9,12 @@ export const ORDER_STATUS_META = {
     badgeClass: 'badge-locked',
     description: '打手已接手订单，正在进行了。',
   },
+  // 取消协商挂起：订单状态本身仍是 LOCKED/DELIVERED，界面改显「申请取消中」
+  CANCELLING: {
+    label: '申请取消中',
+    badgeClass: 'badge-review',
+    description: '取消协商进行中，等待对方同意或拒绝。',
+  },
   DELIVERED: {
     label: '待确认',
     badgeClass: 'badge-review',
@@ -35,11 +41,32 @@ export const ORDER_STATUS_OPTIONS = [
   { value: '', label: '全部状态' },
   { value: 'PENDING', label: '待接单' },
   { value: 'LOCKED', label: '进行中' },
+  { value: 'CANCELLING', label: '申请取消中' },
   { value: 'DELIVERED', label: '待确认' },
   { value: 'COMPLETED', label: '已完成' },
   { value: 'DISPUTED', label: '争议中' },
   { value: 'CANCELLED', label: '已取消' },
 ]
+
+// 订单对外展示状态：有待处理的取消协商时（cancel_pending）显「申请取消中」，
+// 不再仍显示进行中（老板 2026-10-07 要求）。只覆盖进行中/待确认两个活跃态，
+// 已完结订单保持原状态。
+export function getOrderDisplayStatus(order) {
+  if (order?.cancel_pending && (order?.status === 'LOCKED' || order?.status === 'DELIVERED')) {
+    return 'CANCELLING'
+  }
+  return order?.status
+}
+
+// 名额（我的接单/报名名单）有取消协商挂起时的展示元信息
+export const CANCEL_PENDING_CLAIM_META = {
+  label: '申请取消中',
+  tagClass: 'tag !bg-warning-soft !text-warning',
+}
+
+export function isClaimCancelPending(claim) {
+  return Boolean(claim?.cancel_pending) && ['CLAIMED', 'DELIVERED'].includes(claim?.status)
+}
 
 export const USER_ROLE_META = {
   USER: {
