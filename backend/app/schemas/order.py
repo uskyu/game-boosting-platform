@@ -69,6 +69,12 @@ class OrderDeliveryAttachment(BaseModel):
 DeliveryAttachmentList = list[OrderDeliveryAttachment]
 
 
+class OrderDeliveryAttachmentsResponse(BaseModel):
+    """Current delivery-proof attachments after a delete operation."""
+
+    delivery_attachments: DeliveryAttachmentList = Field(default_factory=list, max_length=5)
+
+
 def validate_delivery_attachments(value: DeliveryAttachmentList | None) -> DeliveryAttachmentList | None:
     if value is not None and len(value) > 5:
         raise ValueError("每单最多上传5张交付附件")

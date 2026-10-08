@@ -195,6 +195,13 @@ async def test_pending_cancel_request_blocks_delivery_review(
         headers=auth_header(publisher),
     )
     assert request.status_code == 200, request.text
+    dispute = await client.put(
+        f"/orders/{order['id']}/dispute",
+        headers=auth_header(publisher),
+    )
+    assert dispute.status_code == 409, dispute.text
+    assert "取消协商" in dispute.json()["detail"]
+
     review = await client.put(
         f"/orders/{order['id']}/claims/{claim_id}/review",
         json={"action": "approve"},

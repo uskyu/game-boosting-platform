@@ -1625,18 +1625,58 @@ class OrderService:
         Submitted claims are immutable until reviewed. A rejected claim returns
         to CLAIMED so its booster can replace the submitted evidence and retry.
         """
-        order = await self.get_order_by_id(order_id, user)
+        # Match deliver_order/create_cancel_request lock ordering: acquire the
+        # parent order before its claim so attachment mutations serialize with
+        # delivery and cancellation operations.
+        order_result = await self._db.execute(
+            select(Order).where(Order.id == order_id).with_for_update()
+        )
+        order = order_result.scalar_one_or_none()
+        if order is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="订单不存在",
+            )
 
+        # Preserve get_order_by_id's participant visibility checks while the
+        # parent order row is already locked.
+        order = await self.get_order_by_id(order_id, user)
+        if order.status == OrderStatus.CANCELLED:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="订单已取消，不能修改交付附件",
+            )
+        if order.status == OrderStatus.COMPLETED:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="订单已完成，不能修改交付附件",
+            )
+        if order.status not in (OrderStatus.PENDING, OrderStatus.LOCKED):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="只有进行中的订单才能修改交付附件",
+            )
+
+        # Keep the claim row lock until the request-scoped session commits. Both
+        # upload and delete mutate the JSON attachment list, so serializing by
+        # claim prevents concurrent requests from overwriting each other's updates.
         claim_result = await self._db.execute(
-            select(OrderClaim).where(
+            select(OrderClaim)
+            .where(
                 OrderClaim.order_id == order.id, OrderClaim.booster_id == user.id
             )
+            .with_for_update()
         )
         claim = claim_result.scalar_one_or_none()
         if claim is None:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="只有已报名的打手才能上传交付附件",
+            )
+        if await self._has_pending_cancel_request(order_id=order.id, claim_id=claim.id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="该名额有待处理的取消协商，请先由对方同意或拒绝",
             )
         if claim.status == ClaimLifecycleStatus.CANCELLED:
             raise HTTPException(
@@ -2891,7 +2931,26 @@ class OrderService:
         Raises:
             HTTPException: If order cannot be disputed.
         """
-        order = await self.get_order_by_id(order_id)
+        # Serialize dispute against create_cancel_request using the same parent
+        # order lock. If cancellation wins first, its pending row is visible here;
+        # if dispute wins first, the later cancellation request sees DISPUTED.
+        locked_result = await self._db.execute(
+            select(Order).where(Order.id == order_id).with_for_update()
+        )
+        order = locked_result.scalar_one_or_none()
+        if order is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="订单不存在",
+            )
+
+        # Only order owner, booster, or admin can dispute.
+        if user.role != UserRole.ADMIN and order.user_id != user.id and order.booster_id != user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="无权对此订单发起争议",
+            )
+
         if await self._has_pending_cancel_request(order_id=order.id):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -2902,13 +2961,6 @@ class OrderService:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="只有进行中、待确认或已完成的订单才能发起争议",
-            )
-
-        # Only order owner, booster, or admin can dispute
-        if user.role != UserRole.ADMIN and order.user_id != user.id and order.booster_id != user.id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="无权对此订单发起争议",
             )
 
         order.status = OrderStatus.DISPUTED

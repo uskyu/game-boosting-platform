@@ -40,6 +40,70 @@ async def _upload_proof(
     )
 
 
+async def test_delivery_attachments_can_be_removed_to_free_a_slot(
+    client: AsyncClient, admin_user: dict, booster_user: dict
+):
+    order = await _create_order(client, admin_user)
+    order_id = order["id"]
+    accepted = await client.put(
+        f"/orders/{order_id}/accept", headers=auth_header(booster_user)
+    )
+    assert accepted.status_code == 200, accepted.text
+
+    for index in range(5):
+        uploaded = await _upload_proof(client, booster_user, order_id, f"proof-{index}.png")
+        assert uploaded.status_code == 201, uploaded.text
+
+    sixth = await _upload_proof(client, booster_user, order_id, "proof-5.png")
+    assert sixth.status_code == 400
+    assert "最多上传5张" in sixth.json()["detail"]
+
+    deleted = await client.delete(
+        f"/orders/{order_id}/deliver-attachments/0",
+        headers=auth_header(booster_user),
+    )
+    assert deleted.status_code == 200, deleted.text
+    assert set(deleted.json()) == {"delivery_attachments"}
+    assert len(deleted.json()["delivery_attachments"]) == 4
+
+    replacement = await _upload_proof(client, booster_user, order_id, "replacement.png")
+    assert replacement.status_code == 201, replacement.text
+    detail = await client.get(f"/orders/{order_id}", headers=auth_header(booster_user))
+    assert detail.status_code == 200, detail.text
+    assert len(detail.json()["my_claim"]["delivery_attachments"]) == 5
+
+
+async def test_pending_cancel_request_blocks_attachment_upload_and_delete(
+    client: AsyncClient, admin_user: dict, booster_user: dict
+):
+    order = await _create_order(client, admin_user)
+    order_id = order["id"]
+    accepted = await client.put(
+        f"/orders/{order_id}/accept", headers=auth_header(booster_user)
+    )
+    assert accepted.status_code == 200, accepted.text
+
+    uploaded = await _upload_proof(client, booster_user, order_id, "existing.png")
+    assert uploaded.status_code == 201, uploaded.text
+    detail = await client.get(f"/orders/{order_id}", headers=auth_header(booster_user))
+    claim_id = detail.json()["my_claim"]["id"]
+    request = await client.post(
+        f"/orders/{order_id}/cancel-requests",
+        json={"claim_id": claim_id, "reason": "需要先协商", "compensation_amount": 0},
+        headers=auth_header(admin_user),
+    )
+    assert request.status_code == 200, request.text
+
+    blocked_upload = await _upload_proof(client, booster_user, order_id, "blocked.png")
+    assert blocked_upload.status_code == 409, blocked_upload.text
+    blocked_delete = await client.delete(
+        f"/orders/{order_id}/deliver-attachments/0",
+        headers=auth_header(booster_user),
+    )
+    assert blocked_delete.status_code == 409, blocked_delete.text
+    assert "取消协商" in blocked_delete.json()["detail"]
+
+
 async def test_reject_clears_submission_and_allows_booster_to_resubmit(
     client: AsyncClient, admin_user: dict, booster_user: dict
 ):

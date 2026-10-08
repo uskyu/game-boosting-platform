@@ -59,6 +59,7 @@ const rejectDraft = ref({ requestId: null, reason: '' })
 // 发起争议：正式弹窗替代 window.prompt（移动端 prompt 体验差且样式不统一）
 const showDisputeModal = ref(false)
 const disputeForm = ref({ reason: '' })
+const deletingDeliveryAttachmentIndex = ref(null)
 // 灯箱：订单画廊 / 交付附件各自独立索引
 const orderLightboxVisible = ref(false)
 const orderLightboxIndex = ref(0)
@@ -526,6 +527,26 @@ function onDeliverSuccess() {
   successMessage.value = '汇报已提交，等待订单发布人审核'
   // 刷新报名名单（不切换全局 loading，避免骨架屏闪断）；my_claim 随订单数据更新
   loadClaims()
+}
+
+async function handleDeleteDeliveryAttachment(index) {
+  if (deletingDeliveryAttachmentIndex.value != null || !Number.isInteger(Number(index))) return
+  const attachmentIndex = Number(index)
+  if (attachmentIndex < 0 || attachmentIndex >= deliveryAttachments.value.length) return
+
+  deletingDeliveryAttachmentIndex.value = attachmentIndex
+  errorMessage.value = ''
+  successMessage.value = ''
+  try {
+    const result = await ordersStore.deleteDeliverAttachment(order.value.id, attachmentIndex)
+    if (result.success) {
+      successMessage.value = '交付附件已删除'
+    } else {
+      errorMessage.value = result.error || '删除交付附件失败，请稍后重试'
+    }
+  } finally {
+    deletingDeliveryAttachmentIndex.value = null
+  }
 }
 
 async function handleConfirm() {
@@ -1546,7 +1567,9 @@ onUnmounted(() => {
         :order-id="order.id"
         :require-delivery-image="!!order?.require_delivery_image"
         :attached-count="myClaimAttachmentsCount"
+        :existing-attachments="myClaim?.delivery_attachments || []"
         @success="onDeliverSuccess"
+        @delete-existing="handleDeleteDeliveryAttachment"
       />
 
       <!-- 两步确认：详情页先弹「接手订单」，确认后订单进入进行中 -->

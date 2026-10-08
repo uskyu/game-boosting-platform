@@ -115,6 +115,8 @@ export const useOrdersStore = defineStore('orders', () => {
       order.priority ?? '',
       order.accept_available_at || '',
       order.my_claim?.status || '',
+      order.cancel_pending ?? '',
+      order.my_claim?.cancel_pending ?? '',
       order.compensation_amount ?? '',
       order.title || '',
       order.intro || '',
@@ -428,6 +430,26 @@ export const useOrdersStore = defineStore('orders', () => {
     }
   }
 
+  function syncOrderListDeliveryAttachments(orderId, attachments) {
+    const index = orders.value.findIndex((item) => Number(item.id) === Number(orderId))
+    if (index === -1) return
+
+    // Order list items may be slim summaries. Patch only fields they already expose
+    // instead of replacing the summary with a full detail response.
+    const summary = orders.value[index]
+    const updated = { ...summary }
+    let changed = false
+    if (Object.prototype.hasOwnProperty.call(summary, 'delivery_attachments')) {
+      updated.delivery_attachments = [...attachments]
+      changed = true
+    }
+    if (summary.my_claim && typeof summary.my_claim === 'object') {
+      updated.my_claim = { ...summary.my_claim, delivery_attachments: [...attachments] }
+      changed = true
+    }
+    if (changed) orders.value[index] = updated
+  }
+
   async function uploadDeliverAttachment(orderId, file) {
     error.value = null
     try {
@@ -437,17 +459,24 @@ export const useOrdersStore = defineStore('orders', () => {
         headers: { 'Content-Type': 'multipart/form-data' },
         timeout: 120000,
       })
-      if (currentOrder.value?.id === orderId) {
-        const existing = Array.isArray(currentOrder.value.delivery_attachments) ? [...currentOrder.value.delivery_attachments] : []
+      if (Number(currentOrder.value?.id) === Number(orderId)) {
+        const claim = currentOrder.value.my_claim
+        const savedAttachments = claim
+          ? claim.delivery_attachments
+          : currentOrder.value.delivery_attachments
+        const existing = Array.isArray(savedAttachments) ? [...savedAttachments] : []
         existing.push(response.data)
-        currentOrder.value = { ...currentOrder.value, delivery_attachments: existing }
-        const idx = orders.value.findIndex(o => o.id === orderId)
-        if (idx !== -1) orders.value[idx] = { ...orders.value[idx], delivery_attachments: [...existing] }
+        const updated = { ...currentOrder.value, delivery_attachments: existing }
+        if (claim) {
+          updated.my_claim = { ...claim, delivery_attachments: [...existing] }
+        }
+        currentOrder.value = updated
+        syncOrderListDeliveryAttachments(orderId, existing)
       }
       return { success: true, data: response.data }
     } catch (err) {
       error.value = err.message
-      return { success: false, error: err.message }
+      return { success: false, error: err.message, status: err.status }
     }
   }
 
@@ -455,9 +484,31 @@ export const useOrdersStore = defineStore('orders', () => {
     error.value = null
     try {
       const response = await api.delete(`/orders/${orderId}/deliver-attachments/${attachmentIndex}`)
-      const idx = orders.value.findIndex(o => o.id === orderId)
-      if (idx !== -1) orders.value[idx] = response.data
-      if (currentOrder.value?.id === orderId) currentOrder.value = response.data
+      const responseAttachments = response.data?.my_claim?.delivery_attachments
+        ?? response.data?.delivery_attachments
+      const claim = Number(currentOrder.value?.id) === Number(orderId)
+        ? currentOrder.value.my_claim
+        : null
+      const currentSavedAttachments = claim
+        ? claim.delivery_attachments
+        : currentOrder.value?.delivery_attachments
+      const currentAttachments = Array.isArray(currentSavedAttachments) ? currentSavedAttachments : []
+      const attachments = Array.isArray(responseAttachments)
+        ? [...responseAttachments]
+        : currentAttachments.filter((_, index) => index !== Number(attachmentIndex))
+      const responseClaim = response.data?.my_claim
+      if (Number(currentOrder.value?.id) === Number(orderId)) {
+        const updated = { ...currentOrder.value, delivery_attachments: [...attachments] }
+        if (claim || responseClaim) {
+          updated.my_claim = {
+            ...(claim || {}),
+            ...(responseClaim || {}),
+            delivery_attachments: [...attachments],
+          }
+        }
+        currentOrder.value = updated
+      }
+      syncOrderListDeliveryAttachments(orderId, attachments)
       return { success: true, data: response.data }
     } catch (err) {
       error.value = err.message

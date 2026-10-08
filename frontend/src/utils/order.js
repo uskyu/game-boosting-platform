@@ -190,6 +190,30 @@ export function getOrderStatusBadgeClass(status) {
   return getOrderStatusMeta(status).badgeClass
 }
 
+export function getHallOrderDisplayStatus(order, now = serverNow()) {
+  if (order?.is_archived) return '已归档'
+  if (order?.cancel_pending && ['LOCKED', 'DELIVERED'].includes(order?.status)) {
+    return getOrderStatusLabel('CANCELLING')
+  }
+  if (order?.claim_status === 'PAUSED') return '暂停接单'
+  if (order?.claim_status === 'FULL' || Number(order?.claimed_count ?? 0) >= Number(order?.max_claims ?? 0)) return '已满员'
+  if (order?.claim_status === 'CLOSED') return '已截止'
+  if (order?.deadline && new Date(order.deadline).getTime() <= now) return '已截止'
+  return getOrderStatusLabel(order?.status)
+}
+
+export function getHallOrderDisplayBadgeClass(order, now = serverNow()) {
+  if (order?.is_archived) return 'badge-cancelled'
+  if (order?.cancel_pending && ['LOCKED', 'DELIVERED'].includes(order?.status)) {
+    return getOrderStatusBadgeClass('CANCELLING')
+  }
+  if (order?.claim_status === 'CLOSED' || (order?.deadline && new Date(order.deadline).getTime() <= now)) {
+    return 'badge-cancelled'
+  }
+  if (order?.claim_status === 'PAUSED' || order?.claim_status === 'FULL') return 'badge-review'
+  return getOrderStatusBadgeClass(order?.status)
+}
+
 export function getUserRoleMeta(role) {
   return USER_ROLE_META[role] || {
     label: role || '未知角色',

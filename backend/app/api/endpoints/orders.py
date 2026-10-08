@@ -35,6 +35,7 @@ from app.schemas.order import (
     ClaimReviewRequest,
     OrderAttachment,
     OrderDeliveryAttachment,
+    OrderDeliveryAttachmentsResponse,
     OrderAnalyzeRequest,
     OrderClaimItem,
     OrderClaimListResponse,
@@ -600,7 +601,7 @@ async def upload_deliver_attachment(
 
 @router.delete(
     "/{order_id}/deliver-attachments/{attachment_index}",
-    response_model=OrderResponse,
+    response_model=OrderDeliveryAttachmentsResponse,
     summary="删除交付附件",
 )
 async def delete_deliver_attachment(
@@ -608,7 +609,7 @@ async def delete_deliver_attachment(
     attachment_index: int,
     current_user: CurrentUser,
     db: DatabaseSession,
-) -> OrderResponse:
+) -> OrderDeliveryAttachmentsResponse:
     """Delete a delivery proof image by index from the caller's own claim."""
     if current_user.role == UserRole.ADMIN:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="管理员不参与交付附件")
@@ -619,16 +620,17 @@ async def delete_deliver_attachment(
     if attachment_index < 0 or attachment_index >= len(items):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="附件索引越界")
     item = items.pop(attachment_index)
+    if not item.url.startswith("/uploads/deliveries/"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="附件路径无效")
     relative = item.url.removeprefix("/uploads/")
     upload_root = Path(settings.UPLOAD_DIR).resolve()
     file_path = (upload_root / relative).resolve()
-    if upload_root.resolve() not in file_path.parents:
+    if upload_root not in file_path.parents:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="附件路径无效")
-    file_path.unlink(missing_ok=True)
     claim.delivery_attachments = [entry.model_dump() for entry in items]
     await db.flush()
-    await db.refresh(order)
-    return OrderResponse.model_validate(order)
+    await run_after_commit(lambda: _cleanup_rejected_delivery_files([item.url]))
+    return OrderDeliveryAttachmentsResponse(delivery_attachments=items)
 
 
 @router.get(

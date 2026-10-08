@@ -8,7 +8,7 @@ import { useNotificationsStore } from '@/stores/notifications'
 import { useOrdersStore } from '@/stores/orders'
 import { useSiteStore } from '@/stores/site'
 import { formatCount, formatPayoutDelay, formatPrice, formatShortDate, getAcceptWaitMeta, serverNow } from '@/utils/display'
-import { ORDER_STATUS_OPTIONS, getOrderStatusBadgeClass, getOrderStatusLabel } from '@/utils/order'
+import { ORDER_STATUS_OPTIONS, getHallOrderDisplayBadgeClass, getHallOrderDisplayStatus } from '@/utils/order'
 import api from '@/utils/api'
 
 /**
@@ -72,25 +72,11 @@ const visibleOrders = computed(() => orders.value.filter((order) => {
 }))
 
 function getOrderDisplayStatus(order) {
-  if (order.is_archived) return '已归档'
-  if (order.claim_status === 'PAUSED') return '暂停接单'
-  if (order.claim_status === 'FULL' || Number(order.claimed_count ?? 0) >= Number(order.max_claims ?? 0)) return '已满员'
-  if (order.claim_status === 'CLOSED') return '已截止'
-  if (order.deadline && new Date(order.deadline).getTime() <= serverNow()) return '已截止'
-  // 取消协商挂起：大厅里也不再显示进行中
-  if (order.cancel_pending && (order.status === 'LOCKED' || order.status === 'DELIVERED')) {
-    return getOrderStatusLabel('CANCELLING')
-  }
-  return getOrderStatusLabel(order.status)
+  return getHallOrderDisplayStatus(order)
 }
 
 function getOrderDisplayBadgeClass(order) {
-  if (order.is_archived || order.claim_status === 'CLOSED' || (order.deadline && new Date(order.deadline).getTime() <= serverNow())) return 'badge-cancelled'
-  if (order.claim_status === 'PAUSED' || order.claim_status === 'FULL') return 'badge-review'
-  if (order.cancel_pending && (order.status === 'LOCKED' || order.status === 'DELIVERED')) {
-    return getOrderStatusBadgeClass('CANCELLING')
-  }
-  return getOrderStatusBadgeClass(order.status)
+  return getHallOrderDisplayBadgeClass(order)
 }
 const loading = computed(() => ordersStore.loading)
 const error = computed(() => ordersStore.error)
