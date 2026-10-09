@@ -90,14 +90,23 @@ async function handleStartConversation(target) {
   chatTarget.value = target
   chatLoading.value = true
   message.value = { type: '', text: '' }
-  const result = await chatStore.startConversation(targetUserId, order.value.id)
-  if (result.success) {
-    router.push({ name: 'chat-detail', params: { id: result.data.id } })
-  } else {
-    message.value = { type: 'error', text: result.error }
+  try {
+    const result = await chatStore.startConversation(targetUserId, order.value.id)
+    // stale 成功分支现在会带回 data；没有 data 时不能对 undefined 取 id
+    // （曾经导致按钮永久卡「打开中…」且不导航、无任何提示）。
+    if (result.success && result.data) {
+      router.push({ name: 'chat-detail', params: { id: result.data.id } })
+    } else if (result.success) {
+      message.value = { type: 'success', text: '会话已创建，请到消息中心查看' }
+    } else {
+      message.value = { type: 'error', text: result.error || '打开会话失败，请稍后重试' }
+    }
+  } catch (err) {
+    message.value = { type: 'error', text: err?.message || '打开会话失败，请稍后重试' }
+  } finally {
+    chatLoading.value = false
+    chatTarget.value = null
   }
-  chatLoading.value = false
-  chatTarget.value = null
 }
 
 // ── 灯箱：订单图片 / 汇报图片共用 ──

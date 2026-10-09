@@ -226,7 +226,11 @@ export const useOrdersStore = defineStore('orders', () => {
     } finally {
       if (!silent) {
         ordersUserFetchActive = false
-        loading.value = false
+        // 序号守卫：并发（详情页 loading 在飞时又来一次列表请求）时，
+        // 先到的旧响应不得把详情页的 loading 提前关掉，否则会闪出"订单不存在"空态。
+        if (requestSeq === ordersRequestSeq) {
+          loading.value = false
+        }
         if (ordersSilentRefreshQueued) {
           ordersSilentRefreshQueued = false
           queueMicrotask(() => {
@@ -237,11 +241,16 @@ export const useOrdersStore = defineStore('orders', () => {
     }
   }
 
-  async function fetchOrder(orderId) {
+  // options.silent：静默刷新详情（接单前 freshness 校验、WS 状态变化刷新）——
+  // 不切全局 loading，否则详情页骨架屏会把移动端 fixed 操作栏/弹窗一起卸载。
+  async function fetchOrder(orderId, options = {}) {
+    const silent = Boolean(options.silent)
     const requestSeq = ++orderDetailRequestSeq
-    loading.value = true
+    if (!silent) {
+      loading.value = true
+    }
     error.value = null
-    
+
     try {
       const response = await api.get(`/orders/${orderId}`)
       if (requestSeq !== orderDetailRequestSeq) {
@@ -256,7 +265,7 @@ export const useOrdersStore = defineStore('orders', () => {
       error.value = err.message
       return { success: false, error: err.message }
     } finally {
-      if (requestSeq === orderDetailRequestSeq) {
+      if (!silent && requestSeq === orderDetailRequestSeq) {
         loading.value = false
       }
     }
@@ -367,9 +376,10 @@ export const useOrdersStore = defineStore('orders', () => {
   }
 
   async function acceptOrder(orderId) {
-    loading.value = true
+    // 不切换全局 loading：详情页骨架屏会卸载移动端 fixed 操作栏，
+    // 接单请求期间整页再白一次（同 deliverOrder 的做法）。
     error.value = null
-    
+
     try {
       const response = await api.put(`/orders/${orderId}/accept`)
       
@@ -387,8 +397,6 @@ export const useOrdersStore = defineStore('orders', () => {
     } catch (err) {
       error.value = err.message
       return { success: false, error: err.message }
-    } finally {
-      loading.value = false
     }
   }
 
@@ -397,11 +405,19 @@ export const useOrdersStore = defineStore('orders', () => {
     if (!orderId) return
 
     const order = orders.value.find((item) => Number(item.id) === orderId)
-    if (!order) return
+    if (order) {
+      if (change.status != null) order.status = change.status
+      if (change.claim_status != null) order.claim_status = change.claim_status
+      if (change.claimed_count != null) order.claimed_count = Number(change.claimed_count)
+    }
 
-    if (change.status != null) order.status = change.status
-    if (change.claim_status != null) order.claim_status = change.claim_status
-    if (change.claimed_count != null) order.claimed_count = Number(change.claimed_count)
+    // 详情页打开的订单可能不在当前大厅列表里（筛选后未加载/未挂在大厅），
+    // 命中 currentOrder 时同样 patch，让详情页收到订单状态变化。
+    if (Number(currentOrder.value?.id) === orderId) {
+      if (change.status != null) currentOrder.value.status = change.status
+      if (change.claim_status != null) currentOrder.value.claim_status = change.claim_status
+      if (change.claimed_count != null) currentOrder.value.claimed_count = Number(change.claimed_count)
+    }
   }
 
   async function deliverOrder(orderId, deliveryNote) {

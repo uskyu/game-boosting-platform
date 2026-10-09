@@ -469,9 +469,11 @@ async function submitRejection() {
   }
 }
 
-// 报名名单：打手侧用于「已接单」按钮态；发布人侧用于审核面板（人人可发单模式自审）
+// 报名名单：发布人/管理员侧用于审核面板（人人可发单模式自审）。
+// 打手侧不请求：后端只允许发布人/管理员读名单，打手会稳定 403，
+// 而打手的按钮态靠订单响应里的 my_claim / booster_id 就够。
 async function loadClaims(orderId = order.value?.id, loadSeq = detailLoadSeq) {
-  if (!orderId || !currentUser.value || (!isOwner.value && !isBooster.value)) {
+  if (!orderId || !currentUser.value || (!isOwner.value && !isAdmin.value)) {
     return { success: true, skipped: true }
   }
   const result = await ordersStore.fetchClaims(orderId)
@@ -481,12 +483,31 @@ async function loadClaims(orderId = order.value?.id, loadSeq = detailLoadSeq) {
   return result
 }
 
-function openClaimModal() {
+async function openClaimModal() {
   if (hasClaimed.value || actionLoading.value || acceptWaitSeconds.value > 0) {
     return
   }
   errorMessage.value = ''
   successMessage.value = ''
+
+  // 接单前拉一次最新快照：详情页停留期间别人可能刚抢走（后端有行锁会确定性
+  // 拒绝，但先校验能立刻告知"手慢了"，不必等一个注定失败的往返）。
+  // silent 不切全局 loading，避免又把整页打回骨架屏。
+  const fresh = await ordersStore.fetchOrder(order.value.id, { silent: true })
+  if (!fresh.success || fresh.stale) {
+    // 单人单被抢走后非参与者就看不到订单了，这时刷新会 403/404；
+    // 别把"无权访问此订单"裸丢给用户，说清是被抢走或已下架。
+    showClaimModal.value = false
+    errorMessage.value = '该单刚刚被其他打手接走或已下架，请返回大厅看其他订单'
+    showClaimFailModal.value = true
+    return
+  }
+  if (!canAcceptOrder.value) {
+    showClaimModal.value = false
+    errorMessage.value = '手慢了，该单刚被其他打手接走或已停止接单，请看其他订单'
+    showClaimFailModal.value = true
+    return
+  }
   showClaimModal.value = true
 }
 
@@ -509,10 +530,16 @@ async function handleConfirmClaim() {
     await ordersStore.fetchOrder(order.value.id)
     await loadClaims()
   } else {
-    // 失败（含 409 重复确认）：保留页面顶部错误提示，同时中央强提醒
+    // 失败（含 409 重复确认）：保留页面顶部错误提示，同时中央强提醒。
+    // 必须刷新详情与名单：失败多半是名额刚被别人抢走，不刷新的话页面仍显示
+    // 陈旧的 0/1 与可点的「接手订单」，用户再点必然再拿同一个错误。
     showClaimModal.value = false
     errorMessage.value = result.error
     showClaimFailModal.value = true
+    await Promise.all([
+      ordersStore.fetchOrder(order.value.id, { silent: true }),
+      loadClaims(),
+    ])
   }
   actionLoading.value = false
 }
@@ -863,19 +890,30 @@ async function handleCancel() {
 }
 
 async function handleStartConversation() {
-  if (!chatTargetUserId.value) {
+  // 重入 guard：请求在飞时忽略连点，避免重复创建会话
+  if (!chatTargetUserId.value || chatLoading.value) {
     return
   }
 
   chatLoading.value = true
   errorMessage.value = ''
-  const result = await chatStore.startConversation(chatTargetUserId.value, order.value.id)
-  if (result.success) {
-    router.push({ name: 'chat-detail', params: { id: result.data.id } })
-  } else {
-    errorMessage.value = result.error
+  successMessage.value = ''
+  try {
+    const result = await chatStore.startConversation(chatTargetUserId.value, order.value.id)
+    if (result.success && result.data) {
+      router.push({ name: 'chat-detail', params: { id: result.data.id } })
+    } else if (result.success) {
+      // stale：会话其实已在服务端创建成功，只是本地会话上下文已切换
+      successMessage.value = '会话已创建，请到消息中心查看'
+    } else {
+      errorMessage.value = result.error || '打开会话失败，请稍后重试'
+    }
+  } catch (err) {
+    errorMessage.value = err?.message || '打开会话失败，请稍后重试'
+  } finally {
+    // 任何路径都要复位，否则按钮永久停在"打开中..."
+    chatLoading.value = false
   }
-  chatLoading.value = false
 }
 
 async function fetchReviews(orderId = order.value?.id, loadSeq = detailLoadSeq) {
@@ -961,6 +999,20 @@ watch(
   { immediate: true }
 )
 
+// 订单状态广播（别人抢单/取消/派单/名额变化）：详情页快照原本只在挂载时
+// 拉一次，停留再久也不会更新，用户就会拿着过期数据点「接手订单」然后吃一个
+// "订单已被抢走"。这里订阅 WS 事件静默刷新（不切全局 loading，避免整页骨架屏）。
+watch(() => chatStore.lastOrderStateChange, (change) => {
+  if (!change) return
+  if (Number(change.order_id) !== Number(props.id)) return
+  if (!order.value) return
+  ordersStore.fetchOrder(props.id, { silent: true }).then((result) => {
+    if (result.success && !result.stale) {
+      loadClaims()
+    }
+  }).catch(() => {})
+})
+
 // 手机解锁/切回应用时定时器刚从冻结中恢复：立刻校准时钟基准，别让接单
 // 按钮因为 displayTime 落后而多禁用一两秒（禁用条件本身是时间差计算）。
 function handleDetailVisibility() {
@@ -999,6 +1051,17 @@ onUnmounted(() => {
       <div class="grid gap-6 xl:grid-cols-[1.02fr_0.98fr]">
         <div class="skeleton h-72 !rounded-card"></div>
         <div class="skeleton h-72 !rounded-card"></div>
+      </div>
+      <!-- 加载期间移动端固定底栏：真实操作栏在下面的 order 分支里，loading 时
+           会被一起卸载，手机上就只剩一片（几乎不可见的）骨架屏、没有任何可点
+           元素。这里补一条常驻返回底栏，弱网上至少能退回去。 -->
+      <div
+        class="fixed inset-x-0 z-30 border-t border-line-1 bg-surface p-3 xl:hidden"
+        style="bottom: calc(56px + env(safe-area-inset-bottom))"
+      >
+        <button type="button" class="btn-secondary w-full py-3" @click="router.push({ name: 'orders' })">
+          返回列表
+        </button>
       </div>
     </div>
 

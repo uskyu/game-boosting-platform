@@ -644,6 +644,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function startConversation(targetUserId, orderId = null) {
+    await ensureAuthReady()
     const authContext = captureAuthContext()
     if (!isCurrentAuthContext(authContext)) return { success: false, stale: true }
     try {
@@ -651,7 +652,10 @@ export const useChatStore = defineStore('chat', () => {
         target_user_id: targetUserId,
         order_id: orderId,
       })
-      if (!isCurrentAuthContext(authContext)) return { success: true, stale: true }
+      // 会话其实已创建成功（401 → 拦截器刷新换 token 的间隙），只是上下文
+      // 已翻转：不回写 store，但要把载荷带回给调用方去导航，否则调用方对
+      // undefined 取 id 会抛 TypeError，按钮永久卡「打开中…」。
+      if (!isCurrentAuthContext(authContext)) return { success: true, stale: true, data: response.data }
       const conversation = replaceConversation(response.data)
       return { success: true, data: conversation }
     } catch (err) {

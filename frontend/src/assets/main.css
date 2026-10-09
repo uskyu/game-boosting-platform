@@ -834,12 +834,16 @@
 
   /* ──────────────────────────────
      骨架屏（底块 + 20% 白光扫过）
-     注：文档写 --surface-2 底块；亮色下 #fbfbfd 在白卡上不可辨，
-     落地用 --surface-3（输入框/胶囊底 token），暗色语义不变
+     注：文档写 --surface-2 底块。骨架块直接坐在页面底色 --bg 上，
+     亮色下 #f2f2f7 / #fbfbfd 与 #f5f5f7 对比度都接近 1:1（手机端纯白屏），
+     因此底块走 --surface-2 之外必须补 1px --line-1 描边把轮廓画出来；
+     --line-1 两态都有定义（亮 rgba(0,0,0,.06) / 暗 rgba(255,255,255,.10)），
+     暗色 --surface-2 (#2c2c2e) 压在 #000 上依旧清晰，不回归。
   ────────────────────────────── */
   .skeleton {
     @apply relative overflow-hidden rounded-tile;
-    background-color: var(--surface-3);
+    background-color: var(--surface-2);
+    border: 1px solid var(--line-1);
     background-image: linear-gradient(
       100deg,
       rgba(255, 255, 255, 0) 30%,
@@ -853,7 +857,8 @@
 
   .skeleton-line {
     @apply h-3.5 rounded-full;
-    background-color: var(--surface-3);
+    background-color: var(--surface-2);
+    border: 1px solid var(--line-1);
     background-image: linear-gradient(
       100deg,
       rgba(255, 255, 255, 0) 30%,
