@@ -913,6 +913,23 @@
   .announcement-content a { @apply font-medium text-primary underline underline-offset-2; }
   .announcement-content img { @apply my-3 max-h-72 max-w-full rounded-tile object-contain; }
 
+  /* 订单备注富文本：与公告同一套后端清洗后的 HTML，用 v-html 渲染。
+     只给内部元素排版，不动容器自身字号/字重/颜色——纯文本备注的显示
+     效果与改造前完全一致，HTML 备注才有段落/列表/链接等结构。 */
+  .rich-note p { @apply mb-2 last:mb-0; }
+  .rich-note h1,
+  .rich-note h2,
+  .rich-note h3 { @apply mb-1 mt-3 font-semibold text-ink-1 first:mt-0; }
+  .rich-note ul { @apply mb-2 list-disc space-y-1 pl-5; }
+  .rich-note ol { @apply mb-2 list-decimal space-y-1 pl-5; }
+  .rich-note blockquote { @apply my-2 border-l-2 border-primary pl-3 text-ink-1; }
+  .rich-note a { @apply font-medium text-primary underline underline-offset-2; }
+  .rich-note img { @apply my-2 max-h-72 max-w-full rounded-tile object-contain; }
+  .rich-note pre { @apply overflow-x-auto rounded-tile bg-surface-2 p-3 text-xs; }
+  .rich-note table { @apply my-2 w-full border-collapse text-xs; }
+  .rich-note th,
+  .rich-note td { @apply border border-line-1 px-2 py-1; }
+
   /* 弹窗移动变体：底部滑出面板，内容滚动且操作区可见 */
   @media (max-width: 767px) {
     .modal-scrim--sheet {

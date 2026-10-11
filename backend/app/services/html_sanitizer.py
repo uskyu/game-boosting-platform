@@ -247,6 +247,12 @@ class _AnnouncementSanitizer(HTMLParser):
                 value = _safe_url(value)
                 if value is None:
                     continue
+                # img 的 src 只放行绝对 URL 或根路径：裸相对地址（如 src=x）
+                # 会指向站内不存在的位置，浏览器显示碎图，直接剥掉更干净。
+                # a 的 href 保留相对地址（站内相对链接是合法用法）。
+                if tag == "img" and name == "src":
+                    if not value.lower().startswith(("http://", "https://", "/")):
+                        continue
             elif name == "srcset":
                 candidates = []
                 for candidate in _split_top_level(value, ","):
@@ -265,7 +271,12 @@ class _AnnouncementSanitizer(HTMLParser):
                 continue
             safe_attrs.append(f' {name}="{escape(value, quote=True)}"')
         if tag == "a" and any(attr.startswith(' href="') for attr in safe_attrs):
-            safe_attrs.extend([' target="_blank"', ' rel="noopener noreferrer"'])
+            # 已带 target/rel 的（例如二次清洗的输入）不重复追加，
+            # 保证 sanitize(sanitize(x)) == sanitize(x) 幂等。
+            if not any(attr.startswith(' target="') for attr in safe_attrs):
+                safe_attrs.append(' target="_blank"')
+            if not any(attr.startswith(' rel="') for attr in safe_attrs):
+                safe_attrs.append(' rel="noopener noreferrer"')
         return "".join(safe_attrs)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
@@ -342,3 +353,17 @@ def sanitize_announcement_html(value: str) -> str:
         else:
             parser.output.append(f"</{current}>")
     return "".join(parser.output).strip()
+
+
+def sanitize_note_html(value: str | None) -> str | None:
+    """订单备注等用户侧富文本：与公告同一套黑名单清洗。
+
+    备注列历史上存的是纯文本。读取路径（OrderResponse.notes）统一过一遍
+    清洗：老数据里的 ``<``、``&`` 会被转义、不会再被浏览器当成标签；新数据
+    里粘贴的 HTML 保留排版、剥掉可执行内容。写入路径（OrderCreate /
+    OrderUpdate 的 notes 入参）同样清洗，落库即安全 HTML。清洗幂等，
+    写一次读一次与只读一次结果一致。
+    """
+    if value is None:
+        return None
+    return sanitize_announcement_html(value)

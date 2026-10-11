@@ -5,14 +5,15 @@ Pydantic models for order-related API request/response validation.
 
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 
 from app.core.money import resolve_service_fee_rate
 from app.models.order import PaymentStatus, ClaimStatus
 from app.models.order_cancel_request import OrderCancelRequestStatus
 from app.schemas.serializers import serialize_datetime_utc
+from app.services.html_sanitizer import sanitize_note_html
 
 _FEE_CENT = Decimal("0.01")
 
@@ -245,10 +246,10 @@ class OrderCreate(BaseModel):
         description="优先级",
     )
 
-    notes: str | None = Field(
+    notes: Annotated[str | None, AfterValidator(sanitize_note_html)] = Field(
         default=None,
         max_length=1000,
-        description="备注信息",
+        description="备注信息（支持HTML，保存时与公告同样清洗）",
     )
 
     @field_validator("price", mode="before")
@@ -314,7 +315,9 @@ class OrderUpdate(BaseModel):
     service_type: str | None = Field(default=None, max_length=100)
     server: str | None = Field(default=None, max_length=100)
     priority: int | None = Field(default=None, ge=0, le=10)
-    notes: str | None = Field(default=None, max_length=1000)
+    notes: Annotated[str | None, AfterValidator(sanitize_note_html)] = Field(
+        default=None, max_length=1000
+    )
     payout_delay_days: int | None = Field(
         default=None,
         ge=0,
@@ -565,7 +568,9 @@ class OrderResponse(BaseModel):
     service_type: str | None = Field(default=None, description="服务类型")
     server: str | None = Field(default=None, description="游戏区服")
     priority: int = Field(description="优先级")
-    notes: str | None = Field(default=None, description="备注")
+    notes: Annotated[str | None, AfterValidator(sanitize_note_html)] = Field(
+        default=None, description="备注（返回前已按公告同套规则清洗的安全HTML）"
+    )
     created_at: datetime = Field(description="创建时间")
     updated_at: datetime = Field(description="更新时间")
     locked_at: datetime | None = Field(default=None, description="锁定时间")

@@ -661,7 +661,8 @@ onMounted(async () => {
           </div>
           <div v-if="order.notes" class="info-tile min-w-0">
             <p class="info-tile__label">备注</p>
-            <p class="info-tile__value break-words">{{ order.notes }}</p>
+            <!-- 备注支持HTML（与公告同一套后端清洗）：老数据纯文本已转义，新数据保留排版 -->
+            <div class="info-tile__value rich-note break-words" v-html="order.notes"></div>
           </div>
         </div>
 
