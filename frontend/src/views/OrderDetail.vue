@@ -364,7 +364,9 @@ const ownerClaims = computed(() => ordersStore.claims)
 const pendingReviewCount = computed(() => ownerClaims.value.filter((claim) => getClaimSettlementMeta(claim).isPendingReview).length)
 const pendingSettlementCount = computed(() => ownerClaims.value.filter((claim) => getClaimSettlementMeta(claim).isPendingSettlement).length)
 const showPayoutModal = ref(false)
-const payoutForm = ref({ claimId: null, amount: '', deduction: '', note: '' })
+// 审核固定结账金额（老板 2026-10-12：审核时不能调节结单多少钱，只能固定
+// 结账钱）：弹窗不再收集金额/扣除/备注，只按固定净额确认。
+const payoutForm = ref({ claimId: null })
 const payoutSubmitting = ref(false)
 const showRejectionModal = ref(false)
 const rejectionForm = ref({ claimId: null, reason: '' })
@@ -387,13 +389,7 @@ const serviceFeeView = computed(() => {
 })
 
 function openPayoutModal(claim) {
-  payoutForm.value = {
-    claimId: claim.id,
-    // 默认按扣除服务费后的净额打款；无服务费时为订单全额
-    amount: String(order.value?.net_amount ?? order.value?.price ?? ''),
-    deduction: '',
-    note: '',
-  }
+  payoutForm.value = { claimId: claim.id }
   showPayoutModal.value = true
 }
 
@@ -403,18 +399,9 @@ async function submitPayout() {
   }
   payoutSubmitting.value = true
   errorMessage.value = ''
+  // 固定结账：不带 amount/deduction/note，服务端按「订单报酬-服务费」的
+  // 固定净额结算（非管理员审核服务端同样忽略这些字段，双保险）。
   const payload = { action: 'approve' }
-  const amount = Number(payoutForm.value.amount)
-  if (payoutForm.value.amount !== '' && !Number.isNaN(amount)) {
-    payload.amount = amount
-  }
-  const deduction = Number(payoutForm.value.deduction)
-  if (order.value?.compensation_amount && payoutForm.value.deduction !== '' && !Number.isNaN(deduction)) {
-    payload.deduction = deduction
-  }
-  if (payoutForm.value.note.trim()) {
-    payload.note = payoutForm.value.note.trim()
-  }
   try {
     const result = await ordersStore.reviewClaim(order.value.id, payoutForm.value.claimId, payload)
     if (result.success) {
@@ -1696,25 +1683,21 @@ onUnmounted(() => {
               请再次确认 确认后立即到账接单人钱包!
             </p>
             <p class="mt-2 text-sm leading-6 text-ink-2">
-              通过后按填写金额从托管余额打款给对方；订单报酬
+              订单报酬
               <span class="font-semibold tabular-nums text-price">{{ formatOrderPrice(order) }}</span>
+              <template v-if="serviceFeeView">
+                ，已扣除服务费 {{ serviceFeeView.rate }}（-{{ formatMoneyFixed(serviceFeeView.fee) }}）
+              </template>
             </p>
-            <div class="mt-4 space-y-4">
-              <div>
-                <label class="label" for="payout-amount">打款金额</label>
-                <input id="payout-amount" v-model="payoutForm.amount" type="number" min="0" step="0.01" class="input" :placeholder="serviceFeeView ? '默认扣除服务费后的金额' : '默认订单全额'" />
-                <p v-if="serviceFeeView" class="mt-2 text-xs leading-5 text-ink-2">
-                  已扣除服务费 {{ serviceFeeView.rate }}（-{{ formatMoneyFixed(serviceFeeView.fee) }}），默认到账 {{ formatMoneyFixed(serviceFeeView.net) }}；需按全额发放可手动改回 {{ formatOrderPrice(order) }}。
-                </p>
-              </div>
-              <div v-if="order.compensation_amount">
-                <label class="label" for="payout-deduction">扣除炸单赔偿金（0 ~ {{ formatPrice(order.compensation_amount) }}）</label>
-                <input id="payout-deduction" v-model="payoutForm.deduction" type="number" min="0" :max="Number(order.compensation_amount)" step="0.01" class="input" placeholder="打炸了才扣，默认 0" />
-              </div>
-              <div>
-                <label class="label" for="payout-note">备注（可选）</label>
-                <textarea id="payout-note" v-model="payoutForm.note" rows="2" class="input" placeholder="随钱包流水留存"></textarea>
-              </div>
+            <!-- 固定结账金额：不可调节（老板 2026-10-12 要求删掉可调字段） -->
+            <div class="mt-4 rounded-tile border border-line-1 bg-surface-2 p-4">
+              <p class="info-tile__label">固定到账金额</p>
+              <p class="mt-1 text-2xl font-semibold tabular-nums text-price">
+                {{ formatMoneyFixed(Number(order.value?.net_amount ?? order.value?.price ?? 0)) }}
+              </p>
+              <p class="mt-2 text-xs leading-5 text-ink-2">
+                审核通过后按此固定金额立即结算到对方钱包，不可调整。
+              </p>
             </div>
             <div class="mt-6 flex gap-3">
               <button type="button" class="btn-secondary flex-1" :disabled="payoutSubmitting" @click="showPayoutModal = false">取消</button>

@@ -343,3 +343,98 @@ async def test_fee_rounding_matrix(
     order = resp.json()
     assert order["service_fee_amount"] == expected_fee
     assert order["net_amount"] == expected_net
+
+
+async def test_non_admin_review_is_forced_to_fixed_net_amount(
+    client: AsyncClient,
+    admin_user: dict,
+    registered_user: dict,
+    booster_user: dict,
+    db_session: AsyncSession,
+) -> None:
+    """发布人（非管理员）自审固定结账金额（老板 2026-10-12 口径）。
+
+    客户端传 amount/deduction/note 一律被服务端忽略：按「订单报酬-服务费」
+    的固定净额结算，不扣炸单赔偿金、不留备注。管理员兜底路径仍可调节
+    （test_review_explicit_amount_overrides_fee 覆盖）。
+    """
+    # 全局 8%、总开关关闭：所有新单按全局烙盘
+    await client.put(
+        "/admin/service-fee/settings",
+        json={"service_fee_rate": "8", "individual_service_fee_enabled": False},
+        headers=auth_header(admin_user),
+    )
+
+    user_id = registered_user["user"]["id"]
+    wallet_service = WalletService(db_session)
+    wallet = await wallet_service.get_or_create_wallet(user_id)
+    await wallet_service.credit(
+        wallet,
+        amount=Decimal("1000.00"),
+        tx_type=WalletTransactionType.ADMIN_ADJUST,
+        operator_id=1,
+        remark="test top-up",
+    )
+    await db_session.commit()
+
+    # 打手接单要冻结炸单赔偿金：先给打手充值（保证金门禁的既有行为）
+    booster_wallet = await wallet_service.get_or_create_wallet(booster_user["user"]["id"])
+    await wallet_service.credit(
+        booster_wallet,
+        amount=Decimal("100.00"),
+        tx_type=WalletTransactionType.ADMIN_ADJUST,
+        operator_id=1,
+        remark="test booster top-up",
+    )
+    await db_session.commit()
+
+    resp = await client.post(
+        "/orders/create",
+        json=_order_payload(compensation_amount="20"),
+        headers=auth_header(registered_user),
+    )
+    assert resp.status_code == 201, resp.text
+    order = resp.json()
+    assert order["service_fee_rate"] == "8.00"
+    assert order["net_amount"] == "138.00"
+    order_id = order["id"]
+
+    await client.put(f"/orders/{order_id}/accept", headers=auth_header(booster_user))
+    await client.put(f"/orders/{order_id}/deliver", headers=auth_header(booster_user))
+    resp = await client.get(
+        f"/orders/{order_id}/claims", headers=auth_header(registered_user)
+    )
+    claim = resp.json()["items"][0]
+
+    # 发布人试图按全额 150 + 扣 20 + 备注审核：全部被忽略
+    resp = await client.put(
+        f"/orders/{order_id}/claims/{claim['id']}/review",
+        json={
+            "action": "approve",
+            "amount": "150.00",
+            "deduction": "20.00",
+            "note": "想改就改",
+        },
+        headers=auth_header(registered_user),
+    )
+    assert resp.status_code == 200, resp.text
+    approved = resp.json()
+    assert approved["status"] == "SETTLED"
+
+    # 打手实收 = 固定净额 138.00（150 - 12 服务费，不扣赔偿）；
+    # 加上测试充值的 100 元，余额为 238.00
+    resp = await client.get("/wallet", headers=auth_header(booster_user))
+    assert resp.json()["available_balance"] == "238.00"
+
+    # 流水验证：入账 138.00 的 ORDER_INCOME 流水 remark 不含自定义备注
+    # （note 被忽略）；立即结算路径不写审核快照字段，属既有行为。
+    from app.models.wallet import WalletTransaction
+    tx_result = await db_session.execute(
+        select(WalletTransaction).where(
+            WalletTransaction.order_id == order_id,
+            WalletTransaction.type == WalletTransactionType.ORDER_INCOME,
+        )
+    )
+    income_tx = tx_result.scalar_one()
+    assert income_tx.amount == Decimal("138.00")
+    assert "想改就改" not in (income_tx.remark or "")

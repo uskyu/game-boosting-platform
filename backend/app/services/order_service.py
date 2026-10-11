@@ -2198,6 +2198,15 @@ class OrderService:
             result["_rejected_attachment_urls"] = rejected_attachment_urls
             return result
 
+        # 发布人自审固定结账金额（老板 2026-10-12 口径：审核时不能调节结单
+        # 多少钱，只能固定结账钱）：非管理员审核一律忽略客户端传来的
+        # 金额/扣除/备注，按「订单报酬-服务费」的固定净额结算；管理员兜底
+        # 路径（派单台）仍可逐笔调节。
+        if reviewer.role != UserRole.ADMIN:
+            payout_amount = None
+            deduction = None
+            note = None
+
         if payout_amount is not None:
             cap = await self._payout_cap(order)
             if payout_amount > cap:
