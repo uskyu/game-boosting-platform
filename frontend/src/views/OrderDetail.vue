@@ -115,9 +115,11 @@ const humanStatusSubtitle = computed(() => {
         : '完成后点击「提交结单」提交汇报',
       DELIVERED: myClaim.value.approved_at
         ? `审核已通过，${myClaim.value.settlement_due_at ? `预计 ${formatDateTime(myClaim.value.settlement_due_at)} 自动入账` : '等待自动入账'}`
-        : (formatDueCountdown(myClaim.value.settlement_due_at, now.value)
-          ? `已提交汇报，还需 ${formatDueCountdown(myClaim.value.settlement_due_at, now.value)} 自动入账钱包`
-          : '已提交汇报，等待订单发布人通过审核'),
+        : (myClaim.value.settlement_paused
+          ? '协商/争议处理中，到账倒计时已暂停'
+          : (formatDueCountdown(myClaim.value.settlement_due_at, now.value)
+            ? `已提交汇报，还需 ${formatDueCountdown(myClaim.value.settlement_due_at, now.value)} 自动入账钱包`
+            : '已提交汇报，等待订单发布人通过审核')),
       SETTLED: '报酬已结算，已计入钱包余额',
     }
     return map[myClaim.value.status] ?? ''
