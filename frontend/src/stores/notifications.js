@@ -167,11 +167,14 @@ export const useNotificationsStore = defineStore('notifications', () => {
     if (typeof options.isCurrent === 'function' && !options.isCurrent()) return
     const settings = useSettingsStore().preferences?.notification_settings || {}
     if (settings.global_dnd === true || settings[payload.type] === false) return
-    const sound = payload.type === 'ORDER_ACCEPTED'
-      ? 'claimed'
-      : isNewOrderNotification(payload)
-        ? 'new-order'
-        : null
+    // 订单被申请取消：播「有订单申请取消了请及时查看」（与来单/被接手同级的独立提示音）
+    const sound = payload.type === 'ORDER_CANCEL_REQUESTED'
+      ? 'cancel-requested'
+      : payload.type === 'ORDER_ACCEPTED'
+        ? 'claimed'
+        : isNewOrderNotification(payload)
+          ? 'new-order'
+          : null
     if (!sound) return
     useToastsStore().pushToast({
       title: payload.title,

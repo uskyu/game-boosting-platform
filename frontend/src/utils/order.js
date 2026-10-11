@@ -10,9 +10,10 @@ export const ORDER_STATUS_META = {
     description: '打手已接手订单，正在进行了。',
   },
   // 取消协商挂起：订单状态本身仍是 LOCKED/DELIVERED，界面改显「申请取消中」
+  // 老板 2026-10-11：徽标改红色（badge-disputed），与「争议中」同色系以示警示
   CANCELLING: {
     label: '申请取消中',
-    badgeClass: 'badge-review',
+    badgeClass: 'badge-disputed',
     description: '取消协商进行中，等待对方同意或拒绝。',
   },
   DELIVERED: {
@@ -104,6 +105,18 @@ import { formatDueCountdown, serverNow } from '@/utils/display'
 export function getClaimSettlementMeta(claim, now = serverNow()) {
   const status = claim?.status
   if (status === 'DELIVERED' && !claim?.approved_at) {
+    // 协商/争议处理中（settlement_paused）：结算倒计时被服务端暂停，
+    // 不再显示倒计时或「待发布人审核」，明示已暂停，避免用户以为系统卡住。
+    if (claim?.settlement_paused) {
+      return {
+        key: 'SETTLEMENT_PAUSED',
+        label: '协商/争议处理中，倒计时已暂停',
+        tagClass: 'tag !bg-warning-soft !text-warning',
+        isPendingReview: false,
+        isPendingSettlement: false,
+        countdown: null,
+      }
+    }
     // 已有固定结算时间的名额（AFTER_DELIVERY 快照）改显示「到账倒计时」，
     // 替换单纯的「待发布人审核」；AFTER_APPROVAL 尚未审核时到账时间未定，
     // 此时结算时间只在审核通过那一刻才生成，仍然显示等待审核。

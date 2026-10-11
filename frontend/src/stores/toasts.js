@@ -1,6 +1,6 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
-import { playChatMessage, playClaimed, playNewOrder } from '@/utils/sound'
+import { playCancelRequested, playChatMessage, playClaimed, playNewOrder } from '@/utils/sound'
 
 // 网页内轻提示（新消息推送等）：仅在新事件时弹出，几秒自动消失，可点 X 手动关
 let seq = 0
@@ -26,7 +26,7 @@ export const useToastsStore = defineStore('toasts', () => {
     announcedKeys.clear()
   }
 
-  // sound: 'new-order'（来单一声）| 'claimed'（被接手两声）| null（静默）
+  // sound: 'new-order'（来单一声）| 'claimed'（被接手两声）| 'cancel-requested'（取消申请播报）| null（静默）
   // dedupKey: 可选去重键，重复传入直接 return -1，不重复弹、不重复响
   function pushToast({ title, body = '', duration = 4500, to = null, sound = null, dedupKey = null }) {
     if (dedupKey != null) {
@@ -54,6 +54,8 @@ export const useToastsStore = defineStore('toasts', () => {
       playNewOrder()
     } else if (sound === 'claimed') {
       playClaimed()
+    } else if (sound === 'cancel-requested') {
+      playCancelRequested()
     } else if (sound === 'chat-message') {
       playChatMessage()
     }

@@ -117,7 +117,7 @@ const humanStatusSubtitle = computed(() => {
         ? `审核已通过，${myClaim.value.settlement_due_at ? `预计 ${formatDateTime(myClaim.value.settlement_due_at)} 自动入账` : '等待自动入账'}`
         : (formatDueCountdown(myClaim.value.settlement_due_at, now.value)
           ? `已提交汇报，还需 ${formatDueCountdown(myClaim.value.settlement_due_at, now.value)} 自动入账钱包`
-          : '已提交汇报，等待订单发布人审核打款'),
+          : '已提交汇报，等待订单发布人通过审核'),
       SETTLED: '报酬已结算，已计入钱包余额',
     }
     return map[myClaim.value.status] ?? ''
@@ -826,30 +826,40 @@ async function decideCancelRequest(request, action) {
   decisionError.value = ''
   errorMessage.value = ''
   successMessage.value = ''
-  const payload = { action }
-  const note = rejectDraft.value.requestId === request.id ? rejectDraft.value.reason.trim() : ''
-  if (action === 'reject' && note) {
-    payload.decision_reason = note
-  }
-  const result = await ordersStore.decideCancelRequest(order.value.id, request.id, payload)
-  if (result.success) {
-    rejectDraft.value = { requestId: null, reason: '' }
-    if (action === 'approve') {
-      successMessage.value = '已同意取消，该名额已结束并完成划转'
-      // 名额取消会改变订单状态与报名名单：一起刷新
-      await Promise.all([
-        ordersStore.fetchOrder(order.value.id),
-        loadClaims(),
-        loadCancelRequests(),
-      ])
-    } else {
-      successMessage.value = '已拒绝，订单与名额保持不变'
-      await loadCancelRequests()
+  try {
+    const payload = { action }
+    const note = rejectDraft.value.requestId === request.id ? rejectDraft.value.reason.trim() : ''
+    if (action === 'reject' && note) {
+      payload.decision_reason = note
     }
-  } else {
-    decisionError.value = result.error || '操作失败，请稍后重试'
+    const result = await ordersStore.decideCancelRequest(order.value.id, request.id, payload)
+    if (result.success) {
+      rejectDraft.value = { requestId: null, reason: '' }
+      if (action === 'approve') {
+        successMessage.value = '已同意取消，该名额已结束并完成划转'
+        // 名额取消会改变订单状态与报名名单：一起刷新。
+        // fetchOrder 必须 silent：非静默会把全局 loading 置真，叠加后端广播
+        // order_state_changed 触发的静默刷新后请求序号 +1，非静默请求回来时
+        // 序号不匹配、loading 永不复位，整页卡死在骨架屏（白屏）。
+        await Promise.all([
+          ordersStore.fetchOrder(order.value.id, { silent: true }),
+          loadClaims(),
+          loadCancelRequests(),
+        ])
+      } else {
+        successMessage.value = '已拒绝，订单与名额保持不变'
+        await loadCancelRequests()
+      }
+    } else {
+      decisionError.value = result.error || '操作失败，请稍后重试'
+    }
+  } catch (err) {
+    // 兜底：刷新链上任何异常都不能把按钮永久钉在「处理中…」，
+    // 且必须给用户可见的原因（decisionError 就地展示在协商记录里）。
+    decisionError.value = err?.message || '操作失败，请稍后重试'
+  } finally {
+    decisionSubmittingId.value = null
   }
-  decisionSubmittingId.value = null
 }
 
 // 取消协商记录：仅订单参与方（发单员 / 已接单打手）会拉，其他人不打扰后端
@@ -1282,7 +1292,7 @@ onUnmounted(() => {
             <span v-if="pendingSettlementCount" class="rounded-full bg-info/15 px-3 py-1 text-info">{{ pendingSettlementCount }} 条待自动结算</span>
           </div>
         </div>
-        <p class="mt-1 text-xs text-ink-3">未审核的汇报可点「审核打款」；审核通过后按结算时间自动结算。</p>
+        <p class="mt-1 text-xs text-ink-3">未审核的汇报可点「通过审核」；审核通过后按结算时间自动结算。</p>
         <div class="mt-4 space-y-3">
           <div v-for="claim in ownerClaims" :key="claim.id" class="info-tile flex flex-wrap items-center justify-between gap-3">
             <div class="min-w-0">
@@ -1329,7 +1339,7 @@ onUnmounted(() => {
               </div>
               <div v-if="claim.status === 'DELIVERED' && !claim.approved_at" class="flex shrink-0 gap-2">
                 <button type="button" class="btn-secondary !min-h-[36px] !px-3" @click="openRejectionModal(claim)">驳回重传</button>
-                <button type="button" class="btn-primary !min-h-[36px] !px-4" @click="openPayoutModal(claim)">审核打款</button>
+                <button type="button" class="btn-primary !min-h-[36px] !px-4" @click="openPayoutModal(claim)">通过审核</button>
               </div>
             </div>
           </div>
@@ -1376,7 +1386,7 @@ onUnmounted(() => {
             订单发布人已审核通过。<span v-if="myClaim.settlement_due_at">预计 {{ formatDateTime(myClaim.settlement_due_at) }} 自动入账<span v-if="myClaim.settle_hours_snapshot === 0">（立即）</span>。</span>
           </template>
           <template v-else>
-            已提交结束汇报，等待订单发布人审核打款，通过后报酬会计入余额。
+            已提交结束汇报，等待订单发布人通过审核，通过后报酬会计入余额。
           </template>
         </p>
         <p v-if="isDelivered && isOwner" class="message-warning mt-4 text-xs leading-6">
@@ -1482,16 +1492,6 @@ onUnmounted(() => {
               确认完成
             </button>
 
-            <!-- 申请平台介入：原「发起争议」，老板 2026-10-05 要求改中性样式与名称 -->
-            <button
-              v-if="(isOwner || isAssignedBooster) && ['LOCKED', 'DELIVERED'].includes(order.status)"
-              class="od-ops__chip btn-secondary w-full py-3"
-              :disabled="actionLoading"
-              @click="handleDispute"
-            >
-              申请平台介入
-            </button>
-
             <!-- 申请取消（原协商取消）：双方直接谈，无管理员介入；名额/我方名额在弹窗里选 -->
             <button
               v-if="canInitiateCancelRequest"
@@ -1500,6 +1500,16 @@ onUnmounted(() => {
               @click="openCancelRequestModal"
             >
               申请取消
+            </button>
+
+            <!-- 申请平台介入：原「发起争议」，老板 2026-10-05 要求改中性样式与名称 -->
+            <button
+              v-if="(isOwner || isAssignedBooster) && ['LOCKED', 'DELIVERED'].includes(order.status)"
+              class="od-ops__chip btn-secondary w-full py-3"
+              :disabled="actionLoading"
+              @click="handleDispute"
+            >
+              申请平台介入
             </button>
 
             <!-- 有待处理的取消协同时，提示进详情区处理（同意/拒绝） -->
@@ -1673,11 +1683,15 @@ onUnmounted(() => {
         </div>
       </teleport>
 
-      <!-- 发布人审核打款弹窗（人人可发单模式：交付由发单用户自审） -->
+      <!-- 发布人审核通过弹窗（人人可发单模式：交付由发单用户自审） -->
       <teleport to="body">
         <div v-if="showPayoutModal" class="modal-scrim" @click.self="!payoutSubmitting && (showPayoutModal = false)">
-          <div class="modal-card" role="dialog" aria-modal="true" aria-label="审核打款">
-            <h3 class="text-lg font-semibold text-ink-1">审核打款</h3>
+          <div class="modal-card" role="dialog" aria-modal="true" aria-label="通过审核">
+            <h3 class="text-lg font-semibold text-ink-1">通过审核</h3>
+            <!-- 二次确认提醒：打款不可撤销，置顶固定提示，别让用户误点 -->
+            <p class="message-warning mt-3 text-sm font-semibold leading-6">
+              请再次确认 确认后立即到账接单人钱包!
+            </p>
             <p class="mt-2 text-sm leading-6 text-ink-2">
               通过后按填写金额从托管余额打款给对方；订单报酬
               <span class="font-semibold tabular-nums text-price">{{ formatOrderPrice(order) }}</span>

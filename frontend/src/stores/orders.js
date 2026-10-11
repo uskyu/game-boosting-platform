@@ -665,7 +665,9 @@ export const useOrdersStore = defineStore('orders', () => {
       const index = cancelRequests.value.findIndex(
         (item) => Number(item.id) === Number(requestId),
       )
-      if (index !== -1) {
+      // 空值兜底：后端偶发返回空体（null/undefined）时不改动列表，
+      // 否则会把 null 插进协商记录，页面读 request.status 直接崩。
+      if (index !== -1 && updated != null) {
         cancelRequests.value.splice(index, 1, updated)
       }
       return { success: true, data: updated }

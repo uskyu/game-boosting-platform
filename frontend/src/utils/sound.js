@@ -1,4 +1,4 @@
-// 来单 / 被接手声音提示：优先播放静态语音（老板提供的 wav），
+// 来单 / 被接手 / 取消申请声音提示：优先播放静态语音（老板提供的 wav），
 // 失败时回退 WebAudio 合成音。静态音频启动即预热（preload=auto），
 // 播放直接用已缓冲的 <audio> 元素——不再每播一次从网络拉一遍文件。
 
@@ -16,11 +16,12 @@ function getStaticAudio(src) {
   return audio
 }
 
-// 预热两个播报语音：preload 不需要用户手势，页面加载即开始下载，
+// 预热播报语音：preload 不需要用户手势，页面加载即开始下载，
 // 等第一条订单到来时语音早已缓冲完毕（nginx 对 /sounds/ 另有 1 天强缓存）。
 if (typeof Audio !== 'undefined') {
   getStaticAudio('/sounds/new-order.wav')
   getStaticAudio('/sounds/order-claimed.wav')
+  getStaticAudio('/sounds/order-cancel-requested.wav')
 }
 
 function playStaticAudio(src) {
@@ -122,6 +123,12 @@ function playClaimedWebAudio() {
   beep({ frequency: 660, duration: 0.45, delay: 0.22, type: 'triangle' }).catch(() => {})
 }
 
+// 取消申请兜底音：与「被接手」区分开的下行双音，避免两种提示听起来一样
+function playCancelRequestedWebAudio() {
+  beep({ frequency: 740, duration: 0.2, type: 'triangle' }).catch(() => {})
+  beep({ frequency: 494, duration: 0.45, delay: 0.22, type: 'triangle' }).catch(() => {})
+}
+
 // 来单：优先播放静态音频，失败时回退到 WebAudio 琶音
 export function playNewOrder() {
   if (!playStaticAudio('/sounds/new-order.wav')) {
@@ -133,6 +140,14 @@ export function playNewOrder() {
 export function playClaimed() {
   if (!playStaticAudio('/sounds/order-claimed.wav')) {
     playClaimedWebAudio()
+  }
+}
+
+// 取消申请：优先播放静态音频（老板提供的「有订单申请取消了请及时查看」），
+// 失败时回退到 WebAudio 下行双音
+export function playCancelRequested() {
+  if (!playStaticAudio('/sounds/order-cancel-requested.wav')) {
+    playCancelRequestedWebAudio()
   }
 }
 

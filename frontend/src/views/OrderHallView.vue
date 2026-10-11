@@ -8,13 +8,14 @@ import { useNotificationsStore } from '@/stores/notifications'
 import { useOrdersStore } from '@/stores/orders'
 import { useSiteStore } from '@/stores/site'
 import { formatCount, formatPayoutDelay, formatPrice, formatShortDate, getAcceptWaitMeta, serverNow } from '@/utils/display'
-import { ORDER_STATUS_OPTIONS, getHallOrderDisplayBadgeClass, getHallOrderDisplayStatus } from '@/utils/order'
+import { getHallOrderDisplayBadgeClass, getHallOrderDisplayStatus } from '@/utils/order'
 import api from '@/utils/api'
 
 /**
  * 订单大厅（IA v2：/ = 产品心脏）。
- * 顶部统计条（待接单 / 进行中 / 今日完成，大数字）→ 状态筛选一行
+ * 顶部统计条（待接单 / 进行中 / 今日完成，大数字）
  * → 订单卡网格（桌面 2 列、移动 1 列）→ 空态 → 今日已接单区块。
+ * 大厅固定只展示「可抢」订单：历史/已完结订单不再出现在大厅，请到「我的订单」查看。
  * 卡片信息层级（减法）：价格最大最显眼 → 当前情况 X/Y
  * → 炸单赔偿 / 到账时效 chips → 底部次要信息行（需求摘要 · 游戏名 · 时间 · #id）+「查看详情 →」。
  * 接单两步走：整卡点击进详情，详情页内确认接单。
@@ -26,12 +27,6 @@ const chatStore = useChatStore()
 const notificationsStore = useNotificationsStore()
 const ordersStore = useOrdersStore()
 const siteStore = useSiteStore()
-
-const selectedStatus = ref('')
-const showHistory = ref(false)
-// The hall starts in claimable-only mode so stale dispatch records are not
-// presented as actionable orders before the user changes the filter.
-const openOnly = ref(true)
 
 // 抢单倒计时：每秒刷新 now，与 accept_available_at 求差得到剩余等待秒数
 // now 必须用服务器校准时间（serverNow），设备本地时钟偏差会误导显示
@@ -53,7 +48,6 @@ function getAcceptWaitLabel(order) {
 }
 
 const orders = computed(() => ordersStore.orders)
-const terminalStatuses = ['COMPLETED', 'CANCELLED', 'EXPIRED', 'ARCHIVED']
 
 function isOrderClaimable(order) {
   if (!order || !['PENDING', 'LOCKED'].includes(order.status) || order.claim_status !== 'OPEN' || order.is_archived) return false
@@ -63,13 +57,8 @@ function isOrderClaimable(order) {
   return !Number.isNaN(deadline.getTime()) && deadline.getTime() > serverNow()
 }
 
-const visibleOrders = computed(() => orders.value.filter((order) => {
-  if (showHistory.value) return true
-  // "Only claimable" is the safe default for the public hall. Non-claimable
-  // orders remain available through the dedicated history/my-orders views.
-  if (openOnly.value) return isOrderClaimable(order)
-  return !terminalStatuses.includes(order.status)
-}))
+// 大厅固定只显示「可抢」订单：非可抢/历史订单请到「我的订单」等专用页面查看。
+const visibleOrders = computed(() => orders.value.filter((order) => isOrderClaimable(order)))
 
 function getOrderDisplayStatus(order) {
   return getHallOrderDisplayStatus(order)
@@ -232,25 +221,15 @@ function buildSummary(order) {
 
 async function fetchOrders() {
   ordersStore.setFilters({
-    // 大厅与“我的派单”共用 Pinia 筛选状态，切换页面时必须清掉另一页的游戏/老板筛选。
+    // 大厅与“我的派单”共用 Pinia 筛选状态，切换页面时必须清掉另一页的游戏/老板筛选；
+    // status 固定传 ''，否则会继承 OrderList 页残留的状态筛选。
     gameName: '',
     bossContact: '',
-    status: selectedStatus.value,
+    status: '',
   })
   // 底部分页控件已下线：可抢订单集合很小，一次性拉全（pageSize=100，后端上限），
-  // 省掉翻页状态与额外请求；状态/仅看可抢/历史订单筛选仍走同一接口。
+  // 省掉翻页状态与额外请求。
   await ordersStore.fetchOrders({ slim: true, page: 1, pageSize: 100 })
-}
-
-function handleSearch() {
-  fetchOrders()
-}
-
-function resetFilters() {
-  selectedStatus.value = ''
-  openOnly.value = true
-  showHistory.value = false
-  handleSearch()
 }
 
 function goToOrder(orderId) {
@@ -415,28 +394,6 @@ onUnmounted(() => {
       <router-link v-if="isAuthenticated" :to="{ name: 'order-create' }" class="btn-primary flex shrink-0 items-center !px-5">发布订单</router-link>
     </section>
 
-    <!-- 手机单列，桌面紧凑横排并允许空间不足时回流。 -->
-
-    <section class="surface-card p-4 sm:p-5">
-      <form class="hall-filters flex min-w-0 flex-col gap-3 lg:flex-row lg:flex-wrap lg:items-end" @submit.prevent="handleSearch">
-        <div class="min-w-0 w-full lg:w-44">
-          <label class="label" for="hall-status">状态</label>
-          <select id="hall-status" v-model="selectedStatus" class="input h-11">
-            <option v-for="option in ORDER_STATUS_OPTIONS" :key="option.value" :value="option.value">{{ option.label }}</option>
-          </select>
-        </div>
-
-        <div class="flex min-w-0 flex-wrap items-center gap-3 lg:min-h-11">
-          <label class="filter-check"><input v-model="openOnly" type="checkbox" /> 仅看可抢</label>
-          <label class="filter-check"><input v-model="showHistory" type="checkbox" /> 历史订单</label>
-        </div>
-        <div class="flex min-w-0 flex-wrap items-center gap-2">
-          <button type="submit" class="btn-secondary !px-4">筛选</button>
-          <button type="button" class="btn-ghost !px-4" @click="resetFilters">重置</button>
-        </div>
-      </form>
-    </section>
-
     <div v-if="error" class="message-error">{{ error }}</div>
 
     <!-- 订单卡网格：桌面 2 列、移动 1 列 -->
@@ -526,7 +483,7 @@ onUnmounted(() => {
     <section v-else class="empty-state">
       <div class="empty-state__icon" aria-hidden="true">🗂️</div>
       <h2 class="empty-state__title">暂无匹配的订单</h2>
-      <p class="empty-state__copy">换个筛选条件试试，或者稍后回来看看新需求。</p>
+      <p class="empty-state__copy">大厅当前只展示可抢订单，稍后回来看看新需求。</p>
     </section>
 
     <!-- 今日已接单（原分页位置）：收起时只留标题栏，查看后最多展开 100 条 -->
