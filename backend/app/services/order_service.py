@@ -347,6 +347,10 @@ class OrderService:
             server=server,
             priority=0,
             notes=payload.notes,
+            # 服务卡订单同样按后台全局服务费费率烙盘（2026-10-11：此前漏了
+            # 费率解析，服务卡订单从不收服务费）。服务卡没有逐单字段，
+            # 总开关开/关都一律沿用全局费率。
+            service_fee_rate=await self._resolve_order_service_fee(None, None),
             max_claims=1,
             claimed_count=1,
             locked_at=datetime.now(timezone.utc),

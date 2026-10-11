@@ -469,3 +469,69 @@ async def test_public_service_fee_settings_readable_by_any_user(
         headers=auth_header(registered_user),
     )
     assert resp.status_code == 405
+
+
+async def test_service_card_order_bakes_global_rate(
+    client: AsyncClient,
+    admin_user: dict,
+    booster_user: dict,
+    db_session: AsyncSession,
+) -> None:
+    """服务卡订单同样按后台全局费率烙盘（2026-10-11：该路径此前漏了费率解析）。
+
+    服务卡没有逐单字段：总开关关闭按全局烙盘，开启时也一律沿用全局
+    （_resolve_order_service_fee(None, None) 两种开关态都返回全局费率）。
+    """
+    from app.models.booster_service import BoosterService
+    from app.models.game import Game, GameCategory, GamePlatform
+
+    await _set_global_rate(client, admin_user, "8")
+
+    async def _create_service() -> int:
+        game = Game(
+            name="服务费验证游戏",
+            category=GameCategory.MOBA,
+            platform=GamePlatform.PC,
+            service_template={},
+        )
+        db_session.add(game)
+        await db_session.commit()
+        await db_session.refresh(game)
+        service = BoosterService(
+            booster_id=booster_user["user"]["id"],
+            game_id=game.id,
+            title="服务费验证服务",
+            service_type="陪玩",
+            price_per_hour=Decimal("50.00"),
+            is_available=True,
+            order_count=0,
+        )
+        db_session.add(service)
+        await db_session.commit()
+        await db_session.refresh(service)
+        return service.id
+
+    # 总开关关闭：按全局 8% 烙盘
+    service_id = await _create_service()
+    resp = await client.post(
+        f"/services/{service_id}/order",
+        json={"price": "100.00"},
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["service_fee_rate"] == "8.00"
+    assert body["net_amount"] == "92.00"
+
+    # 总开关开启：服务卡无逐单字段，仍一律沿用全局
+    await _set_individual_fee_enabled(client, admin_user, True)
+    service_id = await _create_service()
+    resp = await client.post(
+        f"/services/{service_id}/order",
+        json={"price": "100.00"},
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["service_fee_rate"] == "8.00"
+    assert body["net_amount"] == "92.00"
