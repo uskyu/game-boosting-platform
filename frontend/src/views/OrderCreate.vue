@@ -5,7 +5,6 @@ import { useRoute, useRouter } from 'vue-router'
 import { useGamesStore } from '@/stores/games'
 import { useOrdersStore } from '@/stores/orders'
 import { useOrderTemplatesStore } from '@/stores/orderTemplates'
-import { useAuthStore } from '@/stores/auth'
 import { useServiceFeeStore } from '@/stores/serviceFee'
 import api from '@/utils/api'
 import { formatFeeRate, formatMoneyFixed, parsePayoutDelay, serviceFeeBreakdown } from '@/utils/display'
@@ -17,9 +16,9 @@ const route = useRoute()
 const gamesStore = useGamesStore()
 const ordersStore = useOrdersStore()
 const templatesStore = useOrderTemplatesStore()
-const authStore = useAuthStore()
 const serviceFeeStore = useServiceFeeStore()
-const isAdmin = computed(() => authStore.isAdmin)
+// 全局服务费设置与逐单开关对任何发布者生效（2026-10-11 修复：此前按管理员
+// 身份门禁，普通用户发单既没有逐单选项、也不按全局费率收服务费）
 const globalServiceFeeRate = ref(0)
 const individualServiceFeeEnabled = ref(false)
 const templateSheetOpen = ref(false)
@@ -239,7 +238,7 @@ async function prefillFromOrder(orderId, mode) {
     // 用户仍可继续选新图一起发布
     attachments: Array.isArray(order.attachments) ? [...order.attachments] : [],
   }
-  if (isAdmin.value && individualServiceFeeEnabled.value) {
+  if (individualServiceFeeEnabled.value) {
     const feeRate = Number(order.service_fee_rate || 0)
     formData.value.service_fee_enabled = feeRate > 0
     formData.value.service_fee_rate = feeRate > 0 ? String(order.service_fee_rate) : ''
@@ -301,7 +300,7 @@ async function publishOrder() {
 
   let serviceFeeRate = null
   // null/undefined 视同留空（走全局费率），只有显式填了值才校验
-  if (isAdmin.value && individualServiceFeeEnabled.value && formData.value.service_fee_enabled && formData.value.service_fee_rate != null && formData.value.service_fee_rate !== '') {
+  if (individualServiceFeeEnabled.value && formData.value.service_fee_enabled && formData.value.service_fee_rate != null && formData.value.service_fee_rate !== '') {
     serviceFeeRate = Number(formData.value.service_fee_rate)
     if (!Number.isFinite(serviceFeeRate) || serviceFeeRate < 0 || serviceFeeRate > 100) {
       errorMessage.value = '服务费费率需为 0-100 之间的数值'
@@ -328,7 +327,7 @@ async function publishOrder() {
     payload.compensation_amount = compensationAmount
   }
   // 从原单带过来的附件（URL 条目）直接进 payload；File 仍走创建后上传
-  if (isAdmin.value && individualServiceFeeEnabled.value) {
+  if (individualServiceFeeEnabled.value) {
     payload.service_fee_enabled = formData.value.service_fee_enabled
     if (serviceFeeRate != null) payload.service_fee_rate = serviceFeeRate
   }
@@ -373,14 +372,14 @@ watch(
 
 onMounted(async () => {
   await Promise.all([gamesStore.ensureCatalog(), templatesStore.fetchTemplates()])
-  if (isAdmin.value) {
-    const feeResult = await serviceFeeStore.fetchSettings(true)
-    if (feeResult.success) {
-      globalServiceFeeRate.value = Number(feeResult.data?.service_fee_rate ?? 0)
-      individualServiceFeeEnabled.value = Boolean(feeResult.data?.individual_service_fee_enabled)
-      if (individualServiceFeeEnabled.value && globalServiceFeeRate.value > 0) {
-        formData.value.service_fee_enabled = true
-      }
+  // 全局服务费设置任何发布者都要读：总开关关闭时本单按全局费率烙盘
+  // （表单给一句说明），开启时才渲染逐单「本单服务费」区块。
+  const feeResult = await serviceFeeStore.fetchSettings(true)
+  if (feeResult.success) {
+    globalServiceFeeRate.value = Number(feeResult.data?.service_fee_rate ?? 0)
+    individualServiceFeeEnabled.value = Boolean(feeResult.data?.individual_service_fee_enabled)
+    if (individualServiceFeeEnabled.value && globalServiceFeeRate.value > 0) {
+      formData.value.service_fee_enabled = true
     }
   }
   // 重建 / 续单：等 catalog 就绪后再拉原单，避免游戏下拉还没渲染
@@ -527,12 +526,12 @@ onMounted(async () => {
           </div>
         </div>
 
-        <div v-if="isAdmin && !individualServiceFeeEnabled" class="sm:col-span-2 rounded-tile border border-line-1 bg-surface-2 p-4 text-sm text-ink-2">
+        <div v-if="!individualServiceFeeEnabled" class="sm:col-span-2 rounded-tile border border-line-1 bg-surface-2 p-4 text-sm text-ink-2">
           后台已关闭单独服务费设置，本单按全局服务费收取{{ globalServiceFeeRate > 0 ? `（当前 ${globalServiceFeeRate}%）` : '（当前全局为 0%，不收取）' }}。
         </div>
 
-        <!-- 逐单服务费由后台总开关控制 -->
-        <div v-if="isAdmin && individualServiceFeeEnabled" class="sm:col-span-2 rounded-tile border border-line-1 p-4">
+        <!-- 逐单服务费由后台总开关控制（任何发布者一致） -->
+        <div v-if="individualServiceFeeEnabled" class="sm:col-span-2 rounded-tile border border-line-1 p-4">
           <div class="flex flex-wrap items-center justify-between gap-3">
             <div>
               <p class="text-sm font-semibold text-ink-1">本单服务费</p>

@@ -11,12 +11,18 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends
 
-from app.api.deps import DatabaseSession, get_current_admin
+from app.api.deps import CurrentUser, DatabaseSession, get_current_admin
 from app.models.user import User
 from app.schemas.service_fee import ServiceFeeSettingsResponse, ServiceFeeSettingsUpdate
 from app.services import service_fee_service
 
 router = APIRouter(prefix="/admin/service-fee", tags=["admin-service-fee"])
+
+# 发单页（任何登录用户）只读读取全局服务费设置：渲染「本单服务费」区块与
+# 到账预览。全局费率/逐单开关是平台级规则，不是管理员隐私；写操作仍走
+# 下面的 admin 路由（2026-10-11 修复：此前发单页只有管理员能读到设置，
+# 普通用户既看不到逐单选项、总开关对他们也形同不存在）。
+public_router = APIRouter(prefix="/service-fee", tags=["service-fee"])
 
 
 @router.get(
@@ -58,6 +64,24 @@ async def update_service_fee_settings(
     setting.updated_by = current_admin.id
     await db.flush()
     await db.refresh(setting)
+    return ServiceFeeSettingsResponse(
+        service_fee_rate=setting.service_fee_rate,
+        individual_service_fee_enabled=setting.individual_service_fee_enabled,
+        updated_at=setting.updated_at,
+    )
+
+
+@public_router.get(
+    "/settings",
+    response_model=ServiceFeeSettingsResponse,
+    summary="获取全局服务费设置（发单页用）",
+    description="任何登录用户可读：全局费率与逐单设置开关，用于发布表单渲染与到账预览。",
+)
+async def get_service_fee_settings_public(
+    db: DatabaseSession,
+    current_user: CurrentUser,
+) -> ServiceFeeSettingsResponse:
+    setting = await service_fee_service.get_or_create_service_fee_setting(db)
     return ServiceFeeSettingsResponse(
         service_fee_rate=setting.service_fee_rate,
         individual_service_fee_enabled=setting.individual_service_fee_enabled,

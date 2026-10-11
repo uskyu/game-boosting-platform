@@ -230,10 +230,10 @@ class OrderService:
             payout_delay_days=order_data.payout_delay_days,
             payout_delay_hours=order_data.payout_delay_hours,
             require_delivery_image=bool(order_data.require_delivery_image),
-            # 管理员新订单在服务端按后台逐单服务费开关解析费率；
-            # 总开关关闭时强制为 0，开启时再读取逐单设置。
+            # 新订单在服务端按后台逐单服务费开关解析费率并烙盘；
+            # 总开关关闭时一律按全局费率（任何发布者身份都一样）。
             service_fee_rate=await self._resolve_order_service_fee(
-                order_data.service_fee_enabled, order_data.service_fee_rate, user
+                order_data.service_fee_enabled, order_data.service_fee_rate
             ),
             status=OrderStatus.PENDING,
         )
@@ -716,20 +716,16 @@ class OrderService:
         self,
         enabled: bool | None,
         requested: Decimal | None,
-        user: User,
     ) -> Decimal | None:
-        """Resolve and snapshot the effective fee for a newly published admin order.
+        """解析并烙盘新发布订单的有效服务费费率（百分数）。
 
         - 逐单设置总开关关闭：所有新订单一律按后台全局费率烙盘，客户端传来的
           逐单字段全部忽略（老板 2026-10-05 口径：不允许单独设置 = 全部沿用
-          全局设置，而不是不收服务费）；
-        - 总开关开启：显式关闭=本单不收；手填费率=逐单优先；开启/未填=全局；
-        - 非管理员发布者：一律 None（不可设，按平台默认费率），防止用户发布人
-          抽成打手报酬。
+          全局设置，而不是不收服务费）。任何身份的发布者一视同仁——全局
+          设置是平台级营收规则，不是管理员个人设置（2026-10-11 修复：此前
+          非管理员发布者一律返回 None，导致他们的订单从不收服务费）；
+        - 总开关开启：显式关闭=本单不收；手填费率=逐单优先；开启/未填=全局。
         """
-        if user.role != UserRole.ADMIN:
-            return None
-
         from app.services import service_fee_service
 
         setting = await service_fee_service.get_or_create_service_fee_setting(self._db)
@@ -3365,18 +3361,15 @@ class OrderService:
                 requirements=self._extract_ai_detail_requirements(ai_tags_input),
             )
 
-        # 服务费仅管理员可改：非管理员（含订单创建者本人）的编辑请求
-        # 显式剔除该字段，值保持不变
-        if user.role != UserRole.ADMIN:
-            update_data.pop("service_fee_rate", None)
-            update_data.pop("service_fee_enabled", None)
-        elif "service_fee_enabled" in update_data or "service_fee_rate" in update_data:
+        # 服务费逐单字段（任何发布者身份一致）：后台总开关关闭时按当前全局
+        # 重新烙盘；开启后开+手填=手填值、开+未填=全局、逐单关=不收取。
+        # 两个字段都不传时下方循环不会碰到费率，值保持不变。
+        if "service_fee_enabled" in update_data or "service_fee_rate" in update_data:
             # 开关/费率组合解析（两个字段都不传时下方循环不会碰到费率）：
             # 后台总开关关闭=按当前全局重新烙盘；开启后开+手填=手填值、开+未填=全局、逐单关=不收取
             update_data["service_fee_rate"] = await self._resolve_order_service_fee(
                 update_data.get("service_fee_enabled"),
                 update_data.get("service_fee_rate"),
-                user,
             )
             update_data.pop("service_fee_enabled", None)
 

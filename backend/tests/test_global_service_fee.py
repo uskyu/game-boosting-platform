@@ -5,7 +5,8 @@
 - 管理员发单：开关开+不填费率 → 按全局烙盘；开关开+手填 → 手填优先；
   开关关 → 不收取；
 - 烙盘保护：全局费率调整后，已发布订单的结算/回显不变；
-- 编辑订单同理；非管理员编辑无法改服务费。
+- 编辑订单同理；非管理员与管理员同口径（2026-10-11 修复：此前非管理员
+  发布者一律不收服务费，全局设置只对老板自己的账号生效）。
 """
 
 from decimal import Decimal
@@ -338,13 +339,17 @@ async def test_edit_order_keeps_rate_when_fee_fields_omitted(
     assert resp.json()["service_fee_rate"] == "8.00"
 
 
-async def test_non_admin_publish_ignores_service_fee_even_with_global(
+async def test_non_admin_publish_bakes_global_rate_like_admin(
     client: AsyncClient,
     admin_user: dict,
     registered_user: dict,
     db_session: AsyncSession,
 ):
-    """普通用户发单即使全局已设费率也不收取（服务端强制清空）。"""
+    """普通用户发单与管理员一致：总开关关闭时按全局费率烙盘（2026-10-11 修复）。
+
+    修复前服务端对非管理员发布者一律返回 None，导致全局服务费设置只对
+    老板自己的账号生效——其他用户发单既没有逐单选项、也不收服务费。
+    """
     from app.models.wallet import WalletTransactionType
     from app.services.wallet_service import WalletService
 
@@ -362,6 +367,7 @@ async def test_non_admin_publish_ignores_service_fee_even_with_global(
     )
     await db_session.commit()
 
+    # 总开关关闭：客户端传来的逐单字段被忽略，按全局 8% 烙盘
     resp = await client.post(
         "/orders/create",
         json=_order_payload(service_fee_enabled=True, service_fee_rate="50"),
@@ -369,14 +375,97 @@ async def test_non_admin_publish_ignores_service_fee_even_with_global(
     )
     assert resp.status_code == 201
     order = resp.json()
-    assert order["service_fee_rate"] == "0.00"
-    assert order["net_amount"] == "150.00"
+    assert order["service_fee_rate"] == "8.00"
+    assert order["net_amount"] == "138.00"
 
-    # 编辑自己的单也无法开启
+    # 编辑自己的单同样按当前全局重新烙盘（逐单字段仍被忽略）
     resp = await client.put(
         f"/orders/{order['id']}",
         json={"service_fee_enabled": True, "service_fee_rate": "50"},
         headers=auth_header(registered_user),
     )
     assert resp.status_code == 200
+    assert resp.json()["service_fee_rate"] == "8.00"
+
+
+async def test_non_admin_publish_respects_individual_switch(
+    client: AsyncClient,
+    admin_user: dict,
+    registered_user: dict,
+    db_session: AsyncSession,
+):
+    """总开关开启后，普通用户发单同样可逐单关闭/自定义费率（与管理员一致）。"""
+    from app.models.wallet import WalletTransactionType
+    from app.services.wallet_service import WalletService
+
+    await _set_global_rate(client, admin_user, "8")
+    await _set_individual_fee_enabled(client, admin_user, True)
+
+    user_id = registered_user["user"]["id"]
+    wallet_service = WalletService(db_session)
+    wallet = await wallet_service.get_or_create_wallet(user_id)
+    await wallet_service.credit(
+        wallet,
+        amount=Decimal("1000.00"),
+        tx_type=WalletTransactionType.ADMIN_ADJUST,
+        operator_id=1,
+        remark="test top-up",
+    )
+    await db_session.commit()
+
+    # 留空费率 → 按全局 8%
+    resp = await client.post(
+        "/orders/create",
+        json=_order_payload(service_fee_enabled=True),
+        headers=auth_header(registered_user),
+    )
+    assert resp.status_code == 201
+    assert resp.json()["service_fee_rate"] == "8.00"
+
+    # 手填费率 → 逐单优先
+    resp = await client.post(
+        "/orders/create",
+        json=_order_payload(service_fee_enabled=True, service_fee_rate="20"),
+        headers=auth_header(registered_user),
+    )
+    assert resp.status_code == 201
+    assert resp.json()["service_fee_rate"] == "20.00"
+
+    # 显式关闭 → 本单不收
+    resp = await client.post(
+        "/orders/create",
+        json=_order_payload(service_fee_enabled=False),
+        headers=auth_header(registered_user),
+    )
+    assert resp.status_code == 201
     assert resp.json()["service_fee_rate"] == "0.00"
+    assert resp.json()["net_amount"] == "150.00"
+
+
+async def test_public_service_fee_settings_readable_by_any_user(
+    client: AsyncClient,
+    admin_user: dict,
+    registered_user: dict,
+) -> None:
+    """发单页读取全局服务费设置的公共端点：任何登录用户 200，写仍 403。"""
+    await _set_global_rate(client, admin_user, "8")
+
+    resp = await client.get(
+        "/service-fee/settings", headers=auth_header(registered_user)
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["service_fee_rate"] == "8.00"
+    assert body["individual_service_fee_enabled"] is False
+
+    # 未登录不可读
+    resp = await client.get("/service-fee/settings")
+    assert resp.status_code == 401
+
+    # 公共端点只读：普通用户不能通过它改设置
+    resp = await client.put(
+        "/service-fee/settings",
+        json={"service_fee_rate": "50"},
+        headers=auth_header(registered_user),
+    )
+    assert resp.status_code == 405
