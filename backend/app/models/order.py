@@ -8,7 +8,7 @@ from decimal import Decimal
 from enum import Enum as PyEnum
 from typing import TYPE_CHECKING, Any, Optional
 
-from sqlalchemy import JSON, Enum, ForeignKey, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, Enum, ForeignKey, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -197,6 +197,17 @@ class Order(Base):
         index=True,
     )
 
+    # 争议前状态快照：dispute_order 置 DISPUTED 前记住原状态，管理员撤销争议
+    # （cancel_dispute）时据此恢复；无争议时为 NULL。
+    pre_dispute_status: Mapped[OrderStatus | None] = mapped_column(
+        Enum(
+            OrderStatus,
+            name="order_status_enum",
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        nullable=True,
+    )
+
     # Detailed description provided by customer
     description_raw: Mapped[str | None] = mapped_column(
         Text,
@@ -374,5 +385,11 @@ class OrderClaim(Base):
     settlement_mode_snapshot: Mapped[str | None] = mapped_column(String(20), nullable=True)
     settle_hours_snapshot: Mapped[int | None] = mapped_column(nullable=True)
     settlement_due_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # 取消协商挂起/订单争议期间暂停该名额的到账倒计时：调度器只结算
+    # settlement_paused=False 的 DELIVERED 名额；处理完（协商拒绝/同意、
+    # 争议撤销）后置回 False 恢复计时。
+    settlement_paused: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
     settled_at: Mapped[datetime | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=func.now(), server_default=func.now(), nullable=False)

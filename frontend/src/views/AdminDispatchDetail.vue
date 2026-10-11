@@ -529,6 +529,22 @@ async function interveneOrder(action) {
   }
 }
 
+// ── 争议处理：取消争议（撤销平台介入，PUT /admin/orders/{id}/dispute/cancel） ──
+
+async function cancelDispute() {
+  if (!window.confirm('撤销后订单将回到争议前状态，已结订单无法撤销，确定撤销？')) return
+  actionKey.value = 'cancel-dispute'
+  try {
+    const response = await api.put(`/admin/orders/${order.value.id}/dispute/cancel`)
+    order.value = response.data
+    message.value = { type: 'success', text: '争议已撤销，订单已回到争议前状态' }
+  } catch (err) {
+    message.value = { type: 'error', text: err.message || '撤销失败' }
+  } finally {
+    actionKey.value = ''
+  }
+}
+
 async function deleteThisOrder() {
   if (!window.confirm(`确定删除订单 #${order.value.id} 吗？此操作不可恢复。`)) return
   actionKey.value = 'delete'
@@ -1034,6 +1050,14 @@ onMounted(async () => {
             >
               {{ actionKey === 'intervene-CANCELLED' ? '处理中…' : '取消订单退款' }}
             </button>
+            <button
+              type="button"
+              class="btn-secondary min-h-[44px] !px-4 !py-2"
+              :disabled="actionKey === 'cancel-dispute'"
+              @click="cancelDispute"
+            >
+              {{ actionKey === 'cancel-dispute' ? '撤销中…' : '取消争议' }}
+            </button>
           </template>
           <button
             v-if="['PENDING', 'LOCKED', 'DELIVERED'].includes(order.status)"
@@ -1059,11 +1083,11 @@ onMounted(async () => {
 
     <!-- 审核弹窗：查看汇报 + 选择打款金额 -->
     <div v-if="reviewModal" class="modal-scrim modal-scrim--sheet" @click.self="closeReviewModal">
-      <div class="modal-card modal-sheet" role="dialog" aria-modal="true" aria-label="审核打手汇报">
+      <div class="modal-card modal-sheet" role="dialog" aria-modal="true" aria-label="通过审核">
         <div class="relative z-10">
           <div class="flex items-start justify-between gap-3">
             <div class="min-w-0">
-              <h3 class="text-2xl font-semibold text-ink-1">审核 · {{ claimBoosterName(reviewModal.claim) }}</h3>
+              <h3 class="text-2xl font-semibold text-ink-1">通过审核 · {{ claimBoosterName(reviewModal.claim) }}</h3>
               <p class="mt-2 text-sm text-ink-2">
                 单号 #{{ reviewModal.claim.id }} · 报酬 <span class="font-semibold tabular-nums text-price">{{ priceLabel(order) }}</span>
                 <template v-if="reviewModal.claim.status === 'SETTLED'"> · 已结算</template>
@@ -1072,6 +1096,11 @@ onMounted(async () => {
             </div>
             <button type="button" class="btn-ghost shrink-0 !px-4 !py-2" @click="closeReviewModal">关闭</button>
           </div>
+
+          <!-- 二次确认提醒：打款不可撤销，置顶固定提示，别让用户误点 -->
+          <p class="message-warning mt-3 text-sm font-semibold leading-6">
+            请再次确认 确认后立即到账接单人钱包!
+          </p>
 
           <div class="mt-5">
             <p class="info-tile__label">汇报说明</p>

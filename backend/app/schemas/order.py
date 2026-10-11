@@ -758,6 +758,11 @@ class OrderClaimItem(BaseModel):
     cancel_pending: bool = Field(
         default=False, description="该名额是否有待处理的取消协商"
     )
+    # 取消/争议处理中：该名额的到账倒计时已暂停，结算到期时间暂不生效，
+    # 处理完（协商拒绝/同意、争议撤销）后恢复。
+    settlement_paused: bool = Field(
+        default=False, description="取消/争议处理中，倒计时已暂停"
+    )
     # 该打手在取消协商里可扣出的款项合计（冻结赔付+可用余额+保证金），
     # 仅报名名单返回；发单员据此设赔偿金额上限，无押金打手也能参与。
     booster_compensation_available: Decimal | None = Field(

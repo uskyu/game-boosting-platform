@@ -149,7 +149,12 @@ async def scan_due_payouts(
     query = (
         select(OrderClaim, Order)
         .join(Order, OrderClaim.order_id == Order.id)
-        .where(OrderClaim.status == ClaimLifecycleStatus.DELIVERED)
+        .where(
+            OrderClaim.status == ClaimLifecycleStatus.DELIVERED,
+            # 取消协商/订单争议处理期间倒计时已暂停（settlement_paused=True），
+            # 这些名额即使 due_at 到期也不自动结算，处理完后再恢复计时。
+            OrderClaim.settlement_paused.is_(False),
+        )
     )
     candidates = await db.execute(query.order_by(OrderClaim.id.asc()))
     rows = candidates.all()
@@ -226,6 +231,10 @@ async def scan_due_payouts(
                 if locked_order is None or locked_claim is None:
                     continue
                 if locked_claim.status != ClaimLifecycleStatus.DELIVERED:
+                    continue
+                # 扫描后、锁行前可能刚好发起取消协商/争议：倒计时被暂停，
+                # 本期限额不结算，等处理完恢复后再走正常到期流程。
+                if locked_claim.settlement_paused:
                     continue
 
                 locked_deposit_on = await deposit_service.is_deposit_enabled(db)

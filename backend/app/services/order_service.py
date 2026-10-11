@@ -944,6 +944,7 @@ class OrderService:
         booster_nickname: str | None = None,
         booster_email: str | None = None,
         booster_deposit_balance: Decimal | None = None,
+        booster_compensation_available: Decimal | None = None,
     ) -> dict[str, Any]:
         """Serialize a claim into the public API contract shape."""
         return {
@@ -969,6 +970,8 @@ class OrderService:
             "settled_at": claim.settled_at,
             "is_first": order_booster_id == claim.booster_id,
             "booster_deposit_balance": booster_deposit_balance,
+            "booster_compensation_available": booster_compensation_available,
+            "settlement_paused": bool(claim.settlement_paused),
         }
 
     async def _claim_view_with_user(
@@ -1008,9 +1011,21 @@ class OrderService:
         if claim is None:
             return None
         wallet_result = await self._db.execute(
-            select(Wallet.deposit_balance).where(Wallet.user_id == booster.id)
+            select(Wallet).where(Wallet.user_id == booster.id)
         )
-        deposit_balance = wallet_result.scalar_one_or_none()
+        wallet = wallet_result.scalar_one_or_none()
+        deposit_balance = wallet.deposit_balance if wallet is not None else None
+        # 打手「申请取消」弹窗要按可扣款项上限填赔偿金额：冻结赔付+可用余额
+        # +保证金，与报名名单（list_order_claims）同一口径。
+        if wallet is None:
+            compensation_available: Decimal | None = _ZERO
+        else:
+            compensation_available = await self._cancel_compensation_collectible(
+                get_wallet_service(self._db),
+                wallet,
+                order_id=order.id,
+                booster_id=booster.id,
+            )
         return self._serialize_claim(
             claim,
             order_booster_id=order.booster_id,
@@ -1020,6 +1035,7 @@ class OrderService:
             booster_deposit_balance=(
                 _to_decimal(deposit_balance) if deposit_balance is not None else _ZERO
             ),
+            booster_compensation_available=compensation_available,
         )
 
     async def claims_view_for_booster(
@@ -1037,10 +1053,21 @@ class OrderService:
         )
         claims = {claim.order_id: claim for claim in result.scalars().all()}
         wallet_result = await self._db.execute(
-            select(Wallet.deposit_balance).where(Wallet.user_id == booster.id)
+            select(Wallet).where(Wallet.user_id == booster.id)
         )
-        deposit_balance = wallet_result.scalar_one_or_none()
-        deposit_amount = _to_decimal(deposit_balance) if deposit_balance is not None else _ZERO
+        wallet = wallet_result.scalar_one_or_none()
+        deposit_amount = (
+            _to_decimal(wallet.deposit_balance) if wallet is not None else _ZERO
+        )
+        # 可扣款项合计按订单逐个算（冻结赔付是 per-order/booster 作用域），
+        # 批量聚合为一条流水查询，避免每单一查。
+        compensation_by_order: dict[int, Decimal] = {}
+        if wallet is not None:
+            compensation_by_order = (
+                await self._cancel_compensation_collectible_batch(
+                    wallet, booster_id=booster.id, order_ids=order_ids
+                )
+            )
         views: dict[int, dict[str, Any]] = {}
         for order in orders:
             claim = claims.get(order.id)
@@ -1053,6 +1080,9 @@ class OrderService:
                 booster_nickname=booster.username,
                 booster_email=booster.email,
                 booster_deposit_balance=deposit_amount,
+                booster_compensation_available=compensation_by_order.get(
+                    order.id, _ZERO
+                ),
             )
         return views
 
@@ -1308,13 +1338,34 @@ class OrderService:
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
+        claim_rows = result.all()
+
+        # 打手「申请取消」弹窗要按可扣款项上限填赔偿金额：冻结赔付+可用余额
+        # +保证金。整页一次钱包查询 + 一条流水聚合（与报名名单同口径），
+        # 不再出现「我的报名看不到可扣款项」。
+        wallet_result = await self._db.execute(
+            select(Wallet).where(Wallet.user_id == booster_id)
+        )
+        wallet = wallet_result.scalar_one_or_none()
+        compensation_by_order: dict[int, Decimal] = {}
+        if wallet is not None:
+            compensation_by_order = (
+                await self._cancel_compensation_collectible_batch(
+                    wallet,
+                    booster_id=booster_id,
+                    order_ids=[order.id for _claim, order in claim_rows],
+                )
+            )
 
         items: list[dict[str, Any]] = []
-        for claim, order in result.all():
+        for claim, order in claim_rows:
             item = self._serialize_claim(
                 claim,
                 order_booster_id=order.booster_id,
                 order_status=order.status,
+                booster_compensation_available=compensation_by_order.get(
+                    order.id, _ZERO
+                ),
             )
             item["order"] = {
                 "id": order.id,
@@ -1974,6 +2025,77 @@ class OrderService:
         held = await self._publisher_escrow_held(order)
         return await self.release_escrow(order, requested=held, reason=reason)
 
+    async def pause_order_settlement(self, order: Order) -> None:
+        """暂停该单进行中名额的到账倒计时（取消协商挂起/订单争议期间）。
+
+        调度器只结算 settlement_paused=False 的 DELIVERED 名额，因此暂停后
+        即使 settlement_due_at 到期也不会自动打款。只影响当前
+        CLAIMED/DELIVERED 的名额；SETTLED/CANCELLED 名额不参与计时，无需处理。
+        """
+        claims_result = await self._db.execute(
+            select(OrderClaim)
+            .where(
+                OrderClaim.order_id == order.id,
+                OrderClaim.status.in_(
+                    (ClaimLifecycleStatus.CLAIMED, ClaimLifecycleStatus.DELIVERED)
+                ),
+            )
+            .with_for_update()
+        )
+        for claim in claims_result.scalars().all():
+            claim.settlement_paused = True
+        await self._db.flush()
+
+    async def resume_order_settlement(self, order: Order) -> None:
+        """恢复该单进行中名额的到账倒计时（取消协商处理完/争议撤销后）。"""
+        claims_result = await self._db.execute(
+            select(OrderClaim)
+            .where(
+                OrderClaim.order_id == order.id,
+                OrderClaim.status.in_(
+                    (ClaimLifecycleStatus.CLAIMED, ClaimLifecycleStatus.DELIVERED)
+                ),
+            )
+            .with_for_update()
+        )
+        for claim in claims_result.scalars().all():
+            claim.settlement_paused = False
+        await self._db.flush()
+
+    async def reset_delivery_submission(
+        self, claim: OrderClaim, order: Order, reason: str
+    ) -> None:
+        """清空一次交付提交，让打手重新结单。
+
+        审核驳回、取消协商被拒绝、争议撤销三条路径共用：名额回到 CLAIMED、
+        交付物与审核/计时快照全部清空（原 review_claim 驳回块漏清 approved_at，
+        已一并补上），订单级交付字段同步清空，且兼容旧单名额制之前的
+        DELIVERED 聚合状态回退到 LOCKED。
+        """
+        claim.status = ClaimLifecycleStatus.CLAIMED
+        claim.delivery_attachments = None
+        claim.delivery_note = None
+        claim.delivered_at = None
+        claim.delivery_rejection_reason = reason[:500]
+        claim.delivery_rejected_at = datetime.now(timezone.utc)
+        claim.approved_payout_amount = None
+        claim.approved_deduction = None
+        claim.approved_note = None
+        claim.settlement_mode_snapshot = None
+        claim.settle_hours_snapshot = None
+        claim.settlement_due_at = None
+        # 审核通过时间必须一起清：留着会让重置后的名额仍带「已审核通过」
+        # 标记，调度器与 review_claim 的 approved_at 判定都会误判。
+        claim.approved_at = None
+        if order.booster_id == claim.booster_id:
+            order.delivery_attachments = None
+            order.delivery_note = None
+        # Compatibility with legacy single-claim orders whose aggregate
+        # order status was DELIVERED; the booster must be able to redeliver.
+        if order.status == OrderStatus.DELIVERED:
+            order.status = OrderStatus.LOCKED
+        await self._db.flush()
+
     async def review_claim(
         self,
         order_id: int,
@@ -2069,27 +2191,8 @@ class OrderService:
                 for item in (claim.delivery_attachments or [])
                 if isinstance(item, dict) and item.get("url")
             ]
-            claim.status = ClaimLifecycleStatus.CLAIMED
-            claim.delivery_attachments = None
-            claim.delivery_note = None
-            claim.delivered_at = None
-            claim.delivery_rejection_reason = reason[:500]
-            claim.delivery_rejected_at = datetime.now(timezone.utc)
-            claim.approved_payout_amount = None
-            claim.approved_deduction = None
-            claim.approved_note = None
-            claim.settlement_mode_snapshot = None
-            claim.settle_hours_snapshot = None
-            claim.settlement_due_at = None
-            if order.booster_id == claim.booster_id:
-                order.delivery_attachments = None
-                order.delivery_note = None
-            # Compatibility with legacy single-claim orders whose aggregate
-            # order status was DELIVERED; the booster must be able to redeliver.
-            if order.status == OrderStatus.DELIVERED:
-                order.status = OrderStatus.LOCKED
+            await self.reset_delivery_submission(claim, order, reason)
 
-            await self._db.flush()
             await self._db.refresh(claim)
             result = await self._claim_view_with_user(claim, order)
             result["_rejected_attachment_urls"] = rejected_attachment_urls
@@ -2457,6 +2560,73 @@ class OrderService:
             + _to_decimal(wallet.deposit_balance)
         ).quantize(_ZERO)
 
+    async def _cancel_compensation_collectible_batch(
+        self,
+        wallet: Wallet,
+        *,
+        booster_id: int,
+        order_ids: list[int],
+    ) -> dict[int, Decimal]:
+        """批量版 _cancel_compensation_collectible：一条流水查询算多个订单。
+
+        冻结赔付口径与 wallet_service._outstanding_compensation_hold 完全
+        一致（DEPOSIT_HOLD/DEPOSIT_RELEASE/COMPENSATION_DEDUCT/
+        CANCEL_COMPENSATION_DEDUCT 四个作用域流水按订单聚合），只是把
+        per-order 查询合并为 group by order_id，供「我的报名」等列表路径
+        避免 N+1。没有流水的订单返回 0 + 可用余额 + 保证金。
+        """
+        if not order_ids:
+            return {}
+        result = await self._db.execute(
+            select(
+                WalletTransaction.order_id,
+                WalletTransaction.type,
+                func.coalesce(func.sum(WalletTransaction.amount), 0),
+            )
+            .where(
+                WalletTransaction.wallet_id == wallet.id,
+                WalletTransaction.booster_id == booster_id,
+                WalletTransaction.order_id.in_(order_ids),
+                WalletTransaction.type.in_(
+                    (
+                        WalletTransactionType.DEPOSIT_HOLD,
+                        WalletTransactionType.DEPOSIT_RELEASE,
+                        WalletTransactionType.COMPENSATION_DEDUCT,
+                        # 取消协商的赔偿扣除同样消耗该名额的冻结赔付。
+                        WalletTransactionType.CANCEL_COMPENSATION_DEDUCT,
+                    )
+                ),
+            )
+            .group_by(WalletTransaction.order_id, WalletTransaction.type)
+        )
+        holds: dict[int, Decimal] = {}
+        deductions: dict[int, Decimal] = {}
+        for order_id, tx_type, total in result.all():
+            if order_id is None:
+                continue
+            total = _to_decimal(total)
+            if tx_type == WalletTransactionType.DEPOSIT_HOLD:
+                holds[order_id] = holds.get(order_id, _ZERO) + max(-total, _ZERO)
+            elif tx_type == WalletTransactionType.DEPOSIT_RELEASE:
+                holds[order_id] = holds.get(order_id, _ZERO) - max(total, _ZERO)
+            else:
+                deductions[order_id] = (
+                    deductions.get(order_id, _ZERO) + max(-total, _ZERO)
+                )
+        base = _to_decimal(wallet.available_balance) + _to_decimal(
+            wallet.deposit_balance
+        )
+        return {
+            order_id: (
+                max(
+                    holds.get(order_id, _ZERO) - deductions.get(order_id, _ZERO),
+                    _ZERO,
+                )
+                + base
+            ).quantize(_ZERO)
+            for order_id in order_ids
+        }
+
     async def pending_cancel_order_ids(self, order_ids: list[int]) -> set[int]:
         """返回这批订单中仍存在待处理取消协商的订单 ID 集合。
 
@@ -2641,6 +2811,9 @@ class OrderService:
         self._db.add(request)
         await self._db.flush()
         await self._db.refresh(request)
+        # 协商挂起期间暂停该单名额的到账倒计时，避免老板以为「申请取消中」
+        # 单子还在走自动结算；对方同意/拒绝后再恢复。
+        await self.pause_order_settlement(order)
         logger.info(
             "Order %s claim %s cancellation requested by %s",
             order.id,
@@ -2706,6 +2879,14 @@ class OrderService:
             request.status = OrderCancelRequestStatus.REJECTED
             request.decision_reason = decision_note
             request.resolved_at = now
+            # 协商期间打手又提交了结单：拒绝后该提交作废，需重新结单
+            # （名额回 CLAIMED、订单回 LOCKED、计时快照清空）。
+            if claim is not None and claim.status == ClaimLifecycleStatus.DELIVERED:
+                await self.reset_delivery_submission(
+                    claim, order, "取消协商被拒绝，请重新提交结单"
+                )
+            # 协商结束：恢复该单名额的到账倒计时。
+            await self.resume_order_settlement(order)
             await self._db.flush()
             await self._db.refresh(request)
             return request
@@ -2718,6 +2899,8 @@ class OrderService:
             request.status = OrderCancelRequestStatus.CANCELLED
             request.decision_reason = "订单或接单名额状态已变化，申请已关闭"
             request.resolved_at = now
+            # 协商已收口：恢复该单其余名额的到账倒计时。
+            await self.resume_order_settlement(order)
             await self._db.flush()
             await self._db.refresh(request)
             return request
@@ -2826,6 +3009,8 @@ class OrderService:
         request.status = OrderCancelRequestStatus.APPROVED
         request.decision_reason = decision_note
         request.resolved_at = now
+        # 名额已取消、协商收口：恢复该单其余名额的到账倒计时。
+        await self.resume_order_settlement(order)
         await self._db.flush()
         await self._db.refresh(request)
         await self._db.refresh(order)
@@ -2963,14 +3148,139 @@ class OrderService:
                 detail="只有进行中、待确认或已完成的订单才能发起争议",
             )
 
+        # 记住争议前状态：管理员撤销争议（cancel_dispute）时据此恢复，
+        # 避免订单停在 DISPUTED 无处可去。
+        order.pre_dispute_status = order.status
         order.status = OrderStatus.DISPUTED
         if reason:
             order.notes = f"争议原因: {reason}" + (f"\n{order.notes}" if order.notes else "")
+        # 争议处理期间暂停名额的到账倒计时，撤销/处理完再恢复。
+        await self.pause_order_settlement(order)
 
         await self._db.flush()
         await self._db.refresh(order)
 
         logger.info(f"Order {order_id} disputed by user {user.id}")
+
+        return order
+
+    async def cancel_dispute(self, order_id: int, admin: User) -> Order:
+        """撤销订单争议（管理员），订单回到争议前的状态。
+
+        护栏（任一不满足即 400，防止撤销后资金/结算状态对不上）：
+        - 订单不在争议中；
+        - 资金已退款（payment_status=REFUNDED）；
+        - 已有结算记录（存在 SETTLED 名额）；
+        - 资金已落账（订单维度存在结算/托管/赔偿类钱包流水）。
+
+        恢复逻辑：争议前为 DELIVERED、或当前仍有 DELIVERED 名额时，重置这些
+        交付提交让打手重新结单（名额回 CLAIMED、订单回 LOCKED）；否则直接恢复
+        争议前状态（快照缺失时兜底 LOCKED）。同时恢复被暂停的到账倒计时，
+        并剥掉争议期间写入 notes 首行的「争议原因: 」。
+        """
+        locked_result = await self._db.execute(
+            select(Order).where(Order.id == order_id).with_for_update()
+        )
+        order = locked_result.scalar_one_or_none()
+        if order is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="订单不存在",
+            )
+
+        if order.status != OrderStatus.DISPUTED:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="订单不在争议中",
+            )
+        if order.payment_status == PaymentStatus.REFUNDED:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="资金已退款，无法撤销争议",
+            )
+        settled_exists = (
+            await self._db.execute(
+                select(OrderClaim.id)
+                .where(
+                    OrderClaim.order_id == order.id,
+                    OrderClaim.status == ClaimLifecycleStatus.SETTLED,
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none() is not None
+        if settled_exists:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="已有结算记录，无法撤销争议",
+            )
+        # 资金落账口径与钱包流水一一对应：打手入账、托管打款/解冻、
+        # 炸单赔偿扣除、取消赔偿扣除/入账。出现任一即说明钱已动过。
+        ledger_exists = (
+            await self._db.execute(
+                select(WalletTransaction.id)
+                .where(
+                    WalletTransaction.order_id == order.id,
+                    WalletTransaction.type.in_(
+                        (
+                            WalletTransactionType.ORDER_INCOME,
+                            WalletTransactionType.ORDER_PAYMENT,
+                            WalletTransactionType.ESCROW_RELEASE,
+                            WalletTransactionType.COMPENSATION_DEDUCT,
+                            WalletTransactionType.CANCEL_COMPENSATION_DEDUCT,
+                            WalletTransactionType.CANCEL_COMPENSATION_IN,
+                        )
+                    ),
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none() is not None
+        if ledger_exists:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="资金已落账，无法撤销争议",
+            )
+
+        prev = order.pre_dispute_status
+        order.pre_dispute_status = None
+        delivered_result = await self._db.execute(
+            select(OrderClaim)
+            .where(
+                OrderClaim.order_id == order.id,
+                OrderClaim.status == ClaimLifecycleStatus.DELIVERED,
+            )
+            .with_for_update()
+        )
+        delivered_claims = delivered_result.scalars().all()
+        if prev == OrderStatus.DELIVERED or delivered_claims:
+            # 交付提交作废、打手重新结单：订单回到 LOCKED（reset 内对
+            # DELIVERED 聚合状态同样回退 LOCKED，这里显式设置以覆盖争议前
+            # 为 DELIVERED 但名额已被其他流程重置的边界）。
+            order.status = OrderStatus.LOCKED
+            for claim in delivered_claims:
+                await self.reset_delivery_submission(
+                    claim, order, "争议已撤销，请重新提交结单"
+                )
+        else:
+            order.status = prev if prev is not None else OrderStatus.LOCKED
+
+        # 争议期间暂停的到账倒计时恢复计时。
+        await self.resume_order_settlement(order)
+
+        # 剥掉争议期间写在 notes 首行的「争议原因: 」，恢复老板原备注。
+        if order.notes and order.notes.startswith("争议原因: "):
+            parts = order.notes.split("\n", 1)
+            remainder = parts[1] if len(parts) > 1 else ""
+            order.notes = remainder or None
+
+        await self._db.flush()
+        await self._db.refresh(order)
+
+        logger.info(
+            "Order %s dispute cancelled by admin %s, restored to %s",
+            order.id,
+            admin.id,
+            order.status,
+        )
 
         return order
 

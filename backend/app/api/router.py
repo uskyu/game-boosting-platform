@@ -37,6 +37,9 @@ from app.api.endpoints import (
     withdrawals_router,
 )
 
+# 直连模块导入：endpoints/__init__.py 未导出该 router（该文件不在本次改动范围内）
+from app.api.endpoints.admin_order_dispute import admin_order_dispute_router
+
 # Create main API router
 api_router = APIRouter()
 
@@ -50,6 +53,7 @@ api_router.include_router(orders_router)
 api_router.include_router(order_templates_router)
 api_router.include_router(users_router)
 api_router.include_router(admin_router)
+api_router.include_router(admin_order_dispute_router)
 api_router.include_router(admin_announcements_router)
 api_router.include_router(admin_site_router)
 api_router.include_router(admin_payment_router)
