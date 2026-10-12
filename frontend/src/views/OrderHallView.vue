@@ -10,6 +10,7 @@ import { useSiteStore } from '@/stores/site'
 import { formatCount, formatPayoutDelay, formatPrice, formatShortDate, getAcceptWaitMeta, serverNow } from '@/utils/display'
 import { getHallOrderDisplayBadgeClass, getHallOrderDisplayStatus } from '@/utils/order'
 import api from '@/utils/api'
+import { measureOrderFlowStage } from '@/utils/orderFlowTiming'
 
 /**
  * 订单大厅（IA v2：/ = 产品心脏）。
@@ -295,7 +296,11 @@ async function silentRefresh() {
   }
   hallRefreshing = true
   try {
-    await ordersStore.fetchOrders({ silent: true, slim: true, page: 1, pageSize: 100 })
+    await measureOrderFlowStage(
+      'hall_refresh',
+      'hall_list_refresh',
+      () => ordersStore.fetchOrders({ silent: true, slim: true, page: 1, pageSize: 100 }),
+    )
     // 「今日已接单」兜底刷新：与订单同源节流（≥15s），失败静默
     if (hallRecentClaimsVisible.value && recentClaimsThrottleReady()) {
       fetchRecentClaims(recentClaimsExpanded.value ? RECENT_CLAIMS_MAX : RECENT_CLAIMS_COLLAPSED_LIMIT).catch(() => {})

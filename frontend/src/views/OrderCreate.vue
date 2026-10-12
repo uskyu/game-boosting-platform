@@ -10,6 +10,7 @@ import api from '@/utils/api'
 import { formatFeeRate, formatMoneyFixed, parsePayoutDelay, serviceFeeBreakdown } from '@/utils/display'
 import { getPublishButtonLabel } from '@/utils/humanCopy'
 import { cleanTemplatePayload, resetOrderForm } from '@/utils/orderTemplates'
+import { measureOrderFlowStage } from '@/utils/orderFlowTiming'
 
 const router = useRouter()
 const route = useRoute()
@@ -98,6 +99,7 @@ async function uploadAttachments(orderId, files) {
   for (let index = 0; index < selected.length; index += 1) {
     const body = new FormData()
     body.append('attachment', selected[index])
+    submitStage.value = `图片上传中 ${index + 1}/${selected.length}`
     uploadProgress.value = `${index + 1}/${selected.length}（0%）`
     await api.post(`/orders/${orderId}/attachments`, body, {
       headers: { 'Content-Type': 'multipart/form-data' },
@@ -168,7 +170,10 @@ const catalogGames = computed(() => gamesStore.games)
 const selectedGame = computed(() => (
   formData.value.game_id ? gamesStore.getGameById(Number(formData.value.game_id)) : null
 ))
-const isSubmitting = computed(() => ordersStore.loading)
+const isSubmitting = computed(() => submitting.value || ordersStore.loading)
+const submitStage = ref('')
+const createdOrderUploadFailed = ref(false)
+const createdOrderId = ref(null)
 
 // 余额托管提示：发布后冻结 ¥price × max_claims，完结后结算给打手
 const escrowHint = computed(() => {
@@ -257,105 +262,124 @@ async function publishOrder() {
   }
 
   submitting.value = true
+  errorMessage.value = ''
+  submitStage.value = '创建订单中'
+  const attachmentCount = Array.from(formData.value.attachments || []).filter(isUploadFile).length
   try {
-  uploadProgress.value = ''
+    await measureOrderFlowStage('order_publish', 'publish_total', async () => {
+      uploadProgress.value = ''
 
-  const attachmentError = validateAttachments(formData.value.attachments)
-  if (attachmentError) {
-    errorMessage.value = attachmentError
-    return
-  }
+      const attachmentError = validateAttachments(formData.value.attachments)
+      if (attachmentError) {
+        errorMessage.value = attachmentError
+        return
+      }
 
-  const bossContact = formData.value.boss_contact.trim()
-  // 老板 2026-10-05 拍板：老板ID必填（打手接单后凭此添加老板好友）
-  if (!bossContact) {
-    errorMessage.value = '请填写老板ID'
-    return
-  }
-  if (bossContact.length > 64) {
-    errorMessage.value = '老板ID不能超过 64 个字符'
-    return
-  }
+      const bossContact = formData.value.boss_contact.trim()
+      // 老板 2026-10-05 拍板：老板ID必填（打手接单后凭此添加老板好友）
+      if (!bossContact) {
+        errorMessage.value = '请填写老板ID'
+        return
+      }
+      if (bossContact.length > 64) {
+        errorMessage.value = '老板ID不能超过 64 个字符'
+        return
+      }
 
-  let compensationAmount = null
-  if (formData.value.compensation_enabled) {
-    compensationAmount = Number(formData.value.compensation_amount)
-    if (!Number.isFinite(compensationAmount) || compensationAmount <= 0) {
-      errorMessage.value = '炸单赔偿金需为大于 0 的金额'
-      return
-    }
-  }
+      let compensationAmount = null
+      if (formData.value.compensation_enabled) {
+        compensationAmount = Number(formData.value.compensation_amount)
+        if (!Number.isFinite(compensationAmount) || compensationAmount <= 0) {
+          errorMessage.value = '炸单赔偿金需为大于 0 的金额'
+          return
+        }
+      }
 
-  const payoutDelay = parsePayoutDelay(formData.value.payout_delay_days, formData.value.payout_delay_hours)
-  if (payoutDelay.error) {
-    errorMessage.value = payoutDelay.error
-    return
-  }
+      const payoutDelay = parsePayoutDelay(formData.value.payout_delay_days, formData.value.payout_delay_hours)
+      if (payoutDelay.error) {
+        errorMessage.value = payoutDelay.error
+        return
+      }
 
-  const maxClaims = Number(formData.value.max_claims)
-  if (!Number.isInteger(maxClaims) || maxClaims < 1 || maxClaims > 100) {
-    errorMessage.value = '最大接单人数需为 1-100 的整数'
-    return
-  }
+      const maxClaims = Number(formData.value.max_claims)
+      if (!Number.isInteger(maxClaims) || maxClaims < 1 || maxClaims > 100) {
+        errorMessage.value = '最大接单人数需为 1-100 的整数'
+        return
+      }
 
-  let serviceFeeRate = null
-  // null/undefined 视同留空（走全局费率），只有显式填了值才校验
-  if (individualServiceFeeEnabled.value && formData.value.service_fee_enabled && formData.value.service_fee_rate != null && formData.value.service_fee_rate !== '') {
-    serviceFeeRate = Number(formData.value.service_fee_rate)
-    if (!Number.isFinite(serviceFeeRate) || serviceFeeRate < 0 || serviceFeeRate > 100) {
-      errorMessage.value = '服务费费率需为 0-100 之间的数值'
-      return
-    }
-  }
+      let serviceFeeRate = null
+      // null/undefined 视同留空（走全局费率），只有显式填了值才校验
+      if (individualServiceFeeEnabled.value && formData.value.service_fee_enabled && formData.value.service_fee_rate != null && formData.value.service_fee_rate !== '') {
+        serviceFeeRate = Number(formData.value.service_fee_rate)
+        if (!Number.isFinite(serviceFeeRate) || serviceFeeRate < 0 || serviceFeeRate > 100) {
+          errorMessage.value = '服务费费率需为 0-100 之间的数值'
+          return
+        }
+      }
 
-  const title = formData.value.title.trim()
-  const payload = {
-    game_id: selectedGame.value.id,
-    game_name: selectedGame.value.name,
-    title: title || null,
-    price: Number(formData.value.price),
-    description_raw: formData.value.description_raw.trim(),
-    service_type: '陪玩',
-    notes: formData.value.notes.trim() || null,
-    boss_contact: bossContact || null,
-    max_claims: maxClaims,
-    payout_delay_days: payoutDelay.days,
-    payout_delay_hours: payoutDelay.hours,
-    require_delivery_image: formData.value.require_delivery_image,
-  }
-  if (compensationAmount != null) {
-    payload.compensation_amount = compensationAmount
-  }
-  // 从原单带过来的附件（URL 条目）直接进 payload；File 仍走创建后上传
-  if (individualServiceFeeEnabled.value) {
-    payload.service_fee_enabled = formData.value.service_fee_enabled
-    if (serviceFeeRate != null) payload.service_fee_rate = serviceFeeRate
-  }
-  const keptAttachments = carriedAttachments()
-  if (keptAttachments.length) {
-    payload.attachments = keptAttachments
-  }
+      const title = formData.value.title.trim()
+      const payload = {
+        game_id: selectedGame.value.id,
+        game_name: selectedGame.value.name,
+        title: title || null,
+        price: Number(formData.value.price),
+        description_raw: formData.value.description_raw.trim(),
+        service_type: '陪玩',
+        notes: formData.value.notes.trim() || null,
+        boss_contact: bossContact || null,
+        max_claims: maxClaims,
+        payout_delay_days: payoutDelay.days,
+        payout_delay_hours: payoutDelay.hours,
+        require_delivery_image: formData.value.require_delivery_image,
+      }
+      if (compensationAmount != null) {
+        payload.compensation_amount = compensationAmount
+      }
+      // 从原单带过来的附件（URL 条目）直接进 payload；File 仍走创建后上传
+      if (individualServiceFeeEnabled.value) {
+        payload.service_fee_enabled = formData.value.service_fee_enabled
+        if (serviceFeeRate != null) payload.service_fee_rate = serviceFeeRate
+      }
+      const keptAttachments = carriedAttachments()
+      if (keptAttachments.length) {
+        payload.attachments = keptAttachments
+      }
 
-  const result = await ordersStore.createOrder(payload)
-  if (!result.success) {
-    errorMessage.value = result.error
-    return
-  }
+      submitStage.value = '创建订单中'
+      const result = await measureOrderFlowStage(
+        'order_publish',
+        'create_api',
+        () => ordersStore.createOrder(payload),
+        attachmentCount,
+      )
+      if (!result.success) {
+        errorMessage.value = result.error
+        return
+      }
+      createdOrderId.value = result.data.id
 
-  try {
-    await uploadAttachments(result.data.id, formData.value.attachments)
-  } catch (error) {
-    uploadProgress.value = ''
-    errorMessage.value = `订单已创建，但图片上传失败：${error.message || '请稍后重试'}`
-    return
-  }
+      try {
+        await measureOrderFlowStage(
+          'order_publish',
+          'attachment_uploads',
+          () => uploadAttachments(result.data.id, formData.value.attachments),
+          attachmentCount,
+        )
+      } catch (error) {
+        uploadProgress.value = ''
+        createdOrderUploadFailed.value = true
+        errorMessage.value = `订单已创建，但图片上传失败：${error.message || '请稍后重试'}。请勿重新发布同一订单，附件仍保留在表单中。`
+        return
+      }
 
-  successMessage.value = '需求发出去了，等陪玩接单。'
-  window.setTimeout(() => {
-    router.push({ name: 'orders' })
-  }, 900)
+      successMessage.value = '需求发出去了，等陪玩接单。'
+      submitStage.value = '即将跳转'
+      await new Promise((resolve) => window.setTimeout(resolve, 900))
+      await router.push({ name: 'orders' })
+    }, attachmentCount)
   } finally {
     submitting.value = false
+    submitStage.value = ''
   }
 }
 
@@ -606,9 +630,10 @@ onMounted(async () => {
     <div ref="createActionsBar" class="create-actions-bar">
       <p class="hidden text-xs text-ink-3 sm:block">发布后金额进入托管，打手完结并经你审核后打款</p>
       <div class="flex w-full gap-3 sm:w-auto">
-        <button type="button" class="btn-secondary flex-1 sm:flex-none" @click="router.push({ name: 'orders' })">取消</button>
-        <button type="button" class="btn-primary flex-1 sm:flex-none" :disabled="isSubmitting || !canPublish" @click="publishOrder">
-          {{ isSubmitting ? '正在发布...' : getPublishButtonLabel(formData.service_type) }}
+        <button v-if="createdOrderUploadFailed" type="button" class="btn-secondary flex-1 sm:flex-none" @click="router.push({ name: 'order-detail', params: { id: createdOrderId } })">查看已创建订单</button>
+        <button v-else type="button" class="btn-secondary flex-1 sm:flex-none" :disabled="isSubmitting" @click="router.push({ name: 'orders' })">取消</button>
+        <button type="button" class="btn-primary flex-1 sm:flex-none" :disabled="isSubmitting || !canPublish || createdOrderUploadFailed" @click="publishOrder">
+          {{ isSubmitting ? `${submitStage || '正在发布...'}` : (createdOrderUploadFailed ? '订单已创建' : getPublishButtonLabel(formData.service_type)) }}
         </button>
       </div>
     </div>

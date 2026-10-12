@@ -21,6 +21,7 @@ from sqlalchemy.exc import DBAPIError, SQLAlchemyError, TimeoutError as SQLAlche
 
 from app.api.router import api_router
 from app.core.config import settings
+from app.core.request_timing import RequestTimingMiddleware
 from app.db.session import async_session_factory, close_db, engine, init_db
 from app.services.user_service import get_user_service
 
@@ -129,6 +130,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept"],
+    expose_headers=["Server-Timing"],
 )
 
 logger.info("Configured CORS origins: %s", settings.cors_origins)
@@ -159,6 +161,7 @@ class UploadCacheControlMiddleware:
 
 
 app.add_middleware(UploadCacheControlMiddleware)
+app.add_middleware(RequestTimingMiddleware)
 
 # Serve uploaded files in development/runtime container.
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_PATH)), name="uploads")

@@ -12,6 +12,7 @@ import { getGameImage } from '@/data/gameImages'
 import api from '@/utils/api'
 import { formatDateTime, formatDueCountdown, formatFeeRate, formatMoneyFixed, formatOrderPrice, formatPayoutDelay, formatPrice, formatSettlementDelay, formatShortDate, getAcceptWaitMeta, serverNow } from '@/utils/display'
 import { CANCEL_PENDING_CLAIM_META, getClaimSettlementMeta, getOrderStatusBadgeClass, getOrderStatusLabel, getOrderStatusMeta, getHumanStatusLabel, getHumanStatusSubtitle } from '@/utils/order'
+import { measureOrderFlowStage } from '@/utils/orderFlowTiming'
 
 const props = defineProps({
   id: {
@@ -508,29 +509,56 @@ function closeClaimModal() {
 }
 
 async function handleConfirmClaim() {
+  if (actionLoading.value) return
   actionLoading.value = true
   errorMessage.value = ''
   successMessage.value = ''
-  const result = await ordersStore.acceptOrder(order.value.id)
-  if (result.success) {
+  let acceptSucceeded = false
+  try {
+    const orderId = order.value.id
+    const result = await measureOrderFlowStage(
+      'order_accept',
+      'accept_api',
+      () => ordersStore.acceptOrder(orderId),
+    )
+    if (result.success) {
+      acceptSucceeded = true
+      showClaimModal.value = false
+      successMessage.value = '已接手订单，开始进行吧'
+      // 必须再取详情补齐当前用户的 my_claim 等个性化字段，但不能切整页骨架屏。
+      const detailRefresh = await measureOrderFlowStage(
+        'order_accept',
+        'accept_detail_refresh',
+        () => ordersStore.fetchOrder(orderId, { silent: true }),
+      )
+      if (!detailRefresh.success) {
+        successMessage.value = '已接手订单，但订单信息刷新失败；请稍后重试或手动刷新'
+      } else {
+        await loadClaims()
+      }
+    } else {
+      // 失败（含 409 重复确认）：保留页面顶部错误提示，同时中央强提醒。
+      // 必须刷新详情与名单：失败多半是名额刚被别人抢走，不刷新的话页面仍显示
+      // 陈旧的 0/1 与可点的「接手订单」，用户再点必然再拿同一个错误。
+      showClaimModal.value = false
+      errorMessage.value = result.error || '接单失败，请稍后重试'
+      showClaimFailModal.value = true
+      await Promise.all([
+        ordersStore.fetchOrder(orderId, { silent: true }),
+        loadClaims(),
+      ])
+    }
+  } catch {
+    if (acceptSucceeded) {
+      successMessage.value = '已接手订单，但订单信息刷新失败；请稍后重试或手动刷新'
+      return
+    }
     showClaimModal.value = false
-    successMessage.value = '已接手订单，开始进行吧'
-    // 刷新订单状态与报名名单，让按钮切到「结束订单」/「已接手订单」态
-    await ordersStore.fetchOrder(order.value.id)
-    await loadClaims()
-  } else {
-    // 失败（含 409 重复确认）：保留页面顶部错误提示，同时中央强提醒。
-    // 必须刷新详情与名单：失败多半是名额刚被别人抢走，不刷新的话页面仍显示
-    // 陈旧的 0/1 与可点的「接手订单」，用户再点必然再拿同一个错误。
-    showClaimModal.value = false
-    errorMessage.value = result.error
+    errorMessage.value = '接单失败，请稍后重试'
     showClaimFailModal.value = true
-    await Promise.all([
-      ordersStore.fetchOrder(order.value.id, { silent: true }),
-      loadClaims(),
-    ])
+  } finally {
+    actionLoading.value = false
   }
-  actionLoading.value = false
 }
 
 function openDeliverModal() {

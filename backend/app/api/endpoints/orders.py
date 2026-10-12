@@ -10,7 +10,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from sqlalchemy import select
 from app.api.chat_utils import send_order_system_message
 from app.api.order_events import broadcast_order_state_changed
@@ -22,6 +22,13 @@ from app.api.deps import (
 from app.api.notification_utils import notify_boosters_new_order, notify_user
 from app.core.config import settings
 from app.core.post_commit import run_after_commit
+from app.core.request_timing import (
+    STAGE_ACCEPT_SERVICE,
+    STAGE_ACCEPT_SIDE_EFFECTS,
+    STAGE_ORDER_NOTIFICATIONS,
+    STAGE_ORDER_SERVICE,
+    measure_stage,
+)
 from app.models.notification import NotificationType
 from app.models.order import ClaimLifecycleStatus, ClaimStatus, Order, OrderClaim, OrderStatus
 from app.models.order_cancel_request import OrderCancelRequestStatus
@@ -358,6 +365,7 @@ async def create_order(
     order_data: OrderCreate,
     current_user: CurrentUser,
     db: DatabaseSession,
+    request: Request,
 ) -> OrderResponse:
     """
     Create a new boosting order.
@@ -375,10 +383,12 @@ async def create_order(
     """
     order_service = get_order_service(db)
 
-    order = await order_service.create_order(order_data, current_user)
+    async with measure_stage(request, STAGE_ORDER_SERVICE):
+        order = await order_service.create_order(order_data, current_user)
 
     # 任何人发单：向所有活跃非管理员广播"新订单"通知（批量、单事务，排除自己）
-    await notify_boosters_new_order(db, order=order, exclude_user_id=current_user.id)
+    async with measure_stage(request, STAGE_ORDER_NOTIFICATIONS):
+        await notify_boosters_new_order(db, order=order, exclude_user_id=current_user.id)
 
     return OrderResponse.model_validate(order)
 
@@ -856,6 +866,7 @@ async def accept_order(
     order_id: int,
     current_user: Annotated[User, Depends(get_current_booster)],
     db: DatabaseSession,
+    request: Request,
 ) -> OrderResponse:
     """
     Accept an order as a booster.
@@ -867,26 +878,29 @@ async def accept_order(
     """
     order_service = get_order_service(db)
 
-    order = await order_service.accept_order(order_id, current_user)
-    await send_order_system_message(
-        db=db,
-        order_id=order.id,
-        content=f"打手 {current_user.username} 已接手订单",
-        meta_json={
-            "event": "order_accepted",
-            "order_id": order.id,
-            "booster_id": current_user.id,
-        },
-    )
-    await notify_user(
-        db,
-        user_id=order.user_id,
-        type=NotificationType.ORDER_ACCEPTED,
-        title="订单已被接手",
-        content=f"打手 {current_user.username} 已接手您的订单「{order.game_name}」",
-        link=f"/orders/{order.id}",
-        ref_id=order.id,
-    )
+    async with measure_stage(request, STAGE_ACCEPT_SERVICE):
+        order = await order_service.accept_order(order_id, current_user)
+
+    async with measure_stage(request, STAGE_ACCEPT_SIDE_EFFECTS):
+        await send_order_system_message(
+            db=db,
+            order_id=order.id,
+            content=f"打手 {current_user.username} 已接手订单",
+            meta_json={
+                "event": "order_accepted",
+                "order_id": order.id,
+                "booster_id": current_user.id,
+            },
+        )
+        await notify_user(
+            db,
+            user_id=order.user_id,
+            type=NotificationType.ORDER_ACCEPTED,
+            title="订单已被接手",
+            content=f"打手 {current_user.username} 已接手您的订单「{order.game_name}」",
+            link=f"/orders/{order.id}",
+            ref_id=order.id,
+        )
 
     # 消息/通知写入与订单不在同一加载上下文，序列化前刷新订单，
     # 防止 expired 属性在同步属性访问时触发 MissingGreenlet 500。
