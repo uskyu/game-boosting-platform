@@ -1693,7 +1693,7 @@ onUnmounted(() => {
             <div class="mt-4 rounded-tile border border-line-1 bg-surface-2 p-4">
               <p class="info-tile__label">固定到账金额</p>
               <p class="mt-1 text-2xl font-semibold tabular-nums text-price">
-                {{ formatMoneyFixed(Number(order.value?.net_amount ?? order.value?.price ?? 0)) }}
+                {{ formatMoneyFixed(Number(order?.net_amount ?? order?.price ?? 0)) }}
               </p>
               <p class="mt-2 text-xs leading-5 text-ink-2">
                 审核通过后按此固定金额立即结算到对方钱包，不可调整。
