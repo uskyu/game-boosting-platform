@@ -17,6 +17,11 @@ TIMING_STATE_KEY = "order_request_timing_stages"
 
 STAGE_ORDER_SERVICE = "order_service"
 STAGE_ORDER_NOTIFICATIONS = "order_notifications"
+STAGE_NOTIFICATION_RECIPIENTS = "notification_recipients"
+STAGE_NOTIFICATION_PREFERENCES = "notification_preferences"
+STAGE_NOTIFICATION_PREPARE = "notification_prepare"
+STAGE_NOTIFICATION_INSERT = "notification_insert"
+STAGE_NOTIFICATION_PAYLOADS = "notification_payloads"
 STAGE_ACCEPT_SERVICE = "accept_service"
 STAGE_ACCEPT_SIDE_EFFECTS = "accept_side_effects"
 
@@ -24,6 +29,11 @@ _ALLOWED_STAGES = frozenset(
     {
         STAGE_ORDER_SERVICE,
         STAGE_ORDER_NOTIFICATIONS,
+        STAGE_NOTIFICATION_RECIPIENTS,
+        STAGE_NOTIFICATION_PREFERENCES,
+        STAGE_NOTIFICATION_PREPARE,
+        STAGE_NOTIFICATION_INSERT,
+        STAGE_NOTIFICATION_PAYLOADS,
         STAGE_ACCEPT_SERVICE,
         STAGE_ACCEPT_SIDE_EFFECTS,
     }
@@ -127,13 +137,22 @@ class RequestTimingMiddleware:
                 if name in _ALLOWED_STAGES
             ]
             stages_json = json.dumps(safe_stages, separators=(",", ":"))
+            scope_state = scope.get("state", {})
+            safe_counts = scope_state.get(TIMING_STATE_KEY + "_counts", {})
+            safe_counts = {
+                name: max(0, int(value))
+                for name, value in safe_counts.items()
+                if name in {"recipient_count", "preference_count", "notification_count"}
+            }
+            counts_json = json.dumps(safe_counts, separators=(",", ":"))
             logger.info(
-                "request_timing method=%s route=%s status=%d duration_ms=%.3f stages=%s",
+                "request_timing method=%s route=%s status=%d duration_ms=%.3f stages=%s counts=%s",
                 method,
                 route_template,
                 response_status,
                 duration_ms,
                 stages_json,
+                counts_json,
                 extra={
                     "event": "request_timing",
                     "method": method,
@@ -141,6 +160,7 @@ class RequestTimingMiddleware:
                     "status": response_status,
                     "duration_ms": round(duration_ms, 3),
                     "stages": safe_stages,
+                    "counts": safe_counts,
                 },
             )
 

@@ -8,8 +8,19 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.requests import Request
+
+from app.core.request_timing import (
+    STAGE_NOTIFICATION_INSERT,
+    STAGE_NOTIFICATION_PAYLOADS,
+    STAGE_NOTIFICATION_PREFERENCES,
+    STAGE_NOTIFICATION_PREPARE,
+    STAGE_NOTIFICATION_RECIPIENTS,
+    TIMING_STATE_KEY,
+    measure_stage,
+)
 
 from app.core.post_commit import run_after_commit
 from app.models.notification import Notification, NotificationType, UserPreference
@@ -74,73 +85,145 @@ async def notify_boosters_new_order(
     *,
     order: Order,
     exclude_user_id: int | None = None,
+    request: Request | None = None,
 ) -> int:
     """
-    管理员（老板）发布订单后，向所有活跃打手（BOOSTER）广播"新订单"通知。
+    管理员（老板）发布订单后，向所有活跃非管理员用户发送"新订单"通知。
 
-    轻量批量实现（复用现有通知机制）：
-    - 一次查询目标打手与通知偏好（偏好记录只读，缺失视为默认开启）；
-    - 逐条校验偏好后批量 db.add_all + 单次 flush —— 全部写入发生在
-      同一事务内，不在循环里逐条 commit；
-    - 对在线打手尽力做 WebSocket 实时推送（失败不影响落库）。
+    收件人和偏好通过集合查询，通知使用单条多值 INSERT 写入当前事务；
+    在线 WebSocket 推送仍在事务提交后尽力执行。
 
     Returns:
         实际写入的通知条数。
     """
+    async def measured(stage_name: str, operation):
+        if request is None:
+            return await operation()
+        async with measure_stage(request, stage_name):
+            return await operation()
+
+    def record_count(name: str, value: int) -> None:
+        if request is None:
+            return
+        counts = getattr(request.state, TIMING_STATE_KEY + "_counts", None)
+        if counts is None:
+            counts = {}
+            setattr(request.state, TIMING_STATE_KEY + "_counts", counts)
+        counts[name] = max(0, int(value))
+
     # 平台模型：管理员发单，其余注册用户均为打手，全部纳入通知范围
-    result = await db.execute(
-        select(User.id).where(
-            User.role != UserRole.ADMIN,
-            User.is_active.is_(True),
+    async def select_recipients():
+        result = await db.execute(
+            select(User.id).where(
+                User.role != UserRole.ADMIN,
+                User.is_active.is_(True),
+            )
         )
-    )
-    booster_ids = [int(uid) for uid in result.scalars().all()]
-    if exclude_user_id is not None:
-        booster_ids = [uid for uid in booster_ids if uid != exclude_user_id]
+        recipient_ids = [int(uid) for uid in result.scalars().all()]
+        if exclude_user_id is not None:
+            recipient_ids = [uid for uid in recipient_ids if uid != exclude_user_id]
+        return recipient_ids
+
+    booster_ids = await measured(STAGE_NOTIFICATION_RECIPIENTS, select_recipients)
+    record_count("recipient_count", len(booster_ids))
     if not booster_ids:
         return 0
 
     # 通知偏好只读校验（缺失偏好记录视为全部开启，避免逐用户懒建写库）
-    prefs_result = await db.execute(
-        select(UserPreference).where(UserPreference.user_id.in_(booster_ids))
-    )
-    settings = {}
-    for pref in prefs_result.scalars().all():
-        settings[pref.user_id] = pref.notification_settings
+    async def select_preferences():
+        prefs_result = await db.execute(
+            select(UserPreference).where(UserPreference.user_id.in_(booster_ids))
+        )
+        return {
+            pref.user_id: pref.notification_settings
+            for pref in prefs_result.scalars().all()
+        }
+
+    settings = await measured(STAGE_NOTIFICATION_PREFERENCES, select_preferences)
+    record_count("preference_count", len(settings))
 
     title = "新订单发布"
     content = f"管理员发布了新订单「{order.game_name}」，请前往抢单"
     link = f"/orders/{order.id}"
 
-    notifications = []
-    for uid in booster_ids:
-        pref = settings.get(uid)
-        if pref is not None and not pref.get(NotificationType.SYSTEM_ANNOUNCEMENT.value, True):
-            continue
-        notifications.append(Notification(
-            user_id=uid,
-            type=NotificationType.SYSTEM_ANNOUNCEMENT,
-            title=title,
-            content=content,
-            link=link,
-            ref_id=order.id,
-            # 同 notification_service.create：避免 flush 后懒加载 IO
-            created_at=datetime.now(timezone.utc),
-        ))
-    if not notifications:
+    async def prepare_notification_values():
+        created_at = datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None)
+        values = []
+        for uid in booster_ids:
+            pref = settings.get(uid)
+            if pref is not None and not pref.get(NotificationType.SYSTEM_ANNOUNCEMENT.value, True):
+                continue
+            values.append({
+                "user_id": uid,
+                "type": NotificationType.SYSTEM_ANNOUNCEMENT,
+                "title": title,
+                "content": content,
+                "link": link,
+                "ref_id": order.id,
+                "created_at": created_at,
+                "is_read": False,
+            })
+        return created_at, values
+
+    created_at, values = await measured(
+        STAGE_NOTIFICATION_PREPARE,
+        prepare_notification_values,
+    )
+    record_count("notification_count", len(values))
+    if not values:
         return 0
 
-    db.add_all(notifications)
-    await db.flush()
+    async def insert_notifications():
+        inserted_count = 0
+        for offset in range(0, len(values), 500):
+            result = await db.execute(
+                insert(Notification).values(values[offset:offset + 500])
+            )
+            inserted_count += result.rowcount or 0
+        return inserted_count
+
+    inserted_count = await measured(STAGE_NOTIFICATION_INSERT, insert_notifications)
+    if inserted_count != len(values):
+        raise RuntimeError("Unable to persist all order notifications")
+
+    async def build_payloads():
+        result = await db.execute(
+            select(Notification.id, Notification.user_id, Notification.created_at).where(
+                Notification.user_id.in_([value["user_id"] for value in values]),
+                Notification.type == NotificationType.SYSTEM_ANNOUNCEMENT,
+                Notification.ref_id == order.id,
+                Notification.title == title,
+                Notification.created_at == created_at,
+            )
+        )
+        inserted = result.all()
+        if len(inserted) != len(values):
+            raise RuntimeError("Unable to reload all persisted order notifications")
+        return [
+            (
+                user_id,
+                NotificationResponse(
+                    id=notification_id,
+                    user_id=user_id,
+                    type=NotificationType.SYSTEM_ANNOUNCEMENT,
+                    title=title,
+                    content=content,
+                    link=link,
+                    ref_id=order.id,
+                    is_read=False,
+                    created_at=notification_created_at,
+                    read_at=None,
+                ).model_dump(mode="json"),
+            )
+            for notification_id, user_id, notification_created_at in inserted
+        ]
+
+    payloads = await measured(STAGE_NOTIFICATION_PAYLOADS, build_payloads)
 
     # 在线打手实时推送：登记到事务提交之后并发执行（尽力而为，失败不影响
     # 已落库的通知）。100 人在线时这里是全站扇出的大头，绝不能留在业务
     # 事务里拖住订单行锁和连接池。
     cm = get_connection_manager()
-    payloads = [
-        (notification.user_id, NotificationResponse.model_validate(notification).model_dump(mode="json"))
-        for notification in notifications
-    ]
 
     async def _broadcast() -> None:
         results = await asyncio.gather(
@@ -156,6 +239,6 @@ async def notify_boosters_new_order(
     logger.info(
         "Broadcast new-order notification for order %s to %s boosters",
         order.id,
-        len(notifications),
+        len(payloads),
     )
-    return len(notifications)
+    return len(payloads)

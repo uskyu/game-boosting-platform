@@ -388,7 +388,12 @@ async def create_order(
 
     # 任何人发单：向所有活跃非管理员广播"新订单"通知（批量、单事务，排除自己）
     async with measure_stage(request, STAGE_ORDER_NOTIFICATIONS):
-        await notify_boosters_new_order(db, order=order, exclude_user_id=current_user.id)
+        await notify_boosters_new_order(
+            db,
+            order=order,
+            exclude_user_id=current_user.id,
+            request=request,
+        )
 
     return OrderResponse.model_validate(order)
 

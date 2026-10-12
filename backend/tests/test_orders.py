@@ -446,17 +446,41 @@ async def test_mine_published_filters_to_admin_own_orders(
     assert other_order["id"] not in ids
 
 
-async def test_admin_create_order_notifies_boosters(
+async def test_admin_create_order_notifies_active_non_admin_users(
     client: AsyncClient,
     admin_user: dict,
     booster_user: dict,
+    registered_user: dict,
     db_session,
 ):
-    """管理员发单后，活跃打手收到"新订单"系统通知（一次事务批量写入）。"""
+    """发单给默认开启的非管理员发通知，尊重关闭偏好并排除发布者。"""
     from sqlalchemy import select
 
-    from app.models.notification import Notification, NotificationType
+    from app.models.notification import Notification, NotificationType, UserPreference
     from app.models.user import User
+
+    booster_result = await db_session.execute(
+        select(User).where(User.email == "booster@example.com")
+    )
+    booster = booster_result.scalar_one()
+    ordinary_opt_out = User(
+        email="notification-opt-out@example.com",
+        username="NotificationOptOut",
+        hashed_password="not-used",
+    )
+    inactive_user = User(
+        email="inactive-notification@example.com",
+        username="InactiveNotification",
+        hashed_password="not-used",
+        is_active=False,
+    )
+    db_session.add_all([ordinary_opt_out, inactive_user])
+    await db_session.flush()
+    db_session.add(UserPreference(
+        user_id=ordinary_opt_out.id,
+        notification_settings={NotificationType.SYSTEM_ANNOUNCEMENT.value: False},
+    ))
+    await db_session.commit()
 
     resp = await client.post(
         "/orders/create",
@@ -471,20 +495,73 @@ async def test_admin_create_order_notifies_boosters(
     assert resp.status_code == 201
     order = resp.json()
 
-    booster_result = await db_session.execute(
-        select(User).where(User.email == "booster@example.com")
-    )
-    booster = booster_result.scalar_one()
-    notif_result = await db_session.execute(
+    rows = list((await db_session.execute(
         select(Notification).where(
-            Notification.user_id == booster.id,
+            Notification.ref_id == order["id"],
             Notification.type == NotificationType.SYSTEM_ANNOUNCEMENT,
         )
+    )).scalars().all())
+    recipient_ids = {row.user_id for row in rows}
+    assert recipient_ids == {booster.id, registered_user["user"]["id"]}
+    assert inactive_user.id not in recipient_ids
+    assert all(row.created_at is not None for row in rows)
+    assert all(row.title == "新订单发布" for row in rows)
+    assert all(row.link == f"/orders/{order['id']}" for row in rows)
+
+
+async def test_create_order_notifications_chunk_large_insert_batches(
+    client: AsyncClient,
+    admin_user: dict,
+    booster_user: dict,
+    registered_user: dict,
+    db_session,
+    monkeypatch,
+):
+    from app.api import notification_utils
+    from app.models.user import User
+
+    db_session.add_all([
+        User(
+            email=f"batch-recipient-{index}@example.com",
+            username=f"BatchRecipient{index}",
+            hashed_password="not-used",
+        )
+        for index in range(501)
+    ])
+    await db_session.commit()
+
+    executed_inserts = []
+    original_execute = notification_utils.AsyncSession.execute
+
+    async def record_execute(session, statement, *args, **kwargs):
+        if getattr(statement, "is_insert", False) and statement.table.name == "notifications":
+            executed_inserts.append(statement)
+        return await original_execute(session, statement, *args, **kwargs)
+
+    monkeypatch.setattr(notification_utils.AsyncSession, "execute", record_execute)
+
+    resp = await client.post(
+        "/orders/create",
+        json={
+            "game_name": "三角洲行动",
+            "current_rank": "黄金",
+            "target_rank": "钻石",
+            "price": "300.00",
+        },
+        headers=auth_header(admin_user),
     )
-    notifications = list(notif_result.scalars().all())
-    assert len(notifications) >= 1
-    assert any(n.ref_id == order["id"] for n in notifications)
-    assert any("新订单" in n.title for n in notifications)
+    assert resp.status_code == 201, resp.text
+    assert len(executed_inserts) == 2
+    assert all(statement.table.name == "notifications" for statement in executed_inserts)
+
+    rows = list((await db_session.execute(
+        select(notification_utils.Notification).where(
+            notification_utils.Notification.ref_id == resp.json()["id"],
+        )
+    )).scalars().all())
+    notified_ids = {row.user_id for row in rows}
+    assert {booster_user["user"]["id"], registered_user["user"]["id"]} <= notified_ids
+    assert len(notified_ids) == 503
 
 
 async def test_accept_quota_counts_claim_lifecycle_and_releases_slots(

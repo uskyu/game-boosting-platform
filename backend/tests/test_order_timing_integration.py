@@ -46,6 +46,13 @@ async def test_create_endpoint_exposes_fixed_timing_only(
     publisher_id = registered_user["user"]["id"]
     await _top_up(client, admin_user, publisher_id, 500)
     await db_session.commit()
+    from app.models.user import User
+    db_session.add(User(
+        email="timing-recipient@example.com",
+        username="TimingRecipient",
+        hashed_password="not-used",
+    ))
+    await db_session.commit()
 
     caplog.set_level(logging.INFO, logger="app.core.request_timing")
     response = await client.post(
@@ -63,6 +70,13 @@ async def test_create_endpoint_exposes_fixed_timing_only(
     assert response.status_code == 201, response.text
     _assert_has_stage(response, "order_service")
     _assert_has_stage(response, "order_notifications")
+    for stage in (
+        "notification_recipients",
+        "notification_prepare",
+        "notification_insert",
+        "notification_payloads",
+    ):
+        _assert_has_stage(response, stage)
 
     timing_records = [
         record for record in caplog.records
@@ -75,6 +89,10 @@ async def test_create_endpoint_exposes_fixed_timing_only(
     assert "order_id=" not in message
     assert registered_user["user"]["email"] not in message
     assert "timing integration order" not in message
+    timing_record = timing_records[-1]
+    assert timing_record.counts["recipient_count"] == 1
+    assert timing_record.counts["preference_count"] == 0
+    assert timing_record.counts["notification_count"] == 1
 
 
 async def test_accept_endpoint_exposes_fixed_timing_without_order_id_label(
