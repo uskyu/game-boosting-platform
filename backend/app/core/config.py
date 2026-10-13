@@ -65,6 +65,12 @@ class Settings(BaseSettings):
     # File upload
     UPLOAD_DIR: str = "uploads"
 
+    # 通知保留期：发单会给全站活跃用户各写一条通知，表会持续增长；后台任务
+    # 按保留天数分批清理过期通知，避免无上限堆积拖慢写入与查询。
+    NOTIFICATION_RETENTION_DAYS: int = 90
+    NOTIFICATION_CLEANUP_BATCH_SIZE: int = 5000
+    NOTIFICATION_CLEANUP_INTERVAL_SECONDS: int = 6 * 3600
+
     # Wallet: platform commission rate charged on order settlement.
     # Booster income = order_price * (1 - COMMISSION_RATE), rounded to cents.
     COMMISSION_RATE: float = 0.0

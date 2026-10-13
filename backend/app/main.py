@@ -38,6 +38,9 @@ UPLOAD_PATH.mkdir(parents=True, exist_ok=True)
 PAYOUT_SCAN_INTERVAL_SECONDS = 600  # 每 10 分钟扫描一次
 _payout_scan_task: asyncio.Task | None = None
 
+# 过期通知清理任务（保留期由 settings.NOTIFICATION_RETENTION_DAYS 控制）
+_notification_cleanup_task: asyncio.Task | None = None
+
 
 async def _payout_scan_loop() -> None:
     """周期扫描到账时效到期的交付名额并自动结算。
@@ -62,13 +65,36 @@ async def _payout_scan_loop() -> None:
             logger.exception("Payout delay scheduler scan failed")
 
 
+async def _notification_cleanup_loop() -> None:
+    """周期清理过期通知：发单会给全站活跃用户各写一条，表会无限增长。
+
+    分批删除 + 每批独立提交，避免一次清理长时间持锁；单批失败只记日志，
+    等下一轮重试。
+    """
+    from app.services.notification_cleanup import cleanup_expired_notifications
+
+    while True:
+        await asyncio.sleep(settings.NOTIFICATION_CLEANUP_INTERVAL_SECONDS)
+        try:
+            async with async_session_factory() as session:
+                await cleanup_expired_notifications(
+                    session,
+                    retention_days=settings.NOTIFICATION_RETENTION_DAYS,
+                    batch_size=settings.NOTIFICATION_CLEANUP_BATCH_SIZE,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Notification cleanup scan failed")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """
     Application lifespan manager.
     Handles startup and shutdown events.
     """
-    global _payout_scan_task
+    global _payout_scan_task, _notification_cleanup_task
     # Startup
     logger.info("Starting Game Boosting Platform API...")
     try:
@@ -95,6 +121,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     _payout_scan_task = asyncio.create_task(_payout_scan_loop())
     logger.info("Payout delay scheduler started (interval=%ss)", PAYOUT_SCAN_INTERVAL_SECONDS)
 
+    # 过期通知清理后台任务
+    _notification_cleanup_task = asyncio.create_task(_notification_cleanup_loop())
+    logger.info(
+        "Notification cleanup started (interval=%ss, retention=%s days)",
+        settings.NOTIFICATION_CLEANUP_INTERVAL_SECONDS,
+        settings.NOTIFICATION_RETENTION_DAYS,
+    )
+
     yield
 
     # Shutdown
@@ -107,6 +141,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             pass
         _payout_scan_task = None
         logger.info("Payout delay scheduler stopped")
+    if _notification_cleanup_task is not None:
+        _notification_cleanup_task.cancel()
+        try:
+            await _notification_cleanup_task
+        except asyncio.CancelledError:
+            pass
+        _notification_cleanup_task = None
+        logger.info("Notification cleanup stopped")
     await close_db()
     logger.info("Database connection closed")
 

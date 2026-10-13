@@ -187,13 +187,13 @@ async def notify_boosters_new_order(
         raise RuntimeError("Unable to persist all order notifications")
 
     async def build_payloads():
+        # 回读只按 ref_id + type 定位本单发出的通知（ix_notifications_ref_id），
+        # 不再附带 title/created_at 等无索引条件——那会让 MySQL 退回 user_id
+        # 索引扫几十万行历史通知，表越大越慢。
         result = await db.execute(
             select(Notification.id, Notification.user_id, Notification.created_at).where(
-                Notification.user_id.in_([value["user_id"] for value in values]),
-                Notification.type == NotificationType.SYSTEM_ANNOUNCEMENT,
                 Notification.ref_id == order.id,
-                Notification.title == title,
-                Notification.created_at == created_at,
+                Notification.type == NotificationType.SYSTEM_ANNOUNCEMENT,
             )
         )
         inserted = result.all()
