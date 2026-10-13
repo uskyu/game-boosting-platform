@@ -1,9 +1,11 @@
-"""Batched cleanup of expired notification rows.
+"""Batched cleanup of expired new-order broadcast notifications.
 
-Publishing an order writes one notification per active non-admin user, so the
-table grows by hundreds of thousands of rows per day. Left unbounded it slows
-every insert and every read on that table. This module deletes in small
-transactions so a single cleanup never holds a long-running lock.
+Publishing an order writes one broadcast notification per active non-admin
+user, so the table grows by hundreds of thousands of rows per day. Left
+unbounded it slows every insert and every read on that table. Only the
+new-order broadcasts are pruned: other notification types and system
+announcements are kept. Deletion happens in small transactions so a single
+cleanup never holds a long-running lock.
 """
 
 import logging
@@ -30,10 +32,13 @@ async def cleanup_expired_notifications(
         return 0
 
     batch_size = max(1, min(int(batch_size), 50_000))
-    # retention_days/batch_size are server-controlled ints, never user input.
+    # 只清理「新订单发布」广播：type=SYSTEM_ANNOUNCEMENT 且 link 指向订单。
+    # 接单/交付/取消等其他类型通知和系统公告一律保留。
+    # retention_days/batch_size 是服务端控制的整数，绝不来自用户输入。
     statement = text(
         f"DELETE FROM notifications "
-        f"WHERE created_at < DATE_SUB(NOW(), INTERVAL {int(retention_days)} DAY) "
+        f"WHERE type='SYSTEM_ANNOUNCEMENT' AND link LIKE '/orders/%' "
+        f"AND created_at < DATE_SUB(NOW(), INTERVAL {int(retention_days)} DAY) "
         f"LIMIT {batch_size}"
     )
 

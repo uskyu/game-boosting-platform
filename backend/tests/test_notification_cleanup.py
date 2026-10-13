@@ -51,6 +51,47 @@ async def test_cleanup_removes_only_expired_notifications(db_session):
     assert remaining == 2
 
 
+async def test_cleanup_keeps_non_broadcast_notifications(db_session):
+    """过期也不删其他类型通知和系统公告：只清「新订单发布」广播。"""
+    user = await _make_user(db_session)
+    # 过期的新订单广播：应删
+    await _make_notification(db_session, user_id=user.id, age_days=400)
+    # 过期的其他类型通知：必须保留
+    db_session.add(Notification(
+        user_id=user.id,
+        type=NotificationType.ORDER_ACCEPTED,
+        title="订单已被接手",
+        content="keep me",
+        link="/orders/1",
+        ref_id=1,
+        is_read=False,
+        created_at=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=400),
+    ))
+    # 过期的系统公告（link 不指向订单）：必须保留
+    db_session.add(Notification(
+        user_id=user.id,
+        type=NotificationType.SYSTEM_ANNOUNCEMENT,
+        title="系统公告",
+        content="keep me too",
+        link="/announcements",
+        ref_id=None,
+        is_read=False,
+        created_at=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=400),
+    ))
+    await db_session.commit()
+
+    deleted = await cleanup_expired_notifications(
+        db_session, retention_days=7, batch_size=10
+    )
+
+    assert deleted == 1
+    remaining_types = list((await db_session.execute(
+        select(Notification.type, Notification.title).order_by(Notification.id)
+    )).all())
+    assert (NotificationType.ORDER_ACCEPTED, "订单已被接手") in remaining_types
+    assert (NotificationType.SYSTEM_ANNOUNCEMENT, "系统公告") in remaining_types
+
+
 async def test_cleanup_respects_batch_size_and_is_idempotent(db_session):
     """分批删除：单批删满就继续，删不满即停；重复执行不再删除。"""
     user = await _make_user(db_session)
