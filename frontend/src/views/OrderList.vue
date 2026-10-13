@@ -49,9 +49,25 @@ watch(() => useAuthStore().isAdmin, (isAdmin) => {
 const orders = computed(() => ordersStore.orders)
 const myClaims = computed(() => ordersStore.myClaims)
 const claimsLoading = computed(() => ordersStore.myClaimsLoading)
+const claimsError = computed(() => ordersStore.myClaimsError)
+const hasClaimsCache = computed(() => ordersStore.hasMyClaimsCache(
+  claimStatus.value === 'DISPUTED' ? undefined : (claimStatus.value || undefined),
+  claimsPagination.value.page || 1,
+  20,
+  claimSearch.value.trim(),
+))
 const claimsPagination = computed(() => ordersStore.myClaimsPagination)
 const loading = computed(() => ordersStore.loading)
 const pagination = computed(() => ordersStore.pagination)
+const publishedCacheFilters = computed(() => ({
+  gameName: '',
+  q: searchGame.value.trim(),
+  status: selectedStatus.value,
+  bossContact: searchBossContact.value.trim(),
+}))
+const hasPublishedOrders = computed(() => ordersStore.hasOrdersForContext('minePublished', {
+  filters: publishedCacheFilters.value,
+}))
 const error = computed(() => ordersStore.error)
 // 我的派单列表由服务端 mine_published=true 保证仅包含当前用户发布的订单
 const publishedOrders = computed(() => orders.value)
@@ -170,6 +186,9 @@ function buildSummary(order) {
 }
 
 async function fetchOrders() {
+  ordersStore.setOrdersContext('minePublished', {
+    filters: publishedCacheFilters.value,
+  })
   ordersStore.setFilters({
     // 订单号、游戏、标题、需求统一走 q，保证老板侧也能按订单主编号查到同一条记录。
     gameName: '',
@@ -179,7 +198,10 @@ async function fetchOrders() {
   })
   // slim：列表卡片只用到 title/intro/ai_tags/首图，大字段（description/notes/
   // 凭证等）详情页单独拿；跨境链路下响应体小一个量级，详情页不受影响。
-  await ordersStore.fetchOrders({ minePublished: true, slim: true })
+  await ordersStore.refreshOrdersContext('minePublished', {
+    slim: true,
+    filters: publishedCacheFilters.value,
+  })
 }
 
 async function fetchClaims(page = 1) {
@@ -192,7 +214,12 @@ function switchTab(tab) {
   activeTab.value = tab
   userTouchedTab = true
   if (tab === 'published') {
+    ordersStore.setFilters(publishedCacheFilters.value)
     ordersStore.setPage(1)
+    ordersStore.setOrdersContext('minePublished', {
+      filters: publishedCacheFilters.value,
+      page: 1,
+    })
     fetchOrders()
   } else if (!useAuthStore().isAdmin) {
     fetchClaims(1)
@@ -313,14 +340,23 @@ watch(claimStatus, () => {
 
 onMounted(async () => {
   // 从 URL 恢复页码后再拉首屏，避免返回/刷新时搜索条件在但页码被重置
-  ordersStore.setPage(Math.max(1, Number(route.query.page) || 1))
-  if (!useAuthStore().isAdmin) fetchClaims()
+  if (activeTab.value === 'published') {
+    ordersStore.setFilters(publishedCacheFilters.value)
+    ordersStore.setOrdersContext('minePublished', {
+      filters: publishedCacheFilters.value,
+      page: Math.max(1, Number(route.query.page) || 1),
+    })
+  }
+  if (activeTab.value !== 'published') {
+    ordersStore.setPage(Math.max(1, Number(route.query.page) || 1))
+  }
   // 管理员不拉报名列表；若用户信息晚到，watch 会切到"我的派单"。
   // 三个请求互不依赖，全部并行发出：跨境链路上每消掉一个串行 RTT，
   // 首屏就快一秒（实测会话列表 100 条服务端 ~310ms、20 条 ~76ms，
   // 且订单卡片仅用它做聊天未读徽章，20 条足够覆盖首屏订单）。
   await Promise.all([
-    fetchOrders(),
+    activeTab.value === 'published' ? fetchOrders() : Promise.resolve(),
+    !useAuthStore().isAdmin && activeTab.value === 'claims' ? fetchClaims() : Promise.resolve(),
     chatStore.fetchConversations({ pageSize: 20 }),
     chatStore.fetchUnreadSummary(),
   ])
@@ -351,25 +387,10 @@ onUnmounted(() => {
     </section>
 
     <!-- 加载失败（多为跨境链路抖动）：保留原有列表不清空，给一个不刷新整页的重试入口 -->
-    <div v-if="error" class="message-error flex flex-wrap items-center gap-x-3 gap-y-1">
+    <div v-if="error && activeTab === 'published'" class="message-error flex flex-wrap items-center gap-x-3 gap-y-1">
       <span class="min-w-0 flex-1">{{ error }}</span>
-      <button
-        v-if="activeTab === 'published'"
-        type="button"
-        class="filter-pill shrink-0"
-        :disabled="loading"
-        @click="fetchOrders()"
-      >
+      <button type="button" class="filter-pill shrink-0" :disabled="loading" @click="fetchOrders()">
         {{ loading ? '加载中…' : '重新加载' }}
-      </button>
-      <button
-        v-else
-        type="button"
-        class="filter-pill shrink-0"
-        :disabled="claimsLoading"
-        @click="fetchClaims(claimsPagination.page || 1)"
-      >
-        {{ claimsLoading ? '加载中…' : '重新加载' }}
       </button>
     </div>
 
@@ -402,7 +423,14 @@ onUnmounted(() => {
         <p class="mt-3 text-xs text-ink-3">订单号是老板和打手共用的主编号，联系对方时直接报订单号。</p>
       </section>
 
-      <section v-if="claimsLoading" class="space-y-3" aria-busy="true">
+      <div v-if="claimsError && activeTab === 'claims'" class="message-error flex flex-wrap items-center gap-x-3 gap-y-1">
+        <span class="min-w-0 flex-1">{{ claimsError }}</span>
+        <button type="button" class="filter-pill shrink-0" :disabled="claimsLoading" @click="fetchClaims(claimsPagination.page || 1)">
+          {{ claimsLoading ? '加载中…' : '重新加载' }}
+        </button>
+      </div>
+
+      <section v-if="claimsLoading && !hasClaimsCache" class="space-y-3" aria-busy="true">
         <div v-for="n in 3" :key="`cs-${n}`" class="skeleton-row">
           <div class="flex-1 space-y-3">
             <div class="skeleton-line h-4 w-2/5"></div>
@@ -411,7 +439,7 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <section v-else-if="displayedClaims.length" class="space-y-3">
+      <section v-else-if="displayedClaims.length" class="space-y-3" :aria-busy="claimsLoading">
         <article
           v-for="claim in displayedClaims"
           :key="claim.id"
@@ -450,7 +478,7 @@ onUnmounted(() => {
         </article>
       </section>
 
-      <section v-else class="empty-state">
+      <section v-else-if="!claimsLoading" class="empty-state">
         <div class="empty-state__icon" aria-hidden="true">🎮</div>
         <h2 class="empty-state__title">还没接过单</h2>
         <p class="empty-state__copy">去大厅看看，有合适的单子直接接。</p>
@@ -492,7 +520,7 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <section v-if="loading" class="grid gap-4 xl:grid-cols-2" aria-busy="true">
+      <section v-if="loading && !hasPublishedOrders" class="grid gap-4 xl:grid-cols-2" aria-busy="true">
         <div v-for="n in 4" :key="`skeleton-${n}`" class="skeleton-row">
           <div class="flex-1 space-y-3">
             <div class="skeleton-line h-4 w-2/5"></div>
@@ -501,7 +529,7 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <section v-else-if="publishedOrders.length" class="grid gap-4 xl:grid-cols-2">
+      <section v-else-if="publishedOrders.length" class="grid gap-4 xl:grid-cols-2" :aria-busy="loading">
         <article
           v-for="order in publishedOrders"
           :key="order.id"
@@ -563,7 +591,7 @@ onUnmounted(() => {
         </article>
       </section>
 
-      <section v-else class="empty-state">
+      <section v-else-if="!loading" class="empty-state">
         <div class="empty-state__icon" aria-hidden="true">🗂️</div>
         <h2 class="empty-state__title">还没有派过单</h2>
         <p class="empty-state__copy">点右上角「发布订单」，把需求挂到大厅让打手接。</p>

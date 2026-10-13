@@ -14,7 +14,19 @@ import { useOrdersStore } from '@/stores/orders'
 
 let pinia
 
-function orderListResponse(items = []) {
+function orderListResponse(items = [], pageSize = 20) {
+  return {
+    data: {
+      items,
+      page: 1,
+      page_size: pageSize,
+      total: items.length,
+      pages: 1,
+    },
+  }
+}
+
+function claimsResponse(items = []) {
   return {
     data: {
       items,
@@ -24,6 +36,12 @@ function orderListResponse(items = []) {
       pages: 1,
     },
   }
+}
+
+async function flushMicrotasks() {
+  await Promise.resolve()
+  await Promise.resolve()
+  await new Promise((resolve) => setTimeout(resolve, 0))
 }
 
 function deferred() {
@@ -152,6 +170,91 @@ describe('fetchOrders finally 的请求序号守卫', () => {
     expect(result).toEqual({ success: true })
     expect(store.loading).toBe(false)
     expect(apiGet).toHaveBeenCalledWith('/orders/', expect.objectContaining({ params: expect.objectContaining({ slim: 1 }) }))
+  })
+})
+
+describe('订单列表上下文缓存', () => {
+  it('大厅和我的派单并发完成时各自保留列表，不互相覆盖', async () => {
+    const store = useOrdersStore()
+    const hall = deferred()
+    const published = deferred()
+    apiGet.mockImplementationOnce(() => hall.promise).mockImplementationOnce(() => published.promise)
+
+    const hallRequest = store.refreshOrdersContext('hall', { page: 1, pageSize: 100, slim: true })
+    const publishedRequest = store.refreshOrdersContext('minePublished', { slim: true })
+
+    published.resolve(orderListResponse([{ id: 2, owner: true }]))
+    await publishedRequest
+    expect(store.ordersContext).toBe('minePublished')
+    expect(store.orders.map((order) => order.id)).toEqual([2])
+
+    hall.resolve(orderListResponse([{ id: 1, owner: false }], 100))
+    await hallRequest
+    expect(store.ordersContext).toBe('minePublished')
+    expect(store.orders.map((order) => order.id)).toEqual([2])
+    expect(store.ordersByContext.hall.map((order) => order.id)).toEqual([1])
+    expect(store.ordersByContext.minePublished.map((order) => order.id)).toEqual([2])
+    expect(apiGet.mock.calls[0][1].params.mine_published).toBeUndefined()
+    expect(apiGet.mock.calls[1][1].params.mine_published).toBe(true)
+  })
+
+  it('有缓存的列表请求 pending 时继续显示旧数据', async () => {
+    const store = useOrdersStore()
+    apiGet.mockResolvedValueOnce(orderListResponse([{ id: 7, title: '原列表' }]))
+    await store.refreshOrdersContext('minePublished', { slim: true })
+
+    const pending = deferred()
+    apiGet.mockImplementationOnce(() => pending.promise)
+    const refresh = store.refreshOrdersContext('minePublished', { slim: true })
+
+    expect(store.loading).toBe(false)
+    expect(store.orders).toEqual([{ id: 7, title: '原列表' }])
+
+    pending.resolve(orderListResponse([{ id: 7, title: '更新列表', updated_at: 'new' }]))
+    await refresh
+    expect(store.orders[0].title).toBe('更新列表')
+  })
+
+  it('离开大厅后丢弃排队大厅刷新，不覆盖我的派单列表', async () => {
+    const store = useOrdersStore()
+    const hall = deferred()
+    const published = deferred()
+    apiGet.mockImplementationOnce(() => hall.promise).mockImplementationOnce(() => published.promise)
+
+    const hallRequest = store.refreshOrdersContext('hall', { page: 1, pageSize: 100, slim: true })
+    expect(await store.fetchOrders({ silent: true, slim: true, page: 1, pageSize: 100 })).toMatchObject({ queued: true })
+    const publishedRequest = store.refreshOrdersContext('minePublished', { slim: true })
+    published.resolve(orderListResponse([{ id: 9, owner: true }]))
+    await publishedRequest
+
+    hall.resolve(orderListResponse([{ id: 8, owner: false }], 100))
+    await hallRequest
+    await flushMicrotasks()
+
+    expect(apiGet).toHaveBeenCalledTimes(2)
+    expect(store.ordersContext).toBe('minePublished')
+    expect(store.orders.map((order) => order.id)).toEqual([9])
+    expect(store.loading).toBe(false)
+  })
+})
+
+describe('fetchMyClaims request sequence', () => {
+  it('旧请求完成不能清除较新 claims 请求的 loading', async () => {
+    const store = useOrdersStore()
+    const oldRequest = deferred()
+    const newRequest = deferred()
+    apiGet.mockImplementationOnce(() => oldRequest.promise).mockImplementationOnce(() => newRequest.promise)
+
+    const first = store.fetchMyClaims('CLAIMED', 1, 20, 'old')
+    const second = store.fetchMyClaims('CLAIMED', 1, 20, 'new')
+    oldRequest.resolve(claimsResponse([{ id: 1 }]))
+    expect(await first).toMatchObject({ success: true, stale: true })
+    expect(store.myClaimsLoading).toBe(true)
+
+    newRequest.resolve(claimsResponse([{ id: 2 }]))
+    await second
+    expect(store.myClaimsLoading).toBe(false)
+    expect(store.myClaims).toEqual([{ id: 2 }])
   })
 })
 

@@ -10,6 +10,24 @@ import api from '@/utils/api'
 export const useOrdersStore = defineStore('orders', () => {
   // State
   const orders = ref([])
+  const ordersContext = ref('hall')
+  const ordersByContext = ref({
+    hall: [],
+    minePublished: [],
+  })
+  const ordersLoadedByContext = ref({
+    hall: false,
+    minePublished: false,
+  })
+  const ordersLoadingByContext = ref({
+    hall: false,
+    minePublished: false,
+  })
+  const ordersCacheByKey = ref({})
+  const ordersCacheKeyByContext = ref({
+    hall: '',
+    minePublished: '',
+  })
   const currentOrder = ref(null)
   const analysisResult = ref(null)
   const loading = ref(false)
@@ -20,6 +38,10 @@ export const useOrdersStore = defineStore('orders', () => {
     pageSize: 20,
     total: 0,
     pages: 0,
+  })
+  const paginationByContext = ref({
+    hall: { page: 1, pageSize: 20, total: 0, pages: 0 },
+    minePublished: { page: 1, pageSize: 20, total: 0, pages: 0 },
   })
   const filters = ref({
     gameName: '',
@@ -33,7 +55,11 @@ export const useOrdersStore = defineStore('orders', () => {
   // 打手自己的接单单（GET /orders/claims/mine）
   const myClaims = ref([])
   const myClaimsLoading = ref(false)
+  const myClaimsError = ref(null)
+  const myClaimsLoaded = ref(false)
   const myClaimsPagination = ref({ page: 1, pageSize: 20, total: 0, pages: 0 })
+  const myClaimsCache = ref({})
+  let activeMyClaimsCacheKey = ''
   // 取消协商（双方同意/拒绝，无管理员）：当前订单的协商请求列表
   const cancelRequests = ref([])
   const cancelRequestsOrderId = ref(null)
@@ -131,115 +157,192 @@ export const useOrdersStore = defineStore('orders', () => {
     return true
   }
 
-  // options.silent：静默刷新（大厅轮询用）——不切换 loading 骨架屏、不清空现有数据、失败不弹错误
-  // 请求序号守卫：慢网络上旧响应后到会覆盖新筛选结果（搜索"闪回"），
-  // 每次发起递增序号，落地的响应若不是最新一次请求则直接丢弃。
-  let ordersRequestSeq = 0
-  let ordersUserFetchActive = false
-  let ordersSilentRefreshQueued = false
+  // 列表按查询上下文缓存；大厅与我的派单结果绝不共用响应槽位。
+  const orderListSeq = new Map()
+  const orderListActiveRequests = new Map()
+  const orderListVisibleRequests = { hall: 0, minePublished: 0 }
+  const orderListSilentQueued = new Map()
+  let activeOrdersCacheKey = ''
+
+  function buildOrdersRequest(options, context) {
+    const contextPagination = paginationByContext.value[context]
+    const params = {
+      page: options.page || contextPagination.page,
+      pageSize: options.pageSize || contextPagination.pageSize,
+    }
+
+    if (context === 'minePublished') {
+      if (filters.value.gameName) params.game_name = filters.value.gameName
+      if (filters.value.q) params.q = filters.value.q
+      if (filters.value.status) params.status = filters.value.status
+      if (filters.value.bossContact) params.boss_contact = filters.value.bossContact
+    }
+    if (options.bossContact) params.boss_contact = options.bossContact
+    if (context === 'minePublished') params.mine_published = true
+    if (options.slim) params.slim = 1
+    return params
+  }
+
+  function cacheKeyFor(context, params) {
+    return `${context}:${JSON.stringify(Object.keys(params).sort().map((key) => [key, params[key]]))}`
+  }
+
+  function activateOrdersCache(context, cacheKey) {
+    const nextContext = context === 'minePublished' ? 'minePublished' : 'hall'
+    ordersContext.value = nextContext
+    activeOrdersCacheKey = cacheKey
+    const cached = ordersCacheByKey.value[cacheKey]
+    orders.value = cached?.items ?? []
+    ordersByContext.value[nextContext] = orders.value
+    ordersLoadedByContext.value[nextContext] = Boolean(cached)
+    pagination.value = cached?.pagination ?? paginationByContext.value[nextContext]
+    paginationByContext.value[nextContext] = pagination.value
+    loading.value = !cached && Boolean(ordersLoadingByContext.value[nextContext])
+    error.value = null
+  }
 
   async function fetchOrders(options = {}) {
     const silent = Boolean(options.silent)
-    if (silent && ordersUserFetchActive) {
-      // 用户主动请求（搜索/筛选/首屏加载）在飞时不让轮询抢序号覆盖它，
-      // 但通知触发的刷新也不能丢：等用户请求结束后补拉一次大厅快照。
-      ordersSilentRefreshQueued = true
+    const context = options.minePublished ? 'minePublished' : 'hall'
+    const params = options._frozenParams || buildOrdersRequest(options, context)
+    const cacheKey = options._cacheKey || cacheKeyFor(context, params)
+    const requestKey = cacheKey
+    const activeCount = orderListActiveRequests.get(requestKey) || 0
+    if (silent && activeCount > 0) {
+      orderListSilentQueued.set(requestKey, { options: { ...options }, params: { ...params }, context, cacheKey })
       return { success: true, skipped: true, queued: true }
     }
+
+    const requestSeq = (orderListSeq.get(requestKey) || 0) + 1
+    orderListSeq.set(requestKey, requestSeq)
+    orderListActiveRequests.set(requestKey, activeCount + 1)
+    activateOrdersCache(context, cacheKey)
     if (!silent) {
-      loading.value = true
+      orderListVisibleRequests[context] += 1
       error.value = null
-      ordersUserFetchActive = true
-    }
-    const requestSeq = ++ordersRequestSeq
-
-    const params = {
-      page: options.page || pagination.value.page,
-      pageSize: options.pageSize || pagination.value.pageSize,
-    }
-
-    if (filters.value.gameName) {
-      params.game_name = filters.value.gameName
-    }
-
-    // 综合搜索：订单号精确命中优先，其次标题/游戏/需求内容（后端按相关度排序）
-    if (filters.value.q) {
-      params.q = filters.value.q
-    }
-
-    if (filters.value.status) {
-      params.status = filters.value.status
-    }
-
-    // bossContact 只在我的派单（minePublished）上下文生效，避免与大厅共用
-    // filters 串扰：大厅轮询不带该参数时不发送残留值
-    if (options.minePublished && filters.value.bossContact) {
-      params.boss_contact = filters.value.bossContact
-    }
-
-    if (options.minePublished) {
-      params.mine_published = true
-    }
-
-    if (options.bossContact) {
-      params.boss_contact = options.bossContact
-    }
-
-    // 大厅轮询瘦身：列表卡片用不到的大字段由后端剥掉，减小 JSON 与重绘成本
-    if (options.slim) {
-      params.slim = 1
+      ordersLoadingByContext.value[context] = true
+      if (ordersContext.value === context && !ordersCacheByKey.value[cacheKey]) loading.value = true
     }
 
     try {
       const response = await api.get('/orders/', {
         params,
-        // Bound mobile/cross-border stalls so loading and the user-fetch guard
-        // cannot remain pending forever.
         timeout: 10000,
       })
 
-      if (requestSeq !== ordersRequestSeq) {
+      if (requestSeq !== orderListSeq.get(requestKey)) {
         return { success: true, stale: true }
       }
 
       const items = response.data.items
-      // 静默轮询快照对比：与当前展示完全一致时跳过整组替换，
-      // 避免每 2 秒推倒重渲 20 张卡片（低端手机肉眼可见卡顿）。
-      if (silent && isSameOrderSnapshot(orders.value, items)) {
-        return { success: true, unchanged: true }
-      }
-
-      orders.value = items
-      pagination.value = {
+      const previous = ordersCacheByKey.value[cacheKey]?.items ?? []
+      const nextPagination = {
         page: response.data.page,
         pageSize: response.data.page_size,
         total: response.data.total,
         pages: response.data.pages,
       }
+      ordersLoadedByContext.value[context] = true
+      if (silent && isSameOrderSnapshot(previous, items)) {
+        ordersCacheByKey.value[cacheKey] = {
+          items: previous,
+          pagination: nextPagination,
+        }
+        if (activeOrdersCacheKey === cacheKey) {
+          orders.value = previous
+          pagination.value = nextPagination
+        }
+        return { success: true, unchanged: true }
+      }
 
+      const snapshot = { items, pagination: nextPagination }
+      ordersCacheByKey.value[cacheKey] = snapshot
+      if (context === 'hall') ordersByContext.value.hall = items
+      if (context === 'minePublished') ordersByContext.value.minePublished = items
+      paginationByContext.value[context] = nextPagination
+      if (activeOrdersCacheKey === cacheKey) {
+        orders.value = items
+        pagination.value = nextPagination
+      }
       return { success: true }
     } catch (err) {
-      if (!silent) {
+      if ((!silent || options.reportError) && activeOrdersCacheKey === cacheKey) {
         error.value = err.message
       }
       return { success: false, error: err.message }
     } finally {
+      const remaining = Math.max(0, (orderListActiveRequests.get(requestKey) || 1) - 1)
+      if (remaining) orderListActiveRequests.set(requestKey, remaining)
+      else orderListActiveRequests.delete(requestKey)
+
       if (!silent) {
-        ordersUserFetchActive = false
-        // 序号守卫：并发（详情页 loading 在飞时又来一次列表请求）时，
-        // 先到的旧响应不得把详情页的 loading 提前关掉，否则会闪出"订单不存在"空态。
-        if (requestSeq === ordersRequestSeq) {
-          loading.value = false
-        }
-        if (ordersSilentRefreshQueued) {
-          ordersSilentRefreshQueued = false
-          queueMicrotask(() => {
-            fetchOrders({ silent: true, slim: true }).catch(() => {})
-          })
-        }
+        orderListVisibleRequests[context] = Math.max(0, orderListVisibleRequests[context] - 1)
+      }
+      if (requestSeq === orderListSeq.get(requestKey)) {
+        ordersLoadingByContext.value[context] = orderListVisibleRequests[context] > 0
+      }
+      if (activeOrdersCacheKey === cacheKey && orderListVisibleRequests[context] === 0) {
+        loading.value = false
+      }
+
+      const queued = orderListSilentQueued.get(requestKey)
+      if (queued && !orderListActiveRequests.has(requestKey)) {
+        orderListSilentQueued.delete(requestKey)
+        queueMicrotask(() => {
+          if (activeOrdersCacheKey !== queued.cacheKey) return
+          fetchOrders({
+            ...queued.options,
+            ...queued.params,
+            silent: true,
+            minePublished: queued.context === 'minePublished',
+            _frozenParams: queued.params,
+            _cacheKey: queued.cacheKey,
+          }).catch(() => {})
+        })
       }
     }
   }
+
+  function setOrdersContext(context, options = {}) {
+    const nextContext = context === 'minePublished' ? 'minePublished' : 'hall'
+    if (nextContext === 'minePublished' && options.filters) {
+      filters.value = { ...filters.value, ...options.filters }
+    }
+    if (options.page) {
+      paginationByContext.value[nextContext] = {
+        ...paginationByContext.value[nextContext],
+        page: options.page,
+      }
+    }
+    const params = options.params || buildOrdersRequest(options, nextContext)
+    activateOrdersCache(nextContext, options.cacheKey || cacheKeyFor(nextContext, params))
+  }
+
+  function hasOrdersForContext(context, options = {}) {
+    const nextContext = context === 'minePublished' ? 'minePublished' : 'hall'
+    const cacheOptions = { ...options, minePublished: nextContext === 'minePublished' }
+    const cacheKey = options.cacheKey || cacheKeyFor(nextContext, options.params || buildOrdersRequest(cacheOptions, nextContext))
+    return Boolean(ordersCacheByKey.value[cacheKey])
+  }
+
+  async function refreshOrdersContext(context, options = {}) {
+    const normalizedContext = context === 'minePublished' ? 'minePublished' : 'hall'
+    if (normalizedContext === 'minePublished' && options.filters) {
+      filters.value = { ...filters.value, ...options.filters }
+    }
+    const requestOptions = { ...options, minePublished: normalizedContext === 'minePublished' }
+    const params = buildOrdersRequest(requestOptions, normalizedContext)
+    const cacheKey = cacheKeyFor(normalizedContext, params)
+    activateOrdersCache(normalizedContext, cacheKey)
+    return fetchOrders({
+      ...requestOptions,
+      ...params,
+      silent: Boolean(ordersCacheByKey.value[cacheKey]),
+      _frozenParams: params,
+      _cacheKey: cacheKey,
+    })
+  }
+
 
   // options.silent：静默刷新详情（接单前 freshness 校验、WS 状态变化刷新）——
   // 不切全局 loading，否则详情页骨架屏会把移动端 fixed 操作栏/弹窗一起卸载。
@@ -322,36 +425,62 @@ export const useOrdersStore = defineStore('orders', () => {
     }
   }
 
-  // 打手自己的接单单：status 可选 'DELIVERED' | 'CLAIMED' | 'SETTLED' | 'CANCELLED'
+  // 打手自己的接单单：按筛选条件缓存，切换 tab 后返回可即时显示最近数据。
   let myClaimsRequestSeq = 0
 
   async function fetchMyClaims(status, page = 1, pageSize = 20, q = '') {
-    myClaimsLoading.value = true
-    error.value = null
+    const params = { page, page_size: pageSize }
+    if (status) params.status = status
+    if (q && q.trim()) params.q = q.trim()
+    const cacheKey = JSON.stringify(Object.keys(params).sort().map((key) => [key, params[key]]))
+    activeMyClaimsCacheKey = cacheKey
+    const cached = myClaimsCache.value[cacheKey]
+    myClaims.value = cached?.items ?? []
+    myClaimsPagination.value = cached?.pagination ?? { page, pageSize, total: 0, pages: 0 }
+    myClaimsLoaded.value = Boolean(cached)
+
     const requestSeq = ++myClaimsRequestSeq
+    myClaimsLoading.value = true
+    myClaimsError.value = null
     try {
-      const params = { page, page_size: pageSize }
-      if (status) params.status = status
-      if (q && q.trim()) params.q = q.trim()
-      const response = await api.get('/orders/claims/mine', { params })
+      const response = await api.get('/orders/claims/mine', { params, timeout: 10000 })
       if (requestSeq !== myClaimsRequestSeq) {
         return { success: true, stale: true }
       }
       const data = response.data || {}
-      myClaims.value = data.items ?? []
-      myClaimsPagination.value = {
+      const items = data.items ?? []
+      const paginationData = {
         page: data.page ?? page,
         pageSize: data.page_size ?? pageSize,
-        total: data.total ?? myClaims.value.length,
+        total: data.total ?? items.length,
         pages: data.pages ?? 0,
       }
-      return { success: true, data: myClaims.value }
+      myClaimsCache.value[cacheKey] = { items, pagination: paginationData }
+      myClaimsLoaded.value = true
+      if (activeMyClaimsCacheKey === cacheKey) {
+        myClaims.value = items
+        myClaimsPagination.value = paginationData
+      }
+      return { success: true, data: items }
     } catch (err) {
-      error.value = err.message
+      if (requestSeq !== myClaimsRequestSeq) {
+        return { success: false, stale: true, error: err.message }
+      }
+      myClaimsError.value = err.message
       return { success: false, error: err.message }
     } finally {
-      myClaimsLoading.value = false
+      if (requestSeq === myClaimsRequestSeq) {
+        myClaimsLoading.value = false
+      }
     }
+  }
+
+  function hasMyClaimsCache(status, page = 1, pageSize = 20, q = '') {
+    const params = { page, page_size: pageSize }
+    if (status) params.status = status
+    if (q && q.trim()) params.q = q.trim()
+    const key = JSON.stringify(Object.keys(params).sort().map((name) => [name, params[name]]))
+    return Boolean(myClaimsCache.value[key])
   }
 
   // 审核/驳回交付（发布人或管理员）：payload { action: 'approve' | 'reject', amount?, note?, deduction?, reason? }
@@ -404,12 +533,21 @@ export const useOrdersStore = defineStore('orders', () => {
     const orderId = Number(change?.order_id || 0)
     if (!orderId) return
 
-    const order = orders.value.find((item) => Number(item.id) === orderId)
-    if (order) {
-      if (change.status != null) order.status = change.status
-      if (change.claim_status != null) order.claim_status = change.claim_status
-      if (change.claimed_count != null) order.claimed_count = Number(change.claimed_count)
+    const patchOrder = (item) => {
+      if (change.status != null) item.status = change.status
+      if (change.claim_status != null) item.claim_status = change.claim_status
+      if (change.claimed_count != null) item.claimed_count = Number(change.claimed_count)
     }
+    for (const cache of Object.values(ordersCacheByKey.value)) {
+      const cachedOrder = cache.items.find((item) => Number(item.id) === orderId)
+      if (cachedOrder) patchOrder(cachedOrder)
+    }
+    for (const contextOrders of Object.values(ordersByContext.value)) {
+      const contextOrder = contextOrders.find((item) => Number(item.id) === orderId)
+      if (contextOrder) patchOrder(contextOrder)
+    }
+    const order = orders.value.find((item) => Number(item.id) === orderId)
+    if (order) patchOrder(order)
 
     // 详情页打开的订单可能不在当前大厅列表里（筛选后未加载/未挂在大厅），
     // 命中 currentOrder 时同样 patch，让详情页收到订单状态变化。
@@ -727,6 +865,10 @@ export const useOrdersStore = defineStore('orders', () => {
 
   function setPage(page) {
     pagination.value.page = page
+    paginationByContext.value[ordersContext.value] = {
+      ...paginationByContext.value[ordersContext.value],
+      page,
+    }
   }
 
   function clearAnalysisResult() {
@@ -753,6 +895,9 @@ export const useOrdersStore = defineStore('orders', () => {
   return {
     // State
     orders,
+    ordersContext,
+    ordersByContext,
+    ordersLoadedByContext,
     currentOrder,
     analysisResult,
     loading,
@@ -765,6 +910,7 @@ export const useOrdersStore = defineStore('orders', () => {
     claimsLoading,
     myClaims,
     myClaimsLoading,
+    myClaimsError,
     myClaimsPagination,
     cancelRequests,
     cancelRequestsOrderId,
@@ -779,10 +925,14 @@ export const useOrdersStore = defineStore('orders', () => {
     analyzeRequirement,
     createOrder,
     fetchOrders,
+    setOrdersContext,
+    hasOrdersForContext,
+    refreshOrdersContext,
     fetchOrder,
     editOrder,
     fetchClaims,
     fetchMyClaims,
+    hasMyClaimsCache,
     reviewClaim,
     acceptOrder,
     applyOrderStateChange,

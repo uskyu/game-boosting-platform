@@ -49,6 +49,11 @@ function getAcceptWaitLabel(order) {
 }
 
 const orders = computed(() => ordersStore.orders)
+const hasHallOrders = computed(() => ordersStore.hasOrdersForContext('hall', {
+  page: 1,
+  pageSize: 100,
+  slim: true,
+}))
 
 function isOrderClaimable(order) {
   if (!order || !['PENDING', 'LOCKED'].includes(order.status) || order.claim_status !== 'OPEN' || order.is_archived) return false
@@ -221,6 +226,11 @@ function buildSummary(order) {
 }
 
 async function fetchOrders() {
+  ordersStore.setOrdersContext('hall', {
+    page: 1,
+    pageSize: 100,
+    slim: true,
+  })
   ordersStore.setFilters({
     // 大厅与“我的派单”共用 Pinia 筛选状态，切换页面时必须清掉另一页的游戏/老板筛选；
     // status 固定传 ''，否则会继承 OrderList 页残留的状态筛选。
@@ -230,7 +240,7 @@ async function fetchOrders() {
   })
   // 底部分页控件已下线：可抢订单集合很小，一次性拉全（pageSize=100，后端上限），
   // 省掉翻页状态与额外请求。
-  await ordersStore.fetchOrders({ slim: true, page: 1, pageSize: 100 })
+  await ordersStore.refreshOrdersContext('hall', { slim: true, page: 1, pageSize: 100 })
 }
 
 function goToOrder(orderId) {
@@ -299,7 +309,7 @@ async function silentRefresh() {
     await measureOrderFlowStage(
       'hall_refresh',
       'hall_list_refresh',
-      () => ordersStore.fetchOrders({ silent: true, slim: true, page: 1, pageSize: 100 }),
+      () => ordersStore.refreshOrdersContext('hall', { silent: true, slim: true, page: 1, pageSize: 100 }),
     )
     // 「今日已接单」兜底刷新：与订单同源节流（≥15s），失败静默
     if (hallRecentClaimsVisible.value && recentClaimsThrottleReady()) {
@@ -402,7 +412,7 @@ onUnmounted(() => {
     <div v-if="error" class="message-error">{{ error }}</div>
 
     <!-- 订单卡网格：桌面 2 列、移动 1 列 -->
-    <section v-if="loading && isAuthenticated" class="grid gap-4 md:grid-cols-2" aria-busy="true">
+    <section v-if="loading && isAuthenticated && !hasHallOrders" class="grid gap-4 md:grid-cols-2" aria-busy="true">
       <div v-for="n in 4" :key="`hall-skeleton-${n}`" class="skeleton-row">
         <div class="flex-1 space-y-3">
           <div class="skeleton-line h-6 w-28"></div>
@@ -416,7 +426,7 @@ onUnmounted(() => {
       </div>
     </section>
 
-    <section v-else-if="isAuthenticated && visibleOrders.length" class="grid grid-cols-1 gap-4 md:grid-cols-2">
+    <section v-else-if="isAuthenticated && visibleOrders.length" class="grid grid-cols-1 gap-4 md:grid-cols-2" :aria-busy="loading">
       <article
         v-for="order in visibleOrders"
         :key="order.id"

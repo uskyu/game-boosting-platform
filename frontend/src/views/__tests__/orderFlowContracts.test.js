@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest'
 
 const createSource = readFileSync(new URL('../OrderCreate.vue', import.meta.url), 'utf8')
 const detailSource = readFileSync(new URL('../OrderDetail.vue', import.meta.url), 'utf8')
+const hallSource = readFileSync(new URL('../OrderHallView.vue', import.meta.url), 'utf8')
+const listSource = readFileSync(new URL('../OrderList.vue', import.meta.url), 'utf8')
 
 function compileView(source, id) {
   const { descriptor, errors } = parse(source, { filename: id })
@@ -38,6 +40,15 @@ describe('order-flow view contracts', () => {
     expect(createSource).toMatch(/createdOrderUploadFailed\.value = true[\s\S]*?请勿重新发布同一订单/)
     expect(createSource).toMatch(/v-if="createdOrderUploadFailed"[\s\S]{0,300}查看已创建订单/)
     expect(createSource).toMatch(/:disabled="isSubmitting \|\| !canPublish \|\| createdOrderUploadFailed"/)
+  })
+
+  it('keeps cached hall and published orders visible while they refresh', () => {
+    expect(hallSource).toMatch(/v-if="loading && isAuthenticated && !hasHallOrders"/)
+    expect(listSource).toMatch(/v-if="loading && !hasPublishedOrders"/)
+    expect(hallSource).toMatch(/:aria-busy="loading"/)
+    expect(listSource).toMatch(/:aria-busy="loading"/)
+    expect(hallSource).toMatch(/refreshOrdersContext\('hall'/)
+    expect(listSource).toMatch(/refreshOrdersContext\('minePublished'/)
   })
 
   it('silently hydrates order details after successful accept and always clears action loading', () => {
