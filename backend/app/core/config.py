@@ -68,7 +68,7 @@ class Settings(BaseSettings):
     # 通知保留期：发单会给全站活跃用户各写一条「新订单发布」广播，表会持续
     # 增长；后台任务按保留天数分批清理过期广播（其他类型通知与系统公告不删），
     # 避免无上限堆积拖慢写入与查询。
-    NOTIFICATION_RETENTION_DAYS: int = 7
+    NOTIFICATION_RETENTION_DAYS: int = 3
     NOTIFICATION_CLEANUP_BATCH_SIZE: int = 5000
     NOTIFICATION_CLEANUP_INTERVAL_SECONDS: int = 6 * 3600
 

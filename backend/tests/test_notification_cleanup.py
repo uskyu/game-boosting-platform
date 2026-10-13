@@ -5,8 +5,13 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, select
 
 from app.models.notification import Notification, NotificationType
+from app.core.config import settings
 from app.models.user import User
 from app.services.notification_cleanup import cleanup_expired_notifications
+
+
+def test_notification_retention_default_is_three_days():
+    assert settings.NOTIFICATION_RETENTION_DAYS == 3
 
 
 async def _make_user(session) -> User:
