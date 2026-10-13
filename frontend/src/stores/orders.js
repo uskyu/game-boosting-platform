@@ -85,6 +85,44 @@ export const useOrdersStore = defineStore('orders', () => {
   let claimsRequestSeq = 0
   let cancelRequestsRequestSeq = 0
 
+  // 看过的订单详情快照（含 description/凭证等全量字段），只保留最近若干条：
+  // 再次点开同一订单时先把页面铺满，后台静默补全，避免整页骨架屏（老板侧
+  // 跨境链路上详情请求要 1-2 秒，纯骨架看起来就是「点开一片白」）。
+  const ORDER_DETAIL_CACHE_LIMIT = 20
+  const orderDetailCacheById = ref({})
+
+  function rememberOrderDetail(order) {
+    const key = String(order?.id ?? '')
+    if (!key) return
+    const next = { ...orderDetailCacheById.value, [key]: order }
+    const keys = Object.keys(next)
+    if (keys.length > ORDER_DETAIL_CACHE_LIMIT) {
+      for (const staleKey of keys.slice(0, keys.length - ORDER_DETAIL_CACHE_LIMIT)) {
+        delete next[staleKey]
+      }
+    }
+    orderDetailCacheById.value = next
+  }
+
+  // 用已有数据（详情缓存优先，其次任意列表缓存里的同 id 卡片）预填 currentOrder。
+  // 返回是否命中缓存；命中的调用方应改走静默刷新，别再切成整页骨架。
+  function primeOrderDetail(orderId) {
+    if (orderId === null || orderId === undefined) return false
+    const detailCached = orderDetailCacheById.value[String(orderId)]
+    if (detailCached) {
+      currentOrder.value = detailCached
+      return true
+    }
+    for (const cache of Object.values(ordersCacheByKey.value)) {
+      const listItem = (cache?.items || []).find((item) => Number(item.id) === Number(orderId))
+      if (listItem) {
+        currentOrder.value = listItem
+        return true
+      }
+    }
+    return false
+  }
+
   // Actions
   async function analyzeRequirement(description) {
     analyzing.value = true
@@ -184,7 +222,14 @@ export const useOrdersStore = defineStore('orders', () => {
   }
 
   function cacheKeyFor(context, params) {
-    return `${context}:${JSON.stringify(Object.keys(params).sort().map((key) => [key, params[key]]))}`
+    // slim 只裁剪响应体字段，不改变「这是哪一批数据」的身份。把它排除在缓存键
+    // 之外：否则 hasOrdersForContext（判断有无缓存）与实际写入缓存的请求会算出
+    // 两个不同的键，出现「明明有缓存却仍然显示骨架屏」。
+    const entries = Object.keys(params)
+      .filter((key) => key !== 'slim')
+      .sort()
+      .map((key) => [key, params[key]])
+    return `${context}:${JSON.stringify(entries)}`
   }
 
   function activateOrdersCache(context, cacheKey) {
@@ -360,6 +405,7 @@ export const useOrdersStore = defineStore('orders', () => {
         return { success: true, stale: true, data: response.data }
       }
       currentOrder.value = response.data
+      rememberOrderDetail(response.data)
       return { success: true, data: response.data }
     } catch (err) {
       if (requestSeq !== orderDetailRequestSeq) {
@@ -929,6 +975,7 @@ export const useOrdersStore = defineStore('orders', () => {
     hasOrdersForContext,
     refreshOrdersContext,
     fetchOrder,
+    primeOrderDetail,
     editOrder,
     fetchClaims,
     fetchMyClaims,

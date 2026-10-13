@@ -238,6 +238,80 @@ describe('订单列表上下文缓存', () => {
   })
 })
 
+describe('列表缓存键与 slim 无关', () => {
+  // 回归：判断"有没有缓存"的调用没传 slim、真正取数的调用传了 slim，
+  // 两个键不一致 → 明明有缓存仍判为没缓存，每次切页都闪骨架屏（白屏）。
+  it('带 slim 取数后，不带 slim 的 hasOrdersForContext 也命中', async () => {
+    const store = useOrdersStore()
+    apiGet.mockResolvedValueOnce(orderListResponse([{ id: 11, title: '派单' }]))
+
+    await store.refreshOrdersContext('minePublished', { slim: true })
+
+    expect(store.hasOrdersForContext('minePublished', {})).toBe(true)
+  })
+
+  it('大厅同样命中（has 传 page/pageSize/slim，取数只传 slim 也一致）', async () => {
+    const store = useOrdersStore()
+    apiGet.mockResolvedValueOnce(orderListResponse([{ id: 12, title: '大厅单' }], 100))
+
+    await store.refreshOrdersContext('hall', { page: 1, pageSize: 100, slim: true })
+
+    expect(store.hasOrdersForContext('hall', { page: 1, pageSize: 100, slim: true })).toBe(true)
+    expect(store.hasOrdersForContext('hall', { page: 1, pageSize: 100 })).toBe(true)
+  })
+
+  it('slim 仍然发给后端（只是不参与缓存键）', async () => {
+    const store = useOrdersStore()
+    apiGet.mockResolvedValueOnce(orderListResponse([]))
+
+    await store.refreshOrdersContext('hall', { page: 1, pageSize: 100, slim: true })
+
+    expect(apiGet.mock.calls[0][1].params.slim).toBe(1)
+  })
+
+  it('不同筛选条件仍是不同缓存（不会错误命中）', async () => {
+    const store = useOrdersStore()
+    apiGet.mockResolvedValueOnce(orderListResponse([{ id: 13 }]))
+    store.setFilters({ q: '王者' })
+    await store.refreshOrdersContext('minePublished', { slim: true, filters: { q: '王者' } })
+
+    expect(store.hasOrdersForContext('minePublished', { filters: { q: '王者' } })).toBe(true)
+    store.setFilters({ q: '英雄联盟' })
+    expect(store.hasOrdersForContext('minePublished', { filters: { q: '英雄联盟' } })).toBe(false)
+  })
+})
+
+describe('primeOrderDetail 详情预填', () => {
+  it('列表缓存里有该订单时可直接铺页面（不用骨架屏）', async () => {
+    const store = useOrdersStore()
+    apiGet.mockResolvedValueOnce(orderListResponse([{ id: 21, title: '大厅卡片' }], 100))
+    await store.refreshOrdersContext('hall', { page: 1, pageSize: 100, slim: true })
+
+    expect(store.primeOrderDetail(21)).toBe(true)
+    expect(store.currentOrder).toEqual({ id: 21, title: '大厅卡片' })
+  })
+
+  it('没有任何缓存时返回 false，调用方保留骨架屏', () => {
+    const store = useOrdersStore()
+
+    expect(store.primeOrderDetail(999)).toBe(false)
+    expect(store.currentOrder).toBeNull()
+  })
+
+  it('详情全量快照优先于列表瘦身卡片', async () => {
+    const store = useOrdersStore()
+    apiGet.mockResolvedValueOnce(orderListResponse([{ id: 22, title: '瘦身卡片', description: null }], 100))
+    await store.refreshOrdersContext('hall', { page: 1, pageSize: 100, slim: true })
+
+    apiGet.mockResolvedValueOnce({ data: { id: 22, title: '全量详情', description: '完整需求' } })
+    await store.fetchOrder(22)
+    store.clearCurrentOrder()
+
+    expect(store.primeOrderDetail(22)).toBe(true)
+    expect(store.currentOrder.description).toBe('完整需求')
+  })
+})
+
 describe('fetchMyClaims request sequence', () => {
   it('旧请求完成不能清除较新 claims 请求的 loading', async () => {
     const store = useOrdersStore()

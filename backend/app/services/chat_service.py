@@ -53,9 +53,9 @@ class ChatService:
             order = await self._get_order_for_conversation(order_id)
             conversation_type = ConversationType.ORDER
 
-            # 终态订单（COMPLETED / CANCELLED）不能再建新会话，但订单进行期
-            # 已经聊起来的会话必须能继续打开：用户要在详情页回看聊天记录。
-            # 所以先查已有会话，命中就直接返回，跳过可联络状态校验。
+            # 已有会话优先：订单进行期聊起来的会话必须能随时打开，包含订单
+            # 完结后的售后回看。命中就直接返回，跳过下面的状态与参与者校验
+            # （历史会话本身已经证明双方当时建联成功）。
             existing_conversation = await self._find_existing_conversation(
                 user_id=current_user.id,
                 target_user_id=target_user.id,
@@ -69,7 +69,8 @@ class ChatService:
                 )
                 return existing_conversation
 
-            # 走到这里说明要新建会话，才做完整的可联络校验。
+            # 走到这里说明要新建会话，才做可联络校验（终态订单只校验归档，
+            # 联络资格由下面的参与者集合判定）。
             self._assert_order_contactable(order)
             order_participants = await self._get_order_participant_ids(order)
 
@@ -761,6 +762,12 @@ class ChatService:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="订单已归档，不可发起会话",
             )
+        # 终态订单（已完成 / 已取消）整单不再禁止建联：发布者与参与打手
+        # 需要售后与复购沟通，截止与抢单状态对已完结的订单也已无意义。
+        # 此处直接放行，联络资格改由参与者集合判定，与订单无关的打手
+        # 依旧会在下游被拒绝。
+        if order.status in (OrderStatus.CANCELLED, OrderStatus.COMPLETED):
+            return
         now = datetime.now(timezone.utc)
         if order.deadline is not None:
             dl = order.deadline
@@ -786,12 +793,6 @@ class ChatService:
             # 已满员仍允许已参与打手与客户互聊，但不允许新的 PENDING 咨询
             # 冲击；此处归入可联络，由参与者集合进一步约束。
             pass
-        # 终态订单不可再基于订单建联
-        if order.status in (OrderStatus.CANCELLED, OrderStatus.COMPLETED):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"订单当前状态为 {order.status.value}，不可基于订单创建会话",
-            )
 
     async def _get_order_participant_ids(self, order: Order) -> set[int]:
         """返回订单参与者 id 集合：order.user_id + 首抢 order.booster_id

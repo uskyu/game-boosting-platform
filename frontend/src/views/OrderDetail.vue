@@ -80,7 +80,12 @@ function openClaimPreview(claim, index) {
 }
 
 const order = computed(() => ordersStore.currentOrder)
-const loading = computed(() => ordersStore.loading)
+// 详情页骨架屏只认自己的请求：store 的全局 loading 会被列表刷新/动作请求改写，
+// 一旦它被别的请求提前复位，整页会在数据回来前闪成空白或「订单不存在」。
+const detailLoading = ref(false)
+// 只有「没有任何订单可渲染」时才把 store 错误当成页面级加载失败展示；
+// 有内容时局部错误走 errorMessage，别把整页替换掉。
+const detailError = computed(() => (order.value ? '' : ordersStore.error || ''))
 const currentUser = computed(() => authStore.user)
 const isBooster = computed(() => authStore.isBooster)
 const isOwner = computed(() => order.value?.user_id === currentUser.value?.id)
@@ -1006,22 +1011,37 @@ async function loadDetail(orderId) {
   errorMessage.value = ''
   successMessage.value = ''
   showPayoutModal.value = false
-  ordersStore.clearCurrentOrder()
 
-  const result = await ordersStore.fetchOrder(orderId)
-  if (!result.success || result.stale || loadSeq !== detailLoadSeq || String(props.id) !== String(orderId)) {
-    return
+  // 命中缓存（详情快照或列表卡片）就先把页面铺满再静默补全：跨境链路上详情
+  // 请求要 1-2 秒，整页骨架屏在老板眼里就是「点开一片白」。
+  const primed = ordersStore.primeOrderDetail(orderId)
+  if (!primed) {
+    ordersStore.clearCurrentOrder()
   }
+  detailLoading.value = !primed
 
-  await Promise.all([
-    fetchReviews(orderId, loadSeq),
-    loadClaims(orderId, loadSeq),
-  ])
-  if (loadSeq !== detailLoadSeq || String(props.id) !== String(orderId)) {
-    return
+  let result
+  try {
+    result = await ordersStore.fetchOrder(orderId, primed ? { silent: true } : {})
+    if (!result.success || result.stale || loadSeq !== detailLoadSeq || String(props.id) !== String(orderId)) {
+      return
+    }
+
+    await Promise.all([
+      fetchReviews(orderId, loadSeq),
+      loadClaims(orderId, loadSeq),
+    ])
+    if (loadSeq !== detailLoadSeq || String(props.id) !== String(orderId)) {
+      return
+    }
+    // 报名名单就绪后再拉协商记录：myClaim 的回退来源此时才可用
+    await loadCancelRequests(orderId, loadSeq)
+  } finally {
+    // 只有最新一次加载能收起骨架，避免慢响应把新页面的骨架提前关掉
+    if (loadSeq === detailLoadSeq) {
+      detailLoading.value = false
+    }
   }
-  // 报名名单就绪后再拉协商记录：myClaim 的回退来源此时才可用
-  await loadCancelRequests(orderId, loadSeq)
 }
 
 watch(
@@ -1079,7 +1099,7 @@ onUnmounted(() => {
 
 <template>
   <div class="page-shell od-page space-y-6">
-    <div v-if="loading" class="space-y-6" aria-busy="true">
+    <div v-if="detailLoading" class="space-y-6" aria-busy="true">
       <div class="skeleton h-44 !rounded-panel"></div>
       <div class="grid gap-6 xl:grid-cols-[1.02fr_0.98fr]">
         <div class="skeleton h-72 !rounded-card"></div>
@@ -1651,6 +1671,17 @@ onUnmounted(() => {
         </div>
       </section>
     </template>
+
+    <!-- 拉取失败（多为跨境链路抖动）不能笼统说「订单不存在」：订单还在，
+         只是没拿到。给出真实原因和重试入口，避免老板以为订单被删了。 -->
+    <section v-else-if="detailError" class="empty-state">
+      <div class="empty-state__icon" aria-hidden="true">⚠️</div>
+      <h2 class="empty-state__title">订单加载失败</h2>
+      <p class="empty-state__copy">{{ detailError }}</p>
+      <button type="button" class="btn-secondary mt-4 !px-5 !py-2.5" @click="loadDetail(props.id)">
+        重新加载
+      </button>
+    </section>
 
     <section v-else class="empty-state">
       <div class="empty-state__icon" aria-hidden="true">🔍</div>
