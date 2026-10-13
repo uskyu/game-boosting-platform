@@ -51,6 +51,27 @@ describe('order-flow view contracts', () => {
     expect(listSource).toMatch(/refreshOrdersContext\('minePublished'/)
   })
 
+  it('surfaces chat-start failures next to the chat button on terminal orders', () => {
+    // 终态订单按钮保持可点（后端已允许重开已有会话），失败时就近展示错误，
+    // 否则用户只看到按钮闪一下"打开中..."，错误藏在页面顶部的 errorMessage 里。
+    expect(detailSource).toContain('const chatError = ref(\'\')')
+
+    const handlerStart = detailSource.indexOf('async function handleStartConversation()')
+    const handlerEnd = detailSource.indexOf('async function fetchReviews(', handlerStart)
+    const handler = detailSource.slice(handlerStart, handlerEnd)
+    expect(handler).toMatch(/chatError\.value = ''/)
+    expect(handler).toMatch(/chatError\.value = (result\.error|err\?\.message)/)
+    // 顶部横幅必须照旧工作
+    expect(handler).toMatch(/errorMessage\.value = result\.error/)
+    expect(handler).toMatch(/errorMessage\.value = err\?\.message/)
+
+    const buttonIndex = detailSource.indexOf("联系打手' : '联系老板'")
+    expect(buttonIndex).toBeGreaterThan(-1)
+    expect(detailSource).toMatch(/联系打手[\s\S]{0,400}v-if="chatError"/)
+    expect(detailSource.slice(buttonIndex, buttonIndex + 400)).toMatch(/v-if="chatError"/)
+    expect(detailSource).toMatch(/<p v-if="chatError" class="message-error mt-2 text-xs">\{\{ chatError \}\}<\/p>/)
+  })
+
   it('silently hydrates order details after successful accept and always clears action loading', () => {
     const handlerStart = detailSource.indexOf('async function handleConfirmClaim()')
     const handlerEnd = detailSource.indexOf('\nfunction openDeliverModal()', handlerStart)

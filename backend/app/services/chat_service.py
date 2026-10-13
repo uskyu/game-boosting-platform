@@ -51,6 +51,25 @@ class ChatService:
 
         if order_id is not None:
             order = await self._get_order_for_conversation(order_id)
+            conversation_type = ConversationType.ORDER
+
+            # 终态订单（COMPLETED / CANCELLED）不能再建新会话，但订单进行期
+            # 已经聊起来的会话必须能继续打开：用户要在详情页回看聊天记录。
+            # 所以先查已有会话，命中就直接返回，跳过可联络状态校验。
+            existing_conversation = await self._find_existing_conversation(
+                user_id=current_user.id,
+                target_user_id=target_user.id,
+                conversation_type=conversation_type,
+                order_id=order_id,
+            )
+            if existing_conversation is not None:
+                existing_conversation.unread_count = await self._get_unread_count(
+                    current_user=current_user,
+                    conversation_id=existing_conversation.id,
+                )
+                return existing_conversation
+
+            # 走到这里说明要新建会话，才做完整的可联络校验。
             self._assert_order_contactable(order)
             order_participants = await self._get_order_participant_ids(order)
 
@@ -78,8 +97,6 @@ class ChatService:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="目标用户不属于该订单",
                 )
-
-            conversation_type = ConversationType.ORDER
 
         conversation = await self._find_existing_conversation(
             user_id=current_user.id,

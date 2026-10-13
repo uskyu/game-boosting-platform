@@ -30,6 +30,9 @@ const errorMessage = ref('')
 const successMessage = ref('')
 const actionLoading = ref(false)
 const chatLoading = ref(false)
+// 会话失败就近提示：终态订单后端仍拒绝「新建」会话（403），
+// 顶部 errorMessage 离按钮太远，用户只看到按钮闪一下"打开中..."，故在按钮下方同步展示。
+const chatError = ref('')
 const reviews = ref([])
 let detailLoadSeq = 0
 let reviewsLoadSeq = 0
@@ -924,6 +927,7 @@ async function handleStartConversation() {
 
   chatLoading.value = true
   errorMessage.value = ''
+  chatError.value = ''
   successMessage.value = ''
   try {
     const result = await chatStore.startConversation(chatTargetUserId.value, order.value.id)
@@ -934,9 +938,11 @@ async function handleStartConversation() {
       successMessage.value = '会话已创建，请到消息中心查看'
     } else {
       errorMessage.value = result.error || '打开会话失败，请稍后重试'
+      chatError.value = result.error || '打开会话失败，请稍后重试'
     }
   } catch (err) {
     errorMessage.value = err?.message || '打开会话失败，请稍后重试'
+    chatError.value = err?.message || '打开会话失败，请稍后重试'
   } finally {
     // 任何路径都要复位，否则按钮永久停在"打开中..."
     chatLoading.value = false
@@ -1428,6 +1434,7 @@ onUnmounted(() => {
             >
               {{ chatLoading ? '打开中...' : (isOwner ? '联系打手' : '联系老板') }}
             </button>
+            <p v-if="chatError" class="message-error mt-2 text-xs">{{ chatError }}</p>
           </article>
         </section>
 
