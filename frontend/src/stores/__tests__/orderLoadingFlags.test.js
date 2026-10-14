@@ -332,7 +332,100 @@ describe('fetchMyClaims request sequence', () => {
   })
 })
 
-describe('fetchOrder silent 选项', () => {
+describe('fetchOrder 不写共享 loading（序号守卫只保护数据）', () => {
+  // 回归：共享 loading 归订单列表/动作请求所有；fetchOrder 一旦写它，详情请求
+  // 或发布页预填就会把列表骨架、发布按钮等无关 UI 一起锁住/提前解锁。
+  it('非 silent 调用（发布页预填走的就是这条路径）在飞期间也不抬升 store.loading', async () => {
+    const store = useOrdersStore()
+    const pending = deferred()
+    apiGet.mockImplementationOnce(() => pending.promise)
+
+    const call = store.fetchOrder(42)
+    expect(store.loading).toBe(false)
+
+    pending.resolve({ data: { id: 42, status: 'LOCKED' } })
+    expect(await call).toEqual({ success: true, data: { id: 42, status: 'LOCKED' } })
+
+    expect(store.loading).toBe(false)
+    expect(store.currentOrder).toEqual({ id: 42, status: 'LOCKED' })
+  })
+
+  it('列表刷新在飞时（loading=true）打开详情：详情请求全程不动共享 loading', async () => {
+    const store = useOrdersStore()
+    store.loading = true
+    apiGet.mockResolvedValue({ data: { id: 42, status: 'LOCKED' } })
+
+    const result = await store.fetchOrder(42)
+
+    expect(result.success).toBe(true)
+    expect(store.loading).toBe(true)
+  })
+
+  it('非 silent 调用失败时不写共享 loading，只写 error', async () => {
+    const store = useOrdersStore()
+    apiGet.mockRejectedValueOnce({ message: '订单不存在' })
+
+    const result = await store.fetchOrder(42)
+
+    expect(result).toEqual({ success: false, error: '订单不存在' })
+    expect(store.loading).toBe(false)
+    expect(store.error).toBe('订单不存在')
+  })
+
+  it('clearCurrentOrder 作废在飞详情请求：stale、不落地、不污染共享 loading', async () => {
+    const store = useOrdersStore()
+    const pending = deferred()
+    apiGet.mockImplementationOnce(() => pending.promise)
+
+    const call = store.fetchOrder(42)
+    expect(store.loading).toBe(false)
+    store.clearCurrentOrder()
+
+    pending.resolve({ data: { id: 42, status: 'LOCKED' } })
+    const result = await call
+
+    expect(result).toEqual({ success: true, stale: true, data: { id: 42, status: 'LOCKED' } })
+    expect(store.currentOrder).toBeNull()
+    expect(store.loading).toBe(false)
+  })
+
+  it('后续 silent 请求作废在飞的非 silent 详情请求：旧响应不落地也不污染 loading', async () => {
+    const store = useOrdersStore()
+    const slow = deferred()
+    apiGet.mockImplementationOnce(() => slow.promise)
+
+    const slowCall = store.fetchOrder(42)
+    expect(store.loading).toBe(false)
+
+    apiGet.mockResolvedValueOnce({ data: { id: 42, status: 'FRESH' } })
+    const fresh = await store.fetchOrder(42, { silent: true })
+    expect(fresh).toEqual({ success: true, data: { id: 42, status: 'FRESH' } })
+    expect(store.loading).toBe(false)
+
+    slow.resolve({ data: { id: 42, status: 'STALE' } })
+    const slowResult = await slowCall
+    expect(slowResult).toEqual({ success: true, stale: true, data: { id: 42, status: 'STALE' } })
+    expect(store.currentOrder).toEqual({ id: 42, status: 'FRESH' })
+    expect(store.loading).toBe(false)
+  })
+
+  it('被作废的失败请求不写 error，也不污染共享 loading（失败路径序号守卫）', async () => {
+    const store = useOrdersStore()
+    const slow = deferred()
+    apiGet.mockImplementationOnce(() => slow.promise)
+
+    const slowCall = store.fetchOrder(42)
+    apiGet.mockResolvedValueOnce({ data: { id: 42, status: 'FRESH' } })
+    await store.fetchOrder(42, { silent: true })
+
+    slow.reject({ message: '网络错误' })
+    const result = await slowCall
+
+    expect(result).toEqual({ success: false, stale: true, error: '网络错误' })
+    expect(store.error).toBeNull()
+    expect(store.loading).toBe(false)
+  })
+
   it('silent 调用不改变 store.loading', async () => {
     const store = useOrdersStore()
     store.loading = true
@@ -354,21 +447,6 @@ describe('fetchOrder silent 选项', () => {
 
     expect(result).toEqual({ success: false, error: '订单不存在' })
     expect(store.loading).toBe(true)
-  })
-
-  it('默认（非 silent）仍按原逻辑切换 loading', async () => {
-    const store = useOrdersStore()
-    const pending = deferred()
-    apiGet.mockImplementationOnce(() => pending.promise)
-
-    const call = store.fetchOrder(42)
-    expect(store.loading).toBe(true)
-
-    pending.resolve({ data: { id: 42, status: 'LOCKED' } })
-    await call
-
-    expect(store.loading).toBe(false)
-    expect(store.currentOrder).toEqual({ id: 42, status: 'LOCKED' })
   })
 
   it('silent 调用仍保留请求序号守卫：旧响应不落地', async () => {

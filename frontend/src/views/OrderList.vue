@@ -11,6 +11,7 @@ import { ORDER_STATUS_OPTIONS, CANCEL_PENDING_CLAIM_META, getClaimSettlementMeta
 const route = useRoute()
 const router = useRouter()
 const chatStore = useChatStore()
+const authStore = useAuthStore()
 const ordersStore = useOrdersStore()
 
 // 双栏：我的接单（claims/mine）/ 我的派单（自己发布的订单）
@@ -38,11 +39,28 @@ function getClaimSettlementDisplayMeta(claim) {
 }
 
 // 管理员默认"我的派单"：整页刷新时用户信息可能晚于挂载到达，用 watch 兜底切换。
-// URL 已指定 tab 时以 URL 为准。
-watch(() => useAuthStore().isAdmin, (isAdmin) => {
-  if (isAdmin && !userTouchedTab && !route.query.tab) {
+// URL 已指定 tab 或用户手动点过 tab 时，一律以用户选择为准。
+// - 初始就是管理员（immediate 首次调用，wasAdmin 为 undefined）：只切默认 tab，
+//   首屏数据仍由 onMounted 拉一次，这里再请求会重复。
+// - 身份在挂载前晚到：onMounted 会按最终 published tab 只拉一次。
+// - 身份在挂载后晚到：首屏已按打手身份拉过 claims，这里补拉派单。
+let listMounted = false
+watch(() => authStore.isAdmin, (isAdmin, wasAdmin) => {
+  if (!isAdmin || userTouchedTab || route.query.tab) {
+    return
+  }
+  if (wasAdmin === undefined) {
     activeTab.value = 'published'
     syncQuery()
+    return
+  }
+  if (wasAdmin === false) {
+    activeTab.value = 'published'
+    if (!listMounted) {
+      syncQuery()
+      return
+    }
+    applyAdminDefaultTab()
   }
 }, { immediate: true })
 
@@ -221,9 +239,24 @@ function switchTab(tab) {
       page: 1,
     })
     fetchOrders()
-  } else if (!useAuthStore().isAdmin) {
+  } else if (!authStore.isAdmin) {
     fetchClaims(1)
   }
+  syncQuery(1)
+}
+
+// 身份晚到的管理员：tab 是数据上下文的一部分，必须连同 minePublished
+// context/filters/页码一起切换并补拉一次列表；只改 activeTab 会让页面停在
+// "我的派单"却展示 claims 上下文的数据（老板反馈的空列表）。
+function applyAdminDefaultTab() {
+  activeTab.value = 'published'
+  ordersStore.setFilters(publishedCacheFilters.value)
+  ordersStore.setPage(1)
+  ordersStore.setOrdersContext('minePublished', {
+    filters: publishedCacheFilters.value,
+    page: 1,
+  })
+  fetchOrders()
   syncQuery(1)
 }
 
@@ -339,6 +372,7 @@ watch(claimStatus, () => {
 })
 
 onMounted(async () => {
+  listMounted = true
   // 从 URL 恢复页码后再拉首屏，避免返回/刷新时搜索条件在但页码被重置
   if (activeTab.value === 'published') {
     ordersStore.setFilters(publishedCacheFilters.value)
@@ -350,13 +384,14 @@ onMounted(async () => {
   if (activeTab.value !== 'published') {
     ordersStore.setPage(Math.max(1, Number(route.query.page) || 1))
   }
-  // 管理员不拉报名列表；若用户信息晚到，watch 会切到"我的派单"。
+  // 管理员不拉报名列表；若用户信息晚到（false → true），watch 会切到
+  // "我的派单"并补拉一次派单列表（初始管理员的首屏请求只在这里发，不重复）。
   // 三个请求互不依赖，全部并行发出：跨境链路上每消掉一个串行 RTT，
   // 首屏就快一秒（实测会话列表 100 条服务端 ~310ms、20 条 ~76ms，
   // 且订单卡片仅用它做聊天未读徽章，20 条足够覆盖首屏订单）。
   await Promise.all([
     activeTab.value === 'published' ? fetchOrders() : Promise.resolve(),
-    !useAuthStore().isAdmin && activeTab.value === 'claims' ? fetchClaims() : Promise.resolve(),
+    !authStore.isAdmin && activeTab.value === 'claims' ? fetchClaims() : Promise.resolve(),
     chatStore.fetchConversations({ pageSize: 20 }),
     chatStore.fetchUnreadSummary(),
   ])

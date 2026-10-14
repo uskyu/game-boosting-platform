@@ -170,7 +170,9 @@ const catalogGames = computed(() => gamesStore.games)
 const selectedGame = computed(() => (
   formData.value.game_id ? gamesStore.getGameById(Number(formData.value.game_id)) : null
 ))
-const isSubmitting = computed(() => submitting.value || ordersStore.loading)
+// 发布栏锁 = 发布请求（submitting）+ 原单预填（recycleLoading，见 prefillFromOrder）；
+// 不再读 store 的全局 loading——列表刷新/动作请求的 loading 不再误锁本页按钮。
+const isSubmitting = computed(() => submitting.value || recycleLoading.value)
 const submitStage = ref('')
 const createdOrderUploadFailed = ref(false)
 const createdOrderId = ref(null)
@@ -204,6 +206,9 @@ function handleGameChange() {
 // 原游戏已下架时保留 game_id/game_name 并告警，发布被 canPublish 拦截
 const recycleOrderId = ref(null)
 const recycleMode = ref('')
+// 预填原单期间的页面本地锁：详情请求现在不写 store 的全局 loading（它归列表
+// 请求所有），预填要不要禁用发布栏由本页自己的请求状态决定，互不牵连。
+const recycleLoading = ref(false)
 const gameOffline = computed(() => (
   Boolean(formData.value.game_id)
   && !catalogGames.value.some((game) => Number(game.id) === Number(formData.value.game_id))
@@ -212,45 +217,51 @@ const gameOffline = computed(() => (
 async function prefillFromOrder(orderId, mode) {
   recycleOrderId.value = orderId
   recycleMode.value = mode
-  const result = await ordersStore.fetchOrder(orderId)
-  const order = result?.data || ordersStore.currentOrder
-  if (!order) {
-    errorMessage.value = result?.error || '原订单读取失败，请手动填写后发布'
-    return
-  }
-  const price = order.price != null ? String(order.price) : ''
-  const compensation = Number(order.compensation_amount || 0)
-  formData.value = {
-    ...formData.value,
-    game_id: order.game_id ?? null,
-    game_name: order.game_name || '',
-    // 续单：指定同一位打手（标题「指定<打手名>」）；无人接过的单没有打手可指定，
-    // 沿用原标题（此时续单与重建等价）；重建一律沿用原标题
-    title: mode === 'repeat' && order.booster?.username
-      ? `指定${order.booster.username}`
-      : (order.title || ''),
-    price,
-    description_raw: order.description_raw || '',
-    notes: order.notes || '',
-    boss_contact: order.boss_contact || '',
-    max_claims: Number(order.max_claims) || 1,
-    compensation_enabled: compensation > 0,
-    compensation_amount: compensation > 0 ? String(order.compensation_amount) : '',
-    payout_delay_days: order.payout_delay_days ?? '',
-    payout_delay_hours: order.payout_delay_hours ?? '',
-    require_delivery_image: Boolean(order.require_delivery_image),
-    // 原单附件以对象形态直接进 payload.attachments（含 /uploads/orders/ URL），
-    // 用户仍可继续选新图一起发布
-    attachments: Array.isArray(order.attachments) ? [...order.attachments] : [],
-  }
-  if (individualServiceFeeEnabled.value) {
-    const feeRate = Number(order.service_fee_rate || 0)
-    formData.value.service_fee_enabled = feeRate > 0
-    formData.value.service_fee_rate = feeRate > 0 ? String(order.service_fee_rate) : ''
-  }
-  // 游戏仍在架时同步 catalog 里的最新名称；已下架则保留原值并告警
-  if (selectedGame.value) {
-    handleGameChange()
+  recycleLoading.value = true
+  try {
+    const result = await ordersStore.fetchOrder(orderId)
+    const order = result?.data || ordersStore.currentOrder
+    if (!order) {
+      errorMessage.value = result?.error || '原订单读取失败，请手动填写后发布'
+      return
+    }
+    const price = order.price != null ? String(order.price) : ''
+    const compensation = Number(order.compensation_amount || 0)
+    formData.value = {
+      ...formData.value,
+      game_id: order.game_id ?? null,
+      game_name: order.game_name || '',
+      // 续单：指定同一位打手（标题「指定<打手名>」）；无人接过的单没有打手可指定，
+      // 沿用原标题（此时续单与重建等价）；重建一律沿用原标题
+      title: mode === 'repeat' && order.booster?.username
+        ? `指定${order.booster.username}`
+        : (order.title || ''),
+      price,
+      description_raw: order.description_raw || '',
+      notes: order.notes || '',
+      boss_contact: order.boss_contact || '',
+      max_claims: Number(order.max_claims) || 1,
+      compensation_enabled: compensation > 0,
+      compensation_amount: compensation > 0 ? String(order.compensation_amount) : '',
+      payout_delay_days: order.payout_delay_days ?? '',
+      payout_delay_hours: order.payout_delay_hours ?? '',
+      require_delivery_image: Boolean(order.require_delivery_image),
+      // 原单附件以对象形态直接进 payload.attachments（含 /uploads/orders/ URL），
+      // 用户仍可继续选新图一起发布
+      attachments: Array.isArray(order.attachments) ? [...order.attachments] : [],
+    }
+    if (individualServiceFeeEnabled.value) {
+      const feeRate = Number(order.service_fee_rate || 0)
+      formData.value.service_fee_enabled = feeRate > 0
+      formData.value.service_fee_rate = feeRate > 0 ? String(order.service_fee_rate) : ''
+    }
+    // 游戏仍在架时同步 catalog 里的最新名称；已下架则保留原值并告警
+    if (selectedGame.value) {
+      handleGameChange()
+    }
+  } finally {
+    // 预填结束（成功、失败、原单不存在）都要解锁发布栏
+    recycleLoading.value = false
   }
 }
 

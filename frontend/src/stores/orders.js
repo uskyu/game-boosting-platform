@@ -389,14 +389,14 @@ export const useOrdersStore = defineStore('orders', () => {
   }
 
 
-  // options.silent：静默刷新详情（接单前 freshness 校验、WS 状态变化刷新）——
-  // 不切全局 loading，否则详情页骨架屏会把移动端 fixed 操作栏/弹窗一起卸载。
+  // options.silent：调用方语义标记（接单前 freshness 校验、WS 状态变化刷新、
+  // 缓存命中后的静默补全）。无论 silent 与否都不写共享 loading：共享 loading
+  // 归列表请求（fetchOrders）所有，详情骨架屏由详情页自己的 detailLoading 驱动，
+  // 发布页预填等场景需要自己的本地锁（recycleLoading），不能被列表刷新连带锁住。
+  // 数据落地仍由请求序号守卫保护：clearCurrentOrder 或后续详情请求会把在飞的
+  // 旧响应/旧 finally 作废（stale），不会污染 currentOrder，也不写共享状态。
   async function fetchOrder(orderId, options = {}) {
-    const silent = Boolean(options.silent)
     const requestSeq = ++orderDetailRequestSeq
-    if (!silent) {
-      loading.value = true
-    }
     error.value = null
 
     try {
@@ -413,10 +413,6 @@ export const useOrdersStore = defineStore('orders', () => {
       }
       error.value = err.message
       return { success: false, error: err.message }
-    } finally {
-      if (!silent && requestSeq === orderDetailRequestSeq) {
-        loading.value = false
-      }
     }
   }
 

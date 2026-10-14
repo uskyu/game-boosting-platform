@@ -268,6 +268,11 @@ let hallRefreshTimer = null
 let hallUnmounted = false
 // 抢单倒计时：独立 1 秒计时器，仅驱动 now 变化
 let countdownTimer = null
+// 切回页面时 focus 与 visibilitychange 几乎同时触发；两次都立刻发请求会让
+// 在飞保护把第二次排进队列再补拉一轮，白跑一次全量列表。用短 debounce 合并为
+// 一次网络刷新；时钟校准与轮询重启仍即时执行（纯本地操作，无请求成本）。
+const HALL_RESUME_REFRESH_DEBOUNCE = 150
+let hallResumeRefreshTimer = null
 // 合并刷新期间到达的通知，当前请求结束后补拉一次，避免「有声音但没新单」
 //（通知恰好撞上轮询在飞时，旧版直接丢弃刷新信号）。
 let hallRefreshQueued = false
@@ -289,13 +294,18 @@ function restartHallTimer() {
   hallRefreshTimer = window.setInterval(silentRefresh, hallPollInterval())
 }
 
-// 页面重新可见（手机解锁/切回应用）：先校准倒计时基准，再立刻同步一次，
-// 不让用户对着刚解冻的陈旧页面干等下一个轮询周期。
+// 页面重新可见（手机解锁/切回应用）：先校准倒计时基准并重启轮询，
+// 再把 focus/visibilitychange 触发的网络刷新用短 debounce 合并成一次，
+// 不让用户对着刚解冻的陈旧页面干等，也不为同一次恢复跑两遍全量列表。
 function handleHallVisibility() {
   if (hallUnmounted || document.visibilityState !== 'visible') return
   now.value = serverNow()
   restartHallTimer()
-  silentRefresh().catch(() => {})
+  if (hallResumeRefreshTimer) window.clearTimeout(hallResumeRefreshTimer)
+  hallResumeRefreshTimer = window.setTimeout(() => {
+    hallResumeRefreshTimer = null
+    silentRefresh().catch(() => {})
+  }, HALL_RESUME_REFRESH_DEBOUNCE)
 }
 
 async function silentRefresh() {
@@ -333,8 +343,16 @@ watch(() => notificationsStore.newOrderNotificationVersion, () => {
 
 // 接单、取消、派单、抢单控制等状态变化会广播给所有在线大厅，
 // 避免其他打手继续看到已经失效的订单卡片。
+// 已在大厅当前 orders 缓存里的订单：applyOrderStateChange 已同步
+// status/claim_status/claimed_count 三个决定大厅可见性的字段，卡片与统计
+// 立即重算，不再发全量列表请求（高并发抢单时能省掉大量重复拉取）。
+// 未知订单（别人刚发布、尚未加载进本页缓存）无法本地判断可见性，
+// 保留 silentRefresh 兜底，避免漏掉新出现的可抢订单。
 watch(() => chatStore.lastOrderStateChange, (change) => {
+  if (!change) return
+  const knownInHall = orders.value.some((order) => Number(order.id) === Number(change.order_id))
   ordersStore.applyOrderStateChange(change)
+  if (knownInHall) return
   silentRefresh().catch(() => {})
 })
 
@@ -389,6 +407,10 @@ onUnmounted(() => {
   if (countdownTimer) {
     window.clearInterval(countdownTimer)
     countdownTimer = null
+  }
+  if (hallResumeRefreshTimer) {
+    window.clearTimeout(hallResumeRefreshTimer)
+    hallResumeRefreshTimer = null
   }
   document.removeEventListener('visibilitychange', handleHallVisibility)
   window.removeEventListener('focus', handleHallVisibility)
