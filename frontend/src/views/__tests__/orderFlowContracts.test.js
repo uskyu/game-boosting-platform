@@ -157,6 +157,82 @@ describe('order list admin late-auth defaults', () => {
   })
 })
 
+// 与上方隔离：只覆盖详情页接单预检（38cedaa 引入的静默快照检查）的回归契约。
+// 线上症状：用户连点「接手订单」→ 预检响应被判 stale/网络失败 → 假报
+// "该单刚刚被其他打手接走或已下架"，且失败后页面仍留可点的陈旧接手按钮。
+describe('claim preflight contracts', () => {
+  function claimModalSource() {
+    const start = detailSource.indexOf('async function openClaimModal()')
+    const end = detailSource.indexOf('\nfunction closeClaimFailModal()', start)
+    expect(start).toBeGreaterThan(-1)
+    expect(end).toBeGreaterThan(start)
+    return detailSource.slice(start, end)
+  }
+
+  it('locks the preflight in flight and never misreads stale as "taken"', () => {
+    const fn = claimModalSource()
+
+    // 在飞锁：预检期间再次点击直接返回，不产生互相作废的并发预检
+    expect(fn).toMatch(/if \(hasClaimed\.value \|\| actionLoading\.value \|\| claimPreflightLoading\.value \|\| acceptWaitSeconds\.value > 0\)/)
+    expect(fn).toMatch(/claimPreflightLoading\.value = true/)
+    expect(fn).toMatch(/finally\s*\{\s*claimPreflightLoading\.value = false/)
+
+    // stale 不是失败：只有真正失败的请求才进入错误分流
+    expect(fn).toMatch(/if \(!fresh\.success && !fresh\.stale\)/)
+    expect(fn).not.toMatch(/if \(!fresh\.success \|\| fresh\.stale\)/)
+
+    // 只有 403/404 才是"被抢走/已下架"；其他失败照实转达网络/服务端原因
+    expect(fn).toMatch(/fresh\.status === 403 \|\| fresh\.status === 404/)
+    expect(fn).toMatch(/该单刚刚被其他打手接走或已下架/)
+    expect(fn).toMatch(/errorMessage\.value = fresh\.error \|\| '网络异常，请稍后重试'/)
+  })
+
+  it('disables the claim button and shows progress while the preflight runs', () => {
+    expect(detailSource).toMatch(/:disabled="actionLoading \|\| claimPreflightLoading \|\| hasClaimed \|\| acceptWaitSeconds > 0"/)
+    expect(detailSource).toContain('{{ claimButtonLabel }}')
+    expect(detailSource).toMatch(/if \(claimPreflightLoading\.value\) return '正在确认…'/)
+  })
+
+  it('drops the stale primed snapshot when the order becomes invisible (403/404)', () => {
+    const loadStart = detailSource.indexOf('async function loadDetail(orderId)')
+    const loadEnd = detailSource.indexOf('\nwatch(', loadStart)
+    expect(loadStart).toBeGreaterThan(-1)
+    expect(loadEnd).toBeGreaterThan(loadStart)
+    const load = detailSource.slice(loadStart, loadEnd)
+
+    expect(load).toMatch(/if \(result\.status === 403 \|\| result\.status === 404\)/)
+    expect(load).toMatch(/ordersStore\.clearCurrentOrder\(\)/)
+    expect(load).toMatch(/detailGone\.value = true/)
+
+    // 序号/stale 守卫在前：被取代的旧加载不得把页面打成"已接走"
+    const guardIndex = load.indexOf('loadSeq !== detailLoadSeq || String(props.id) !== String(orderId) || result.stale')
+    const goneIndex = load.indexOf('detailGone.value = true')
+    expect(guardIndex).toBeGreaterThan(-1)
+    expect(goneIndex).toBeGreaterThan(guardIndex)
+
+    // 空态分支：明确"已被接走或已下架" + 返回大厅，并优先于通用错误态
+    const goneSectionIndex = detailSource.indexOf('v-else-if="detailGone"')
+    const errorSectionIndex = detailSource.indexOf('v-else-if="detailError"')
+    expect(goneSectionIndex).toBeGreaterThan(-1)
+    expect(errorSectionIndex).toBeGreaterThan(goneSectionIndex)
+    expect(detailSource).toMatch(/v-else-if="detailGone"[\s\S]{0,600}返回大厅/)
+  })
+
+  it('closes the fail modal through the reload-aware handler', () => {
+    expect(detailSource).toContain('function closeClaimFailModal()')
+    expect(detailSource).not.toMatch(/@click\.self="showClaimFailModal = false"/)
+
+    const fnStart = detailSource.indexOf('function closeClaimFailModal()')
+    const fnEnd = detailSource.indexOf('\n}', fnStart)
+    const fn = detailSource.slice(fnStart, fnEnd)
+    expect(fn).toMatch(/claimFailShouldReload/)
+    expect(fn).toMatch(/loadDetail\(props\.id\)/)
+
+    // 403/404 失败后关闭弹窗要重载页面，进入"已接走"态
+    expect(claimModalSource()).toMatch(/claimFailShouldReload = true/)
+  })
+})
+
 // ── 大厅刷新契约（isolated block：只覆盖 OrderHallView 的大厅刷新路径，不改上方原测试）──
 describe('hall refresh contracts', () => {
   function hallSlice(startMarker, endMarker) {
@@ -205,12 +281,42 @@ describe('hall refresh contracts', () => {
     expect(notificationHandler).not.toMatch(/setTimeout|clearTimeout|knownInHall/)
   })
 
-  it('keeps the hall reconcile and fallback intervals unchanged', () => {
+  it('keeps the reconcile interval and the 2s fallback baseline', () => {
     expect(hallSource).toMatch(/const HALL_RECONCILE_INTERVAL = 10_000/)
     expect(hallSource).toMatch(/const HALL_FALLBACK_INTERVAL = 2_000/)
+    expect(hallSource).toMatch(/let hallFallbackInterval = HALL_FALLBACK_INTERVAL/)
     expect(hallSource).toMatch(
-      /return chatStore\.socketStatus === 'connected'\s*\n\s*\? HALL_RECONCILE_INTERVAL\s*\n\s*: HALL_FALLBACK_INTERVAL/,
+      /return chatStore\.socketStatus === 'connected'\s*\n\s*\? HALL_RECONCILE_INTERVAL\s*\n\s*: hallFallbackInterval/,
     )
+  })
+
+  it('backs off fallback polling when the server is slow and recovers when healthy', () => {
+    // 2026-10-14 生产事故：WS 断线时 2s 全量轮询在服务器拥塞期自激（CPU 打满 →
+    // 更多掉线 → 全站 504）。兜底节奏必须能自适应降频，且服务器健康即回 2s。
+    const adjust = hallSlice('function adjustHallFallbackInterval(', 'async function silentRefresh()')
+    expect(adjust).toMatch(/if \(chatStore\.socketStatus === 'connected'\)/)
+    expect(adjust).toMatch(/hallFallbackInterval = HALL_FALLBACK_INTERVAL/)
+    expect(adjust).toMatch(/succeeded && elapsedMs < HALL_FALLBACK_SLOW_MS/)
+    expect(adjust).toMatch(/Math\.min\(hallFallbackInterval \* 2, HALL_FALLBACK_MAX_INTERVAL\)/)
+    expect(adjust).toMatch(/restartHallTimer\(\)/)
+
+    // 常量约束：慢阈值大于基准间隔、退避上限不超过对账间隔
+    const slowMs = Number(hallSource.match(/const HALL_FALLBACK_SLOW_MS = ([\d_]+)/)[1].replace(/_/g, ''))
+    const maxMs = Number(hallSource.match(/const HALL_FALLBACK_MAX_INTERVAL = ([\d_]+)/)[1].replace(/_/g, ''))
+    const fallbackMs = Number(hallSource.match(/const HALL_FALLBACK_INTERVAL = ([\d_]+)/)[1].replace(/_/g, ''))
+    const reconcileMs = Number(hallSource.match(/const HALL_RECONCILE_INTERVAL = ([\d_]+)/)[1].replace(/_/g, ''))
+    expect(slowMs).toBeGreaterThan(fallbackMs)
+    expect(maxMs).toBeGreaterThanOrEqual(fallbackMs * 2)
+    expect(maxMs).toBeLessThanOrEqual(reconcileMs)
+
+    // 每次兜底刷新按实际耗时喂给退避判定（成功 + 够快才回到 2s）
+    const refresh = hallSlice('async function silentRefresh()', 'watch(() => notificationsStore.newOrderNotificationVersion')
+    expect(refresh).toMatch(/const startedAt = performance\.now\(\)/)
+    expect(refresh).toMatch(/adjustHallFallbackInterval\(succeeded, performance\.now\(\) - startedAt\)/)
+
+    // WS 重连后重置退避参数：下一次断线仍从 2s 起步
+    const socketWatcher = hallSlice('watch(() => chatStore.socketStatus', 'async function startHallLifecycle()')
+    expect(socketWatcher).toMatch(/hallFallbackInterval = HALL_FALLBACK_INTERVAL/)
   })
 
   it('merges focus and visibilitychange recovery into one debounced refresh', () => {

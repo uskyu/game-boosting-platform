@@ -408,11 +408,12 @@ export const useOrdersStore = defineStore('orders', () => {
       rememberOrderDetail(response.data)
       return { success: true, data: response.data }
     } catch (err) {
+      // status 用于调用方区分"真的没权限/被抢走"(403/404) 与网络失败
       if (requestSeq !== orderDetailRequestSeq) {
-        return { success: false, stale: true, error: err.message }
+        return { success: false, stale: true, status: err.status, error: err.message }
       }
       error.value = err.message
-      return { success: false, error: err.message }
+      return { success: false, status: err.status, error: err.message }
     }
   }
 

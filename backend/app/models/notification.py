@@ -6,7 +6,7 @@ Supports platform-wide notification center and per-user settings.
 from datetime import datetime
 from enum import Enum as PyEnum
 
-from sqlalchemy import JSON, Enum, ForeignKey, String, Text
+from sqlalchemy import JSON, Enum, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
@@ -37,6 +37,12 @@ class Notification(Base):
     """
 
     __tablename__ = "notifications"
+    # 轮询热路径（WS 断线时客户端每 2s 拉一次）：列表 = user_id 等值 +
+    # created_at 倒序。035 已有 (user_id, is_read) 覆盖未读计数，这里补列表用的
+    # (user_id, created_at)，让 ORDER BY 走有序前缀而不是 filesort 全量历史。
+    __table_args__ = (
+        Index("ix_notifications_user_created", "user_id", "created_at"),
+    )
 
     id: Mapped[int] = mapped_column(
         primary_key=True,

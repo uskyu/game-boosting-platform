@@ -207,6 +207,10 @@ export const useAuthStore = defineStore('auth', () => {
     clearTokens()
     user.value = null
     error.value = null
+    // 注销会作废在飞的 fetchCurrentUser：其 finally 因序号不匹配跳过复位，
+    // 这里必须兜底清掉 loading，否则登录页的按钮会被永久禁用（"一直点没反应"），
+    // 只有整页刷新才能恢复。
+    loading.value = false
   }
 
   function getSessionContext() {

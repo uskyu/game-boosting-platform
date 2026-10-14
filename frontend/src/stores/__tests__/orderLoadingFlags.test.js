@@ -468,6 +468,47 @@ describe('fetchOrder 不写共享 loading（序号守卫只保护数据）', () 
   })
 })
 
+describe('fetchOrder 失败结果携带 status（供接单预检区分"被抢走"与网络错误）', () => {
+  // 回归：接单预检曾把任何失败（超时/断连/5xx）都翻译成"被其他打手接走或已下架"，
+  // 调用方需要 HTTP 状态码才能只对 403/404 说"被抢走"。
+  it('403 时返回 status=403 与中文原因', async () => {
+    const store = useOrdersStore()
+    apiGet.mockRejectedValueOnce({ status: 403, message: '无权访问此订单' })
+
+    const result = await store.fetchOrder(42)
+
+    expect(result).toEqual({ success: false, status: 403, error: '无权访问此订单' })
+    expect(store.error).toBe('无权访问此订单')
+  })
+
+  it('网络失败（拦截器不带 status）时 status 为 undefined', async () => {
+    const store = useOrdersStore()
+    apiGet.mockRejectedValueOnce({ message: '网络连接超时，请检查网络后重试' })
+
+    const result = await store.fetchOrder(42)
+
+    expect(result.success).toBe(false)
+    expect(result.status).toBeUndefined()
+    expect(result.error).toBe('网络连接超时，请检查网络后重试')
+  })
+
+  it('被更新请求作废的失败（stale）同样携带 status 且不写共享 error', async () => {
+    const store = useOrdersStore()
+    const slow = deferred()
+    apiGet.mockImplementationOnce(() => slow.promise)
+
+    const slowCall = store.fetchOrder(42)
+    apiGet.mockResolvedValueOnce({ data: { id: 42, title: 'fresh' } })
+    await store.fetchOrder(42, { silent: true })
+
+    slow.reject({ status: 403, message: '无权访问此订单' })
+    const result = await slowCall
+
+    expect(result).toEqual({ success: false, stale: true, status: 403, error: '无权访问此订单' })
+    expect(store.error).toBeNull()
+  })
+})
+
 describe('applyOrderStateChange 同步 currentOrder', () => {
   it('currentOrder 命中时同步 patch status/claim_status/claimed_count', () => {
     const store = useOrdersStore()

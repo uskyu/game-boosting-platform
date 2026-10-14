@@ -29,6 +29,12 @@ const ordersStore = useOrdersStore()
 const errorMessage = ref('')
 const successMessage = ref('')
 const actionLoading = ref(false)
+// 接单预检在飞锁：静默请求期间按钮不禁用、无反馈，用户连点会打出并发预检，
+// 先返回的响应被判 stale，反被误报成"被抢走"。
+const claimPreflightLoading = ref(false)
+// 预检确认订单已不可见（403/404）后，关闭失败弹窗时重新加载页面进入"已接走"态，
+// 避免页面继续渲染大厅缓存里过期的可接订单，诱导用户反复点击。
+let claimFailShouldReload = false
 const chatLoading = ref(false)
 // 会话失败就近提示：终态订单后端仍拒绝「新建」会话（403），
 // 顶部 errorMessage 离按钮太远，用户只看到按钮闪一下"打开中..."，故在按钮下方同步展示。
@@ -83,6 +89,9 @@ const order = computed(() => ordersStore.currentOrder)
 // 详情页骨架屏只认自己的请求：store 的全局 loading 会被列表刷新/动作请求改写，
 // 一旦它被别的请求提前复位，整页会在数据回来前闪成空白或「订单不存在」。
 const detailLoading = ref(false)
+// 403/404：订单对本用户已不可见（被抢走/下架/名额满）。此时要丢掉大厅缓存
+// 预填的陈旧快照，整页切到"已接走"态，而不是留一个还能点的接手按钮。
+const detailGone = ref(false)
 // 只有「没有任何订单可渲染」时才把 store 错误当成页面级加载失败展示；
 // 有内容时局部错误走 errorMessage，别把整页替换掉。
 const detailError = computed(() => (order.value ? '' : ordersStore.error || ''))
@@ -157,6 +166,12 @@ const acceptWaitSeconds = computed(() => acceptWaitMeta.value.remaining)
 // 本单要求等待的总秒数（后端按当前用户所在阶梯下发，null=保证金模式关闭）
 const acceptRequiredWait = computed(() => acceptWaitMeta.value.total)
 const acceptWaitState = computed(() => acceptWaitMeta.value.state)
+const claimButtonLabel = computed(() => {
+  if (hasClaimed.value) return '已接手订单'
+  if (claimPreflightLoading.value) return '正在确认…'
+  if (acceptWaitSeconds.value > 0) return `等待 ${acceptWaitSeconds.value} 秒后可接单`
+  return '接手订单'
+})
 // 统计卡只显示已填写的参数：未填服务/区服直接不渲染，节省 UI
 const detailStats = computed(() => {
   const o = order.value || {}
@@ -482,7 +497,7 @@ async function loadClaims(orderId = order.value?.id, loadSeq = detailLoadSeq) {
 }
 
 async function openClaimModal() {
-  if (hasClaimed.value || actionLoading.value || acceptWaitSeconds.value > 0) {
+  if (hasClaimed.value || actionLoading.value || claimPreflightLoading.value || acceptWaitSeconds.value > 0) {
     return
   }
   errorMessage.value = ''
@@ -490,13 +505,30 @@ async function openClaimModal() {
 
   // 接单前拉一次最新快照：详情页停留期间别人可能刚抢走（后端有行锁会确定性
   // 拒绝，但先校验能立刻告知"手慢了"，不必等一个注定失败的往返）。
-  // silent 不切全局 loading，避免又把整页打回骨架屏。
-  const fresh = await ordersStore.fetchOrder(order.value.id, { silent: true })
-  if (!fresh.success || fresh.stale) {
-    // 单人单被抢走后非参与者就看不到订单了，这时刷新会 403/404；
-    // 别把"无权访问此订单"裸丢给用户，说清是被抢走或已下架。
+  // silent 不切全局 loading，避免又把整页打回骨架屏；在飞锁 + 按钮禁用
+  // 保证用户拿到的反馈是确定性的，而不是并发预检互相作废后的假失败。
+  claimPreflightLoading.value = true
+  let fresh = { success: false }
+  try {
+    fresh = await ordersStore.fetchOrder(order.value.id, { silent: true })
+  } catch (err) {
+    fresh = { success: false, error: err?.message }
+  } finally {
+    claimPreflightLoading.value = false
+  }
+  // stale 只代表本次响应被更新的请求取代（并发刷新/连点），store 里已是最新
+  // 快照，继续按最新数据判断即可——绝不能把它当成"被抢走"。
+  if (!fresh.success && !fresh.stale) {
     showClaimModal.value = false
-    errorMessage.value = '该单刚刚被其他打手接走或已下架，请返回大厅看其他订单'
+    if (fresh.status === 403 || fresh.status === 404) {
+      // 单人单被抢走后非参与者就看不到订单了，这时刷新会 403/404；
+      // 别把"无权访问此订单"裸丢给用户，说清是被抢走或已下架。
+      errorMessage.value = '该单刚刚被其他打手接走或已下架，请返回大厅看其他订单'
+      claimFailShouldReload = true
+    } else {
+      // 超时/断连/服务端异常不等于被抢走：照实说，别让用户以为单没了。
+      errorMessage.value = fresh.error || '网络异常，请稍后重试'
+    }
     showClaimFailModal.value = true
     return
   }
@@ -507,6 +539,16 @@ async function openClaimModal() {
     return
   }
   showClaimModal.value = true
+}
+
+// 关闭"接手失败"强提醒：若失败原因是订单已不可见，顺手重载页面进入"已接走"态，
+// 让陈旧的接手按钮彻底消失。
+function closeClaimFailModal() {
+  showClaimFailModal.value = false
+  if (claimFailShouldReload) {
+    claimFailShouldReload = false
+    loadDetail(props.id).catch(() => {})
+  }
 }
 
 function closeClaimModal() {
@@ -1018,12 +1060,22 @@ async function loadDetail(orderId) {
   if (!primed) {
     ordersStore.clearCurrentOrder()
   }
+  detailGone.value = false
   detailLoading.value = !primed
 
   let result
   try {
     result = await ordersStore.fetchOrder(orderId, primed ? { silent: true } : {})
-    if (!result.success || result.stale || loadSeq !== detailLoadSeq || String(props.id) !== String(orderId)) {
+    if (loadSeq !== detailLoadSeq || String(props.id) !== String(orderId) || result.stale) {
+      return
+    }
+    if (!result.success) {
+      // 403/404 是权威的"此单对你已不可见"（被抢走/下架/名额满）：丢掉大厅
+      // 缓存预填的陈旧快照，整页切到"已接走"态，别留一个还能点的接手按钮。
+      if (result.status === 403 || result.status === 404) {
+        ordersStore.clearCurrentOrder()
+        detailGone.value = true
+      }
       return
     }
 
@@ -1485,10 +1537,10 @@ onUnmounted(() => {
             <button
               v-if="isBooster && (canAcceptOrder || (order.status === 'PENDING' && !isOwner && hasClaimed))"
               class="od-ops__primary btn-primary w-full py-3"
-              :disabled="actionLoading || hasClaimed || acceptWaitSeconds > 0"
+              :disabled="actionLoading || claimPreflightLoading || hasClaimed || acceptWaitSeconds > 0"
               @click="openClaimModal"
             >
-              {{ hasClaimed ? '已接手订单' : (acceptWaitSeconds > 0 ? `等待 ${acceptWaitSeconds} 秒后可接单` : '接手订单') }}
+              {{ claimButtonLabel }}
             </button>
 
             <button
@@ -1672,6 +1724,17 @@ onUnmounted(() => {
       </section>
     </template>
 
+    <!-- 拉取 403/404：该订单对本用户已不可见（被其他打手接走/下架/名额满）。
+         必须丢掉陈旧快照，明确引导回大厅，而不是留一个点了必失败的接手按钮。 -->
+    <section v-else-if="detailGone" class="empty-state">
+      <div class="empty-state__icon" aria-hidden="true">⏳</div>
+      <h2 class="empty-state__title">该单已被接走或已下架</h2>
+      <p class="empty-state__copy">这条订单刚刚被其他打手接走或已停止接单，看看大厅里的其他订单吧。</p>
+      <button type="button" class="btn-secondary mt-4 !px-5 !py-2.5" @click="router.push({ name: 'orders' })">
+        返回大厅
+      </button>
+    </section>
+
     <!-- 拉取失败（多为跨境链路抖动）不能笼统说「订单不存在」：订单还在，
          只是没拿到。给出真实原因和重试入口，避免老板以为订单被删了。 -->
     <section v-else-if="detailError" class="empty-state">
@@ -1723,7 +1786,7 @@ onUnmounted(() => {
 
       <!-- 接单失败中央强提醒：复用 modal-scrim/modal-card，顶部 errorMessage 同步保留 -->
       <teleport to="body">
-        <div v-if="showClaimFailModal" class="modal-scrim" @click.self="showClaimFailModal = false">
+        <div v-if="showClaimFailModal" class="modal-scrim" @click.self="closeClaimFailModal">
           <div class="modal-card" role="alertdialog" aria-modal="true" aria-label="接手失败">
             <h3 class="text-lg font-semibold text-ink-1">接手失败</h3>
             <p class="mt-3 text-sm leading-6 text-ink-2">{{ errorMessage || '接手失败，请稍后重试' }}</p>
@@ -1731,9 +1794,9 @@ onUnmounted(() => {
               【需钱包有 {{ formatPrice(order?.compensation_amount) }} 余额才可接手订单】
             </p>
             <div class="mt-6 flex gap-3">
-              <button v-if="claimFailNeedsRecharge" type="button" class="btn-secondary flex-1" @click="showClaimFailModal = false">知道了</button>
+              <button v-if="claimFailNeedsRecharge" type="button" class="btn-secondary flex-1" @click="closeClaimFailModal">知道了</button>
               <button v-if="claimFailNeedsRecharge" type="button" class="btn-primary flex-1" @click="goRechargeFromFail">去充值</button>
-              <button v-else type="button" class="btn-primary flex-1" @click="showClaimFailModal = false">知道了</button>
+              <button v-else type="button" class="btn-primary flex-1" @click="closeClaimFailModal">知道了</button>
             </div>
           </div>
         </div>

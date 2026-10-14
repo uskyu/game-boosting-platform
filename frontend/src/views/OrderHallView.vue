@@ -264,6 +264,13 @@ watch(isAuthenticated, (loggedIn) => {
 // 走的就是这条兜底，5s 就是老板实测的「起码五秒」来源；2s 把最坏延迟压到 2s。
 const HALL_RECONCILE_INTERVAL = 10_000
 const HALL_FALLBACK_INTERVAL = 2_000
+// 兜底轮询退避：WS 断线时 2 秒一次的全量列表在服务器拥塞期会自激
+// （2026-10-14 生产事故：单 worker CPU 打满 → WS 掉线 → 全员 2s 轮询 →
+// 更拥塞，三分钟内全站 970 个 504）。单次兜底刷新过慢或失败就临时降频，
+// 服务器健康（成功且够快）立刻回到 2s，不牺牲正常时的秒级延迟。
+const HALL_FALLBACK_SLOW_MS = 2_500
+const HALL_FALLBACK_MAX_INTERVAL = 10_000
+let hallFallbackInterval = HALL_FALLBACK_INTERVAL
 let hallRefreshTimer = null
 let hallUnmounted = false
 // 抢单倒计时：独立 1 秒计时器，仅驱动 now 变化
@@ -282,7 +289,28 @@ let hallRefreshing = false
 function hallPollInterval() {
   return chatStore.socketStatus === 'connected'
     ? HALL_RECONCILE_INTERVAL
-    : HALL_FALLBACK_INTERVAL
+    : hallFallbackInterval
+}
+
+// 兜底节奏自适应：健康回到 2s，拥塞/失败翻倍退避（上限 10s）。
+// 只在 WS 断开时生效；WS 健康时重置参数，下一次断线仍从 2s 起步。
+function adjustHallFallbackInterval(succeeded, elapsedMs) {
+  if (hallUnmounted) return
+  if (chatStore.socketStatus === 'connected') {
+    if (hallFallbackInterval !== HALL_FALLBACK_INTERVAL) {
+      hallFallbackInterval = HALL_FALLBACK_INTERVAL
+      restartHallTimer()
+    }
+    return
+  }
+  const healthy = succeeded && elapsedMs < HALL_FALLBACK_SLOW_MS
+  const next = healthy
+    ? HALL_FALLBACK_INTERVAL
+    : Math.min(hallFallbackInterval * 2, HALL_FALLBACK_MAX_INTERVAL)
+  if (next !== hallFallbackInterval) {
+    hallFallbackInterval = next
+    restartHallTimer()
+  }
 }
 
 function restartHallTimer() {
@@ -315,12 +343,15 @@ async function silentRefresh() {
     return
   }
   hallRefreshing = true
+  const startedAt = performance.now()
+  let succeeded = false
   try {
     await measureOrderFlowStage(
       'hall_refresh',
       'hall_list_refresh',
       () => ordersStore.refreshOrdersContext('hall', { silent: true, slim: true, page: 1, pageSize: 100 }),
     )
+    succeeded = true
     // 「今日已接单」兜底刷新：与订单同源节流（≥15s），失败静默
     if (hallRecentClaimsVisible.value && recentClaimsThrottleReady()) {
       fetchRecentClaims(recentClaimsExpanded.value ? RECENT_CLAIMS_MAX : RECENT_CLAIMS_COLLAPSED_LIMIT).catch(() => {})
@@ -329,6 +360,9 @@ async function silentRefresh() {
     // 静默失败等下一轮
   } finally {
     hallRefreshing = false
+    if (!hallUnmounted) {
+      adjustHallFallbackInterval(succeeded, performance.now() - startedAt)
+    }
     if (hallRefreshQueued && !hallUnmounted) {
       hallRefreshQueued = false
       window.setTimeout(() => silentRefresh().catch(() => {}), 0)
@@ -357,9 +391,10 @@ watch(() => chatStore.lastOrderStateChange, (change) => {
 })
 
 // 重连成功后补一次同步，覆盖断线期间错过的状态事件。
-// 同时按 WS 状态切换轮询节奏：断了走 5 秒短兜底，恢复后回到 30 秒对账。
+// 同时按 WS 状态切换轮询节奏：断了走秒级短兜底（拥塞时自动退避），恢复后回到对账间隔。
 watch(() => chatStore.socketStatus, (status, previousStatus) => {
   if (status === 'connected' && previousStatus !== 'connected') {
+    hallFallbackInterval = HALL_FALLBACK_INTERVAL
     silentRefresh().catch(() => {})
   }
   restartHallTimer()
