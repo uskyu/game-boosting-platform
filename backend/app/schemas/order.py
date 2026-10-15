@@ -568,7 +568,7 @@ class OrderResponse(BaseModel):
     service_type: str | None = Field(default=None, description="服务类型")
     server: str | None = Field(default=None, description="游戏区服")
     priority: int = Field(description="优先级")
-    notes: Annotated[str | None, AfterValidator(sanitize_note_html)] = Field(
+    notes: str | None = Field(
         default=None, description="备注（返回前已按公告同套规则清洗的安全HTML）"
     )
     created_at: datetime = Field(description="创建时间")
@@ -644,6 +644,15 @@ class OrderResponse(BaseModel):
     @field_serializer("deadline", "created_at", "updated_at", "locked_at", "delivered_at", "completed_at", "paid_at", "accept_available_at")
     def serialize_datetime(self, value: datetime | None) -> str | None:
         return serialize_datetime_utc(value)
+
+    @field_serializer("notes")
+    def serialize_notes(self, value: str | None) -> str | None:
+        """读取出口兜底清洗 notes（老数据里的 <、& 转义，可执行 HTML 剥掉）。
+
+        放在序列化阶段而非校验器：仅当响应真正下发 notes 时才清洗，大厅列表
+        瘦身路径把 notes 置空后不再对上百条订单白跑一遍富文本清洗。
+        """
+        return sanitize_note_html(value)
 
     @model_validator(mode="after")
     def compute_service_fee(self) -> "OrderResponse":

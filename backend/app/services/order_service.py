@@ -13,7 +13,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import Text, and_, case, cast, exists, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased, selectinload
+from sqlalchemy.orm import aliased, joinedload, selectinload
 
 from app.core.security import encrypt_text, escape_like
 from app.models.booster_service import BoosterService
@@ -21,6 +21,8 @@ from app.models.deposit import (
     SETTLEMENT_MODE_AFTER_APPROVAL,
     SETTLEMENT_MODE_AFTER_DELIVERY,
     SETTLEMENT_MODE_ORDER_DELAY,
+    DepositSetting,
+    DepositTier,
 )
 from app.models.game import Game
 from app.models.order import (
@@ -516,8 +518,8 @@ class OrderService:
             后两个为同一聚合查询顺带取回的大厅摘要基线（无可见订单时为 None）。
         """
         query = select(Order).options(
-            selectinload(Order.user),
-            selectinload(Order.booster),
+            joinedload(Order.user),
+            joinedload(Order.booster),
         )
         # 一次聚合同时取总数与大厅摘要（最近 updated_at / 最早 deadline），
         # 不额外增加查询往返；列表响应带上摘要基线，客户端全量刷新后无需再单独拉摘要。
@@ -526,6 +528,63 @@ class OrderService:
             func.max(Order.updated_at),
             func.min(Order.deadline),
         )
+        # 同一聚合行顺带取回「本请求查看者上下文」标量：钱包三字段 + 保证金总开关
+        # + 命中档位等待秒数。这些值原先分别由 claims_view（钱包）与 accept window
+        # （钱包/开关/档位）多次串行往返取，现在合并进本聚合一次带回，整条列表链路
+        # 不再重复查同一张钱包/档位表。管理员视图不需要该上下文，故跳过。
+        viewer_needs_ctx = user is not None and user.role != UserRole.ADMIN
+        if viewer_needs_ctx:
+            wallet_id_sq = (
+                select(Wallet.id).where(Wallet.user_id == user.id).scalar_subquery()
+            )
+            wallet_available_sq = (
+                select(func.coalesce(Wallet.available_balance, 0))
+                .where(Wallet.user_id == user.id)
+                .scalar_subquery()
+            )
+            wallet_deposit_sq = (
+                select(func.coalesce(Wallet.deposit_balance, 0))
+                .where(Wallet.user_id == user.id)
+                .scalar_subquery()
+            )
+            setting_enabled_sq = (
+                select(DepositSetting.enabled)
+                .where(DepositSetting.id == 1)
+                .scalar_subquery()
+            )
+            # 档位解析与 deposit_service.resolve_tier 同口径：门槛 ≤ 余额的最高一档；
+            # 都不满足时回退最低一档（enabled_only）。
+            tier_wait_sq = func.coalesce(
+                select(DepositTier.wait_seconds)
+                .where(
+                    DepositTier.enabled.is_(True),
+                    DepositTier.threshold <= wallet_deposit_sq,
+                )
+                .order_by(DepositTier.threshold.desc())
+                .limit(1)
+                .scalar_subquery(),
+                select(DepositTier.wait_seconds)
+                .where(DepositTier.enabled.is_(True))
+                .order_by(DepositTier.threshold.asc())
+                .limit(1)
+                .scalar_subquery(),
+            )
+            count_query = count_query.add_columns(
+                wallet_id_sq.label("ctx_wallet_id"),
+                wallet_available_sq.label("ctx_wallet_available"),
+                wallet_deposit_sq.label("ctx_wallet_deposit"),
+                setting_enabled_sq.label("ctx_deposit_enabled"),
+                tier_wait_sq.label("ctx_tier_wait"),
+            )
+        # 挂起取消协商标记本就在本页订单范围内，直接作为相关子查询并入分页 SELECT，
+        # 省掉后续 pending_cancel_order_ids 的一次独立往返（结果在请求内缓存复用）。
+        pending_cancel_exists = exists(
+            select(OrderCancelRequest.id).where(
+                OrderCancelRequest.order_id == Order.id,
+                OrderCancelRequest.status == OrderCancelRequestStatus.PENDING,
+            )
+        )
+        query = query.add_columns(pending_cancel_exists.label("cancel_pending"))
 
         # Apply user-based filtering
         if mine_published and user is not None:
@@ -645,6 +704,19 @@ class OrderService:
         total = int(count_row[0] or 0)
         hall_max_updated_at = _ensure_utc(count_row[1])
         hall_earliest_deadline = _ensure_utc(count_row[2])
+        if viewer_needs_ctx:
+            # 本请求上下文缓存（挂在 session.info，同请求内其他方法复用）：
+            # 钱包事实 + 保证金开关/档位等待秒数，避免重复往返。
+            self._db.info["_gb_list_ctx"] = {
+                "user_id": user.id,
+                "wallet_id": (
+                    int(count_row[3]) if count_row[3] is not None else None
+                ),
+                "available": _to_decimal(count_row[4]),
+                "deposit": _to_decimal(count_row[5]),
+                "deposit_enabled": bool(count_row[6]),
+                "wait_seconds": int(count_row[7] or 0),
+            }
 
         # Apply pagination and ordering (综合搜索时按相关度排序，否则按发布时间倒序)
         offset = (page - 1) * page_size
@@ -656,7 +728,14 @@ class OrderService:
 
         # Execute query
         result = await self._db.execute(query)
-        orders = list(result.scalars().all())
+        rows = result.all()
+        orders = [row[0] for row in rows]
+        # 本页「申请取消中」订单集合缓存，供 pending_cancel_order_ids 复用
+        # （键为本次请求的订单集合，集合不同则回退独立查询，保证不串请求）。
+        self._db.info["_gb_pending_cancel"] = (
+            frozenset(order.id for order in orders),
+            {row[0].id for row in rows if row[1]},
+        )
 
         return orders, total, hall_max_updated_at, hall_earliest_deadline
 
@@ -678,6 +757,24 @@ class OrderService:
             query = query.where(scope)
         row = (await self._db.execute(query)).one()
         return int(row[0] or 0), _ensure_utc(row[1]), _ensure_utc(row[2])
+
+    async def accept_window_wait(self, viewer: User) -> tuple[bool, int]:
+        """返回 (保证金模式是否开启, 查看者接单等待秒数)。
+
+        优先复用 list_orders 聚合顺带取回的请求内上下文（省掉钱包/开关/档位
+        三次往返）；缺上下文时（详情等其它路径）回退 deposit_service 原实现，
+        行为与旧代码逐字段一致。
+        """
+        ctx = self._db.info.get("_gb_list_ctx")
+        if ctx is not None and ctx.get("user_id") == viewer.id:
+            return bool(ctx.get("deposit_enabled")), int(ctx.get("wait_seconds") or 0)
+        # 延迟导入避免 service -> api 的循环依赖
+        from app.services import deposit_service
+
+        if not await deposit_service.is_deposit_enabled(self._db):
+            return False, 0
+        tier, _balance = await deposit_service.get_user_tier(self._db, viewer.id)
+        return True, int(tier.wait_seconds or 0) if tier else 0
 
     async def _active_claim_count(self, booster_id: int) -> int:
         """Count quota-consuming claims for one booster.
@@ -1100,22 +1197,11 @@ class OrderService:
             )
         )
         claims = {claim.order_id: claim for claim in result.scalars().all()}
-        wallet_result = await self._db.execute(
-            select(Wallet).where(Wallet.user_id == booster.id)
+        # 钱包事实与可扣款项：钱包由 list_orders 的聚合顺带取回（同请求缓存），
+        # 可扣款项按订单批量聚合为一条流水查询，避免重复查钱包与每单一查。
+        wallet_id, deposit_amount, compensation_by_order = (
+            await self._booster_wallet_facts(booster, order_ids)
         )
-        wallet = wallet_result.scalar_one_or_none()
-        deposit_amount = (
-            _to_decimal(wallet.deposit_balance) if wallet is not None else _ZERO
-        )
-        # 可扣款项合计按订单逐个算（冻结赔付是 per-order/booster 作用域），
-        # 批量聚合为一条流水查询，避免每单一查。
-        compensation_by_order: dict[int, Decimal] = {}
-        if wallet is not None:
-            compensation_by_order = (
-                await self._cancel_compensation_collectible_batch(
-                    wallet, booster_id=booster.id, order_ids=order_ids
-                )
-            )
         views: dict[int, dict[str, Any]] = {}
         for order in orders:
             claim = claims.get(order.id)
@@ -1133,6 +1219,49 @@ class OrderService:
                 ),
             )
         return views
+
+    async def _booster_wallet_facts(
+        self, booster: User, order_ids: list[int]
+    ) -> tuple[int | None, Decimal, dict[int, Decimal]]:
+        """返回 (wallet_id, 保证金余额, 按订单的可扣款项合计)。
+
+        优先复用 list_orders 聚合顺带取回的请求内钱包上下文（避免重复往返）；
+        缺上下文（详情等其它调用路径）时回退一条「只选列」的钱包查询——
+        只取三个标量列，不加载 Wallet 实体，从而不触发 Wallet.transactions 的
+        selectin 额外往返。
+        """
+        ctx = self._db.info.get("_gb_list_ctx")
+        if ctx is not None and ctx.get("user_id") == booster.id:
+            wallet_id = ctx.get("wallet_id")
+            available = _to_decimal(ctx.get("available"))
+            deposit = _to_decimal(ctx.get("deposit"))
+        else:
+            row = (
+                await self._db.execute(
+                    select(
+                        Wallet.id,
+                        Wallet.available_balance,
+                        Wallet.deposit_balance,
+                    ).where(Wallet.user_id == booster.id)
+                )
+            ).one_or_none()
+            if row is None:
+                return None, _ZERO, {}
+            wallet_id = int(row[0])
+            available = _to_decimal(row[1])
+            deposit = _to_decimal(row[2])
+        if wallet_id is None:
+            # 无钱包行：与旧逻辑一致（Deposit 余额按 0 下发，可扣款为空）。
+            return None, _ZERO, {}
+        compensation = await self._cancel_compensation_collectible_batch_values(
+            wallet_id=wallet_id,
+            available_balance=available,
+            deposit_balance=deposit,
+            booster_id=booster.id,
+            order_ids=order_ids,
+        )
+        return wallet_id, deposit, compensation
+
 
     async def claim_status_counts(
         self, order_ids: list[int]
@@ -1234,7 +1363,6 @@ class OrderService:
         claim_rows = rows.all()
         # 报名打手的钱包：一条 IN 查询批量取（禁止 N+1），供发单员在
         # 「申请取消」弹窗里计算可扣款上限与保证金总额。
-        wallet_service = get_wallet_service(self._db)
         wallet_by_booster: dict[int, Wallet] = {}
         booster_ids = sorted({claim.booster_id for claim, _username, _email in claim_rows})
         if booster_ids:
@@ -1253,6 +1381,18 @@ class OrderService:
                 .distinct()
             )
             pending_claim_ids = {row[0] for row in pending_result.all()}
+        # 可扣款项上限（冻结赔付+可用余额+保证金）：整单名额一次流水聚合，
+        # 取代旧版每名额一次 _cancel_compensation_collectible 的 N+1
+        #（与「我的报名」list_my_claims 的批量版模式一致）。
+        compensation_by_booster = (
+            await self._cancel_compensation_collectible_batch_for_order(
+                wallet_by_booster=wallet_by_booster,
+                order_id=order.id,
+                booster_ids=[bid for bid in booster_ids if bid in wallet_by_booster],
+            )
+            if booster_ids
+            else {}
+        )
         claims: list[dict[str, Any]] = []
         for claim, username, email in claim_rows:
             item = self._serialize_claim(
@@ -1272,13 +1412,8 @@ class OrderService:
             if wallet is None:
                 item["booster_compensation_available"] = _ZERO
             else:
-                item["booster_compensation_available"] = (
-                    await self._cancel_compensation_collectible(
-                        wallet_service,
-                        wallet,
-                        order_id=order.id,
-                        booster_id=claim.booster_id,
-                    )
+                item["booster_compensation_available"] = compensation_by_booster.get(
+                    claim.booster_id, _ZERO
                 )
             claims.append(item)
         return claims
@@ -2638,6 +2773,29 @@ class OrderService:
         per-order 查询合并为 group by order_id，供「我的报名」等列表路径
         避免 N+1。没有流水的订单返回 0 + 可用余额 + 保证金。
         """
+        return await self._cancel_compensation_collectible_batch_values(
+            wallet_id=wallet.id,
+            available_balance=_to_decimal(wallet.available_balance),
+            deposit_balance=_to_decimal(wallet.deposit_balance),
+            booster_id=booster_id,
+            order_ids=order_ids,
+        )
+
+    async def _cancel_compensation_collectible_batch_values(
+        self,
+        *,
+        wallet_id: int,
+        available_balance: Decimal,
+        deposit_balance: Decimal,
+        booster_id: int,
+        order_ids: list[int],
+    ) -> dict[int, Decimal]:
+        """批量可扣款项（标量入参版）：复用同一条 group by order_id 聚合。
+
+        与 ``_cancel_compensation_collectible_batch`` 同口径，但钱包只以
+        (id, 可用余额, 保证金) 标量传入，不加载 Wallet 实体，避免触发
+        Wallet.transactions 的 selectin 额外往返。
+        """
         if not order_ids:
             return {}
         result = await self._db.execute(
@@ -2647,7 +2805,7 @@ class OrderService:
                 func.coalesce(func.sum(WalletTransaction.amount), 0),
             )
             .where(
-                WalletTransaction.wallet_id == wallet.id,
+                WalletTransaction.wallet_id == wallet_id,
                 WalletTransaction.booster_id == booster_id,
                 WalletTransaction.order_id.in_(order_ids),
                 WalletTransaction.type.in_(
@@ -2676,9 +2834,7 @@ class OrderService:
                 deductions[order_id] = (
                     deductions.get(order_id, _ZERO) + max(-total, _ZERO)
                 )
-        base = _to_decimal(wallet.available_balance) + _to_decimal(
-            wallet.deposit_balance
-        )
+        base = _to_decimal(available_balance) + _to_decimal(deposit_balance)
         return {
             order_id: (
                 max(
@@ -2690,6 +2846,80 @@ class OrderService:
             for order_id in order_ids
         }
 
+    async def _cancel_compensation_collectible_batch_for_order(
+        self,
+        *,
+        wallet_by_booster: dict[int, Wallet],
+        order_id: int,
+        booster_ids: list[int],
+    ) -> dict[int, Decimal]:
+        """报名名单批量版：一条流水查询算「同一订单、多个打手」的可扣款项。
+
+        口径与 ``_cancel_compensation_collectible`` 相同（同一冻结赔付流水
+        按 (booster, order) 聚合），取代 list_order_claims 里每名额一次
+        查询的 N+1，与「我的报名」的批量版互为对称。
+        """
+        if not booster_ids:
+            return {}
+        wallet_ids = [
+            wallet_by_booster[bid].id for bid in booster_ids if bid in wallet_by_booster
+        ]
+        if not wallet_ids:
+            return {}
+        result = await self._db.execute(
+            select(
+                WalletTransaction.booster_id,
+                WalletTransaction.type,
+                func.coalesce(func.sum(WalletTransaction.amount), 0),
+            )
+            .where(
+                WalletTransaction.wallet_id.in_(wallet_ids),
+                WalletTransaction.booster_id.in_(booster_ids),
+                WalletTransaction.order_id == order_id,
+                WalletTransaction.type.in_(
+                    (
+                        WalletTransactionType.DEPOSIT_HOLD,
+                        WalletTransactionType.DEPOSIT_RELEASE,
+                        WalletTransactionType.COMPENSATION_DEDUCT,
+                        WalletTransactionType.CANCEL_COMPENSATION_DEDUCT,
+                    )
+                ),
+            )
+            .group_by(WalletTransaction.booster_id, WalletTransaction.type)
+        )
+        holds: dict[int, Decimal] = {}
+        deductions: dict[int, Decimal] = {}
+        for booster_id, tx_type, total in result.all():
+            if booster_id is None:
+                continue
+            total = _to_decimal(total)
+            if tx_type == WalletTransactionType.DEPOSIT_HOLD:
+                holds[booster_id] = holds.get(booster_id, _ZERO) + max(-total, _ZERO)
+            elif tx_type == WalletTransactionType.DEPOSIT_RELEASE:
+                holds[booster_id] = holds.get(booster_id, _ZERO) - max(total, _ZERO)
+            else:
+                deductions[booster_id] = (
+                    deductions.get(booster_id, _ZERO) + max(-total, _ZERO)
+                )
+        result_map: dict[int, Decimal] = {}
+        for booster_id in booster_ids:
+            wallet = wallet_by_booster.get(booster_id)
+            if wallet is None:
+                result_map[booster_id] = _ZERO
+                continue
+            base = _to_decimal(wallet.available_balance) + _to_decimal(
+                wallet.deposit_balance
+            )
+            result_map[booster_id] = (
+                max(
+                    holds.get(booster_id, _ZERO) - deductions.get(booster_id, _ZERO),
+                    _ZERO,
+                )
+                + base
+            ).quantize(_ZERO)
+        return result_map
+
+
     async def pending_cancel_order_ids(self, order_ids: list[int]) -> set[int]:
         """返回这批订单中仍存在待处理取消协商的订单 ID 集合。
 
@@ -2698,6 +2928,11 @@ class OrderService:
         """
         if not order_ids:
             return set()
+        # list_orders 已把本页的挂起标记并入分页 SELECT 顺带取回；请求内命中
+        # 同一订单集合时直接复用，省掉一次独立往返（集合不同则回退查询，绝不串请求）。
+        cache = self._db.info.get("_gb_pending_cancel")
+        if cache is not None and cache[0] == frozenset(order_ids):
+            return set(cache[1])
         result = await self._db.execute(
             select(OrderCancelRequest.order_id)
             .where(

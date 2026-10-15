@@ -161,15 +161,33 @@ const canAcceptOrder = computed(() => {
 // ── 抢单倒计时：每秒刷新 now，基于 accept_available_at 求剩余等待秒数 ──
 const now = ref(serverNow())
 let claimCountdownTimer = null
+// 服务端 400「还需等待 N 秒」时前端补一个本地等待截止：进入与 accept_available_at
+// 相同的倒计时禁用态，避免用户在闸门期内反复点按钮、反复吃 400（线上失败率 71%）。
+// 闸门以服务端为准，这里只是本地节流，归零即自动恢复可点。
+const acceptGateOverrideUntil = ref(0)
+const acceptGateOverrideSeconds = computed(() => {
+  const diff = acceptGateOverrideUntil.value - now.value
+  return diff > 0 ? Math.ceil(diff / 1000) : 0
+})
 const acceptWaitMeta = computed(() => getAcceptWaitMeta(order.value, now.value))
-const acceptWaitSeconds = computed(() => acceptWaitMeta.value.remaining)
+// 取服务端等待（accept_available_at）与本地 400 补时的较大值：任一还在等待都禁用。
+const acceptWaitSeconds = computed(
+  () => Math.max(acceptWaitMeta.value.remaining, acceptGateOverrideSeconds.value),
+)
 // 本单要求等待的总秒数（后端按当前用户所在阶梯下发，null=保证金模式关闭）
 const acceptRequiredWait = computed(() => acceptWaitMeta.value.total)
-const acceptWaitState = computed(() => acceptWaitMeta.value.state)
+const acceptWaitState = computed(
+  () => (acceptWaitSeconds.value > 0 ? 'waiting' : acceptWaitMeta.value.state),
+)
 const claimButtonLabel = computed(() => {
   if (hasClaimed.value) return '已接手订单'
   if (claimPreflightLoading.value) return '正在确认…'
-  if (acceptWaitSeconds.value > 0) return `等待 ${acceptWaitSeconds.value} 秒后可接单`
+  if (acceptWaitSeconds.value > 0) return `接手订单（${acceptWaitSeconds.value} 秒后可接）`
+  return '接手订单'
+})
+const claimConfirmLabel = computed(() => {
+  if (actionLoading.value) return '接手中…'
+  if (acceptWaitSeconds.value > 0) return `接手订单（${acceptWaitSeconds.value} 秒后可接）`
   return '接手订单'
 })
 // 统计卡只显示已填写的参数：未填服务/区服直接不渲染，节省 UI
@@ -558,6 +576,20 @@ function closeClaimModal() {
   showClaimModal.value = false
 }
 
+// 服务端等待闸门 400 的文案形如「还需等待 5 秒」：解析出剩余秒数，用于本地补一个
+// 等待截止（与 accept_available_at 等价的禁用态）。解析不到返回 0。
+function parseAcceptWaitSeconds(message) {
+  const match = /还需等待\s*(\d+)\s*秒/.exec(String(message || ''))
+  if (!match) return 0
+  const seconds = Number(match[1])
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : 0
+}
+
+// 满员/已被抢/已归档：订单已失效，刷新一次详情即可，重试无意义。
+function isUnavailableAcceptError(message) {
+  return /满员|已被抢|已归档|已下架/.test(String(message || ''))
+}
+
 async function handleConfirmClaim() {
   if (actionLoading.value) return
   actionLoading.value = true
@@ -588,15 +620,25 @@ async function handleConfirmClaim() {
       }
     } else {
       // 失败（含 409 重复确认）：保留页面顶部错误提示，同时中央强提醒。
-      // 必须刷新详情与名单：失败多半是名额刚被别人抢走，不刷新的话页面仍显示
-      // 陈旧的 0/1 与可点的「接手订单」，用户再点必然再拿同一个错误。
       showClaimModal.value = false
       errorMessage.value = result.error || '接单失败，请稍后重试'
       showClaimFailModal.value = true
-      await Promise.all([
-        ordersStore.fetchOrder(orderId, { silent: true }),
-        loadClaims(),
-      ])
+      const waitSeconds = parseAcceptWaitSeconds(result.error)
+      if (waitSeconds > 0) {
+        // 服务端 400「还需等待 N 秒」：进入本地倒计时禁用态并提示，不自动重试
+        //（闸门以服务端为准，重试只会继续吃 400）。
+        acceptGateOverrideUntil.value = serverNow() + waitSeconds * 1000
+      } else if (isUnavailableAcceptError(result.error)) {
+        // 满员/已被抢/已归档：订单状态已变，只刷新一次详情，不重试。
+        await ordersStore.fetchOrder(orderId, { silent: true })
+      } else {
+        // 其他失败：刷新详情与名单，避免页面仍显示陈旧的 0/1 与可点的「接手订单」，
+        // 用户再点必然再拿同一个错误。
+        await Promise.all([
+          ordersStore.fetchOrder(orderId, { silent: true }),
+          loadClaims(),
+        ])
+      }
     }
   } catch {
     if (acceptSucceeded) {
@@ -1099,6 +1141,8 @@ async function loadDetail(orderId) {
 watch(
   () => props.id,
   (orderId) => {
+    // 换单时清掉上一单的本地等待补时，避免把闸门禁用态带到另一张单上。
+    acceptGateOverrideUntil.value = 0
     loadDetail(orderId).catch(() => {})
   },
   { immediate: true }
@@ -1524,7 +1568,7 @@ onUnmounted(() => {
               :class="[acceptWaitState === 'waiting' ? 'message-warning' : 'message-info', 'od-ops__notice', 'text-xs leading-6']"
             >
               <template v-if="acceptWaitState === 'waiting'">
-                接单等待中：配置等待 {{ acceptRequiredWait }} 秒，当前还剩 {{ acceptWaitSeconds }} 秒，倒计时结束后即可接单。
+                接单等待中：<template v-if="acceptRequiredWait > 0">配置等待 {{ acceptRequiredWait }} 秒，</template>当前还剩 {{ acceptWaitSeconds }} 秒，倒计时结束后即可接单。
               </template>
               <template v-else-if="acceptWaitState === 'ready'">
                 接单等待已结束：配置等待 {{ acceptRequiredWait }} 秒，当前可立即接单。
@@ -1776,8 +1820,8 @@ onUnmounted(() => {
             </p>
             <div class="mt-6 flex gap-3">
               <button type="button" class="btn-secondary flex-1" :disabled="actionLoading" @click="closeClaimModal">取消</button>
-              <button type="button" class="btn-primary flex-1" :disabled="actionLoading" @click="handleConfirmClaim">
-                {{ actionLoading ? '接手中…' : '接手订单' }}
+              <button type="button" class="btn-primary flex-1" :disabled="actionLoading || acceptWaitSeconds > 0" @click="handleConfirmClaim">
+                {{ claimConfirmLabel }}
               </button>
             </div>
           </div>

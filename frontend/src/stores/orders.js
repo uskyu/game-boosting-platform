@@ -634,6 +634,40 @@ export const useOrdersStore = defineStore('orders', () => {
     }
   }
 
+  // 新单通知随带的大厅 slim 卡片（服务端 WS payload 的 order_card）：本地插进
+  // 大厅缓存第一页，让新单即时可见，避免为每张新单全量重刷整个大厅。
+  // 只在「当前就在大厅、且当前激活的正是第一页缓存」时生效；其余上下文
+  //（我的派单、翻页到第 2 页等）一律 no-op，交给下一轮摘要对账纠正。
+  // 不动 hallDigest 基线：摘要会在下轮发现变化并做一次全量对账（期望的自愈路径）。
+  // 卡片里 viewer 相关字段（如 accept_available_at）服务端直推版为 null，
+  // 大厅对 null 已容错（等价"无等待"）；真正抢单仍以详情页为准。
+  function applyNewOrderCard(card) {
+    if (!card || card.id == null) return false
+    if (ordersContext.value !== 'hall') return false
+    const cacheKey = activeOrdersCacheKey
+    if (!cacheKey || !cacheKey.startsWith('hall:')) return false
+    const cache = ordersCacheByKey.value[cacheKey]
+    if (!cache || !Array.isArray(cache.items)) return false
+    // 只认大厅第一页缓存：翻页/筛选后的批次不是新单该出现的位置。
+    if (Number(cache.pagination?.page) !== 1) return false
+    const orderId = Number(card.id)
+    // 按 id 去重：已加载过的订单（重复通知/已在对账结果里）不再插入。
+    if (cache.items.some((item) => Number(item.id) === orderId)) return false
+    const items = [card, ...cache.items]
+    // 只抬 total（新单确实让大厅多了一条）；items 可能比 pageSize 多一条，
+    // 属于可接受的最小不一致，下一轮全量对账会自然收敛。
+    const nextPagination = {
+      ...(cache.pagination || {}),
+      total: (Number(cache.pagination?.total) || 0) + 1,
+    }
+    ordersCacheByKey.value[cacheKey] = { items, pagination: nextPagination }
+    orders.value = items
+    ordersByContext.value.hall = items
+    pagination.value = nextPagination
+    paginationByContext.value.hall = nextPagination
+    return true
+  }
+
   function applyOrderStateChange(change) {
     const orderId = Number(change?.order_id || 0)
     if (!orderId) return
@@ -1045,6 +1079,7 @@ export const useOrdersStore = defineStore('orders', () => {
     reviewClaim,
     acceptOrder,
     applyOrderStateChange,
+    applyNewOrderCard,
     deliverOrder,
     uploadDeliverAttachment,
     deleteDeliverAttachment,

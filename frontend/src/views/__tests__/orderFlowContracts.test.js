@@ -340,15 +340,15 @@ describe('hall refresh contracts', () => {
     expect(socketWatcher).toMatch(/hallFallbackInterval = HALL_FALLBACK_INTERVAL/)
   })
 
-  it('gates the digest probe behind the WS-disconnected fallback only', () => {
-    // 灰度边界：摘要优化只服务断线兜底；WS 正常时 10s 对账 + 推送的主通道
-    // 必须与旧版完全一致（不出现任何摘要请求）。
+  it('probes the digest first on every reconcile, not only the WS-disconnected fallback', () => {
+    // 摘要优先现在覆盖 WS 正常时的 10s 对账与断线 2s 兜底两条路径：不能再被
+    // socketStatus 限制在断线分支里，且摘要逻辑必须先于全量刷新。
     const refresh = hallSlice('async function silentRefresh()', 'watch(() => notificationsStore.newOrderNotificationVersion')
-    const disconnectedIndex = refresh.indexOf("chatStore.socketStatus !== 'connected'")
-    expect(disconnectedIndex).toBeGreaterThan(-1)
+    const gateStart = refresh.indexOf('!hallDigestUnavailable')
+    expect(gateStart).toBeGreaterThan(-1)
 
-    const gate = branchBody(refresh, disconnectedIndex)
-    // 跳过全量的三条前提都在断线分支里：摘要可用、基线已知、还在强制窗口内
+    const gate = branchBody(refresh, gateStart)
+    // 跳过全量的三条前提都在摘要分支里：摘要可用、基线已知、还在强制窗口内
     expect(gate).toMatch(/!hallDigestUnavailable/)
     expect(gate).toMatch(/hallDigestBaseline !== null/)
     expect(gate).toMatch(/hallFullRefreshWithinWindow\(\)/)
@@ -357,12 +357,15 @@ describe('hall refresh contracts', () => {
     expect(gate).toMatch(/refreshHallRecentClaimsIfDue\(\)/)
     expect(gate).toMatch(/return/)
 
-    // 断线分支之外（即 WS 正常路径）不出现任何摘要请求
-    expect(refresh.replace(gate, '')).not.toMatch(/probeHallDigest|fetchHallDigest/)
-    // 对 socketStatus 的判断先于摘要逻辑
-    expect(disconnectedIndex).toBeLessThan(refresh.indexOf('probeHallDigestKey()'))
+    // 摘要分支本身不再受 WS 状态约束（WS 正常也要先探摘要）
+    expect(gate).not.toMatch(/socketStatus/)
+    expect(refresh).not.toMatch(/socketStatus/)
+
     // 摘要判断先于全量刷新：摘要没变的轮次根本不会走到全量列表
-    expect(refresh.indexOf('await measureOrderFlowStage(')).toBeGreaterThan(disconnectedIndex)
+    expect(refresh.indexOf('await probeHallDigestKey()'))
+      .toBeLessThan(refresh.indexOf('await measureOrderFlowStage('))
+    // 全量刷新仍在 silentRefresh 里（摘要未跳过的轮次会走到它）
+    expect(refresh.indexOf('await measureOrderFlowStage(')).toBeGreaterThan(-1)
   })
 
   it('caps the digest-skip window and rebuilds the baseline after a full refresh', () => {
@@ -388,8 +391,8 @@ describe('hall refresh contracts', () => {
     // 优先吃列表响应随带的 hall_*，列表没带才兜底探一次摘要
     expect(record).toMatch(/hallDigestKey\(ordersStore\.hallDigest\)/)
     expect(record).toMatch(/hallDigestBaseline = await probeHallDigestKey\(\)/)
-    // WS 正常时不建基线（主通道不发摘要请求）
-    expect(record).toMatch(/if \(chatStore\.socketStatus === 'connected'\) return/)
+    // 无论 WS 状态都重建基线：不再有 socketStatus 早退，WS 正常时 10s 对账也要用基线
+    expect(record).not.toMatch(/socketStatus/)
 
     // 基线在生命周期开始/卸载时重置为 null
     const lifecycle = hallSlice('async function startHallLifecycle()', 'onMounted(() => {')
@@ -436,5 +439,67 @@ describe('hall refresh contracts', () => {
     // 卸载时必须清掉待执行的 debounce，避免卸载后复活刷新
     const unmountBlock = hallSlice('onUnmounted(() => {', '</script>')
     expect(unmountBlock).toMatch(/clearTimeout\(hallResumeRefreshTimer\)/)
+  })
+})
+
+// ── 抢单本地闸门契约（isolated block：只覆盖 OrderDetail 等待期禁用与 400 分流）──
+describe('claim wait-gate contracts', () => {
+  function confirmHandler() {
+    const start = detailSource.indexOf('async function handleConfirmClaim()')
+    const end = detailSource.indexOf('\nfunction openDeliverModal()', start)
+    expect(start).toBeGreaterThan(-1)
+    expect(end).toBeGreaterThan(start)
+    return detailSource.slice(start, end)
+  }
+
+  it('disables both claim buttons and shows remaining seconds while waiting', () => {
+    // 入口按钮：等待期禁用（acceptWaitSeconds > 0），标签带剩余秒数
+    expect(detailSource).toMatch(/:disabled="actionLoading \|\| claimPreflightLoading \|\| hasClaimed \|\| acceptWaitSeconds > 0"/)
+    // 确认按钮：同样在等待期禁用并显示倒计时标签
+    expect(detailSource).toMatch(/class="btn-primary flex-1" :disabled="actionLoading \|\| acceptWaitSeconds > 0"/)
+    expect(detailSource).toContain('{{ claimConfirmLabel }}')
+    expect(detailSource).toMatch(/const claimConfirmLabel = computed\(/)
+    // 本地补时与服务端等待取较大值：任一未归零都保持禁用（归零自动恢复）
+    expect(detailSource).toMatch(/Math\.max\(acceptWaitMeta\.value\.remaining, acceptGateOverrideSeconds\.value\)/)
+  })
+
+  it('parses the server "还需等待 N 秒" 400 into a local wait deadline without retrying', () => {
+    const handler = confirmHandler()
+    expect(handler).toMatch(/const waitSeconds = parseAcceptWaitSeconds\(result\.error\)/)
+    expect(handler).toMatch(/acceptGateOverrideUntil\.value = serverNow\(\) \+ waitSeconds \* 1000/)
+
+    const waitStart = handler.indexOf('if (waitSeconds > 0)')
+    const waitEnd = handler.indexOf('} else if (isUnavailableAcceptError(result.error))', waitStart)
+    expect(waitStart).toBeGreaterThan(-1)
+    expect(waitEnd).toBeGreaterThan(waitStart)
+    const waitBranch = handler.slice(waitStart, waitEnd)
+    // 等待分支只设本地截止，不重发接单、不刷新详情（重试只会继续吃 400）
+    expect(waitBranch).not.toMatch(/acceptOrder|handleConfirmClaim|fetchOrder|loadClaims/)
+
+    // 解析器按「还需等待 N 秒」文案取秒数；满员/已被抢/已归档识别器同在源码里
+    expect(detailSource).toMatch(/function parseAcceptWaitSeconds\(message\)/)
+    expect(detailSource).toMatch(/还需等待\\s\*\(\\d\+\)\\s\*秒/)
+    expect(detailSource).toMatch(/function isUnavailableAcceptError\(message\)/)
+    expect(detailSource).toMatch(/满员\|已被抢\|已归档/)
+  })
+
+  it('refreshes the detail only once (no retry) for full/taken/archived errors', () => {
+    const handler = confirmHandler()
+    const branchStart = handler.indexOf('} else if (isUnavailableAcceptError(result.error)) {')
+    expect(branchStart).toBeGreaterThan(-1)
+    const branchEnd = handler.indexOf('} else {', branchStart)
+    expect(branchEnd).toBeGreaterThan(branchStart)
+    const branch = handler.slice(branchStart, branchEnd)
+    expect(branch).toMatch(/await ordersStore\.fetchOrder\(orderId, \{ silent: true \}\)/)
+    // 只刷详情：不刷新名单、不重发接单
+    expect(branch).not.toMatch(/loadClaims|acceptOrder|handleConfirmClaim/)
+  })
+
+  it('keeps the 5f04d87 in-flight lock and 403/404 status routing intact', () => {
+    // acceptOrder 在飞锁：重复确认直接返回
+    expect(detailSource).toMatch(/async function handleConfirmClaim\(\) \{\s*if \(actionLoading\.value\) return/)
+    // 预检期间只有 403/404 才说"被抢走或已下架"
+    expect(detailSource).toMatch(/if \(fresh\.status === 403 \|\| fresh\.status === 404\)/)
+    expect(detailSource).toMatch(/该单刚刚被其他打手接走或已下架/)
   })
 })

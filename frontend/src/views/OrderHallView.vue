@@ -273,11 +273,10 @@ const HALL_FALLBACK_MAX_INTERVAL = 10_000
 let hallFallbackInterval = HALL_FALLBACK_INTERVAL
 let hallRefreshTimer = null
 let hallUnmounted = false
-// 断线兜底的「摘要优先」轮询（2026-10-14 事故的正面修复）：
-// 只灰度 WS 断开路径——WS 正常时 10s 对账 + 推送是主通道、请求量本来就低，
-// 改它只会引入漏单风险；事故压力则全部来自断线后 2s 一次的全量列表。
-// 断线时先拉极轻量的 hall-digest（count / max_updated_at / earliest_deadline），
-// 摘要与基线一致就跳过全量，把断线期的列表请求量降一个数量级。
+// 「摘要优先」轮询（2026-10-14 事故的正面修复）：WS 正常时的 10s 对账与断线
+// 2s 兜底都先拉极轻量的 hall-digest（count / max_updated_at / earliest_deadline），
+// 摘要与基线一致就跳过全量列表，把列表请求量降一个数量级。断线期（事故压力
+// 全部来自 2s 一次的全量列表）收益最大；WS 正常时也省掉一次必然无变化的对账。
 const HALL_FORCED_FULL_INTERVAL = 30_000
 // 摘要一致时最多只跳过这么久：摘要是聚合信号，可能有盲区（列表与摘要的批次差、
 // 后端摘要聚合缓存延迟），30 秒强制一次全量兜住盲区，保证最坏延迟有上界。
@@ -367,13 +366,12 @@ function refreshHallRecentClaimsIfDue() {
   }
 }
 
-// 全量刷新成功后：记录时刻（强制窗口基准），并在断线路径下重建摘要基线。
+// 全量刷新成功后：记录时刻（强制窗口基准），并重建摘要基线。
 // 基线首选列表响应随带的 hall_* 字段（零额外请求，见 orders store），列表没带
 // 才兜底探一次摘要，否则下一轮基线仍是 null、会被迫每轮全量（退回旧行为）。
-// WS 正常时不建基线：主通道不读基线，也就不该为兜底优化多发摘要请求。
+// 无论 WS 是否正常都建基线：WS 正常时的 10s 对账也要先探摘要，基线必须持续维护。
 async function recordHallFullRefreshSuccess() {
   lastHallFullRefreshAt = Date.now()
-  if (chatStore.socketStatus === 'connected') return
   const fromList = hallDigestKey(ordersStore.hallDigest)
   if (fromList !== null) {
     hallDigestBaseline = fromList
@@ -408,11 +406,11 @@ async function silentRefresh() {
   // 摘要探测的耗时/成败一律不计入退避——退避语义仍只看全量列表。
   let fullRefreshElapsedMs = null
   try {
-    // 仅断线兜底走摘要判断：摘要可用、基线已知、还在强制窗口内，才值得先探测；
-    // 任一不满足（首次断线、基线未知、超过 30s、老后端）都直接走原来的全量。
+    // 摘要优先：WS 正常时的 10s 对账与断线 2s 兜底都先探摘要——摘要可用、
+    // 基线已知、还在强制窗口内，才值得先探测；任一不满足（首次、基线未知、
+    // 超过 30s、老后端）都直接走原来的全量。
     if (
-      chatStore.socketStatus !== 'connected'
-      && !hallDigestUnavailable
+      !hallDigestUnavailable
       && hallDigestBaseline !== null
       && hallFullRefreshWithinWindow()
     ) {

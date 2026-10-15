@@ -107,13 +107,12 @@ async def _apply_accept_window(
     """
     if viewer.role == UserRole.ADMIN:
         return
-    # 延迟导入避免 service -> api 的循环依赖
-    from app.services import deposit_service
-
-    if not await deposit_service.is_deposit_enabled(db):
+    # 保证金开关/档位等待秒数：列表链路已由 list_orders 的聚合顺带取回（请求内
+    # 缓存复用），详情等其它路径回退 deposit_service 原实现，二者同口径。
+    order_service = get_order_service(db)
+    deposit_enabled, wait_seconds = await order_service.accept_window_wait(viewer)
+    if not deposit_enabled:
         return
-    tier, _balance = await deposit_service.get_user_tier(db, viewer.id)
-    wait_seconds = int(tier.wait_seconds or 0) if tier else 0
     now = datetime.now(timezone.utc)
     orders_by_id = {order.id: order for order in orders}
     for response in responses:
@@ -387,13 +386,21 @@ async def create_order(
     async with measure_stage(request, STAGE_ORDER_SERVICE):
         order = await order_service.create_order(order_data, current_user)
 
-    # 任何人发单：向所有活跃非管理员广播"新订单"通知（批量、单事务，排除自己）
+    # 任何人发单：向所有活跃非管理员广播"新订单"通知（批量、单事务，排除自己）。
+    # 卡片一律按「其他打手视角」构建：game_account/boss_contact 强制置空，
+    # 不能把发布方（可能是管理员）视角的敏感字段推给全站打手。
+    card_response = OrderResponse.model_validate(order).model_copy(
+        update={"game_account": None, "boss_contact": None}
+    )
+    order_card = _apply_slim_list_payload(card_response).model_dump(mode="json")
+
     async with measure_stage(request, STAGE_ORDER_NOTIFICATIONS):
         await notify_boosters_new_order(
             db,
             order=order,
             exclude_user_id=current_user.id,
             request=request,
+            order_card=order_card,
         )
 
     return OrderResponse.model_validate(order)

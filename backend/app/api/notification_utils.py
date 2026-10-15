@@ -86,12 +86,19 @@ async def notify_boosters_new_order(
     order: Order,
     exclude_user_id: int | None = None,
     request: Request | None = None,
+    order_card: dict | None = None,
 ) -> int:
     """
     管理员（老板）发布订单后，向所有活跃非管理员用户发送"新订单"通知。
 
     收件人和偏好通过集合查询，通知使用单条多值 INSERT 写入当前事务；
     在线 WebSocket 推送仍在事务提交后尽力执行。
+
+    Args:
+        order_card: 大厅列表卡片的 slim dict，由调用方构建并复用，用于让前端
+            收到新单通知后本地插卡、避免全量刷新。不为 None 时附加到每条
+            WebSocket payload 的 "order_card" 键上（多份 payload 共享同一个
+            只读 dict 引用，不做深拷贝）；传 None 时行为与历史完全一致。
 
     Returns:
         实际写入的通知条数。
@@ -199,24 +206,25 @@ async def notify_boosters_new_order(
         inserted = result.all()
         if len(inserted) != len(values):
             raise RuntimeError("Unable to reload all persisted order notifications")
-        return [
-            (
-                user_id,
-                NotificationResponse(
-                    id=notification_id,
-                    user_id=user_id,
-                    type=NotificationType.SYSTEM_ANNOUNCEMENT,
-                    title=title,
-                    content=content,
-                    link=link,
-                    ref_id=order.id,
-                    is_read=False,
-                    created_at=notification_created_at,
-                    read_at=None,
-                ).model_dump(mode="json"),
-            )
-            for notification_id, user_id, notification_created_at in inserted
-        ]
+        payloads: list[tuple[int, dict]] = []
+        for notification_id, user_id, notification_created_at in inserted:
+            payload = NotificationResponse(
+                id=notification_id,
+                user_id=user_id,
+                type=NotificationType.SYSTEM_ANNOUNCEMENT,
+                title=title,
+                content=content,
+                link=link,
+                ref_id=order.id,
+                is_read=False,
+                created_at=notification_created_at,
+                read_at=None,
+            ).model_dump(mode="json")
+            if order_card is not None:
+                # 全站扇出共享同一个只读卡片引用，避免逐条深拷贝
+                payload["order_card"] = order_card
+            payloads.append((user_id, payload))
+        return payloads
 
     payloads = await measured(STAGE_NOTIFICATION_PAYLOADS, build_payloads)
 

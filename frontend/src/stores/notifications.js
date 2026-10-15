@@ -9,6 +9,7 @@ import api from '@/utils/api'
 import { useAuthStore } from '@/stores/auth'
 import { useSettingsStore } from '@/stores/settings'
 import { useToastsStore } from '@/stores/toasts'
+import { useOrdersStore } from '@/stores/orders'
 
 export const useNotificationsStore = defineStore('notifications', () => {
   const notifications = ref([])
@@ -190,6 +191,14 @@ export const useNotificationsStore = defineStore('notifications', () => {
     const id = String(payload.id)
     if (signaledNewOrderIds.has(id)) return false
     signaledNewOrderIds.add(id)
+    // 服务端直推大厅卡片：本地插卡即可让新单即时可见，无需 bump 版本触发
+    // 大厅全量重刷（新单到达不再让 600 个客户端各自全量拉列表）。
+    // 少数派（老服务器/不带 order_card 的来源）保持旧行为：bump → 大厅
+    // silentRefresh 全量兜底。version 的唯一监听者是大厅 watch。
+    if (payload.order_card) {
+      useOrdersStore().applyNewOrderCard(payload.order_card)
+      return true
+    }
     newOrderNotificationVersion.value += 1
     return true
   }
