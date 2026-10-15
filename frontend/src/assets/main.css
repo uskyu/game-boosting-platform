@@ -252,6 +252,10 @@
       margin-right: -1rem;
       padding-left: 1rem;
       padding-right: 1rem;
+      /* 底部 Tab 栏（56px + 安全区）固定压在视口底：sticky 操作栏必须抬到它上方，
+         否则滚动中「取消/发布订单」被 Tab 栏盖住（老板 2026-10-15 反馈） */
+      bottom: calc(56px + env(safe-area-inset-bottom));
+      padding-bottom: 1rem;
     }
   }
 

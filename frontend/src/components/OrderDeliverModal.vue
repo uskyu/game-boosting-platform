@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { useOrdersStore } from '@/stores/orders'
+import { compressImageFile } from '@/utils/imageCompress'
 
 const props = defineProps({
   modelValue: { type: Boolean, required: true },
@@ -103,7 +104,7 @@ function validateFile(file) {
   return ''
 }
 
-function onPick(event) {
+async function onPick(event) {
   generalError.value = ''
   const list = Array.from(event.target.files || [])
   if (!list.length) return
@@ -122,8 +123,11 @@ function onPick(event) {
       generalError.value = `${file.name}: ${error}`
       continue
     }
-    files.value.push(file)
-    previews.value.push(URL.createObjectURL(file))
+    // 大图先压缩再入队：手机原图直传弱网下常被浏览器 60s 网络超时掐断（服务端 499），
+    // 对应老板反馈的「网络连接失败」（2026-10-15）
+    const prepared = await compressImageFile(file)
+    files.value.push(prepared)
+    previews.value.push(URL.createObjectURL(prepared))
     uploadStates.value.push('idle')
     uploadErrors.value.push('')
   }
@@ -156,6 +160,10 @@ function attachmentLimitMessage() {
   return '服务器已有 5 张，已达到上限；请刷新详情同步附件后，删除已保存草稿附件再重试。'
 }
 
+function isNetworkError(message) {
+  return /网络连接|network|超时|timeout/i.test(String(message || ''))
+}
+
 async function uploadOne(file) {
   const index = files.value.indexOf(file)
   if (index < 0) return { success: true }
@@ -163,7 +171,12 @@ async function uploadOne(file) {
   const persistedBeforeUpload = persistedCount.value
   uploadStates.value[index] = 'uploading'
   uploadErrors.value[index] = ''
-  const result = await ordersStore.uploadDeliverAttachment(props.orderId, file)
+  let result = await ordersStore.uploadDeliverAttachment(props.orderId, file)
+  // 弱网下连接被中途掐断（服务端 499）时自动补一次：若首次其实已落库，
+  // 最坏是多出一张可手动删除的交付图，换取用户对瞬时抖动无感。
+  if (!result.success && isNetworkError(result.error)) {
+    result = await ordersStore.uploadDeliverAttachment(props.orderId, file)
+  }
   const currentIndex = files.value.indexOf(file)
   if (result.success) {
     // prop 可能在请求返回前已更新；取请求前数量 +1 与当前服务端数量的较大值，避免成功项双计。

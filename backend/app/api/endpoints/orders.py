@@ -53,6 +53,7 @@ from app.schemas.order import (
     OrderResponse,
     OrderUpdate,
     ClaimControlRequest,
+    HallDigestResponse,
     MyOrderClaimItem,
     MyOrderClaimListResponse,
 )
@@ -470,7 +471,7 @@ async def list_orders(
     )
 
     resolved_status, cancel_pending_only = _resolve_order_status_filter(status_filter)
-    orders, total = await order_service.list_orders(
+    orders, total, hall_max_updated_at, hall_earliest_deadline = await order_service.list_orders(
         user=current_user,
         game_name=game_name,
         status_filter=resolved_status,
@@ -496,6 +497,40 @@ async def list_orders(
         page=page,
         page_size=page_size,
         pages=pages,
+        # 与 hall-digest 同口径的摘要基线，随列表一起下发（同一聚合查询顺带取回）。
+        # 只在大厅口径下发：mine_published（我的派单）的计数范围与大厅不同，
+        # 客户端拿它当基线会把错误口径的摘要混进对账判断。
+        hall_count=total if not mine_published else None,
+        hall_max_updated_at=hall_max_updated_at if not mine_published else None,
+        hall_earliest_deadline=hall_earliest_deadline if not mine_published else None,
+    )
+
+
+@router.get(
+    "/hall-digest",
+    response_model=HallDigestResponse,
+    summary="大厅对账摘要",
+    description=(
+        "轻量轮询：只返回当前可见订单的数量/最近更新时间/最早截止时间，"
+        "客户端断线兜底轮询先拉摘要，无变化则跳过全量列表请求"
+    ),
+)
+async def get_hall_digest(
+    current_user: CurrentUser,
+    db: DatabaseSession,
+) -> HallDigestResponse:
+    """大厅对账摘要：一条聚合查询代替全量列表，供客户端判断是否需要刷新。
+
+    过滤条件与 list_orders 的 booster_scope 完全一致（非管理员只看可接/自己
+    相关的订单，管理员不加过滤）：口径不同会让客户端「摘要没变就不拉全量」的
+    判断失效（摘要不变但列表实际已变）。
+    """
+    order_service = get_order_service(db)
+    count, max_updated_at, earliest_deadline = await order_service.hall_digest(current_user)
+    return HallDigestResponse(
+        count=count,
+        max_updated_at=max_updated_at,
+        earliest_deadline=earliest_deadline,
     )
 
 
@@ -652,7 +687,7 @@ async def delete_deliver_attachment(
     "/claims/mine",
     response_model=MyOrderClaimListResponse,
     summary="我的报名记录",
-    description="分页获取当前用户的订单报名记录（名额），按记录ID倒序，支持按状态筛选",
+    description="分页获取当前用户的订单报名记录（名额），按记录ID倒序，支持按状态与老板ID筛选",
 )
 async def list_my_claims(
     current_user: CurrentUser,
@@ -676,6 +711,10 @@ async def list_my_claims(
         str | None,
         Query(max_length=100, description="搜索订单号、接单记录号、标题、游戏或需求内容"),
     ] = None,
+    boss_contact: Annotated[
+        str | None,
+        Query(description="按老板ID模糊筛选（打手检索自己接过谁的活）", max_length=64),
+    ] = None,
 ) -> MyOrderClaimListResponse:
     """
     List the current user's claims (我的报名) with the parent order summary.
@@ -685,6 +724,8 @@ async def list_my_claims(
     - Each item carries the claim lifecycle fields plus an ``order`` summary
     - ``q`` accepts the parent order ID as the canonical number and also the
       claim record ID as a compatibility alias
+    - ``boss_contact`` filters own claims by the boss contact ID (partial
+      match); safe because the list only contains the caller's own claims
     """
     if current_user.role == UserRole.ADMIN:
         raise HTTPException(
@@ -702,6 +743,7 @@ async def list_my_claims(
         page=page,
         page_size=page_size,
         q=q,
+        boss_contact=boss_contact,
         cancel_pending_only=cancel_pending_only,
     )
     pages = (total + page_size - 1) // page_size if total > 0 else 0

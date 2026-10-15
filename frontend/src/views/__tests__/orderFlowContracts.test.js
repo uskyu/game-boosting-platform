@@ -243,6 +243,22 @@ describe('hall refresh contracts', () => {
     return hallSource.slice(start, end)
   }
 
+  // 源码文本里用 {} 配平近似取出某个 if 语句的完整分支体（含条件），
+  // 用于证明"摘要逻辑确实被包在断线分支里"，而不是只靠先后顺序猜测。
+  function branchBody(source, startIndex) {
+    const open = source.indexOf('{', startIndex)
+    expect(open).toBeGreaterThan(-1)
+    let depth = 0
+    for (let index = open; index < source.length; index += 1) {
+      if (source[index] === '{') depth += 1
+      else if (source[index] === '}') {
+        depth -= 1
+        if (depth === 0) return source.slice(startIndex, index + 1)
+      }
+    }
+    throw new Error('unbalanced branch in hall source')
+  }
+
   const stateChangeHandler = hallSlice(
     'watch(() => chatStore.lastOrderStateChange',
     'watch(() => chatStore.socketStatus',
@@ -309,14 +325,83 @@ describe('hall refresh contracts', () => {
     expect(maxMs).toBeGreaterThanOrEqual(fallbackMs * 2)
     expect(maxMs).toBeLessThanOrEqual(reconcileMs)
 
-    // 每次兜底刷新按实际耗时喂给退避判定（成功 + 够快才回到 2s）
+    // 每次兜底刷新按实际耗时喂给退避判定（成功 + 够快才回到 2s），且计时只覆盖
+    // 全量列表本身：摘要探测的耗时/成败不计入，被摘要跳过的轮次不喂退避判定。
     const refresh = hallSlice('async function silentRefresh()', 'watch(() => notificationsStore.newOrderNotificationVersion')
-    expect(refresh).toMatch(/const startedAt = performance\.now\(\)/)
-    expect(refresh).toMatch(/adjustHallFallbackInterval\(succeeded, performance\.now\(\) - startedAt\)/)
+    expect(refresh).toMatch(/const fullRefreshStartedAt = performance\.now\(\)/)
+    expect(refresh).toMatch(/fullRefreshElapsedMs = performance\.now\(\) - fullRefreshStartedAt/)
+    expect(refresh).toMatch(/adjustHallFallbackInterval\(succeeded, fullRefreshElapsedMs\)/)
+    expect(refresh).toMatch(/if \(!hallUnmounted && fullRefreshElapsedMs !== null\)/)
+    expect(refresh.indexOf('await probeHallDigestKey()'))
+      .toBeLessThan(refresh.indexOf('const fullRefreshStartedAt = performance.now()'))
 
     // WS 重连后重置退避参数：下一次断线仍从 2s 起步
     const socketWatcher = hallSlice('watch(() => chatStore.socketStatus', 'async function startHallLifecycle()')
     expect(socketWatcher).toMatch(/hallFallbackInterval = HALL_FALLBACK_INTERVAL/)
+  })
+
+  it('gates the digest probe behind the WS-disconnected fallback only', () => {
+    // 灰度边界：摘要优化只服务断线兜底；WS 正常时 10s 对账 + 推送的主通道
+    // 必须与旧版完全一致（不出现任何摘要请求）。
+    const refresh = hallSlice('async function silentRefresh()', 'watch(() => notificationsStore.newOrderNotificationVersion')
+    const disconnectedIndex = refresh.indexOf("chatStore.socketStatus !== 'connected'")
+    expect(disconnectedIndex).toBeGreaterThan(-1)
+
+    const gate = branchBody(refresh, disconnectedIndex)
+    // 跳过全量的三条前提都在断线分支里：摘要可用、基线已知、还在强制窗口内
+    expect(gate).toMatch(/!hallDigestUnavailable/)
+    expect(gate).toMatch(/hallDigestBaseline !== null/)
+    expect(gate).toMatch(/hallFullRefreshWithinWindow\(\)/)
+    expect(gate).toMatch(/const digestKey = await probeHallDigestKey\(\)/)
+    expect(gate).toMatch(/if \(digestKey === hallDigestBaseline\)/)
+    expect(gate).toMatch(/refreshHallRecentClaimsIfDue\(\)/)
+    expect(gate).toMatch(/return/)
+
+    // 断线分支之外（即 WS 正常路径）不出现任何摘要请求
+    expect(refresh.replace(gate, '')).not.toMatch(/probeHallDigest|fetchHallDigest/)
+    // 对 socketStatus 的判断先于摘要逻辑
+    expect(disconnectedIndex).toBeLessThan(refresh.indexOf('probeHallDigestKey()'))
+    // 摘要判断先于全量刷新：摘要没变的轮次根本不会走到全量列表
+    expect(refresh.indexOf('await measureOrderFlowStage(')).toBeGreaterThan(disconnectedIndex)
+  })
+
+  it('caps the digest-skip window and rebuilds the baseline after a full refresh', () => {
+    const forcedMatch = hallSource.match(/const HALL_FORCED_FULL_INTERVAL = ([\d_]+)/)
+    expect(forcedMatch).not.toBeNull()
+    const forcedMs = Number(forcedMatch[1].replace(/_/g, ''))
+    expect(forcedMs).toBeGreaterThan(0)
+    expect(forcedMs).toBeLessThanOrEqual(60_000)
+
+    // 基线为 null（未知）必须全量；强制窗口由 HALL_FORCED_FULL_INTERVAL 把关，
+    // 摘要一致也不能无限跳过（防摘要盲区）
+    expect(hallSource).toMatch(/let hallDigestBaseline = null/)
+    const withinWindow = hallSlice('function hallFullRefreshWithinWindow(', 'function refreshHallRecentClaimsIfDue(')
+    expect(withinWindow).toMatch(/Date\.now\(\) - lastHallFullRefreshAt < HALL_FORCED_FULL_INTERVAL/)
+
+    // 全量成功后才更新基线
+    const refresh = hallSlice('async function silentRefresh()', 'watch(() => notificationsStore.newOrderNotificationVersion')
+    expect(refresh.indexOf('succeeded = true')).toBeGreaterThan(-1)
+    expect(refresh.indexOf('await recordHallFullRefreshSuccess()'))
+      .toBeGreaterThan(refresh.indexOf('succeeded = true'))
+    const record = hallSlice('async function recordHallFullRefreshSuccess(', 'async function silentRefresh()')
+    expect(record).toMatch(/lastHallFullRefreshAt = Date\.now\(\)/)
+    // 优先吃列表响应随带的 hall_*，列表没带才兜底探一次摘要
+    expect(record).toMatch(/hallDigestKey\(ordersStore\.hallDigest\)/)
+    expect(record).toMatch(/hallDigestBaseline = await probeHallDigestKey\(\)/)
+    // WS 正常时不建基线（主通道不发摘要请求）
+    expect(record).toMatch(/if \(chatStore\.socketStatus === 'connected'\) return/)
+
+    // 基线在生命周期开始/卸载时重置为 null
+    const lifecycle = hallSlice('async function startHallLifecycle()', 'onMounted(() => {')
+    expect(lifecycle).toMatch(/hallDigestBaseline = null/)
+    expect(lifecycle).toMatch(/lastHallFullRefreshAt = 0/)
+    const unmount = hallSlice('onUnmounted(() => {', '</script>')
+    expect(unmount).toMatch(/hallDigestBaseline = null/)
+
+    // 2s/10s 节奏常量与退避上限保持不变（只改断线兜底的取数策略，不动节奏）
+    expect(hallSource).toMatch(/const HALL_RECONCILE_INTERVAL = 10_000/)
+    expect(hallSource).toMatch(/const HALL_FALLBACK_INTERVAL = 2_000/)
+    expect(hallSource).toMatch(/const HALL_FALLBACK_MAX_INTERVAL = 10_000/)
   })
 
   it('merges focus and visibilitychange recovery into one debounced refresh', () => {

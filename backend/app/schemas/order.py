@@ -706,6 +706,19 @@ class OrderListResponse(BaseModel):
     page: int = Field(description="当前页码")
     page_size: int = Field(description="每页数量")
     pages: int = Field(description="总页数")
+    # 大厅对账摘要基线：与 hall-digest 端点同口径（本条列表查询的过滤范围内），
+    # 客户端每次全量刷新后据此更新基线，无需再单独请求摘要端点。
+    hall_count: int | None = Field(default=None, description="大厅可见订单数（摘要基线）")
+    hall_max_updated_at: datetime | None = Field(
+        default=None, description="大厅可见订单最近更新时间（摘要基线）"
+    )
+    hall_earliest_deadline: datetime | None = Field(
+        default=None, description="大厅可见订单最早截止时间（摘要基线）"
+    )
+
+    @field_serializer("hall_max_updated_at", "hall_earliest_deadline")
+    def _serialize_hall_datetimes(self, value: datetime | None, _info) -> str | None:
+        return serialize_datetime_utc(value)
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -715,6 +728,35 @@ class OrderListResponse(BaseModel):
                 "page": 1,
                 "page_size": 20,
                 "pages": 0,
+                "hall_count": 0,
+                "hall_max_updated_at": None,
+                "hall_earliest_deadline": None,
+            }
+        }
+    )
+
+
+class HallDigestResponse(BaseModel):
+    """大厅对账摘要：轻量轮询先拉摘要，无变化则不拉全量列表。"""
+
+    count: int = Field(description="当前可见订单数")
+    max_updated_at: datetime | None = Field(
+        default=None, description="可见订单中最近一次更新时间"
+    )
+    earliest_deadline: datetime | None = Field(
+        default=None, description="可见订单中最早的截止时间（未设截止则忽略）"
+    )
+
+    @field_serializer("max_updated_at", "earliest_deadline")
+    def _serialize_datetimes(self, value: datetime | None, _info) -> str | None:
+        return serialize_datetime_utc(value)
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "count": 12,
+                "max_updated_at": "2026-10-13T08:30:00+00:00",
+                "earliest_deadline": "2026-10-14T12:00:00+00:00",
             }
         }
     )

@@ -230,6 +230,62 @@ async def test_claim_search_uses_shared_order_number(
         assert item["order"]["description_raw"] == "统一搜索内容"
 
 
+async def test_claim_search_by_boss_contact(
+    client: AsyncClient, admin_user: dict, booster_user: dict
+):
+    """我的接单支持按老板ID模糊搜索（老板 2026-10-15 反馈）；只命中自己的报名。"""
+    created = []
+    for boss_contact in ("BossAlpha888", "BossBeta999"):
+        resp = await client.post(
+            "/orders/create",
+            json={
+                "game_name": "三角洲行动",
+                "current_rank": "黄金",
+                "target_rank": "钻石",
+                "price": "58.00",
+                "boss_contact": boss_contact,
+            },
+            headers=auth_header(admin_user),
+        )
+        assert resp.status_code == 201, resp.text
+        order = resp.json()
+        accept = await client.put(
+            f"/orders/{order['id']}/accept",
+            headers=auth_header(booster_user),
+        )
+        assert accept.status_code == 200, accept.text
+        created.append(order)
+
+    # 完整老板ID：精确命中对应订单
+    mine = await client.get(
+        "/orders/claims/mine",
+        params={"boss_contact": "BossAlpha888"},
+        headers=auth_header(booster_user),
+    )
+    assert mine.status_code == 200, mine.text
+    data = mine.json()
+    assert data["total"] == 1
+    assert data["items"][0]["order"]["id"] == created[0]["id"]
+
+    # 部分匹配且大小写不敏感
+    mine = await client.get(
+        "/orders/claims/mine",
+        params={"boss_contact": "bossalpha"},
+        headers=auth_header(booster_user),
+    )
+    assert mine.status_code == 200, mine.text
+    assert mine.json()["total"] == 1
+
+    # 无匹配：返回空列表而不是全量
+    mine = await client.get(
+        "/orders/claims/mine",
+        params={"boss_contact": "NoSuchBoss"},
+        headers=auth_header(booster_user),
+    )
+    assert mine.status_code == 200, mine.text
+    assert mine.json()["total"] == 0
+
+
 async def test_deliver_requires_claimed_user(
     client: AsyncClient, admin_user: dict, registered_user: dict
 ):

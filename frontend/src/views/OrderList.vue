@@ -24,6 +24,7 @@ const searchBossContact = ref(String(route.query.boss || ''))
 const selectedStatus = ref(String(route.query.status || ''))
 const claimStatus = ref(String(route.query.claim_status || ''))
 const claimSearch = ref(String(route.query.claim_q || ''))
+const claimBossContact = ref(String(route.query.claim_boss || ''))
 
 function getClaimSettlementDisplayMeta(claim) {
   // 取消协商挂起：徽标与「接单状态」都改显申请取消中，不再显示进行中
@@ -73,6 +74,7 @@ const hasClaimsCache = computed(() => ordersStore.hasMyClaimsCache(
   claimsPagination.value.page || 1,
   20,
   claimSearch.value.trim(),
+  claimBossContact.value.trim(),
 ))
 const claimsPagination = computed(() => ordersStore.myClaimsPagination)
 const loading = computed(() => ordersStore.loading)
@@ -225,7 +227,7 @@ async function fetchOrders() {
 async function fetchClaims(page = 1) {
   // DISPUTED 本地过滤：服务端不支持该值，拉全量再过滤
   const serverStatus = claimStatus.value === 'DISPUTED' ? undefined : (claimStatus.value || undefined)
-  await ordersStore.fetchMyClaims(serverStatus, page, 20, claimSearch.value.trim())
+  await ordersStore.fetchMyClaims(serverStatus, page, 20, claimSearch.value.trim(), claimBossContact.value.trim())
 }
 
 function switchTab(tab) {
@@ -270,6 +272,7 @@ function syncQuery(page = ordersStore.pagination.page) {
       status: selectedStatus.value || undefined,
       claim_status: claimStatus.value || undefined,
       claim_q: claimSearch.value.trim() || undefined,
+      claim_boss: claimBossContact.value.trim() || undefined,
       page: page > 1 ? page : undefined,
     },
   })
@@ -286,6 +289,7 @@ watch(() => route.query, (query) => {
   const qStatus = String(query.status || '')
   const qClaim = String(query.claim_status || '')
   const qClaimSearch = String(query.claim_q || '')
+  const qClaimBoss = String(query.claim_boss || '')
   const qPage = Math.max(1, Number(query.page) || 1)
 
   restoringFromQuery = true
@@ -296,6 +300,7 @@ watch(() => route.query, (query) => {
   if (selectedStatus.value !== qStatus) { selectedStatus.value = qStatus; changed = true }
   if (claimStatus.value !== qClaim) { claimStatus.value = qClaim; changed = true }
   if (claimSearch.value !== qClaimSearch) { claimSearch.value = qClaimSearch; changed = true }
+  if (claimBossContact.value !== qClaimBoss) { claimBossContact.value = qClaimBoss; changed = true }
   if (ordersStore.pagination.page !== qPage) { ordersStore.setPage(qPage); changed = true }
   nextTick(() => { restoringFromQuery = false })
 
@@ -320,6 +325,7 @@ function resetFilters() {
   selectedStatus.value = ''
   claimStatus.value = ''
   claimSearch.value = ''
+  claimBossContact.value = ''
   ordersStore.setPage(1)
   fetchOrders()
   fetchClaims()
@@ -432,7 +438,7 @@ onUnmounted(() => {
     <!-- ── 我的接单：打手自己接的活（进行中 / 待审核 / 已结算） ── -->
     <template v-if="activeTab === 'claims'">
       <section class="surface-card p-4 sm:p-5">
-        <div class="grid gap-4 lg:grid-cols-[1.4fr_220px_auto] lg:items-end">
+        <div class="grid gap-4 lg:grid-cols-[1.2fr_1fr_220px_auto] lg:items-end">
           <div>
             <label class="label" for="claim-search">搜索订单</label>
             <input
@@ -445,6 +451,18 @@ onUnmounted(() => {
             />
           </div>
           <div>
+            <label class="label" for="claim-boss-contact">老板ID</label>
+            <input
+              id="claim-boss-contact"
+              v-model="claimBossContact"
+              type="text"
+              class="input"
+              maxlength="64"
+              placeholder="搜老板ID"
+              @keyup.enter="handleClaimSearch"
+            />
+          </div>
+          <div>
             <label class="label" for="claim-status">接单状态</label>
             <select id="claim-status" v-model="claimStatus" class="input">
               <option v-for="option in claimStatusOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
@@ -452,7 +470,7 @@ onUnmounted(() => {
           </div>
           <div class="flex gap-3 lg:self-end">
             <button type="button" class="btn-secondary !px-4 !py-2.5" @click="handleClaimSearch">搜索</button>
-            <button type="button" class="btn-ghost !px-4 !py-2.5" @click="claimSearch = ''; handleClaimSearch()">重置</button>
+            <button type="button" class="btn-ghost !px-4 !py-2.5" @click="claimSearch = ''; claimBossContact = ''; handleClaimSearch()">重置</button>
           </div>
         </div>
         <p class="mt-3 text-xs text-ink-3">订单号是老板和打手共用的主编号，联系对方时直接报订单号。</p>

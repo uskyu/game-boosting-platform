@@ -330,6 +330,17 @@ describe('fetchMyClaims request sequence', () => {
     expect(store.myClaimsLoading).toBe(false)
     expect(store.myClaims).toEqual([{ id: 2 }])
   })
+
+  it('老板ID作为独立筛选参数并参与缓存键', async () => {
+    const store = useOrdersStore()
+    apiGet.mockResolvedValueOnce(claimsResponse([{ id: 9 }]))
+
+    await store.fetchMyClaims('CLAIMED', 1, 20, '', 'BossA888')
+
+    expect(apiGet.mock.calls[apiGet.mock.calls.length - 1][1].params).toMatchObject({ boss_contact: 'BossA888' })
+    expect(store.hasMyClaimsCache('CLAIMED', 1, 20, '', 'BossA888')).toBe(true)
+    expect(store.hasMyClaimsCache('CLAIMED', 1, 20, '', 'BossB999')).toBe(false)
+  })
 })
 
 describe('fetchOrder 不写共享 loading（序号守卫只保护数据）', () => {
@@ -563,16 +574,124 @@ describe('applyOrderStateChange 同步 currentOrder', () => {
     expect(() => store.applyOrderStateChange({ order_id: 42, status: 'LOCKED' })).not.toThrow()
     expect(store.orders[0].status).toBe('LOCKED')
   })
+})
 
-  it('change 缺字段时不覆盖已有值', () => {
+describe('fetchHallDigest 不写共享 loading/error（大厅断线兜底专用探测）', () => {
+  // 回归：摘要探测是大厅断线兜底的心跳请求，与列表请求共用 api，但绝不能碰
+  // 共享 loading（会把列表骨架屏/详情页一起锁住）或共享 error（大厅顶部弹红条）。
+  it('成功返回 {success, data}，不碰共享 loading/error，也不回写列表基线', async () => {
     const store = useOrdersStore()
-    store.orders = [{ id: 42, status: 'PENDING', claim_status: 'OPEN', claimed_count: 0 }]
-    store.currentOrder = { id: 42, status: 'PENDING', claim_status: 'OPEN', claimed_count: 0 }
+    store.loading = true
+    const digest = { count: 3, max_updated_at: '2026-10-14T00:00:00Z', earliest_deadline: null }
+    apiGet.mockResolvedValueOnce({ data: digest })
 
-    store.applyOrderStateChange({ order_id: 42, status: 'LOCKED' })
+    const result = await store.fetchHallDigest()
 
-    expect(store.currentOrder.status).toBe('LOCKED')
-    expect(store.currentOrder.claim_status).toBe('OPEN')
-    expect(store.currentOrder.claimed_count).toBe(0)
+    expect(apiGet).toHaveBeenCalledWith('/orders/hall-digest')
+    expect(result).toEqual({ success: true, data: digest })
+    expect(store.loading).toBe(true)
+    expect(store.error).toBeNull()
+    // 探测结果只在返回值里给调用方对比；hallDigest 只由列表响应写入
+    expect(store.hallDigest).toBeNull()
+  })
+
+  it('失败静默：返回 {success:false,error} 且不写共享 loading/error', async () => {
+    const store = useOrdersStore()
+    apiGet.mockRejectedValueOnce({ status: 404, message: '未找到' })
+
+    const result = await store.fetchHallDigest()
+
+    expect(result).toEqual({ success: false, status: 404, error: '未找到' })
+    expect(store.loading).toBe(false)
+    expect(store.error).toBeNull()
+  })
+
+  it('被后续探测作废的旧响应不落地（stale、无 data），也不动共享 loading', async () => {
+    const store = useOrdersStore()
+    const slow = deferred()
+    apiGet.mockImplementationOnce(() => slow.promise)
+
+    const slowCall = store.fetchHallDigest()
+    apiGet.mockResolvedValueOnce({ data: { count: 9, max_updated_at: 'fresh', earliest_deadline: null } })
+    const fresh = await store.fetchHallDigest()
+    expect(fresh.success).toBe(true)
+
+    slow.resolve({ data: { count: 1, max_updated_at: 'stale', earliest_deadline: null } })
+    // 陈旧摘要不能给调用方做基线对比（会误判"没变"而跳过该拉的全量）
+    expect(await slowCall).toEqual({ success: true, stale: true })
+    expect(store.loading).toBe(false)
+    expect(store.error).toBeNull()
+  })
+
+  it('被作废的失败探测只标 stale，不写共享 error', async () => {
+    const store = useOrdersStore()
+    const slow = deferred()
+    apiGet.mockImplementationOnce(() => slow.promise)
+
+    const slowCall = store.fetchHallDigest()
+    apiGet.mockResolvedValueOnce({ data: { count: 9, max_updated_at: 'fresh', earliest_deadline: null } })
+    await store.fetchHallDigest()
+
+    slow.reject({ message: '网络错误' })
+    expect(await slowCall).toEqual({ success: false, stale: true, status: undefined, error: '网络错误' })
+    expect(store.error).toBeNull()
   })
 })
+
+describe('列表响应随带的 hall_* 摘要字段', () => {
+  it('带字段时写入 hallDigest，供视图更新断线兜底基线', async () => {
+    const store = useOrdersStore()
+    apiGet.mockResolvedValueOnce({
+      data: {
+        items: [{ id: 1, status: 'PENDING' }],
+        page: 1,
+        page_size: 100,
+        total: 1,
+        pages: 1,
+        hall_count: 5,
+        hall_max_updated_at: '2026-10-14T01:02:03Z',
+        hall_earliest_deadline: '2026-10-15T00:00:00Z',
+      },
+    })
+
+    await store.refreshOrdersContext('hall', { page: 1, pageSize: 100, slim: true })
+
+    expect(store.hallDigest).toEqual({
+      count: 5,
+      max_updated_at: '2026-10-14T01:02:03Z',
+      earliest_deadline: '2026-10-15T00:00:00Z',
+    })
+  })
+
+  it('不带字段时保持 hallDigest 为 null（老后端不受影响）', async () => {
+    const store = useOrdersStore()
+    apiGet.mockResolvedValueOnce(orderListResponse([{ id: 1, status: 'PENDING' }]))
+
+    await store.refreshOrdersContext('hall', { page: 1, pageSize: 100, slim: true })
+
+    expect(store.hallDigest).toBeNull()
+  })
+
+  it('被序号作废的旧响应不及时写入摘要（stale 路径不落地）', async () => {
+    const store = useOrdersStore()
+    const first = deferred()
+    const second = deferred()
+    apiGet.mockImplementationOnce(() => first.promise).mockImplementationOnce(() => second.promise)
+
+    const firstCall = store.refreshOrdersContext('hall', { page: 1, pageSize: 100, slim: true })
+    const secondCall = store.refreshOrdersContext('hall', { page: 1, pageSize: 100, slim: true })
+
+    first.resolve({
+      data: { items: [], page: 1, page_size: 100, total: 0, pages: 0, hall_count: 1, hall_max_updated_at: 'stale', hall_earliest_deadline: null },
+    })
+    expect(await firstCall).toMatchObject({ stale: true })
+    expect(store.hallDigest).toBeNull()
+
+    second.resolve({
+      data: { items: [], page: 1, page_size: 100, total: 0, pages: 0, hall_count: 2, hall_max_updated_at: 'fresh', hall_earliest_deadline: null },
+    })
+    await secondCall
+    expect(store.hallDigest).toEqual({ count: 2, max_updated_at: 'fresh', earliest_deadline: null })
+  })
+})
+

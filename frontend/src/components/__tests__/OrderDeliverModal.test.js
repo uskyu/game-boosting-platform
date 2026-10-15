@@ -185,6 +185,22 @@ describe('OrderDeliverModal attachment limits', () => {
     unmount()
   })
 
+  it('网络失败自动补一次：重试成功则不打扰用户', async () => {
+    storeMocks.uploadDeliverAttachment
+      .mockResolvedValueOnce({ success: false, error: '网络连接失败，请检查网络后重试' })
+      .mockResolvedValueOnce({ success: true, data: { url: '/uploads/proof.png' } })
+    storeMocks.deliverOrder.mockResolvedValue({ success: true, data: {} })
+    const { body, unmount } = mountModal()
+    await pickFiles(fileInput(body), [createFile('flaky.png')])
+    buttonByText(body, '提交结单').props.onClick()
+
+    await vi.waitFor(() => expect(storeMocks.uploadDeliverAttachment).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(storeMocks.deliverOrder).toHaveBeenCalledTimes(1))
+    // 帮助文案里有「上传失败可重试或移除」，这里只断言没有具体报错横幅
+    expect(textContent(body)).not.toContain('第 1 张上传失败')
+    unmount()
+  })
+
   it('clears queued files and upload errors when closed and reopened', async () => {
     storeMocks.uploadDeliverAttachment.mockResolvedValue({ success: false, error: 'Network error' })
     const { body, update, unmount } = mountModal()

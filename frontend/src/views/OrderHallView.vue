@@ -273,6 +273,21 @@ const HALL_FALLBACK_MAX_INTERVAL = 10_000
 let hallFallbackInterval = HALL_FALLBACK_INTERVAL
 let hallRefreshTimer = null
 let hallUnmounted = false
+// 断线兜底的「摘要优先」轮询（2026-10-14 事故的正面修复）：
+// 只灰度 WS 断开路径——WS 正常时 10s 对账 + 推送是主通道、请求量本来就低，
+// 改它只会引入漏单风险；事故压力则全部来自断线后 2s 一次的全量列表。
+// 断线时先拉极轻量的 hall-digest（count / max_updated_at / earliest_deadline），
+// 摘要与基线一致就跳过全量，把断线期的列表请求量降一个数量级。
+const HALL_FORCED_FULL_INTERVAL = 30_000
+// 摘要一致时最多只跳过这么久：摘要是聚合信号，可能有盲区（列表与摘要的批次差、
+// 后端摘要聚合缓存延迟），30 秒强制一次全量兜住盲区，保证最坏延迟有上界。
+// null = 基线未知（刚断线/刚挂载），此时必须全量，没有摘要可对比。
+let hallDigestBaseline = null
+// 上次全量刷新成功的时刻；0 = 本页生命周期内还没成功刷过（强制先全量一次）。
+let lastHallFullRefreshAt = 0
+// hall-digest 路由不存在（404，老后端）时，本页生命周期直接退回旧版全量兜底，
+// 不为一个不存在的接口每轮多打一个注定失败的探测请求。
+let hallDigestUnavailable = false
 // 抢单倒计时：独立 1 秒计时器，仅驱动 now 变化
 let countdownTimer = null
 // 切回页面时 focus 与 visibilitychange 几乎同时触发；两次都立刻发请求会让
@@ -322,6 +337,51 @@ function restartHallTimer() {
   hallRefreshTimer = window.setInterval(silentRefresh, hallPollInterval())
 }
 
+// 摘要 → 基线键。缺字段用空串占位，保证同一份摘要永远得到同一个键。
+function hallDigestKey(digest) {
+  if (!digest) return null
+  return `${digest.count ?? ''}|${digest.max_updated_at ?? ''}|${digest.earliest_deadline ?? ''}`
+}
+
+// 摘要探测：失败/不可用一律返回 null，调用方必须退回全量——兜底路径宁可多拉
+// 一次全量，也不能因为摘要故障漏掉新单。
+async function probeHallDigestKey() {
+  const result = await ordersStore.fetchHallDigest()
+  if (!result.success) {
+    if (result.status === 404) hallDigestUnavailable = true
+    return null
+  }
+  return hallDigestKey(result.data)
+}
+
+// 距上次全量成功是否还在强制全量窗口内：超出窗口无条件全量（防摘要盲区）。
+function hallFullRefreshWithinWindow() {
+  return Date.now() - lastHallFullRefreshAt < HALL_FORCED_FULL_INTERVAL
+}
+
+// 「今日已接单」兜底刷新：与订单同源节流（≥15s），失败静默。
+// 被摘要跳过的轮次也保留它（节流窗口 15s 远长于轮询间隔，不会因此多发请求）。
+function refreshHallRecentClaimsIfDue() {
+  if (hallRecentClaimsVisible.value && recentClaimsThrottleReady()) {
+    fetchRecentClaims(recentClaimsExpanded.value ? RECENT_CLAIMS_MAX : RECENT_CLAIMS_COLLAPSED_LIMIT).catch(() => {})
+  }
+}
+
+// 全量刷新成功后：记录时刻（强制窗口基准），并在断线路径下重建摘要基线。
+// 基线首选列表响应随带的 hall_* 字段（零额外请求，见 orders store），列表没带
+// 才兜底探一次摘要，否则下一轮基线仍是 null、会被迫每轮全量（退回旧行为）。
+// WS 正常时不建基线：主通道不读基线，也就不该为兜底优化多发摘要请求。
+async function recordHallFullRefreshSuccess() {
+  lastHallFullRefreshAt = Date.now()
+  if (chatStore.socketStatus === 'connected') return
+  const fromList = hallDigestKey(ordersStore.hallDigest)
+  if (fromList !== null) {
+    hallDigestBaseline = fromList
+    return
+  }
+  hallDigestBaseline = await probeHallDigestKey()
+}
+
 // 页面重新可见（手机解锁/切回应用）：先校准倒计时基准并重启轮询，
 // 再把 focus/visibilitychange 触发的网络刷新用短 debounce 合并成一次，
 // 不让用户对着刚解冻的陈旧页面干等，也不为同一次恢复跑两遍全量列表。
@@ -343,25 +403,48 @@ async function silentRefresh() {
     return
   }
   hallRefreshing = true
-  const startedAt = performance.now()
   let succeeded = false
+  // 只给全量刷新计时：null = 本轮被摘要跳过、没有全量，finally 里就不喂退避判定。
+  // 摘要探测的耗时/成败一律不计入退避——退避语义仍只看全量列表。
+  let fullRefreshElapsedMs = null
   try {
-    await measureOrderFlowStage(
-      'hall_refresh',
-      'hall_list_refresh',
-      () => ordersStore.refreshOrdersContext('hall', { silent: true, slim: true, page: 1, pageSize: 100 }),
-    )
-    succeeded = true
-    // 「今日已接单」兜底刷新：与订单同源节流（≥15s），失败静默
-    if (hallRecentClaimsVisible.value && recentClaimsThrottleReady()) {
-      fetchRecentClaims(recentClaimsExpanded.value ? RECENT_CLAIMS_MAX : RECENT_CLAIMS_COLLAPSED_LIMIT).catch(() => {})
+    // 仅断线兜底走摘要判断：摘要可用、基线已知、还在强制窗口内，才值得先探测；
+    // 任一不满足（首次断线、基线未知、超过 30s、老后端）都直接走原来的全量。
+    if (
+      chatStore.socketStatus !== 'connected'
+      && !hallDigestUnavailable
+      && hallDigestBaseline !== null
+      && hallFullRefreshWithinWindow()
+    ) {
+      const digestKey = await probeHallDigestKey()
+      if (digestKey === hallDigestBaseline) {
+        // 摘要没变：跳过全量，本轮的兜底心跳只花在一次摘要请求上；
+        // 「今日已接单」保留原节流刷新，在飞/排队逻辑也保持不变。
+        refreshHallRecentClaimsIfDue()
+        return
+      }
     }
+
+    const fullRefreshStartedAt = performance.now()
+    try {
+      await measureOrderFlowStage(
+        'hall_refresh',
+        'hall_list_refresh',
+        () => ordersStore.refreshOrdersContext('hall', { silent: true, slim: true, page: 1, pageSize: 100 }),
+      )
+      succeeded = true
+    } finally {
+      // 先定格全量耗时：基线同步可能带一次摘要兜底请求，不能算进全量节奏
+      fullRefreshElapsedMs = performance.now() - fullRefreshStartedAt
+    }
+    refreshHallRecentClaimsIfDue()
+    await recordHallFullRefreshSuccess()
   } catch {
     // 静默失败等下一轮
   } finally {
     hallRefreshing = false
-    if (!hallUnmounted) {
-      adjustHallFallbackInterval(succeeded, performance.now() - startedAt)
+    if (!hallUnmounted && fullRefreshElapsedMs !== null) {
+      adjustHallFallbackInterval(succeeded, fullRefreshElapsedMs)
     }
     if (hallRefreshQueued && !hallUnmounted) {
       hallRefreshQueued = false
@@ -404,6 +487,10 @@ watch(() => chatStore.socketStatus, (status, previousStatus) => {
 // 身份可能在挂载后才由后台 /auth/me 补全（守卫已不阻塞），挂载和补全两条路径都走这里。
 async function startHallLifecycle() {
   if (hallUnmounted) return
+  // 摘要基线/强制窗口/探测可用性按本次挂载重建：旧挂载的基线与当前列表无关
+  hallDigestBaseline = null
+  lastHallFullRefreshAt = 0
+  hallDigestUnavailable = false
   fetchOrders()
   // 站点设置决定「今日已接单」区块是否渲染；App 启动时已预取，这里基本直接命中缓存
   await siteStore.fetchSettings()
@@ -439,6 +526,10 @@ onMounted(() => {
 
 onUnmounted(() => {
   hallUnmounted = true
+  // 基线一并作废：卸载后不许任何残留状态影响下一次挂载的兜底判断
+  hallDigestBaseline = null
+  lastHallFullRefreshAt = 0
+  hallDigestUnavailable = false
   if (countdownTimer) {
     window.clearInterval(countdownTimer)
     countdownTimer = null

@@ -64,6 +64,11 @@ export const useOrdersStore = defineStore('orders', () => {
   const cancelRequests = ref([])
   const cancelRequestsOrderId = ref(null)
   const cancelRequestsLoading = ref(false)
+  // 大厅摘要（GET /orders/hall-digest，或列表响应随带的 hall_* 字段）：
+  // 大厅断线兜底轮询用它对比基线，摘要没变就跳过全量列表（见 OrderHallView）。
+  // 只由列表响应写入——它代表"与当前列表同批"的摘要；摘要探测结果不回写，
+  // 避免视图把探测快照误当列表基线。
+  const hallDigest = ref(null)
 
   // Getters
   const hasOrders = computed(() => orders.value.length > 0)
@@ -84,6 +89,9 @@ export const useOrdersStore = defineStore('orders', () => {
   let orderDetailRequestSeq = 0
   let claimsRequestSeq = 0
   let cancelRequestsRequestSeq = 0
+  // 摘要探测独立序号：不能被详情页的加载/清理（orderDetailRequestSeq）连带作废，
+  // 反之摘要探测也不该作废详情请求。
+  let digestRequestSeq = 0
 
   // 看过的订单详情快照（含 description/凭证等全量字段），只保留最近若干条：
   // 再次点开同一订单时先把页面铺满，后台静默补全，避免整页骨架屏（老板侧
@@ -279,6 +287,26 @@ export const useOrdersStore = defineStore('orders', () => {
         return { success: true, stale: true }
       }
 
+      // 大厅摘要随列表响应顺带下发（可选字段，老后端没有）：存下来供大厅
+      // 断线兜底建立对比基线，省掉"全量成功后再单独探一次摘要"的请求。
+      // 只认大厅口径：mine_published（我的派单）后端不下发这些字段，其计数
+      // 范围也与大厅不同，不能拿来做基线。字段缺失时保持原值不动（null），
+      // 视图会走探测兜底。
+      if (
+        context === 'hall'
+        && (
+          response.data.hall_count !== undefined
+          || response.data.hall_max_updated_at !== undefined
+          || response.data.hall_earliest_deadline !== undefined
+        )
+      ) {
+        setHallDigest({
+          count: response.data.hall_count,
+          max_updated_at: response.data.hall_max_updated_at,
+          earliest_deadline: response.data.hall_earliest_deadline,
+        })
+      }
+
       const items = response.data.items
       const previous = ordersCacheByKey.value[cacheKey]?.items ?? []
       const nextPagination = {
@@ -345,6 +373,38 @@ export const useOrdersStore = defineStore('orders', () => {
           }).catch(() => {})
         })
       }
+    }
+  }
+
+  // 保存列表响应随带的大厅摘要；缺字段用空值占位，保证"同一份摘要 → 同一个键"。
+  function setHallDigest(digest) {
+    if (!digest) return
+    hallDigest.value = {
+      count: Number(digest.count ?? 0),
+      max_updated_at: digest.max_updated_at ?? null,
+      earliest_deadline: digest.earliest_deadline ?? null,
+    }
+  }
+
+  // GET /orders/hall-digest → { count, max_updated_at, earliest_deadline }
+  // 不写共享 loading（摘要只是断线兜边的判断输入，不驱动任何骨架屏），失败也不写
+  // 共享 error（静默探测失败由调用方按"摘要不可用"退回全量刷新，不该在大厅顶部
+  // 弹红条）。序号守卫保证被后续探测作废的旧响应不落地。
+  async function fetchHallDigest() {
+    const requestSeq = ++digestRequestSeq
+    try {
+      const response = await api.get('/orders/hall-digest')
+      if (requestSeq !== digestRequestSeq) {
+        // 陈旧摘要不能给调用方做基线对比（会误判"没变"而跳过该拉的全量），
+        // 因此 stale 结果不带 data。
+        return { success: true, stale: true }
+      }
+      return { success: true, data: response.data }
+    } catch (err) {
+      if (requestSeq !== digestRequestSeq) {
+        return { success: false, stale: true, status: err.status, error: err.message }
+      }
+      return { success: false, status: err.status, error: err.message }
     }
   }
 
@@ -471,10 +531,11 @@ export const useOrdersStore = defineStore('orders', () => {
   // 打手自己的接单单：按筛选条件缓存，切换 tab 后返回可即时显示最近数据。
   let myClaimsRequestSeq = 0
 
-  async function fetchMyClaims(status, page = 1, pageSize = 20, q = '') {
+  async function fetchMyClaims(status, page = 1, pageSize = 20, q = '', bossContact = '') {
     const params = { page, page_size: pageSize }
     if (status) params.status = status
     if (q && q.trim()) params.q = q.trim()
+    if (bossContact && bossContact.trim()) params.boss_contact = bossContact.trim()
     const cacheKey = JSON.stringify(Object.keys(params).sort().map((key) => [key, params[key]]))
     activeMyClaimsCacheKey = cacheKey
     const cached = myClaimsCache.value[cacheKey]
@@ -518,10 +579,11 @@ export const useOrdersStore = defineStore('orders', () => {
     }
   }
 
-  function hasMyClaimsCache(status, page = 1, pageSize = 20, q = '') {
+  function hasMyClaimsCache(status, page = 1, pageSize = 20, q = '', bossContact = '') {
     const params = { page, page_size: pageSize }
     if (status) params.status = status
     if (q && q.trim()) params.q = q.trim()
+    if (bossContact && bossContact.trim()) params.boss_contact = bossContact.trim()
     const key = JSON.stringify(Object.keys(params).sort().map((name) => [name, params[name]]))
     return Boolean(myClaimsCache.value[key])
   }
@@ -958,6 +1020,7 @@ export const useOrdersStore = defineStore('orders', () => {
     cancelRequests,
     cancelRequestsOrderId,
     cancelRequestsLoading,
+    hallDigest,
     // Getters
     hasOrders,
     pendingOrders,
@@ -968,6 +1031,8 @@ export const useOrdersStore = defineStore('orders', () => {
     analyzeRequirement,
     createOrder,
     fetchOrders,
+    fetchHallDigest,
+    setHallDigest,
     setOrdersContext,
     hasOrdersForContext,
     refreshOrdersContext,

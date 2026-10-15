@@ -128,7 +128,7 @@ async def list_all_orders_for_admin(
 
     order_service = get_order_service(db)
     resolved_status, cancel_pending_only = _resolve_order_status_filter(status_filter)
-    orders, total = await order_service.list_orders(
+    orders, total, _hall_max_updated_at, _hall_earliest_deadline = await order_service.list_orders(
         user=current_admin,
         game_name=game_name,
         status_filter=resolved_status,

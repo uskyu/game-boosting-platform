@@ -53,6 +53,44 @@ def _to_decimal(value: Decimal | int | str | None) -> Decimal:
     return Decimal(str(value))
 
 
+def _ensure_utc(value: datetime | None) -> datetime | None:
+    """MySQL DATETIME 不带时区：按 list_orders 既有约定补成 UTC 后再比较/下发。"""
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
+def build_hall_visibility_scope(user: User):
+    """构建大厅/订单列表共用的可见范围条件；管理员返回 None 表示不加过滤。
+
+    摘要端点必须与 list_orders 用完全相同的过滤条件：客户端「摘要无变化就
+    不拉全量列表」的前提是二者同源，口径不一致会出现摘要未变但列表实际
+    已变（漏刷新）或反之的假阴性。
+    """
+    if user.role == UserRole.ADMIN:
+        return None
+    now = datetime.now(timezone.utc)
+    claimable = (
+        Order.status.in_((OrderStatus.PENDING, OrderStatus.LOCKED))
+        & (Order.claim_status == ClaimStatus.OPEN)
+        & (Order.is_archived.is_(False))
+        & (or_(Order.deadline.is_(None), Order.deadline > now))
+        & (Order.claimed_count < Order.max_claims)
+    )
+    my_claim_exists = exists(
+        select(OrderClaim.id).where(
+            OrderClaim.order_id == Order.id,
+            OrderClaim.booster_id == user.id,
+        )
+    )
+    return (
+        claimable
+        | (Order.user_id == user.id)
+        | (Order.booster_id == user.id)
+        | my_claim_exists
+    )
+
+
 class OrderService:
     """
     Service class for order-related business logic.
@@ -455,7 +493,7 @@ class OrderService:
         boss_contact: str | None = None,
         q: str | None = None,
         cancel_pending_only: bool = False,
-    ) -> tuple[list[Order], int]:
+    ) -> tuple[list[Order], int, datetime | None, datetime | None]:
         """
         List orders with filtering and pagination.
 
@@ -474,13 +512,20 @@ class OrderService:
             page_size: Items per page.
 
         Returns:
-            Tuple of (orders list, total count).
+            Tuple of (orders list, total count, 大厅最近更新时间, 大厅最近截止时间)。
+            后两个为同一聚合查询顺带取回的大厅摘要基线（无可见订单时为 None）。
         """
         query = select(Order).options(
             selectinload(Order.user),
             selectinload(Order.booster),
         )
-        count_query = select(func.count(Order.id))
+        # 一次聚合同时取总数与大厅摘要（最近 updated_at / 最早 deadline），
+        # 不额外增加查询往返；列表响应带上摘要基线，客户端全量刷新后无需再单独拉摘要。
+        count_query = select(
+            func.count(Order.id),
+            func.max(Order.updated_at),
+            func.min(Order.deadline),
+        )
 
         # Apply user-based filtering
         if mine_published and user is not None:
@@ -494,26 +539,7 @@ class OrderService:
                 # (PENDING or multi-claim LOCKED), and boosters always see the
                 # orders they have claimed so LOCKED entries do not vanish
                 # from "my orders".
-                now = datetime.now(timezone.utc)
-                claimable = (
-                    Order.status.in_((OrderStatus.PENDING, OrderStatus.LOCKED))
-                    & (Order.claim_status == ClaimStatus.OPEN)
-                    & (Order.is_archived.is_(False))
-                    & (or_(Order.deadline.is_(None), Order.deadline > now))
-                    & (Order.claimed_count < Order.max_claims)
-                )
-                my_claim_exists = exists(
-                    select(OrderClaim.id).where(
-                        OrderClaim.order_id == Order.id,
-                        OrderClaim.booster_id == user.id,
-                    )
-                )
-                booster_scope = (
-                    claimable
-                    | (Order.user_id == user.id)
-                    | (Order.booster_id == user.id)
-                    | my_claim_exists
-                )
+                booster_scope = build_hall_visibility_scope(user)
                 query = query.where(booster_scope)
                 count_query = count_query.where(booster_scope)
             # Admins see all orders (no filter)
@@ -613,9 +639,12 @@ class OrderService:
             if title_score is not None:
                 rank_clauses.append(title_score.desc())
 
-        # Get total count
+        # Get total count and hall digest (one aggregate query)
         total_result = await self._db.execute(count_query)
-        total = total_result.scalar() or 0
+        count_row = total_result.one()
+        total = int(count_row[0] or 0)
+        hall_max_updated_at = _ensure_utc(count_row[1])
+        hall_earliest_deadline = _ensure_utc(count_row[2])
 
         # Apply pagination and ordering (综合搜索时按相关度排序，否则按发布时间倒序)
         offset = (page - 1) * page_size
@@ -629,7 +658,26 @@ class OrderService:
         result = await self._db.execute(query)
         orders = list(result.scalars().all())
 
-        return orders, total
+        return orders, total, hall_max_updated_at, hall_earliest_deadline
+
+    async def hall_digest(
+        self, user: User
+    ) -> tuple[int, datetime | None, datetime | None]:
+        """大厅对账摘要：一条聚合查询取 (可见订单数, 最近更新, 最近截止)。
+
+        过滤条件复用 build_hall_visibility_scope，与 list_orders 完全同口径
+        （管理员不加过滤），保证客户端「摘要没变就不拉全量」的判断可靠。
+        """
+        query = select(
+            func.count(Order.id),
+            func.max(Order.updated_at),
+            func.min(Order.deadline),
+        )
+        scope = build_hall_visibility_scope(user)
+        if scope is not None:
+            query = query.where(scope)
+        row = (await self._db.execute(query)).one()
+        return int(row[0] or 0), _ensure_utc(row[1]), _ensure_utc(row[2])
 
     async def _active_claim_count(self, booster_id: int) -> int:
         """Count quota-consuming claims for one booster.
@@ -1242,6 +1290,7 @@ class OrderService:
         page: int = 1,
         page_size: int = 20,
         q: str | None = None,
+        boss_contact: str | None = None,
         cancel_pending_only: bool = False,
     ) -> tuple[list[dict[str, Any]], int]:
         """
@@ -1322,6 +1371,11 @@ class OrderService:
                         [Order.id == number, OrderClaim.id == number]
                     )
                 conditions.append(or_(*token_conditions))
+
+        if boss_contact and boss_contact.strip():
+            conditions.append(
+                Order.boss_contact.ilike(f"%{escape_like(boss_contact.strip())}%")
+            )
 
         total_result = await self._db.execute(
             select(func.count(OrderClaim.id))
