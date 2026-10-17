@@ -157,6 +157,61 @@ describe('order list admin late-auth defaults', () => {
   })
 })
 
+// 每日接单量达限的权益弹窗契约：后端 detail 为
+// {code:'daily_accept_limit', benefit, level, current, limit}。
+describe('daily accept limit popup contracts', () => {
+  it('parses only the structured daily-limit detail', () => {
+    expect(detailSource).toMatch(/function parseDailyLimitInfo\(detail\) \{/)
+    expect(detailSource).toMatch(/detail\.code !== 'daily_accept_limit'/)
+    expect(detailSource).toMatch(/benefit: String\(detail\.benefit \|\| '当前档位'\)/)
+    expect(detailSource).toMatch(/level: Number\(detail\.level\) \|\| 0/)
+    expect(detailSource).toMatch(/current: Number\(detail\.current\) \|\| 0/)
+    expect(detailSource).toMatch(/limit: Number\(detail\.limit\) \|\| 0/)
+  })
+
+  it('shows the benefit popup instead of the generic failure modal and never retries', () => {
+    const handlerStart = detailSource.indexOf('async function handleConfirmClaim()')
+    const handlerEnd = detailSource.indexOf('\nfunction openDeliverModal()', handlerStart)
+    const handler = detailSource.slice(handlerStart, handlerEnd)
+
+    const limitIndex = handler.indexOf('parseDailyLimitInfo(result.detail)')
+    const failIndex = handler.indexOf('showClaimFailModal.value = true', limitIndex)
+    expect(limitIndex).toBeGreaterThan(-1)
+    // 达限分支必须早于通用失败弹窗，且以 return 收尾（不刷新、不重试）
+    expect(handler.slice(limitIndex, failIndex)).toMatch(/dailyLimitInfo\.value = dailyLimit/)
+    expect(handler.slice(limitIndex, failIndex)).toMatch(/showDailyLimitModal\.value = true/)
+    expect(handler.slice(limitIndex, failIndex)).toMatch(/\n\s*return\b/)
+    // 达限分支不得再触发任何刷新
+    expect(handler.slice(limitIndex, failIndex)).not.toMatch(/fetchOrder|loadClaims/)
+  })
+
+  it('renders the four benefit fields in the modal', () => {
+    const modalStart = detailSource.indexOf('aria-label="接单量已达上限"')
+    expect(modalStart).toBeGreaterThan(-1)
+    const modal = detailSource.slice(modalStart, modalStart + 1600)
+    expect(modal).toMatch(/今日接单量已达上限/)
+    expect(modal).toMatch(/每日 12:00 刷新后即可继续接单/)
+    expect(modal).toMatch(/你的权益[\s\S]*?dailyLimitInfo\?\.benefit/)
+    expect(modal).toMatch(/你的权益等级[\s\S]*?dailyLimitInfo\?\.level/)
+    expect(modal).toMatch(/你当前接单数[\s\S]*?dailyLimitInfo\?\.current/)
+    expect(modal).toMatch(/该权益等级最高可接单数[\s\S]*?dailyLimitInfo\?\.limit/)
+  })
+
+  it('passes the structured detail through the accept store action', () => {
+    const ordersStore = readFileSync(new URL('../../stores/orders.js', import.meta.url), 'utf8')
+    const acceptStart = ordersStore.indexOf('async function acceptOrder(orderId)')
+    const acceptEnd = ordersStore.indexOf('\n  },', acceptStart)
+    const accept = ordersStore.slice(acceptStart, acceptEnd)
+    expect(accept).toMatch(/detail: err\.original\?\.response\?\.data\?\.detail/)
+  })
+
+  it('flattens object detail messages for readable top-level errors', () => {
+    const apiSource = readFileSync(new URL('../../utils/api.js', import.meta.url), 'utf8')
+    expect(apiSource).toMatch(/typeof detail === 'object' && !Array\.isArray\(detail\)/)
+    expect(apiSource).toMatch(/typeof detail\.message === 'string' && detail\.message/)
+  })
+})
+
 // 与上方隔离：只覆盖详情页接单预检（38cedaa 引入的静默快照检查）的回归契约。
 // 线上症状：用户连点「接手订单」→ 预检响应被判 stale/网络失败 → 假报
 // "该单刚刚被其他打手接走或已下架"，且失败后页面仍留可点的陈旧接手按钮。

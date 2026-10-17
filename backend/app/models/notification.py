@@ -28,6 +28,8 @@ class NotificationType(str, PyEnum):
     SYSTEM_ANNOUNCEMENT = "SYSTEM_ANNOUNCEMENT"  # 系统公告
     ORDER_CANCEL_REQUESTED = "ORDER_CANCEL_REQUESTED"  # 对方发起取消申请，待我处理
     ORDER_CANCEL_REQUEST_RESOLVED = "ORDER_CANCEL_REQUEST_RESOLVED"  # 取消申请已同意/拒绝
+    AFTERSALES_CREATED = "AFTERSALES_CREATED"        # 老板发起售后申请，待平台裁定
+    AFTERSALES_RESOLVED = "AFTERSALES_RESOLVED"      # 售后申请已通过/驳回
 
 
 class Notification(Base):

@@ -43,6 +43,7 @@ async def get_my_deposit(
     tier = deposit_service.resolve_tier(tiers, balance)
     block_reason = await deposit_service.return_block_reason(db, current_user.id)
     enabled = await deposit_service.is_deposit_enabled(db)
+    daily_status = await deposit_service.daily_accept_status(db, current_user.id)
 
     return DepositOverviewResponse(
         enabled=enabled,
@@ -52,6 +53,9 @@ async def get_my_deposit(
         wait_seconds=tier.wait_seconds if tier else 0,
         exempt_compensation=tier.exempt_compensation if tier else False,
         settle_hours=tier.settle_hours if tier else 72,
+        daily_accept_limit=daily_status.limit,
+        daily_accepted_count=daily_status.accepted,
+        daily_limit_reset_at=daily_status.next_refresh_at,
         # 总开关关闭时不再提供转入（由 service 拒绝），但保留转回入口避免锁死资金
         can_return=block_reason is None and balance > 0,
         return_block_reason=block_reason,

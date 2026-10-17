@@ -626,11 +626,14 @@ export const useOrdersStore = defineStore('orders', () => {
       if (currentOrder.value?.id === orderId) {
         currentOrder.value = response.data
       }
-      
+
       return { success: true, data: response.data }
     } catch (err) {
       error.value = err.message
-      return { success: false, error: err.message }
+      // detail 透传：服务端结构化错误（如每日接单量达限的
+      // {code:'daily_accept_limit', benefit, level, current, limit}）
+      // 由调用方做字段级展示，message 只承担可读文案。
+      return { success: false, error: err.message, detail: err.original?.response?.data?.detail }
     }
   }
 

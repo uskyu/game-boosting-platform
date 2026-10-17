@@ -20,6 +20,10 @@ from app.api.endpoints.admin_withdrawal_rule import (
     router as admin_withdrawal_rule_router,
 )
 from app.api.endpoints.auth import router as auth_router
+from app.api.endpoints.after_sales import (
+    admin_after_sales_router,
+    after_sales_router,
+)
 from app.api.endpoints.announcements import router as announcements_router
 from app.api.endpoints.chat import router as chat_router
 from app.api.endpoints.deposit import router as deposit_router
@@ -39,6 +43,7 @@ from app.api.endpoints.users import router as users_router
 from app.api.endpoints.wallet import router as wallet_router, withdrawals_router
 
 __all__ = [
+    "admin_after_sales_router",
     "admin_deposit_router",
     "admin_payment_router",
     "admin_service_fee_router",
@@ -49,6 +54,7 @@ __all__ = [
     "admin_withdrawal_category_router",
     "admin_withdrawal_payout_router",
     "admin_withdrawal_rule_router",
+    "after_sales_router",
     "auth_router",
     "announcements_router",
     "chat_router",

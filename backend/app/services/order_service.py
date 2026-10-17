@@ -33,6 +33,7 @@ from app.models.order import (
     OrderStatus,
     PaymentStatus,
 )
+from app.models.order_after_sale import AfterSaleStatus, OrderAfterSale
 from app.models.order_cancel_request import OrderCancelRequest, OrderCancelRequestStatus
 from app.models.user import User, UserRole
 from app.models.wallet import Wallet, WalletTransaction, WalletTransactionType
@@ -585,6 +586,15 @@ class OrderService:
             )
         )
         query = query.add_columns(pending_cancel_exists.label("cancel_pending"))
+        # 售后中标记同样折进分页 SELECT：售后期间打手禁止提现，前端据此把
+        # 「售后」按钮切为禁用态（与取消中标记同一手法，零额外往返）。
+        after_sale_exists = exists(
+            select(OrderAfterSale.id).where(
+                OrderAfterSale.order_id == Order.id,
+                OrderAfterSale.status == AfterSaleStatus.PENDING,
+            )
+        )
+        query = query.add_columns(after_sale_exists.label("after_sale_pending"))
 
         # Apply user-based filtering
         if mine_published and user is not None:
@@ -735,6 +745,10 @@ class OrderService:
         self._db.info["_gb_pending_cancel"] = (
             frozenset(order.id for order in orders),
             {row[0].id for row in rows if row[1]},
+        )
+        self._db.info["_gb_pending_after_sale"] = (
+            frozenset(order.id for order in orders),
+            {row[0].id for row in rows if row[2]},
         )
 
         return orders, total, hall_max_updated_at, hall_earliest_deadline
@@ -903,6 +917,40 @@ class OrderService:
             return 0, False
         return int(tier.wait_seconds or 0), bool(tier.exempt_compensation)
 
+    async def _daily_accept_gate(self, booster_id: int) -> None:
+        """每日接单量闸门（fail-fast，加在等待闸门之前）。
+
+        口径：按北京时间每天 12:00 刷新；窗口内接单且订单未取消才计数，
+        被取消的不计；达到当前档位上限后拒绝接单，detail 带四项权益信息
+        （档位标签 / 等级 / 已接数 / 上限）供前端弹窗。
+
+        保证金模式未开启时不施加任何限制，保持原有体验；管理端派单路径
+        （assign_order）不走本闸门，与等待闸门口径一致。
+        """
+        from app.services import deposit_service
+
+        if not await deposit_service.is_deposit_enabled(self._db):
+            return
+        # 局部变量不能用 status：会遮蔽模块级 from fastapi import status，
+        # 下面 raise 处的 status.HTTP_400_BAD_REQUEST 将取到本对象而 500。
+        daily = await deposit_service.daily_accept_status(self._db, booster_id)
+        if daily.limit is None or daily.accepted < daily.limit:
+            return
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "daily_accept_limit",
+                "message": (
+                    f"今日接单量已达上限（{daily.accepted}/{daily.limit}），"
+                    f"每日12点刷新后恢复"
+                ),
+                "benefit": daily.label,
+                "level": daily.level,
+                "current": daily.accepted,
+                "limit": daily.limit,
+            },
+        )
+
     async def accept_order(
         self,
         order_id: int,
@@ -993,6 +1041,10 @@ class OrderService:
         existing = await self._db.execute(select(OrderClaim).where(OrderClaim.order_id == order.id, OrderClaim.booster_id == booster.id))
         if existing.scalar_one_or_none() is not None:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="您已报名过该订单，无需重复报名")
+
+        # 每日接单量闸门：达到当前档位上限（北京时间每日 12 点刷新）即拒绝，
+        # fail-fast 放在等待闸门之前，避免达限用户还卡在等待期才被拒。
+        await self._daily_accept_gate(booster.id)
 
         # 保证金接单闸门：订单发布后需等待 N 秒（按打手保证金档位减免秒数）。
         # 保证金模式未开启时不施加任何等待，保持原有体验。
@@ -1691,6 +1743,8 @@ class OrderService:
         # wait is deliberately not enforced here. The same tier resolution is
         # still required to decide whether this booster needs a compensation
         # hold, matching accept_order's balance behavior.
+        # 同理，每日接单量上限（_daily_accept_gate）也不在派单路径施加：
+        # 派单是管理端人工干预，口径与等待闸门保持一致。
         _wait_seconds, exempt_compensation = await self._deposit_gate(
             locked_booster.id
         )
@@ -2938,6 +2992,27 @@ class OrderService:
             .where(
                 OrderCancelRequest.order_id.in_(order_ids),
                 OrderCancelRequest.status == OrderCancelRequestStatus.PENDING,
+            )
+            .distinct()
+        )
+        return {row[0] for row in result.all()}
+
+    async def pending_after_sale_order_ids(self, order_ids: list[int]) -> set[int]:
+        """返回这批订单中仍存在待处理售后申请的订单 ID 集合。
+
+        列表/详情接口据此打「售后处理中」标记：售后期间打手禁止提现，
+        前端把「售后」按钮切为禁用态，避免同一订单重复发起。
+        """
+        if not order_ids:
+            return set()
+        cache = self._db.info.get("_gb_pending_after_sale")
+        if cache is not None and cache[0] == frozenset(order_ids):
+            return set(cache[1])
+        result = await self._db.execute(
+            select(OrderAfterSale.order_id)
+            .where(
+                OrderAfterSale.order_id.in_(order_ids),
+                OrderAfterSale.status == AfterSaleStatus.PENDING,
             )
             .distinct()
         )

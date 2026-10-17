@@ -346,6 +346,11 @@ function rebuildOrder(orderId) {
   router.push({ path: '/orders/create', query: { recycle: String(orderId), mode: 'rebuild' } })
 }
 
+// 售后申请：仅已完成单可发起；该单有进行中售后时按钮禁用（after_sale_pending）
+function goToAfterSaleApply(orderId) {
+  router.push({ name: 'afterSaleApply', params: { id: orderId } })
+}
+
 function repeatOrder(orderId) {
   router.push({ path: '/orders/create', query: { recycle: String(orderId), mode: 'repeat' } })
 }
@@ -620,8 +625,18 @@ onUnmounted(() => {
               </div>
             </div>
             <!-- 重建/续单：老板要求所有订单都可操作（打手一次性交全部单、进行中单
-                 争议无回应时先派再谈），不再限状态；都带原单进创建页预填 -->
+                 争议无回应时先派再谈），不再限状态；都带原单进创建页预填。
+                 售后：仅已完成单可申请；进行中售后（after_sale_pending）置灰。 -->
             <div class="mt-3 flex flex-wrap justify-end gap-2">
+              <button
+                v-if="order.status === 'COMPLETED'"
+                type="button"
+                class="btn-danger !px-4 !py-2"
+                :disabled="order.after_sale_pending"
+                @click.stop="goToAfterSaleApply(order.id)"
+              >
+                {{ order.after_sale_pending ? '售后处理中' : '售后' }}
+              </button>
               <button
                 type="button"
                 class="btn-secondary !px-4 !py-2"

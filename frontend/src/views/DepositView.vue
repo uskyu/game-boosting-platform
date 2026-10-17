@@ -8,7 +8,7 @@
 import { computed, onMounted, ref } from 'vue'
 
 import { useWalletStore } from '@/stores/wallet'
-import { formatPrice } from '@/utils/display'
+import { formatDateTime, formatPrice } from '@/utils/display'
 
 const walletStore = useWalletStore()
 
@@ -42,6 +42,13 @@ function formatWaitSeconds(seconds) {
   const value = Number(seconds)
   if (!Number.isFinite(value) || value <= 0) return '立即可接'
   return `等待 ${value} 秒`
+}
+
+// 每日接单量上限展示：null/0 = 不限
+function formatDailyLimit(limit) {
+  const value = Number(limit)
+  if (!Number.isFinite(value) || value <= 0) return '不限'
+  return `${value} 单`
 }
 
 // 当前档位高亮：用 current_threshold 与各档门槛比对（可能为 null）
@@ -151,6 +158,16 @@ onMounted(async () => {
             <span class="mx-2 text-ink-3">·</span>
             结账时效 {{ formatSettleHours(overview.settle_hours) }}
           </p>
+          <p class="mt-2 text-sm text-ink-2">
+            今日已接 <span class="font-semibold tabular-nums text-ink-1">{{ overview.daily_accepted_count }}</span> 单
+            <span class="mx-2 text-ink-3">·</span>
+            每日上限 {{ formatDailyLimit(overview.daily_accept_limit) }}
+            <span class="text-ink-3">（北京时间每日 12:00 刷新，取消的订单不计入）</span>
+            <template v-if="overview.daily_limit_reset_at">
+              <span class="mx-2 text-ink-3">·</span>
+              下次刷新 {{ formatDateTime(overview.daily_limit_reset_at) }}
+            </template>
+          </p>
         </article>
       </div>
     </section>
@@ -238,11 +255,12 @@ onMounted(async () => {
         </div>
 
         <div v-else class="mt-6 overflow-x-auto">
-          <table class="w-full min-w-[640px] border-collapse text-left text-sm">
+          <table class="w-full min-w-[760px] border-collapse text-left text-sm">
             <thead>
               <tr class="text-xs uppercase tracking-[0.08em] text-ink-3">
                 <th class="px-3 py-3 font-medium">保证金门槛</th>
                 <th class="px-3 py-3 font-medium">优先接单</th>
+                <th class="px-3 py-3 font-medium">每日接单量</th>
                 <th class="px-3 py-3 font-medium">接单免冻结赔付金</th>
                 <th class="px-3 py-3 font-medium">结账时效</th>
                 <th class="px-3 py-3 font-medium">档位</th>
@@ -257,6 +275,7 @@ onMounted(async () => {
               >
                 <td class="px-3 py-3 font-semibold tabular-nums text-ink-1">{{ formatPrice(tier.threshold) }}</td>
                 <td class="px-3 py-3 text-ink-2">{{ formatWaitSeconds(tier.wait_seconds) }}</td>
+                <td class="px-3 py-3 text-ink-2">{{ formatDailyLimit(tier.daily_accept_limit) }}</td>
                 <td class="px-3 py-3 text-ink-2">{{ tier.exempt_compensation ? '✅ 免冻结' : '❌ 需冻结' }}</td>
                 <td class="px-3 py-3 text-ink-2">{{ formatSettleHours(tier.settle_hours) }}</td>
                 <td class="px-3 py-3">

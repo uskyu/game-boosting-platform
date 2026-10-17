@@ -16,6 +16,10 @@ class DepositTierResponse(BaseModel):
     wait_seconds: int = Field(description="接单等待秒数（0 = 立即可接）")
     exempt_compensation: bool = Field(description="是否免除炸单赔付金冻结")
     settle_hours: int = Field(description="结账时效（小时）")
+    daily_accept_limit: int | None = Field(
+        default=None,
+        description="每日接单量上限（按北京时间每日 12:00 刷新；NULL/0 = 不限）",
+    )
     enabled: bool = Field(description="是否启用")
 
     model_config = ConfigDict(from_attributes=True)
@@ -28,6 +32,12 @@ class DepositTierUpsert(BaseModel):
     wait_seconds: int = Field(..., ge=0, le=86400, description="接单等待秒数")
     exempt_compensation: bool = Field(default=False, description="是否免除炸单赔付金冻结")
     settle_hours: int = Field(..., ge=0, le=8760, description="结账时效（小时）")
+    daily_accept_limit: int | None = Field(
+        default=None,
+        ge=0,
+        le=999,
+        description="每日接单量上限（0 与 None 同义 = 不限）",
+    )
     enabled: bool = Field(default=True, description="是否启用")
 
     model_config = ConfigDict(extra="forbid")
@@ -58,6 +68,16 @@ class DepositOverviewResponse(BaseModel):
     wait_seconds: int = Field(default=0, description="当前档位的接单等待秒数")
     exempt_compensation: bool = Field(default=False, description="当前档位是否免除炸单赔付金")
     settle_hours: int = Field(default=72, description="当前档位的结账时效（小时）")
+    daily_accept_limit: int | None = Field(
+        default=None,
+        description="当前档位的每日接单量上限（NULL/0 = 不限）",
+    )
+    daily_accepted_count: int = Field(
+        default=0, description="我今日窗口（北京时间 12:00 刷新）已接且未取消的订单数"
+    )
+    daily_limit_reset_at: datetime | None = Field(
+        default=None, description="每日接单量下次刷新时间（窗口起点 + 1 天，UTC）"
+    )
 
     can_return: bool = Field(description="当前是否允许转回余额")
     return_block_reason: str | None = Field(
@@ -65,6 +85,10 @@ class DepositOverviewResponse(BaseModel):
     )
 
     tiers: list[DepositTierResponse] = Field(default_factory=list, description="全部生效阶梯")
+
+    @field_serializer("daily_limit_reset_at")
+    def serialize_reset_at(self, value: datetime | None) -> str | None:
+        return serialize_datetime_utc(value)
 
 
 class DepositTransferRequest(BaseModel):

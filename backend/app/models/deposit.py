@@ -130,6 +130,13 @@ class DepositTier(Base):
         server_default="72",
     )
 
+    # 每日接单量上限（按北京时间每日 12:00 刷新；NULL/0 = 不限）。
+    # 统计口径：窗口内接单且订单未取消（CANCELLED 的 claim 不计数）。
+    daily_accept_limit: Mapped[int | None] = mapped_column(
+        Integer(),
+        nullable=True,
+    )
+
     enabled: Mapped[bool] = mapped_column(
         Boolean(),
         nullable=False,
@@ -169,13 +176,13 @@ SETTLEMENT_MODE_ORDER_DELAY = "ORDER_DELAY"
 SETTLEMENT_MODES = (SETTLEMENT_MODE_AFTER_DELIVERY, SETTLEMENT_MODE_AFTER_APPROVAL)
 
 # 默认阶梯（与老板给定的权益表一致）
-# 保证金 / 接单等待秒数 / 免炸单赔付金 / 结账时效
+# 保证金 / 接单等待秒数 / 免炸单赔付金 / 结账时效 / 每日接单量上限（None = 不限）
 DEFAULT_DEPOSIT_TIERS: list[dict] = [
-    {"threshold": Decimal("0.00"), "wait_seconds": 30, "exempt_compensation": False, "settle_hours": 72},
-    {"threshold": Decimal("100.00"), "wait_seconds": 30, "exempt_compensation": True, "settle_hours": 72},
-    {"threshold": Decimal("300.00"), "wait_seconds": 20, "exempt_compensation": True, "settle_hours": 72},
-    {"threshold": Decimal("500.00"), "wait_seconds": 10, "exempt_compensation": True, "settle_hours": 48},
-    {"threshold": Decimal("1000.00"), "wait_seconds": 0, "exempt_compensation": True, "settle_hours": 1},
+    {"threshold": Decimal("0.00"), "wait_seconds": 30, "exempt_compensation": False, "settle_hours": 72, "daily_accept_limit": None},
+    {"threshold": Decimal("100.00"), "wait_seconds": 30, "exempt_compensation": True, "settle_hours": 72, "daily_accept_limit": None},
+    {"threshold": Decimal("300.00"), "wait_seconds": 20, "exempt_compensation": True, "settle_hours": 72, "daily_accept_limit": None},
+    {"threshold": Decimal("500.00"), "wait_seconds": 10, "exempt_compensation": True, "settle_hours": 48, "daily_accept_limit": None},
+    {"threshold": Decimal("1000.00"), "wait_seconds": 0, "exempt_compensation": True, "settle_hours": 1, "daily_accept_limit": None},
 ]
 
 # 保证金转回余额的默认冷却期（天）

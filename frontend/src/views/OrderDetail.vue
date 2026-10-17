@@ -53,6 +53,10 @@ const showClaimFailModal = ref(false)
 // 接单失败若是「可用余额不够冻结炸单赔付金」，弹窗里补缺口文案并给直达充值的按钮，
 // 让用户知道下一步该干什么（很多人看不懂裸的错误文案就来问）。
 const claimFailNeedsRecharge = computed(() => (errorMessage.value || '').includes('余额不足以冻结'))
+// 每日接单量达限：单独弹窗展示四项权益信息（你的权益/等级/当前接单数/上限），
+// 服务端 detail 为 {code:'daily_accept_limit', benefit, level, current, limit}。
+const showDailyLimitModal = ref(false)
+const dailyLimitInfo = ref(null)
 
 function goRechargeFromFail() {
   showClaimFailModal.value = false
@@ -590,6 +594,22 @@ function isUnavailableAcceptError(message) {
   return /满员|已被抢|已归档|已下架/.test(String(message || ''))
 }
 
+// 每日接单量达限的结构化错误（后端 detail dict）。非该类错误返回 null。
+function parseDailyLimitInfo(detail) {
+  if (!detail || typeof detail !== 'object') return null
+  if (detail.code !== 'daily_accept_limit') return null
+  return {
+    benefit: String(detail.benefit || '当前档位'),
+    level: Number(detail.level) || 0,
+    current: Number(detail.current) || 0,
+    limit: Number(detail.limit) || 0,
+  }
+}
+
+function closeDailyLimitModal() {
+  showDailyLimitModal.value = false
+}
+
 async function handleConfirmClaim() {
   if (actionLoading.value) return
   actionLoading.value = true
@@ -622,6 +642,14 @@ async function handleConfirmClaim() {
       // 失败（含 409 重复确认）：保留页面顶部错误提示，同时中央强提醒。
       showClaimModal.value = false
       errorMessage.value = result.error || '接单失败，请稍后重试'
+      const dailyLimit = parseDailyLimitInfo(result.detail)
+      if (dailyLimit) {
+        // 每日接单量达限：用权益信息弹窗替代通用失败弹窗；订单状态未变，
+        // 刷新拿到的还是同一结果，故不重试不刷新。
+        dailyLimitInfo.value = dailyLimit
+        showDailyLimitModal.value = true
+        return
+      }
       showClaimFailModal.value = true
       const waitSeconds = parseAcceptWaitSeconds(result.error)
       if (waitSeconds > 0) {
@@ -1841,6 +1869,39 @@ onUnmounted(() => {
               <button v-if="claimFailNeedsRecharge" type="button" class="btn-secondary flex-1" @click="closeClaimFailModal">知道了</button>
               <button v-if="claimFailNeedsRecharge" type="button" class="btn-primary flex-1" @click="goRechargeFromFail">去充值</button>
               <button v-else type="button" class="btn-primary flex-1" @click="closeClaimFailModal">知道了</button>
+            </div>
+          </div>
+        </div>
+      </teleport>
+
+      <!-- 每日接单量达限：展示当前权益与用量，告知每日 12 点刷新 -->
+      <teleport to="body">
+        <div v-if="showDailyLimitModal" class="modal-scrim" @click.self="closeDailyLimitModal">
+          <div class="modal-card" role="alertdialog" aria-modal="true" aria-label="接单量已达上限">
+            <h3 class="text-lg font-semibold text-ink-1">今日接单量已达上限</h3>
+            <p class="mt-3 text-sm leading-6 text-ink-2">
+              您当前权益等级的每日接单量已用完，每日 12:00 刷新后即可继续接单。
+            </p>
+            <dl class="mt-4 space-y-2 rounded-xl bg-surface-2 p-4 text-sm">
+              <div class="flex items-center justify-between gap-3">
+                <dt class="text-ink-2">你的权益</dt>
+                <dd class="font-semibold text-ink-1">{{ dailyLimitInfo?.benefit }}</dd>
+              </div>
+              <div class="flex items-center justify-between gap-3">
+                <dt class="text-ink-2">你的权益等级</dt>
+                <dd class="font-semibold tabular-nums text-ink-1">第 {{ dailyLimitInfo?.level }} 档</dd>
+              </div>
+              <div class="flex items-center justify-between gap-3">
+                <dt class="text-ink-2">你当前接单数</dt>
+                <dd class="font-semibold tabular-nums text-ink-1">{{ dailyLimitInfo?.current }} 单</dd>
+              </div>
+              <div class="flex items-center justify-between gap-3">
+                <dt class="text-ink-2">该权益等级最高可接单数</dt>
+                <dd class="font-semibold tabular-nums text-ink-1">{{ dailyLimitInfo?.limit }} 单</dd>
+              </div>
+            </dl>
+            <div class="mt-6 flex gap-3">
+              <button type="button" class="btn-primary flex-1" @click="closeDailyLimitModal">知道了</button>
             </div>
           </div>
         </div>

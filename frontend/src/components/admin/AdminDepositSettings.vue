@@ -31,6 +31,8 @@ function cloneTiers(tiers) {
     wait_seconds: Number(tier.wait_seconds) || 0,
     exempt_compensation: Boolean(tier.exempt_compensation),
     settle_hours: Number(tier.settle_hours) || 0,
+    // null = 不限；输入框清空时是 ''，保存时统一归一
+    daily_accept_limit: tier.daily_accept_limit == null ? null : Number(tier.daily_accept_limit),
     enabled: tier.enabled !== false,
   }))
 }
@@ -46,7 +48,7 @@ function sync(data) {
 }
 
 function addTier() {
-  form.tiers.push({ threshold: 0, wait_seconds: 30, exempt_compensation: false, settle_hours: 72, enabled: true })
+  form.tiers.push({ threshold: 0, wait_seconds: 30, exempt_compensation: false, settle_hours: 72, daily_accept_limit: null, enabled: true })
 }
 
 function removeTier(index) {
@@ -101,6 +103,15 @@ async function save() {
       notice.value = { type: 'error', text: '结账时效需为不小于 0 的整数（小时）' }
       return
     }
+    // 每日接单量：留空（null/''）或 0 = 不限；其余须为 0-999 整数
+    const daily = tier.daily_accept_limit
+    if (daily !== null && daily !== '') {
+      const dailyValue = Number(daily)
+      if (!Number.isInteger(dailyValue) || dailyValue < 0 || dailyValue > 999) {
+        notice.value = { type: 'error', text: '每日接单量上限需为 0-999 的整数（留空 = 不限）' }
+        return
+      }
+    }
   }
 
   if (hasDuplicateThreshold()) {
@@ -120,6 +131,11 @@ async function save() {
       wait_seconds: Number(tier.wait_seconds),
       exempt_compensation: Boolean(tier.exempt_compensation),
       settle_hours: Number(tier.settle_hours),
+      // 0 与空串同义 = 不限，统一发 null（后端同样归一）
+      daily_accept_limit:
+        tier.daily_accept_limit === '' || tier.daily_accept_limit == null
+          ? null
+          : Number(tier.daily_accept_limit),
       enabled: Boolean(tier.enabled),
     })),
   })
@@ -146,7 +162,7 @@ onMounted(async () => {
 <template>
   <section class="surface-card p-4 sm:p-6">
     <h2 class="text-2xl font-semibold text-ink-1">保证金管理</h2>
-    <p class="mt-2 text-sm text-ink-2">配置保证金模式与权益阶梯：门槛越高，接单等待越短、结账越快、越可能免除炸单赔付金。</p>
+    <p class="mt-2 text-sm text-ink-2">配置保证金模式与权益阶梯：门槛越高，接单等待越短、结账越快、越可能免除炸单赔付金，每日可接单量上限越高。</p>
 
     <div v-if="notice.text" class="mt-4" :class="notice.type === 'success' ? 'message-success' : 'message-error'">{{ notice.text }}</div>
 
@@ -232,6 +248,7 @@ onMounted(async () => {
               <tr class="text-xs uppercase tracking-[0.08em] text-ink-3">
                 <th class="px-2 py-2 font-medium">保证金门槛（元）</th>
                 <th class="px-2 py-2 font-medium">接单等待（秒）</th>
+                <th class="px-2 py-2 font-medium">每日接单量（12点刷新）</th>
                 <th class="px-2 py-2 font-medium">接单免冻结赔付金</th>
                 <th class="px-2 py-2 font-medium">结账时效（小时）</th>
                 <th class="px-2 py-2 font-medium">启用</th>
@@ -245,6 +262,18 @@ onMounted(async () => {
                 </td>
                 <td class="px-2 py-2">
                   <input v-model.number="tier.wait_seconds" type="number" min="0" step="1" class="input h-10 w-24" />
+                </td>
+                <td class="px-2 py-2">
+                  <input
+                    v-model="tier.daily_accept_limit"
+                    type="number"
+                    min="0"
+                    max="999"
+                    step="1"
+                    placeholder="留空=不限"
+                    aria-label="每日接单量上限"
+                    class="input h-10 w-24"
+                  />
                 </td>
                 <td class="px-2 py-2">
                   <label class="flex min-h-[40px] items-center gap-2 text-sm text-ink-2">

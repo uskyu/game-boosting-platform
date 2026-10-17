@@ -91,6 +91,11 @@ function readableApiError(error) {
   }
 
   const detail = data?.detail
+  if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+    // 结构化错误（如 {code, message, ...}）：message 作为可读文案；
+    // 完整结构保留在 rejected.original，供需要字段级处理的调用方取用。
+    if (typeof detail.message === 'string' && detail.message) return detail.message
+  }
   if (Array.isArray(detail)) {
     for (const item of detail) {
       if (typeof item === 'string') {

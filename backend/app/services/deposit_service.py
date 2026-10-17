@@ -8,6 +8,7 @@
 """
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -15,6 +16,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.product_time import product_local_date, product_noon_utc
 from app.models.deposit import (
     DEFAULT_DEPOSIT_RETURN_COOLDOWN_DAYS,
     DEFAULT_DEPOSIT_TIERS,
@@ -266,6 +268,108 @@ async def get_user_tier(db: AsyncSession, user_id: int) -> tuple[DepositTier | N
     return resolve_tier(tiers, balance), balance
 
 
+# ---------------------------------------------------------------------------
+# 每日接单量（按北京时间每日 12:00 刷新）
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DailyAcceptStatus:
+    """打手每日接单量现状（接单闸门与「查看权益」页共用同一口径）。
+
+    next_refresh_at 是 naive UTC，与库里 DATETIME 列同一约定。
+    """
+
+    limit: int | None          # 当前档位每日接单量上限（None = 不限）
+    accepted: int              # 今日窗口内已接且订单未取消的订单数
+    next_refresh_at: datetime | None  # 下次刷新时间（窗口起点 + 1 天）
+    level: int                 # 档位等级（生效档按门槛升序的 1-based 序号）
+    label: str                 # 档位标签（弹窗「你的权益」）
+
+
+def normalize_daily_accept_limit(value: int | None) -> int | None:
+    """0 与 None 同义 = 不限，统一归一成 None 再写库/比较。"""
+    if value is None:
+        return None
+    limit = int(value)
+    return limit if limit > 0 else None
+
+
+def daily_accept_window(now: datetime) -> tuple[datetime, datetime]:
+    """每日接单量统计窗口，返回 (window_start, next_refresh)，均为 naive UTC。
+
+    与提现机会 DAILY_NOON 同一墙钟口径：now ≥ 今天 12:00（北京时间）则窗口
+    从今天 12:00 起算，否则从昨天 12:00 起算，每 24 小时滚动一次。
+    """
+    now_utc = _as_utc(now)
+    noon_today = product_noon_utc(product_local_date(now_utc))
+    window_start = (
+        noon_today
+        if now_utc.replace(tzinfo=None) >= noon_today
+        else product_noon_utc(product_local_date(now_utc) - timedelta(days=1))
+    )
+    return window_start, window_start + timedelta(days=1)
+
+
+async def daily_accept_count(
+    db: AsyncSession, booster_id: int, window_start: datetime
+) -> int:
+    """窗口内接单且订单未取消的订单数（被取消的 claim 不计数）。"""
+    result = await db.execute(
+        select(func.count(OrderClaim.id)).where(
+            OrderClaim.booster_id == booster_id,
+            OrderClaim.created_at >= window_start,
+            OrderClaim.status != ClaimLifecycleStatus.CANCELLED,
+        )
+    )
+    return int(result.scalar() or 0)
+
+
+def tier_level_and_label(
+    tiers: list[DepositTier], tier: DepositTier | None
+) -> tuple[int, str]:
+    """档位等级与标签：等级 = 生效档按门槛升序的 1-based 序号。
+
+    0 元档标签取「默认档」（对用户比「¥0 档」更直观），其余为
+    「保证金 ¥{threshold:g} 档」（:g 去尾零，1000.00 → ¥1000）。
+    """
+    if tier is None:
+        return 0, "默认档"
+    level = 0
+    for index, item in enumerate(tiers, start=1):  # 已按门槛升序
+        if item.id == tier.id or item is tier:
+            level = index
+            break
+    threshold = Decimal(str(tier.threshold or 0))
+    # 去尾零展示：1000.00 → ¥1000，100.50 → ¥100.5（Decimal 的 :g 会保留 .00）
+    threshold_text = f"{threshold:f}"
+    if "." in threshold_text:
+        threshold_text = threshold_text.rstrip("0").rstrip(".")
+    label = "默认档" if threshold == 0 else f"保证金 ¥{threshold_text} 档"
+    return level, label
+
+
+async def daily_accept_status(db: AsyncSession, booster_id: int) -> DailyAcceptStatus:
+    """汇总打手每日接单量现状：当前档位上限、窗口已接数、下次刷新时间。"""
+    wallet_service = get_wallet_service(db)
+    wallet = await wallet_service.get_or_create_wallet(booster_id)
+    tiers = await list_tiers(db)
+    tier = resolve_tier(tiers, wallet.deposit_balance)
+    limit = normalize_daily_accept_limit(
+        tier.daily_accept_limit if tier is not None else None
+    )
+    window_start, next_refresh = daily_accept_window(datetime.now(timezone.utc))
+    accepted = await daily_accept_count(db, booster_id, window_start)
+    level, label = tier_level_and_label(tiers, tier)
+    return DailyAcceptStatus(
+        limit=limit,
+        accepted=accepted,
+        next_refresh_at=next_refresh,
+        level=level,
+        label=label,
+    )
+
+
 async def return_block_reason(db: AsyncSession, user_id: int) -> str | None:
     """保证金转回余额的冷却期校验（None = 可转回）。
 
@@ -369,15 +473,21 @@ async def transfer_out(db: AsyncSession, user: User, amount: Decimal) -> None:
 
 
 __all__ = [
+    "DailyAcceptStatus",
+    "daily_accept_count",
+    "daily_accept_status",
+    "daily_accept_window",
     "ensure_default_tiers",
     "get_or_create_deposit_setting",
     "get_user_tier",
     "is_deposit_enabled",
     "list_tiers",
+    "normalize_daily_accept_limit",
     "refresh_unsettled_claim_settlements",
     "resolve_tier",
     "resolve_unsettled_settlement_due",
     "return_block_reason",
+    "tier_level_and_label",
     "transfer_in",
     "transfer_out",
 ]

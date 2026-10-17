@@ -10,6 +10,7 @@ from app.api.endpoints.admin_service_fee import (
 )
 from app.api.endpoints.admin_service_fee import router as admin_service_fee_router
 from app.api.endpoints import (
+    admin_after_sales_router,
     admin_deposit_router,
     admin_announcements_router,
     admin_payment_router,
@@ -19,6 +20,7 @@ from app.api.endpoints import (
     admin_withdrawal_category_router,
     admin_withdrawal_payout_router,
     admin_withdrawal_rule_router,
+    after_sales_router,
     auth_router,
     announcements_router,
     chat_router,
@@ -54,8 +56,11 @@ api_router.include_router(announcements_router)
 api_router.include_router(order_hall_router)
 api_router.include_router(orders_router)
 api_router.include_router(order_templates_router)
+# 售后：订单维度（/orders/{id}/after-sales）+ 个人维度（/after-sales/mine）
+api_router.include_router(after_sales_router)
 api_router.include_router(users_router)
 api_router.include_router(admin_router)
+api_router.include_router(admin_after_sales_router)
 api_router.include_router(admin_order_dispute_router)
 api_router.include_router(admin_announcements_router)
 api_router.include_router(admin_site_router)

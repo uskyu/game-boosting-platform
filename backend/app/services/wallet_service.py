@@ -1321,6 +1321,17 @@ class WalletService:
         # 渠道开关校验：被后台关闭的支付宝/微信渠道不允许新增提现（BANK 不受限）。
         await ensure_channel_enabled(self._db, channel)
 
+        # 售后处理中（PENDING）的打手禁止提现：等平台裁定结案后再试。
+        # 延迟导入：售后结算未来要在 after_sale_service 里调用钱包原语，
+        # 模块级导入会形成循环依赖。
+        from app.services.after_sale_service import has_pending_after_sale_for_booster
+
+        if await has_pending_after_sale_for_booster(self._db, user.id):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="售后处理中，暂不能提现，请等待售后结案后再试",
+            )
+
         withdrawal = WithdrawalRequest(
             user_id=user.id,
             amount=amount,

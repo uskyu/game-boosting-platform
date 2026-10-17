@@ -3,6 +3,12 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { useAuthStore } from '@/stores/auth'
+import {
+  useAfterSalesStore,
+  AFTER_SALE_STATUS_OPTIONS,
+  getAfterSaleStatusLabel,
+  getAfterSaleStatusTagClass,
+} from '@/stores/afterSales'
 import AdminDashboard from '@/components/admin/AdminDashboard.vue'
 import AdminUserList from '@/components/admin/AdminUserList.vue'
 import AdminSiteSettings from '@/components/admin/AdminSiteSettings.vue'
@@ -52,9 +58,10 @@ const globalServiceFeeRate = ref(0)
 const individualServiceFeeEnabled = ref(false)
 const ordersStore = useOrdersStore()
 const walletStore = useWalletStore()
+const afterSalesStore = useAfterSalesStore()
 const withdrawalPayoutStore = useWithdrawalPayoutStore()
 
-const TAB_KEYS = ['dashboard', 'orders', 'withdrawals', 'wallet-adjust', 'games', 'users', 'site', 'payment', 'service-fee', 'withdrawal-rule', 'withdrawal-category', 'payout-batches', 'deposit', 'announcements']
+const TAB_KEYS = ['dashboard', 'orders', 'withdrawals', 'afterSales', 'wallet-adjust', 'games', 'users', 'site', 'payment', 'service-fee', 'withdrawal-rule', 'withdrawal-category', 'payout-batches', 'deposit', 'announcements']
 
 function normalizeTab(tab) {
   const value = Array.isArray(tab) ? tab[0] : tab
@@ -449,6 +456,8 @@ function modalTitle() {
   if (modal.value?.type === 'assign') return '订单派单'
   if (modal.value?.type === 'reject') return '驳回提现'
   if (modal.value?.type === 'mark-paid') return '标记已打款'
+  if (modal.value?.type === 'after-sale-approve') return '通过售后申请'
+  if (modal.value?.type === 'after-sale-reject') return '驳回售后申请'
   return ''
 }
 
@@ -466,6 +475,11 @@ async function submitModal() {
   }
 
   if (state.type === 'reject' && !state.reason.trim()) {
+    state.error = '请填写驳回原因'
+    return
+  }
+
+  if (state.type === 'after-sale-reject' && !state.reason.trim()) {
     state.error = '请填写驳回原因'
     return
   }
@@ -508,9 +522,91 @@ async function submitModal() {
     removeWithdrawalFromSelection(state.withdrawalId)
     message.value = { type: 'success', text: '已标记已打款' }
     await fetchWithdrawals(walletStore.adminWithdrawalsPagination.page)
+  } else if (state.type === 'after-sale-approve' || state.type === 'after-sale-reject') {
+    const action = state.type === 'after-sale-approve' ? 'approve' : 'reject'
+    const result = await afterSalesStore.reviewAfterSale(state.afterSaleId, {
+      action,
+      reason: state.reason.trim(),
+    })
+    if (!result.success) {
+      state.error = result.error || '操作失败'
+      state.submitting = false
+      return
+    }
+    message.value = {
+      type: 'success',
+      text: action === 'approve' ? '售后申请已通过，款项已划转' : '售后申请已驳回',
+    }
+    await fetchAfterSales(afterSalesStore.adminAfterSalesPagination.page)
   }
 
   closeModal()
+}
+
+// ── 售后管理 ──
+// 列表/审核统一走 afterSales store；通过=确认弹窗（注明扣划划转），
+// 驳回=必填原因（前端拦截空原因，与驳回提现同口径）。
+const afterSaleStatus = ref('PENDING')
+const afterSaleOrderId = ref('')
+const afterSaleSearch = ref('')
+// 展开全文的售后单（原因较长时卡片只显示截断文案）
+const afterSaleReasonDetail = ref(null)
+
+async function fetchAfterSales(page = 1) {
+  await afterSalesStore.fetchAdminAfterSales({
+    status: afterSaleStatus.value,
+    orderId: afterSaleOrderId.value.trim() || undefined,
+    q: afterSaleSearch.value.trim() || undefined,
+    page,
+  })
+}
+
+function afterSaleBossName(item) {
+  return item?.requester?.username || item?.boss?.username || item?.requester_name || '—'
+}
+
+function afterSaleBoosterName(item) {
+  return item?.booster?.username || item?.booster_name || item?.order?.booster?.username || '—'
+}
+
+function afterSaleOrderLabel(item) {
+  const order = item?.order || {}
+  const id = order.id ?? item?.order_id
+  return { id: id ?? '—', title: order.title || order.game_name || '售后订单' }
+}
+
+function afterSaleImageList(item) {
+  const images = item?.images
+  if (!Array.isArray(images)) return []
+  return images
+    .map((image) => (typeof image === 'string' ? { url: image } : image))
+    .filter((image) => image?.url)
+}
+
+function openAfterSaleImage(url) {
+  if (url) window.open(url, '_blank', 'noopener')
+}
+
+function openAfterSaleApproveModal(item) {
+  modal.value = {
+    type: 'after-sale-approve',
+    afterSaleId: item.id,
+    amount: item.amount,
+    reason: '',
+    error: '',
+    submitting: false,
+  }
+}
+
+function openAfterSaleRejectModal(item) {
+  modal.value = {
+    type: 'after-sale-reject',
+    afterSaleId: item.id,
+    amount: item.amount,
+    reason: '',
+    error: '',
+    submitting: false,
+  }
 }
 
 // ── 钱包调账 ──
@@ -1063,6 +1159,9 @@ watch(activeTab, (tab) => {
   if (tab === 'games') {
     fetchGamesWithFilter()
   }
+  if (tab === 'afterSales') {
+    fetchAfterSales(1)
+  }
 })
 
 async function refreshDashboard() {
@@ -1071,6 +1170,10 @@ async function refreshDashboard() {
 
 onMounted(async () => {
   await refreshDashboard()
+  // 直接带 ?tab=afterSales 落地时 watch 不立即触发，补拉一次列表
+  if (activeTab.value === 'afterSales') {
+    fetchAfterSales(1)
+  }
 })
 </script>
 
@@ -1093,6 +1196,7 @@ onMounted(async () => {
           <button type="button" :class="activeTab === 'dashboard' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'dashboard'">数据看板</button>
           <button type="button" :class="activeTab === 'orders' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'orders'">派单管理</button>
           <button type="button" :class="activeTab === 'withdrawals' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'withdrawals'">提现处理</button>
+          <button type="button" :class="activeTab === 'afterSales' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'afterSales'">售后管理</button>
           <button type="button" :class="activeTab === 'wallet-adjust' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'wallet-adjust'">钱包调账</button>
           <button type="button" :class="activeTab === 'games' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'games'">游戏管理</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'users' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'users'">用户管理</button>
@@ -1409,6 +1513,137 @@ onMounted(async () => {
       </div>
     </section>
 
+    <section v-else-if="activeTab === 'afterSales'" class="surface-card p-6 sm:p-8">
+      <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <h2 class="text-2xl font-semibold text-ink-1">售后管理</h2>
+        <div class="flex flex-wrap gap-3">
+          <input
+            v-model="afterSaleOrderId"
+            type="search"
+            class="input min-w-[160px]"
+            placeholder="订单号"
+            aria-label="按订单号筛选售后"
+            @keyup.enter="fetchAfterSales(1)"
+          />
+          <input
+            v-model="afterSaleSearch"
+            type="search"
+            class="input min-w-[160px]"
+            placeholder="订单号 / 标题 / 游戏"
+            aria-label="搜索售后订单"
+            @keyup.enter="fetchAfterSales(1)"
+          />
+          <select v-model="afterSaleStatus" class="input min-w-[140px]" aria-label="售后状态筛选" @change="fetchAfterSales(1)">
+            <option v-for="option in AFTER_SALE_STATUS_OPTIONS" :key="option.value" :value="option.value">{{ option.label }}</option>
+          </select>
+          <button class="btn-secondary !px-4 !py-2" @click="fetchAfterSales(1)">筛选</button>
+        </div>
+      </div>
+
+      <div v-if="afterSalesStore.adminAfterSalesLoading" class="mt-6 space-y-3" aria-busy="true">
+        <div v-for="n in 4" :key="`as-skeleton-${n}`" class="skeleton h-36 !rounded-card"></div>
+      </div>
+
+      <div v-else-if="!afterSalesStore.adminAfterSales.length" class="empty-state mt-6">
+        <div class="empty-state__icon" aria-hidden="true">🧾</div>
+        <h3 class="empty-state__title">暂无售后申请</h3>
+        <p class="empty-state__copy">用户提交售后后，会按状态出现在这里。</p>
+      </div>
+
+      <div v-else class="mt-6 space-y-3">
+        <article
+          v-for="item in afterSalesStore.adminAfterSales"
+          :key="item.id"
+          class="catalog-card cyber-corner"
+        >
+          <div class="flex flex-wrap items-start justify-between gap-4">
+            <div class="min-w-0 max-w-full space-y-2">
+              <div class="flex flex-wrap items-center gap-2">
+                <h3 class="text-xl font-semibold text-ink-1">#{{ afterSaleOrderLabel(item).id }} {{ afterSaleOrderLabel(item).title }}</h3>
+                <span :class="['tag', getAfterSaleStatusTagClass(item.status)]">{{ getAfterSaleStatusLabel(item.status) }}</span>
+              </div>
+              <p class="text-sm text-ink-2">
+                老板 {{ afterSaleBossName(item) }} · 打手 {{ afterSaleBoosterName(item) }}
+              </p>
+              <p class="text-xs text-ink-3">申请于 {{ formatDateTime(item.created_at) }}</p>
+            </div>
+
+            <div class="flex shrink-0 flex-col items-end gap-3">
+              <p class="text-2xl font-semibold tabular-nums text-price">{{ formatPrice(item.amount) }}</p>
+              <!-- 凭证缩略图：点击新窗口看大图 -->
+              <div v-if="afterSaleImageList(item).length" class="flex flex-wrap justify-end gap-2">
+                <button
+                  v-for="(image, index) in afterSaleImageList(item)"
+                  :key="image.url || index"
+                  type="button"
+                  class="admin-order-thumb"
+                  :aria-label="`查看售后凭证 ${index + 1}`"
+                  @click.stop="openAfterSaleImage(image.url)"
+                >
+                  <img :src="image.url" :alt="image.name || `售后凭证 ${index + 1}`" loading="lazy" />
+                </button>
+              </div>
+              <span v-else class="text-xs text-ink-3">未上传凭证</span>
+            </div>
+          </div>
+
+          <!-- 原因：截断展示，点击弹窗看全文 -->
+          <button type="button" class="mt-4 block w-full text-left" @click="afterSaleReasonDetail = item">
+            <p class="truncate text-sm text-ink-2">{{ item.reason || '—' }}</p>
+            <p class="helper-text">点击查看售后原因全文</p>
+          </button>
+
+          <div v-if="item.status === 'REJECTED' && item.decision_reason" class="message-error mt-4">
+            驳回原因：{{ item.decision_reason }}
+          </div>
+
+          <div class="mt-4 flex flex-wrap items-center justify-end gap-3">
+            <template v-if="item.status === 'PENDING'">
+              <button
+                type="button"
+                class="btn-success min-h-[44px] !px-4 !py-2"
+                :disabled="afterSalesStore.submitting"
+                @click="openAfterSaleApproveModal(item)"
+              >
+                通过
+              </button>
+              <button
+                type="button"
+                class="btn-danger min-h-[44px] !px-4 !py-2"
+                :disabled="afterSalesStore.submitting"
+                @click="openAfterSaleRejectModal(item)"
+              >
+                驳回
+              </button>
+            </template>
+            <span v-else class="text-xs text-ink-3">已处理</span>
+          </div>
+        </article>
+      </div>
+
+      <div v-if="afterSalesStore.adminAfterSalesPagination.pages > 1" class="mt-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <p class="text-sm text-ink-2">
+          {{ afterSalesStore.adminAfterSalesPagination.page }} / {{ afterSalesStore.adminAfterSalesPagination.pages }} · 共 {{ afterSalesStore.adminAfterSalesPagination.total }} 条
+        </p>
+        <div class="flex items-center gap-2">
+          <button
+            class="btn-secondary !px-4 !py-2"
+            :disabled="afterSalesStore.adminAfterSalesPagination.page <= 1 || afterSalesStore.adminAfterSalesLoading"
+            @click="fetchAfterSales(afterSalesStore.adminAfterSalesPagination.page - 1)"
+          >
+            上一页
+          </button>
+          <button
+            class="btn-secondary !px-4 !py-2"
+            :disabled="afterSalesStore.adminAfterSalesPagination.page >= afterSalesStore.adminAfterSalesPagination.pages || afterSalesStore.adminAfterSalesLoading"
+            @click="fetchAfterSales(afterSalesStore.adminAfterSalesPagination.page + 1)"
+          >
+            下一页
+          </button>
+        </div>
+      </div>
+    </section>
+
     <section v-else-if="activeTab === 'wallet-adjust'" class="surface-card p-6 sm:p-8">
       <h2 class="text-2xl font-semibold text-ink-1">钱包调账</h2>
       <p class="mt-2 text-sm text-ink-2">为指定用户直接调整钱包余额：金额为正表示充值，为负表示扣减。</p>
@@ -1532,7 +1767,9 @@ onMounted(async () => {
             {{
               modal.type === 'assign'
                 ? `订单 #${modal.orderId} ${modal.gameName || ''}`
-                : `提现 #${modal.withdrawalId} · ${formatPrice(modal.amount)}`
+                : modal.type === 'after-sale-approve' || modal.type === 'after-sale-reject'
+                  ? `售后 #${modal.afterSaleId} · ${formatPrice(modal.amount)}`
+                  : `提现 #${modal.withdrawalId} · ${formatPrice(modal.amount)}`
             }}
           </p>
 
@@ -1552,6 +1789,23 @@ onMounted(async () => {
             <div v-if="modal.type === 'reject'">
               <label class="label" for="reject-reason">驳回原因</label>
               <textarea id="reject-reason" v-model="modal.reason" rows="3" class="input resize-none" placeholder="请填写驳回原因"></textarea>
+            </div>
+
+            <div v-if="modal.type === 'after-sale-approve'" class="message-warning">
+              通过将从打手账户扣划 {{ formatPrice(modal.amount) }} 划转给老板，请确认售后核实无误。
+            </div>
+
+            <div v-if="modal.type === 'after-sale-approve' || modal.type === 'after-sale-reject'">
+              <label class="label" for="after-sale-review-reason">
+                {{ modal.type === 'after-sale-approve' ? '处理备注（选填）' : '驳回原因（必填）' }}
+              </label>
+              <textarea
+                id="after-sale-review-reason"
+                v-model="modal.reason"
+                rows="3"
+                class="input resize-none"
+                placeholder="请填写处理说明"
+              ></textarea>
             </div>
 
             <div v-if="modal.type === 'mark-paid'">
@@ -1662,6 +1916,42 @@ onMounted(async () => {
             >
               标记已打款
             </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 售后原因全文弹窗：卡片只显示截断文案，这里看完整原因 -->
+    <div v-if="afterSaleReasonDetail" class="modal-scrim modal-scrim--sheet">
+      <div class="absolute inset-0" aria-hidden="true" @click="afterSaleReasonDetail = null"></div>
+
+      <div class="modal-card modal-sheet" role="dialog" aria-modal="true" aria-label="售后原因全文">
+        <div class="relative z-10">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <h3 class="text-2xl font-semibold text-ink-1">售后原因</h3>
+              <p class="mt-2 text-sm text-ink-2">
+                售后 #{{ afterSaleReasonDetail.id }} · 订单 #{{ afterSaleOrderLabel(afterSaleReasonDetail).id }} ·
+                <span class="font-semibold tabular-nums text-price">{{ formatPrice(afterSaleReasonDetail.amount) }}</span>
+              </p>
+            </div>
+            <button type="button" class="btn-ghost shrink-0 !px-4 !py-2" @click="afterSaleReasonDetail = null">关闭</button>
+          </div>
+          <p class="mt-5 whitespace-pre-line text-sm leading-6 text-ink-2">{{ afterSaleReasonDetail.reason || '—' }}</p>
+          <div v-if="afterSaleImageList(afterSaleReasonDetail).length" class="mt-5">
+            <p class="info-tile__label">售后凭证</p>
+            <div class="mt-2 flex flex-wrap gap-2">
+              <button
+                v-for="(image, index) in afterSaleImageList(afterSaleReasonDetail)"
+                :key="image.url || index"
+                type="button"
+                class="admin-order-thumb"
+                :aria-label="`查看售后凭证 ${index + 1}`"
+                @click="openAfterSaleImage(image.url)"
+              >
+                <img :src="image.url" :alt="image.name || `售后凭证 ${index + 1}`" loading="lazy" />
+              </button>
+            </div>
           </div>
         </div>
       </div>

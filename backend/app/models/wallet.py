@@ -50,6 +50,9 @@ class WalletTransactionType(str, PyEnum):
     # 取消订单赔偿（发单员对进行中订单发起取消时直扣打手保证金，无需对方同意）
     CANCEL_COMPENSATION_IN = "CANCEL_COMPENSATION_IN"        # 取消赔偿入账，发单员可用余额 (+)
     CANCEL_COMPENSATION_DEDUCT = "CANCEL_COMPENSATION_DEDUCT"  # 取消赔偿扣除，打手保证金扣减 (-)
+    # 售后扣划（老板对已完成订单的售后通过：打手可用余额 → 老板可用余额）
+    AFTERSALE_DEDUCTION = "AFTERSALE_DEDUCTION"  # 售后扣划，打手可用余额扣减 (-)
+    AFTERSALE_REFUND = "AFTERSALE_REFUND"        # 售后收款，老板可用余额增加 (+)
 
 
 class Wallet(Base):

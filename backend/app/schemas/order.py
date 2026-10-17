@@ -640,6 +640,11 @@ class OrderResponse(BaseModel):
     cancel_pending: bool = Field(
         default=False, description="是否存在待处理的取消协商（申请取消中）"
     )
+    # 有进行中的售后申请（老板发起、平台未裁定）：售后期间打手禁止提现，
+    # 列表据此把「售后」按钮切为禁用态，避免同一订单重复发起。
+    after_sale_pending: bool = Field(
+        default=False, description="是否存在进行中的售后申请"
+    )
 
     @field_serializer("deadline", "created_at", "updated_at", "locked_at", "delivered_at", "completed_at", "paid_at", "accept_available_at")
     def serialize_datetime(self, value: datetime | None) -> str | None:

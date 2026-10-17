@@ -101,6 +101,7 @@ function normalizeDepositTier(tier) {
     wait_seconds: toNumber(tier?.wait_seconds, 0),
     exempt_compensation: Boolean(tier?.exempt_compensation),
     settle_hours: toNumber(tier?.settle_hours, 0),
+    daily_accept_limit: tier?.daily_accept_limit == null ? null : toNumber(tier.daily_accept_limit, 0),
     enabled: tier?.enabled !== false,
     updated_at: tier?.updated_at,
   }
@@ -116,6 +117,9 @@ function normalizeDepositOverview(data) {
     wait_seconds: toNumber(source.wait_seconds, 0),
     exempt_compensation: Boolean(source.exempt_compensation),
     settle_hours: toNumber(source.settle_hours, 0),
+    daily_accept_limit: source.daily_accept_limit == null ? null : toNumber(source.daily_accept_limit, 0),
+    daily_accepted_count: toNumber(source.daily_accepted_count, 0),
+    daily_limit_reset_at: source.daily_limit_reset_at || null,
     can_return: Boolean(source.can_return),
     return_block_reason: source.return_block_reason || '',
     tiers: Array.isArray(source.tiers) ? source.tiers.map(normalizeDepositTier) : [],

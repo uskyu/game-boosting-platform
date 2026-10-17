@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { useAuthStore } from '@/stores/auth'
+import { useAfterSalesStore } from '@/stores/afterSales'
 import { useOrdersStore } from '@/stores/orders'
 import { useWalletStore } from '@/stores/wallet'
 import { useWithdrawalSettingsStore } from '@/stores/withdrawalSettings'
@@ -23,6 +24,7 @@ const router = useRouter()
 const walletStore = useWalletStore()
 const authStore = useAuthStore()
 const ordersStore = useOrdersStore()
+const afterSalesStore = useAfterSalesStore()
 const withdrawalSettings = useWithdrawalSettingsStore()
 
 // 到账倒计时按秒跳动：now 用服务器校准时间（设备本地时钟可能偏差数秒）
@@ -331,6 +333,20 @@ const walletInfo = computed(() =>
 // 提现机会提示：now 每秒推进，跨过刷新点（如下午 12:00 / 间隔到期）时自动解除禁用
 const withdrawQuotaNotice = computed(() => quotaNotice(walletStore.quota, now.value))
 
+// 售后进行中冻结提现：打手有 PENDING 售后时禁用提交。
+// 双保险：列表拉到的进行中售后 + 提交时后端返回同样文案（列表竞态未刷新到）。
+const afterSaleBlockedByServer = ref(false)
+const afterSaleWithdrawBlocked = computed(() =>
+  !authStore.isAdmin
+  && (afterSalesStore.hasPendingBoosterAfterSale || afterSaleBlockedByServer.value)
+)
+
+async function fetchAfterSaleGuard() {
+  // 管理员无打手提现场景，/after-sales/mine 对管理员无意义，跳过
+  if (authStore.isAdmin) return
+  await afterSalesStore.fetchMyAfterSales({ role: 'booster', status: 'pending' })
+}
+
 // 统计卡＝白卡同款，仅数字颜色区分语义（文档 5 节：可用余额/提现=ink-1、冻结=warning、收入=success）
 const statCards = computed(() => [
   { label: '可用余额', value: formatPrice(walletInfo.value.available_balance), valueClass: 'text-ink-1', cardClass: 'stat-card' },
@@ -426,6 +442,10 @@ async function submitWithdrawal() {
     ])
   } else {
     withdrawMessage.value = { type: 'error', text: result.error || '提交失败' }
+    // 后端也以售后文案拒绝时（进行中售后列表还没刷新到的竞态），就地抬起冻结提示
+    if (/售后/.test(result.error || '')) {
+      afterSaleBlockedByServer.value = true
+    }
   }
   submittingWithdrawal.value = false
 }
@@ -461,7 +481,8 @@ onMounted(() => {
   }
   // 并行拉取：钱包数据与审核中报名单互不依赖，串行会放大远程库延迟
   // 渠道开关单独一路：拉不到（如 403）不阻塞页面，isChannelEnabled 会按默认全开兜底
-  Promise.all([refreshAll(), fetchReviewClaims(), fetchRechargeData(), fetchDepositData(), withdrawalSettings.fetchChannels()])
+  // 售后闸门同样单独一路：拉不到只当无进行中售后，不阻塞钱包页
+  Promise.all([refreshAll(), fetchReviewClaims(), fetchRechargeData(), fetchDepositData(), withdrawalSettings.fetchChannels(), fetchAfterSaleGuard()])
   countdownTimer = window.setInterval(() => {
     now.value = serverNow()
   }, 1000)
@@ -709,6 +730,9 @@ onUnmounted(() => {
 
       <div v-if="withdrawQuotaNotice.text" class="message-info mt-4">{{ withdrawQuotaNotice.text }}</div>
 
+      <!-- 售后进行中冻结提现：与提现机会提示同款位置/样式 -->
+      <div v-if="afterSaleWithdrawBlocked" class="message-warning mt-4">售后处理中，暂不能提现，请等待售后结案</div>
+
       <form class="mt-6 grid gap-5 lg:grid-cols-2" @submit.prevent="submitWithdrawal">
         <div>
           <label class="label" for="withdraw-amount">提现金额（元）</label>
@@ -790,7 +814,7 @@ onUnmounted(() => {
         </div>
 
         <div class="lg:col-span-2">
-          <button class="btn-primary w-full py-3 sm:w-auto sm:!px-10" :disabled="submittingWithdrawal || walletStore.submitting || withdrawQuotaNotice.blocked">
+          <button class="btn-primary w-full py-3 sm:w-auto sm:!px-10" :disabled="submittingWithdrawal || walletStore.submitting || withdrawQuotaNotice.blocked || afterSaleWithdrawBlocked">
             {{ submittingWithdrawal ? '提交中...' : '提交申请' }}
           </button>
           <p class="helper-text">

@@ -25,6 +25,7 @@ from app.models.notification import Notification, NotificationType, UserPreferen
 from app.models.payment_setting import PaymentSetting
 from app.models.push_subscription import PushSubscription
 from app.models.order import Order, OrderStatus, PaymentStatus
+from app.models.order_after_sale import AfterSaleStatus, OrderAfterSale
 from app.models.order_cancel_request import OrderCancelRequest, OrderCancelRequestStatus
 from app.models.order_template import OrderTemplate
 from app.models.recharge import RechargeOrder, RechargeStatus
@@ -47,6 +48,7 @@ __all__ = [
     "Announcement",
     "AnnouncementFrequency",
     "AnnouncementView",
+    "AfterSaleStatus",
     "BoosterApplicationStatus",
     "BoosterService",
     "Conversation",
@@ -65,6 +67,7 @@ __all__ = [
     "Notification",
     "NotificationType",
     "Order",
+    "OrderAfterSale",
     "OrderCancelRequest",
     "OrderCancelRequestStatus",
     "OrderStatus",

@@ -26,6 +26,7 @@ def _tier_response(tier: DepositTier) -> DepositTierAdminResponse:
         wait_seconds=tier.wait_seconds,
         exempt_compensation=tier.exempt_compensation,
         settle_hours=tier.settle_hours,
+        daily_accept_limit=tier.daily_accept_limit,
         enabled=tier.enabled,
         updated_at=tier.updated_at,
     )
@@ -99,6 +100,10 @@ async def update_deposit_settings(
                 wait_seconds=item.wait_seconds,
                 exempt_compensation=item.exempt_compensation,
                 settle_hours=item.settle_hours,
+                # 0 与 None 同义 = 不限，统一归一成 None 再写库
+                daily_accept_limit=deposit_service.normalize_daily_accept_limit(
+                    item.daily_accept_limit
+                ),
                 enabled=item.enabled,
             )
         )

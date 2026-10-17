@@ -92,6 +92,14 @@ const routes = [
     props: true,
   },
   {
+    // 售后申请（我的派单卡片「售后」按钮进入）
+    path: '/orders/:id/after-sale/apply',
+    name: 'afterSaleApply',
+    component: () => import('@/views/AfterSaleApplyView.vue'),
+    meta: { title: '售后申请', requiresAuth: true },
+    props: true,
+  },
+  {
     path: '/messages',
     name: 'message-center',
     component: () => import('@/views/MessageCenterView.vue'),

@@ -253,6 +253,8 @@ async def _enrich_order_response(db, response: OrderResponse, order, viewer: Use
             response.boss_contact = None
     pending_cancel_ids = await order_service.pending_cancel_order_ids([order.id])
     response.cancel_pending = order.id in pending_cancel_ids
+    after_sale_ids = await order_service.pending_after_sale_order_ids([order.id])
+    response.after_sale_pending = order.id in after_sale_ids
     await _apply_accept_window(db, [response], [order], viewer)
     return response
 
@@ -300,6 +302,11 @@ async def _enrich_order_responses(
     )
     for response in responses:
         response.cancel_pending = response.id in pending_cancel_ids
+    after_sale_ids = await order_service.pending_after_sale_order_ids(
+        [response.id for response in responses]
+    )
+    for response in responses:
+        response.after_sale_pending = response.id in after_sale_ids
     await _apply_accept_window(db, responses, orders, viewer)
     return responses
 
