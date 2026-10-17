@@ -116,6 +116,15 @@ async def _review(client: AsyncClient, admin_user: dict, after_sale_id: int, bod
     )
 
 
+async def _withdraw(
+    client: AsyncClient, user: dict, order_id: int, after_sale_id: int
+):
+    return await client.post(
+        f"/orders/{order_id}/after-sales/{after_sale_id}/withdraw",
+        headers=auth_header(user),
+    )
+
+
 async def _wallet(db: AsyncSession, user_id: int) -> Wallet:
     """直读用户钱包行（请求已提交，rollback 掉测试侧快照后再查）。"""
     db.expire_all()
@@ -442,6 +451,7 @@ async def test_admin_after_sale_list_and_approve(
     client: AsyncClient,
     admin_user: dict,
     booster_user: dict,
+    db_session: AsyncSession,
     make_captcha,
 ):
     publisher = await _register(
@@ -687,3 +697,410 @@ async def test_rejected_after_sale_leaves_wallets_untouched(
         await _after_sale_ledger(db_session, order_id=order["id"], user_id=publisher_id)
         == []
     )
+
+
+async def test_approved_after_sale_with_adjusted_amount_settles_partial(
+    client: AsyncClient,
+    admin_user: dict,
+    booster_user: dict,
+    db_session: AsyncSession,
+    make_captcha,
+):
+    """approve 带裁定金额（20 < 申请 30）：只按 20 划转，裁定说明写进 decision_reason。"""
+    publisher = await _register(
+        client, make_captcha, "aftersale-adjust@example.com", "PubAdjust"
+    )
+    publisher_id = publisher["user"]["id"]
+    booster_id = booster_user["user"]["id"]
+    order = await _completed_order(client, admin_user, publisher, booster_user)
+    await db_session.rollback()
+    assert (await _wallet(db_session, booster_id)).available_balance == Decimal("100.00")
+    assert (await _wallet(db_session, publisher_id)).available_balance == Decimal("100.00")
+
+    created = await _create_after_sale(client, publisher, order["id"], amount="30.00")
+    assert created.status_code == 201, created.text
+    approved = await _review(
+        client,
+        admin_user,
+        created.json()["id"],
+        {"action": "approve", "reason": "协商后部分赔付", "amount": "20.00"},
+    )
+    assert approved.status_code == 200, approved.text
+    data = approved.json()
+    assert data["status"] == "APPROVED"
+    # 裁定说明拼在管理员审阅意见之后
+    assert data["decision_reason"] == "协商后部分赔付；裁定扣款 ¥20.00（申请 ¥30.00）"
+
+    # 只按裁定额 20 划转：打手 100 → 80，老板 100 → 120
+    await db_session.rollback()
+    assert (await _wallet(db_session, booster_id)).available_balance == Decimal("80.00")
+    assert (await _wallet(db_session, publisher_id)).available_balance == Decimal("120.00")
+
+    # 流水按 20 记
+    deduction = await _after_sale_ledger(
+        db_session, order_id=order["id"], user_id=booster_id
+    )
+    assert len(deduction) == 1
+    assert deduction[0].amount == Decimal("-20.00")
+    assert deduction[0].balance_before == Decimal("100.00")
+    assert deduction[0].balance_after == Decimal("80.00")
+    refund = await _after_sale_ledger(
+        db_session, order_id=order["id"], user_id=publisher_id
+    )
+    assert len(refund) == 1
+    assert refund[0].amount == Decimal("20.00")
+    assert refund[0].balance_before == Decimal("100.00")
+    assert refund[0].balance_after == Decimal("120.00")
+
+    # 通知按裁定额 20 播报
+    db_session.expire_all()
+    notifications = await db_session.execute(
+        select(Notification).where(
+            Notification.type == NotificationType.AFTERSALES_RESOLVED
+        )
+    )
+    by_user = {row.user_id: row.content for row in notifications.scalars().all()}
+    assert "已扣划 ¥20.00 给老板" in by_user[booster_id]
+    assert "已收款 ¥20.00" in by_user[publisher_id]
+
+
+async def test_approved_after_sale_amount_above_claimed_rejected(
+    client: AsyncClient,
+    admin_user: dict,
+    booster_user: dict,
+    db_session: AsyncSession,
+    make_captcha,
+):
+    """approve 裁定金额超过申请金额：400，且不落状态、不动资金。"""
+    publisher = await _register(
+        client, make_captcha, "aftersale-over@example.com", "PubOver"
+    )
+    publisher_id = publisher["user"]["id"]
+    booster_id = booster_user["user"]["id"]
+    order = await _completed_order(client, admin_user, publisher, booster_user)
+    await db_session.rollback()
+    booster_before = (await _wallet(db_session, booster_id)).available_balance
+    publisher_before = (await _wallet(db_session, publisher_id)).available_balance
+
+    created = await _create_after_sale(client, publisher, order["id"], amount="30.00")
+    assert created.status_code == 201, created.text
+    over = await _review(
+        client,
+        admin_user,
+        created.json()["id"],
+        {"action": "approve", "amount": "40.00"},
+    )
+    assert over.status_code == 400, over.text
+    assert over.json()["detail"] == "裁定扣款金额不能超过售后申请金额"
+
+    # 状态仍是 PENDING，余额与流水均未动。
+    # 先 rollback 结束旧快照：售后单是 API 侧事务提交的，REPEATABLE READ 下
+    # 不换事务直接查会看不到（内存视图还停在建单之前）。
+    await db_session.rollback()
+    db_session.expire_all()
+    stored = await db_session.execute(
+        select(OrderAfterSale.status).where(OrderAfterSale.id == created.json()["id"])
+    )
+    assert stored.scalar_one() == AfterSaleStatus.PENDING
+    await db_session.rollback()
+    assert (await _wallet(db_session, booster_id)).available_balance == booster_before
+    assert (await _wallet(db_session, publisher_id)).available_balance == publisher_before
+    assert (
+        await _after_sale_ledger(db_session, order_id=order["id"], user_id=booster_id)
+        == []
+    )
+
+
+async def test_closed_after_sale_leaves_wallets_untouched(
+    client: AsyncClient,
+    admin_user: dict,
+    booster_user: dict,
+    db_session: AsyncSession,
+    make_captcha,
+):
+    """close：落 CLOSED、不动资金、无售后流水，双边通知「已关闭、平台未做裁定」。"""
+    publisher = await _register(
+        client, make_captcha, "aftersale-close@example.com", "PubClose"
+    )
+    publisher_id = publisher["user"]["id"]
+    booster_id = booster_user["user"]["id"]
+    order = await _completed_order(client, admin_user, publisher, booster_user)
+    await db_session.rollback()
+    booster_before = (await _wallet(db_session, booster_id)).available_balance
+    publisher_before = (await _wallet(db_session, publisher_id)).available_balance
+
+    created = await _create_after_sale(client, publisher, order["id"])
+    assert created.status_code == 201, created.text
+    closed = await _review(
+        client,
+        admin_user,
+        created.json()["id"],
+        {"action": "close", "reason": "双方已线下协商一致"},
+    )
+    assert closed.status_code == 200, closed.text
+    data = closed.json()
+    assert data["status"] == "CLOSED"
+    assert data["decision_reason"] == "双方已线下协商一致"
+    assert data["reviewed_by"] == admin_user["user"]["id"]
+    assert data["resolved_at"] is not None
+
+    # 余额不动、无售后流水
+    await db_session.rollback()
+    assert (await _wallet(db_session, booster_id)).available_balance == booster_before
+    assert (await _wallet(db_session, publisher_id)).available_balance == publisher_before
+    assert (
+        await _after_sale_ledger(db_session, order_id=order["id"], user_id=booster_id)
+        == []
+    )
+    assert (
+        await _after_sale_ledger(db_session, order_id=order["id"], user_id=publisher_id)
+        == []
+    )
+
+    # 结案后打手禁提现闸门释放
+    allowed = await client.post(
+        "/withdrawals",
+        json={
+            "amount": "40.00",
+            "channel": "ALIPAY",
+            "account_name": "张三",
+            "account_no": "13800000000",
+        },
+        headers=auth_header(booster_user),
+    )
+    assert allowed.status_code == 201, allowed.text
+
+    # 双边「已关闭、平台未做裁定」口径
+    db_session.expire_all()
+    notifications = await db_session.execute(
+        select(Notification).where(
+            Notification.type == NotificationType.AFTERSALES_RESOLVED
+        )
+    )
+    by_user = {
+        row.user_id: (row.title, row.content) for row in notifications.scalars().all()
+    }
+    assert booster_id in by_user and publisher_id in by_user
+    for user_id in (booster_id, publisher_id):
+        title, content = by_user[user_id]
+        assert title == "售后申请已关闭"
+        assert "售后申请已关闭，平台未做裁定" in content
+        assert "双方已线下协商一致" in content
+
+
+async def test_close_after_sale_requires_reason(
+    client: AsyncClient,
+    admin_user: dict,
+    booster_user: dict,
+    make_captcha,
+):
+    """close 缺原因：400，售后保持 PENDING。"""
+    publisher = await _register(
+        client, make_captcha, "aftersale-close-noreason@example.com", "PubCloseNR"
+    )
+    order = await _completed_order(client, admin_user, publisher, booster_user)
+    created = await _create_after_sale(client, publisher, order["id"])
+    assert created.status_code == 201, created.text
+
+    missing = await _review(
+        client, admin_user, created.json()["id"], {"action": "close"}
+    )
+    assert missing.status_code == 400, missing.text
+    assert "必须填写原因" in missing.json()["detail"]
+
+    # 售后仍未处理（经「我的售后」回显核对）
+    as_requester = await client.get(
+        "/after-sales/mine", headers=auth_header(publisher)
+    )
+    assert as_requester.status_code == 200, as_requester.text
+    assert as_requester.json()[0]["status"] == "PENDING"
+
+
+async def test_publisher_withdraws_pending_after_sale(
+    client: AsyncClient,
+    admin_user: dict,
+    booster_user: dict,
+    db_session: AsyncSession,
+    make_captcha,
+):
+    """老板撤诉：CLOSED + 发布人主动撤回，不动资金，双边撤回通知。"""
+    publisher = await _register(
+        client, make_captcha, "aftersale-withdraw-pub@example.com", "PubWithdrawAS"
+    )
+    publisher_id = publisher["user"]["id"]
+    booster_id = booster_user["user"]["id"]
+    order = await _completed_order(client, admin_user, publisher, booster_user)
+    await db_session.rollback()
+    booster_before = (await _wallet(db_session, booster_id)).available_balance
+    publisher_before = (await _wallet(db_session, publisher_id)).available_balance
+
+    created = await _create_after_sale(client, publisher, order["id"])
+    assert created.status_code == 201, created.text
+    withdrawn = await _withdraw(
+        client, publisher, order["id"], created.json()["id"]
+    )
+    assert withdrawn.status_code == 200, withdrawn.text
+    data = withdrawn.json()
+    assert data["status"] == "CLOSED"
+    assert data["decision_reason"] == "发布人主动撤回"
+    assert data["resolved_at"] is not None
+
+    # 余额不动、无售后流水；打手禁提现闸门释放
+    await db_session.rollback()
+    assert (await _wallet(db_session, booster_id)).available_balance == booster_before
+    assert (await _wallet(db_session, publisher_id)).available_balance == publisher_before
+    assert (
+        await _after_sale_ledger(db_session, order_id=order["id"], user_id=booster_id)
+        == []
+    )
+    allowed = await client.post(
+        "/withdrawals",
+        json={
+            "amount": "40.00",
+            "channel": "ALIPAY",
+            "account_name": "张三",
+            "account_no": "13800000000",
+        },
+        headers=auth_header(booster_user),
+    )
+    assert allowed.status_code == 201, allowed.text
+
+    # 双边撤回通知：打手侧说明提现限制已解除
+    db_session.expire_all()
+    notifications = await db_session.execute(
+        select(Notification).where(
+            Notification.type == NotificationType.AFTERSALES_RESOLVED
+        )
+    )
+    by_user = {
+        row.user_id: (row.title, row.content) for row in notifications.scalars().all()
+    }
+    assert booster_id in by_user and publisher_id in by_user
+    for user_id in (booster_id, publisher_id):
+        assert by_user[user_id][0] == "售后申请已撤回"
+    assert "提现限制已解除" in by_user[booster_id][1]
+    assert "不再处理" in by_user[publisher_id][1]
+
+
+async def test_booster_cannot_withdraw_after_sale(
+    client: AsyncClient,
+    admin_user: dict,
+    booster_user: dict,
+    make_captcha,
+):
+    """打手不是发布者，不能撤诉：403，售后保持 PENDING。"""
+    publisher = await _register(
+        client, make_captcha, "aftersale-withdraw-booster@example.com", "PubWithdrawBooster"
+    )
+    order = await _completed_order(client, admin_user, publisher, booster_user)
+    created = await _create_after_sale(client, publisher, order["id"])
+    assert created.status_code == 201, created.text
+
+    forbidden = await _withdraw(
+        client, booster_user, order["id"], created.json()["id"]
+    )
+    assert forbidden.status_code == 403, forbidden.text
+    assert "只有售后申请发布者" in forbidden.json()["detail"]
+
+    as_booster = await client.get(
+        "/after-sales/mine", params={"role": "booster"}, headers=auth_header(booster_user)
+    )
+    assert as_booster.status_code == 200, as_booster.text
+    assert as_booster.json()[0]["status"] == "PENDING"
+
+
+async def test_withdraw_processed_after_sale_conflicts(
+    client: AsyncClient,
+    admin_user: dict,
+    booster_user: dict,
+    make_captcha,
+):
+    """已 APPROVED 的售后不能再撤诉：409。"""
+    publisher = await _register(
+        client, make_captcha, "aftersale-withdraw-done@example.com", "PubWithdrawDone"
+    )
+    order = await _completed_order(client, admin_user, publisher, booster_user)
+    created = await _create_after_sale(client, publisher, order["id"])
+    assert created.status_code == 201, created.text
+
+    approved = await _review(
+        client, admin_user, created.json()["id"], {"action": "approve"}
+    )
+    assert approved.status_code == 200, approved.text
+
+    conflict = await _withdraw(
+        client, publisher, order["id"], created.json()["id"]
+    )
+    assert conflict.status_code == 409, conflict.text
+    assert "无法撤回" in conflict.json()["detail"]
+
+
+async def test_create_after_sale_blocked_when_order_already_approved(
+    client: AsyncClient,
+    admin_user: dict,
+    booster_user: dict,
+    db_session: AsyncSession,
+    make_captcha,
+):
+    """一单一裁：该单已有 APPROVED 售后时不能再次发起（重复扣款防护）。"""
+    publisher = await _register(
+        client, make_captcha, "aftersale-onepass@example.com", "PubOnePass"
+    )
+    order = await _completed_order(client, admin_user, publisher, booster_user)
+    created = await _create_after_sale(client, publisher, order["id"], amount="30.00")
+    assert created.status_code == 201, created.text
+    assert (await _review(client, admin_user, created.json()["id"], {"action": "approve"})).status_code == 200
+
+    again = await _create_after_sale(client, publisher, order["id"], amount="10.00")
+    assert again.status_code == 400, again.text
+    assert again.json()["detail"] == "该订单已有已裁定通过的售后申请，不能再次发起"
+
+
+async def test_approve_blocked_when_another_approved_exists(
+    client: AsyncClient,
+    admin_user: dict,
+    booster_user: dict,
+    db_session: AsyncSession,
+    make_captcha,
+):
+    """并发双裁兜底：同订单存在另一笔 APPROVED 时 approve 被 400 拦下。
+
+    create 侧已拦多数场景，这里直接插第二笔 PENDING 绕过发起校验，
+    专测 review 分支的权威兜底（唯一键 uq_wallet_tx_order_booster_type 之前）。
+    """
+    from decimal import Decimal as _Decimal
+
+    publisher = await _register(
+        client, make_captcha, "aftersale-dualp@example.com", "PubDual"
+    )
+    order = await _completed_order(client, admin_user, publisher, booster_user)
+    first = await _create_after_sale(client, publisher, order["id"], amount="30.00")
+    assert first.status_code == 201, first.text
+    assert (await _review(client, admin_user, first.json()["id"], {"action": "approve"})).status_code == 200
+
+    # 直接插第二笔 PENDING（绕过 create 的「已有 APPROVED」拦截）
+    second = OrderAfterSale(
+        order_id=order["id"],
+        requester_id=publisher["user"]["id"],
+        booster_id=booster_user["user"]["id"],
+        reason="第二笔售后（绕过发起校验直插）",
+        images=[],
+        amount=_Decimal("20.00"),
+        status=AfterSaleStatus.PENDING,
+    )
+    db_session.add(second)
+    await db_session.commit()
+    await db_session.refresh(second)
+    # id 先取标量：API 调用后实例属性过期，异步会话里再访问会触发懒加载
+    # （MissingGreenlet），后续查询一律用这个 int。
+    second_id = second.id
+
+    resp = await _review(client, admin_user, second_id, {"action": "approve"})
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == "该订单已有已通过的售后申请，不能重复裁定"
+
+    await db_session.rollback()
+    stored = await db_session.execute(
+        select(OrderAfterSale.status).where(OrderAfterSale.id == second_id)
+    )
+    assert stored.scalar_one() == AfterSaleStatus.PENDING

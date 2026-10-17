@@ -458,6 +458,7 @@ function modalTitle() {
   if (modal.value?.type === 'mark-paid') return '标记已打款'
   if (modal.value?.type === 'after-sale-approve') return '通过售后申请'
   if (modal.value?.type === 'after-sale-reject') return '驳回售后申请'
+  if (modal.value?.type === 'after-sale-close') return '取消售后'
   return ''
 }
 
@@ -482,6 +483,21 @@ async function submitModal() {
   if (state.type === 'after-sale-reject' && !state.reason.trim()) {
     state.error = '请填写驳回原因'
     return
+  }
+
+  // 取消售后：必填原因，与驳回同款拦截
+  if (state.type === 'after-sale-close' && !state.reason.trim()) {
+    state.error = '请填写取消原因'
+    return
+  }
+
+  // 裁定额：留空=按申请金额全额扣划（后端默认口径）；填了则必须 >0 且不超过申请金额
+  if (state.type === 'after-sale-approve' && state.amount !== '' && state.amount != null) {
+    const amount = Number(state.amount)
+    if (!Number.isFinite(amount) || amount <= 0 || amount > Number(state.appliedAmount)) {
+      state.error = `裁定额必须大于 0 且不超过申请金额 ${formatPrice(state.appliedAmount)}`
+      return
+    }
   }
 
   if (state.type === 'mark-paid' && !state.payment_reference.trim()) {
@@ -522,11 +538,16 @@ async function submitModal() {
     removeWithdrawalFromSelection(state.withdrawalId)
     message.value = { type: 'success', text: '已标记已打款' }
     await fetchWithdrawals(walletStore.adminWithdrawalsPagination.page)
-  } else if (state.type === 'after-sale-approve' || state.type === 'after-sale-reject') {
-    const action = state.type === 'after-sale-approve' ? 'approve' : 'reject'
+  } else if (state.type === 'after-sale-approve' || state.type === 'after-sale-reject' || state.type === 'after-sale-close') {
+    const action = state.type === 'after-sale-close' ? 'close' : (state.type === 'after-sale-approve' ? 'approve' : 'reject')
     const result = await afterSalesStore.reviewAfterSale(state.afterSaleId, {
       action,
       reason: state.reason.trim(),
+      // 裁定额只随 approve 提交：留空则整个字段不发，走后端「默认按申请金额」；
+      // 填了才传（上面已校验 >0 且不超过申请金额）
+      ...(action === 'approve' && state.amount !== '' && state.amount != null
+        ? { amount: Number(state.amount) }
+        : {}),
     })
     if (!result.success) {
       state.error = result.error || '操作失败'
@@ -535,7 +556,9 @@ async function submitModal() {
     }
     message.value = {
       type: 'success',
-      text: action === 'approve' ? '售后申请已通过，款项已划转' : '售后申请已驳回',
+      text: action === 'approve'
+        ? '售后申请已通过，款项已划转'
+        : action === 'close' ? '售后申请已取消' : '售后申请已驳回',
     }
     await fetchAfterSales(afterSalesStore.adminAfterSalesPagination.page)
   }
@@ -544,8 +567,9 @@ async function submitModal() {
 }
 
 // ── 售后管理 ──
-// 列表/审核统一走 afterSales store；通过=确认弹窗（注明扣划划转），
-// 驳回=必填原因（前端拦截空原因，与驳回提现同口径）。
+// 列表/审核统一走 afterSales store；PENDING 三动作：
+// 售后成功=确认弹窗（可裁额，注明扣划划转）、驳回=必填原因、
+// 取消售后=必填原因（仅关案不扣款）；原因空值前端拦截，与驳回提现同口径。
 const afterSaleStatus = ref('PENDING')
 const afterSaleOrderId = ref('')
 const afterSaleSearch = ref('')
@@ -591,7 +615,10 @@ function openAfterSaleApproveModal(item) {
   modal.value = {
     type: 'after-sale-approve',
     afterSaleId: item.id,
+    // amount = 弹窗内的裁定额（默认=申请金额，直接绑输入框，上方扣划文案随之联动）；
+    // appliedAmount = 申请金额，只读，用于输入框 max / placeholder / 提交校验
     amount: item.amount,
+    appliedAmount: item.amount,
     reason: '',
     error: '',
     submitting: false,
@@ -601,6 +628,18 @@ function openAfterSaleApproveModal(item) {
 function openAfterSaleRejectModal(item) {
   modal.value = {
     type: 'after-sale-reject',
+    afterSaleId: item.id,
+    amount: item.amount,
+    reason: '',
+    error: '',
+    submitting: false,
+  }
+}
+
+// 取消售后：仅关闭案件、不涉及扣款，但必须留原因（与驳回同款必填拦截）
+function openAfterSaleCloseModal(item) {
+  modal.value = {
+    type: 'after-sale-close',
     afterSaleId: item.id,
     amount: item.amount,
     reason: '',
@@ -1605,7 +1644,7 @@ onMounted(async () => {
                 :disabled="afterSalesStore.submitting"
                 @click="openAfterSaleApproveModal(item)"
               >
-                通过
+                售后成功
               </button>
               <button
                 type="button"
@@ -1614,6 +1653,14 @@ onMounted(async () => {
                 @click="openAfterSaleRejectModal(item)"
               >
                 驳回
+              </button>
+              <button
+                type="button"
+                class="btn-secondary min-h-[44px] !px-4 !py-2"
+                :disabled="afterSalesStore.submitting"
+                @click="openAfterSaleCloseModal(item)"
+              >
+                取消售后
               </button>
             </template>
             <span v-else class="text-xs text-ink-3">已处理</span>
@@ -1767,7 +1814,7 @@ onMounted(async () => {
             {{
               modal.type === 'assign'
                 ? `订单 #${modal.orderId} ${modal.gameName || ''}`
-                : modal.type === 'after-sale-approve' || modal.type === 'after-sale-reject'
+                : modal.type === 'after-sale-approve' || modal.type === 'after-sale-reject' || modal.type === 'after-sale-close'
                   ? `售后 #${modal.afterSaleId} · ${formatPrice(modal.amount)}`
                   : `提现 #${modal.withdrawalId} · ${formatPrice(modal.amount)}`
             }}
@@ -1795,9 +1842,33 @@ onMounted(async () => {
               通过将从打手账户扣划 {{ formatPrice(modal.amount) }} 划转给老板，请确认售后核实无误。
             </div>
 
-            <div v-if="modal.type === 'after-sale-approve' || modal.type === 'after-sale-reject'">
+            <!-- 裁定额：默认=申请金额（不改即全额扣划），不得超过申请金额 -->
+            <div v-if="modal.type === 'after-sale-approve'">
+              <label class="label" for="after-sale-approve-amount">裁定额（默认按申请金额）</label>
+              <input
+                id="after-sale-approve-amount"
+                v-model="modal.amount"
+                type="number"
+                min="0.01"
+                :max="modal.appliedAmount"
+                step="0.01"
+                class="input"
+                :placeholder="`默认按申请金额 ${formatPrice(modal.appliedAmount)} 扣划`"
+              />
+              <p class="helper-text">留空提交按申请金额全额扣划；裁定额需大于 0 且不超过申请金额。</p>
+            </div>
+
+            <div v-if="modal.type === 'after-sale-close'" class="message-warning">
+              取消仅关闭案件，不涉及扣款；取消后该单可重新发起售后。
+            </div>
+
+            <div v-if="modal.type === 'after-sale-approve' || modal.type === 'after-sale-reject' || modal.type === 'after-sale-close'">
               <label class="label" for="after-sale-review-reason">
-                {{ modal.type === 'after-sale-approve' ? '处理备注（选填）' : '驳回原因（必填）' }}
+                {{
+                  modal.type === 'after-sale-approve'
+                    ? '处理备注（选填）'
+                    : modal.type === 'after-sale-close' ? '取消原因（必填）' : '驳回原因（必填）'
+                }}
               </label>
               <textarea
                 id="after-sale-review-reason"

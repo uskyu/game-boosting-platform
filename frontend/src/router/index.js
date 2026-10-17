@@ -118,12 +118,6 @@ const routes = [
     props: true,
   },
   {
-    path: '/support',
-    name: 'support',
-    component: () => import('@/views/CustomerServiceView.vue'),
-    meta: { title: '联系管理员', requiresAuth: true }
-  },
-  {
     path: '/notifications',
     name: 'notifications',
     redirect: { name: 'message-center', query: { tab: 'notifications' } },
@@ -201,7 +195,7 @@ router.beforeEach(async (to, from, next) => {
   // 弱网下串行等待它会推迟整个页面的首个绘制。
   const setDocTitle = () => {
     const brand = siteStore.settings.site_name || '游戏服务平台'
-    document.title = to.name === 'support' ? '联系管理员' : `${to.meta.title || brand} - ${brand}`
+    document.title = `${to.meta.title || brand} - ${brand}`
   }
   setDocTitle()
   siteStore.fetchSettings().then(setDocTitle)

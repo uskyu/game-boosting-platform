@@ -6,13 +6,14 @@ import time
 from typing import Annotated, Any
 
 from fastapi import APIRouter, File, Query, UploadFile, WebSocket, WebSocketDisconnect, status
+from pydantic import BaseModel
 from sqlalchemy import select
 
 from app.api.deps import CurrentUser, DatabaseSession
 from app.core.security import verify_token
 from app.db.session import async_session_factory
 from app.models.chat import Conversation, ConversationParticipant, Message
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.schemas.chat import (
     ChatMessageResponse,
     ChatUserBrief,
@@ -369,6 +370,50 @@ async def chat_websocket(websocket: WebSocket) -> None:
             close_code,
             time.monotonic() - connected_at,
         )
+
+
+class AdminTargetResponse(BaseModel):
+    """「联系管理员 / 联系平台协助」的会话目标。
+
+    响应模型内联在本文件：该端点只服务前端直达会话的导航，
+    不属于 schemas/chat.py 的会话序列化体系。
+    """
+
+    admin_id: int
+    admin_username: str
+
+
+@router.get(
+    "/admin-target",
+    response_model=AdminTargetResponse,
+    summary="获取管理员会话目标",
+    description="返回第一个活跃管理员，供「联系管理员 / 联系平台协助」一键直达会话",
+)
+async def get_admin_target(
+    current_user: CurrentUser,
+    db: DatabaseSession,
+) -> AdminTargetResponse:
+    # 取管理员逻辑迁移自已下线的 AI 客服转人工（原 endpoints/support.py）：
+    # 任何登录用户都可发起，目标固定为 id 最小的活跃管理员；排除本人，
+    # 避免管理员点「联系管理员」时拿到自己（后端禁止与自己建会话）。
+    result = await db.execute(
+        select(User)
+        .where(
+            User.role == UserRole.ADMIN,
+            User.is_active.is_(True),
+            User.id != current_user.id,
+        )
+        .order_by(User.id.asc())
+        .limit(1)
+    )
+    admin = result.scalar_one_or_none()
+    if admin is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="暂无在线的管理员",
+        )
+
+    return AdminTargetResponse(admin_id=admin.id, admin_username=admin.username)
 
 
 @router.post(

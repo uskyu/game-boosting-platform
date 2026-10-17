@@ -4,15 +4,19 @@ import { useRoute, useRouter } from 'vue-router'
 
 import { useChatStore } from '@/stores/chat'
 import { useAuthStore } from '@/stores/auth'
+import { useAfterSalesStore, isPendingAfterSale } from '@/stores/afterSales'
 import { useOrdersStore } from '@/stores/orders'
+import AfterSaleStatusModal from '@/components/AfterSaleStatusModal.vue'
 import { formatCount, formatDateTime, formatOrderPrice, formatPayoutDelay, formatPrice, formatShortDate } from '@/utils/display'
 import { ORDER_STATUS_OPTIONS, CANCEL_PENDING_CLAIM_META, getClaimSettlementMeta, getOrderDisplayStatus, getOrderStatusBadgeClass, getOrderStatusLabel, isClaimCancelPending } from '@/utils/order'
+import { buildAfterSaleAssistMessage } from '@/utils/afterSaleAssist'
 
 const route = useRoute()
 const router = useRouter()
 const chatStore = useChatStore()
 const authStore = useAuthStore()
 const ordersStore = useOrdersStore()
+const afterSalesStore = useAfterSalesStore()
 
 // 双栏：我的接单（claims/mine）/ 我的派单（自己发布的订单）
 // 搜索与 Tab 状态同步进 URL query：从详情页/其他页面返回、刷新、前进后退都能恢复，
@@ -243,6 +247,8 @@ function switchTab(tab) {
     fetchOrders()
   } else if (!authStore.isAdmin) {
     fetchClaims(1)
+    // 售后兜底数据随 claims tab 一起刷新，避免「联系平台协助」停在旧状态
+    afterSalesStore.fetchMyAfterSales({ role: 'booster', status: 'pending' })
   }
   syncQuery(1)
 }
@@ -346,9 +352,71 @@ function rebuildOrder(orderId) {
   router.push({ path: '/orders/create', query: { recycle: String(orderId), mode: 'rebuild' } })
 }
 
-// 售后申请：仅已完成单可发起；该单有进行中售后时按钮禁用（after_sale_pending）
+// 售后申请：仅已完成单可发起；该单有进行中售后时按钮禁跳申请页，
+// 改开「售后处理中」状态弹窗（可查看案情并撤回售后）。
 function goToAfterSaleApply(orderId) {
   router.push({ name: 'afterSaleApply', params: { id: orderId } })
+}
+
+// 售后处理中弹窗（老板侧）：afterSaleStatusOrderId 非空即打开
+const afterSaleStatusOrderId = ref(null)
+const afterSaleStatusOpen = computed({
+  get: () => afterSaleStatusOrderId.value != null,
+  set: (open) => {
+    if (!open) afterSaleStatusOrderId.value = null
+  },
+})
+
+function openAfterSaleStatus(order) {
+  afterSaleStatusOrderId.value = order.id
+}
+
+// 撤回成功后刷新派单列表：按钮恢复可发起，after_sale_pending 标记由列表接口重算
+function onAfterSaleWithdrawn() {
+  fetchOrders()
+}
+
+// 售后兜底（仅 claims 卡片用）：打手进行中售后 → 「联系平台协助」直达管理员
+// 会话，预填案情。数据源为「我的售后」（role=booster, status=pending），
+// 按 order_id 与报名卡片匹配；金额取售后记录本身。
+function getPendingAfterSale(claim) {
+  const orderId = Number(claim.order?.id || claim.order_id)
+  if (!orderId) {
+    return null
+  }
+  return afterSalesStore.myAfterSales.find(
+    (item) => isPendingAfterSale(item) && Number(item.order_id) === orderId
+  ) || null
+}
+
+const afterSaleAssistLoadingId = ref(null)
+const afterSaleAssistMessage = ref({ type: '', text: '' })
+
+async function contactPlatformForClaim(claim) {
+  const orderId = Number(claim.order?.id || claim.order_id)
+  const pending = getPendingAfterSale(claim)
+  if (!orderId || !pending || afterSaleAssistLoadingId.value) {
+    return
+  }
+  afterSaleAssistLoadingId.value = orderId
+  afterSaleAssistMessage.value = { type: '', text: '' }
+  try {
+    const result = await chatStore.startAdminConversation({
+      presetMessage: buildAfterSaleAssistMessage({ orderId, amount: pending.amount }),
+    })
+    if (result.success && result.data) {
+      router.push({ name: 'chat-detail', params: { id: result.data.id } })
+    } else if (result.success) {
+      // stale：会话其实已在服务端创建成功，只是本地会话上下文已切换
+      afterSaleAssistMessage.value = { type: 'info', text: '会话已创建，请到消息中心查看' }
+    } else {
+      afterSaleAssistMessage.value = { type: 'error', text: result.error || '联系平台失败，请稍后重试' }
+    }
+  } catch (err) {
+    afterSaleAssistMessage.value = { type: 'error', text: err?.message || '联系平台失败，请稍后重试' }
+  } finally {
+    afterSaleAssistLoadingId.value = null
+  }
 }
 
 function repeatOrder(orderId) {
@@ -405,6 +473,10 @@ onMounted(async () => {
     !authStore.isAdmin && activeTab.value === 'claims' ? fetchClaims() : Promise.resolve(),
     chatStore.fetchConversations({ pageSize: 20 }),
     chatStore.fetchUnreadSummary(),
+    // 售后兜底：打手进行中售后 → claims 卡片「联系平台协助」（按 order_id 匹配）
+    !authStore.isAdmin && activeTab.value === 'claims'
+      ? afterSalesStore.fetchMyAfterSales({ role: 'booster', status: 'pending' })
+      : Promise.resolve(),
   ])
 })
 
@@ -488,6 +560,15 @@ onUnmounted(() => {
         </button>
       </div>
 
+      <!-- 售后兜底「联系平台协助」的就近反馈（打开会话失败 / 会话已创建） -->
+      <div
+        v-if="afterSaleAssistMessage.text"
+        class="flex flex-wrap items-center gap-x-3 gap-y-1"
+        :class="afterSaleAssistMessage.type === 'error' ? 'message-error' : 'message-info'"
+      >
+        <span class="min-w-0 flex-1">{{ afterSaleAssistMessage.text }}</span>
+      </div>
+
       <section v-if="claimsLoading && !hasClaimsCache" class="space-y-3" aria-busy="true">
         <div v-for="n in 3" :key="`cs-${n}`" class="skeleton-row">
           <div class="flex-1 space-y-3">
@@ -514,12 +595,24 @@ onUnmounted(() => {
                 <div class="flex flex-wrap items-center gap-2">
                   <span :class="getClaimSettlementDisplayMeta(claim).tagClass">{{ getClaimSettlementDisplayMeta(claim).label }}</span>
                   <span v-if="claim.order?.status === 'DISPUTED'" class="tag !bg-danger-soft !text-danger">订单争议中</span>
+                  <!-- 售后兜底：该单有我作为打手的进行中售后时标记出来 -->
+                  <span v-if="getPendingAfterSale(claim)" class="tag !bg-warning-soft !text-warning">售后处理中</span>
                   <!-- 发单员申请取消时直扣的保证金：打手在这里看到自己被扣了多少钱 -->
                   <span v-if="Number(claim.approved_deduction) > 0" class="tag !bg-danger-soft !text-danger">扣款 {{ formatPrice(claim.approved_deduction) }}</span>
                 </div>
                 <p class="mt-2 truncate text-[13px] text-ink-3">
                   {{ formatShortDate(claim.created_at) }} · 订单 #{{ claim.order?.id || claim.order_id }}<template v-if="claim.order?.boss_contact"> · 老板ID {{ claim.order.boss_contact }}</template><template v-if="claim.delivered_at"> · 交付于 {{ formatDateTime(claim.delivered_at) }}</template>
                 </p>
+                <!-- 售后兜底：暂时联系不上发单人时直达平台管理员，预填售后案情 -->
+                <button
+                  v-if="getPendingAfterSale(claim)"
+                  type="button"
+                  class="btn-ghost mt-2 !px-3 !py-1 !text-xs"
+                  :disabled="afterSaleAssistLoadingId === Number(claim.order?.id || claim.order_id)"
+                  @click.stop="contactPlatformForClaim(claim)"
+                >
+                  {{ afterSaleAssistLoadingId === Number(claim.order?.id || claim.order_id) ? '打开中...' : '联系平台协助' }}
+                </button>
               </div>
               <div class="flex shrink-0 gap-2">
                 <div class="info-tile info-tile--compact">
@@ -632,8 +725,8 @@ onUnmounted(() => {
                 v-if="order.status === 'COMPLETED'"
                 type="button"
                 class="btn-danger !px-4 !py-2"
-                :disabled="order.after_sale_pending"
-                @click.stop="goToAfterSaleApply(order.id)"
+                :class="order.after_sale_pending ? 'opacity-60' : ''"
+                @click.stop="order.after_sale_pending ? openAfterSaleStatus(order) : goToAfterSaleApply(order.id)"
               >
                 {{ order.after_sale_pending ? '售后处理中' : '售后' }}
               </button>
@@ -676,6 +769,13 @@ onUnmounted(() => {
           </div>
         </div>
       </section>
+
+      <!-- 售后处理中：查看案情 / 撤回售后（老板侧） -->
+      <AfterSaleStatusModal
+        v-model="afterSaleStatusOpen"
+        :order-id="afterSaleStatusOrderId"
+        @withdrawn="onAfterSaleWithdrawn"
+      />
     </template>
   </div>
 </template>

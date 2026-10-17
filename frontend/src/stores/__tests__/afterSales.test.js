@@ -167,4 +167,42 @@ describe('afterSales store', () => {
     const failed = await store.reviewAfterSale(1, { action: 'approve' })
     expect(failed).toEqual({ success: false, error: '售后单已处理，请勿重复操作' })
   })
+
+  it('reviewAfterSale sends the adjusted amount only for approve', async () => {
+    const store = useAfterSalesStore()
+    apiPost.mockResolvedValueOnce({ data: makeAfterSale(1, 'APPROVED') })
+
+    await store.reviewAfterSale(1, { action: 'approve', reason: '各让一步', amount: 20 })
+    expect(apiPost).toHaveBeenCalledWith('/admin/after-sales/1/review', {
+      action: 'approve',
+      reason: '各让一步',
+      amount: 20,
+    })
+
+    // close / reject 不传 amount；approve 未裁额时也不传（走后端默认全额）
+    apiPost.mockResolvedValueOnce({ data: makeAfterSale(2, 'CLOSED') })
+    await store.reviewAfterSale(2, { action: 'close', reason: '老板撤诉' })
+    expect(apiPost).toHaveBeenLastCalledWith('/admin/after-sales/2/review', {
+      action: 'close',
+      reason: '老板撤诉',
+    })
+
+    apiPost.mockResolvedValueOnce({ data: makeAfterSale(3, 'APPROVED') })
+    await store.reviewAfterSale(3, { action: 'approve' })
+    expect(apiPost).toHaveBeenLastCalledWith('/admin/after-sales/3/review', { action: 'approve' })
+  })
+
+  it('withdrawAfterSale posts to the withdraw endpoint and unwraps failures', async () => {
+    const store = useAfterSalesStore()
+    apiPost.mockResolvedValueOnce({ data: makeAfterSale(1, 'CLOSED') })
+
+    const ok = await store.withdrawAfterSale(12, 1)
+    expect(apiPost).toHaveBeenCalledWith('/orders/12/after-sales/1/withdraw')
+    expect(ok.success).toBe(true)
+    expect(store.submitting).toBe(false)
+
+    apiPost.mockRejectedValueOnce({ message: '该售后申请已处理，无法撤回' })
+    const failed = await store.withdrawAfterSale(12, 1)
+    expect(failed).toEqual({ success: false, error: '该售后申请已处理，无法撤回' })
+  })
 })

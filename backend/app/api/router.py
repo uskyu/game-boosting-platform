@@ -36,7 +36,6 @@ from app.api.endpoints import (
     search_router,
     site_router,
     services_router,
-    support_router,
     users_router,
     wallet_router,
     withdrawals_router,
@@ -82,7 +81,6 @@ api_router.include_router(services_router)
 api_router.include_router(search_router)
 api_router.include_router(site_router)
 api_router.include_router(reviews_router)
-api_router.include_router(support_router)
 api_router.include_router(wallet_router)
 api_router.include_router(recharge_router)
 api_router.include_router(withdrawals_router)

@@ -12,6 +12,8 @@ export const AFTER_SALE_STATUS_META = {
   PENDING: { label: '待处理', tagClass: '!bg-warning-soft !text-warning' },
   APPROVED: { label: '已通过', tagClass: '!bg-success-soft !text-success' },
   REJECTED: { label: '已驳回', tagClass: '!bg-danger-soft !text-danger' },
+  // 已取消：老板撤诉或后台「取消售后」的终态，不涉及扣款
+  CLOSED: { label: '已取消', tagClass: '!bg-surface-3 !text-ink-2' },
 }
 
 export const AFTER_SALE_STATUS_OPTIONS = [
@@ -19,6 +21,7 @@ export const AFTER_SALE_STATUS_OPTIONS = [
   { value: 'PENDING', label: '待处理' },
   { value: 'APPROVED', label: '已通过' },
   { value: 'REJECTED', label: '已驳回' },
+  { value: 'CLOSED', label: '已取消' },
 ]
 
 export function getAfterSaleStatusLabel(status) {
@@ -149,14 +152,32 @@ export const useAfterSalesStore = defineStore('afterSales', () => {
     }
   }
 
-  // POST /admin/after-sales/{id}/review —— body { action: 'approve'|'reject', reason }
+  // POST /admin/after-sales/{id}/review —— body { action: 'approve'|'reject'|'close', reason?, amount? }
+  // approve 可带 amount（裁定额，默认=申请金额，不得超申请金额）；reject/close 必填 reason
   async function reviewAfterSale(id, payload = {}) {
     submitting.value = true
     error.value = null
     try {
       const body = { action: payload.action }
       if (payload.reason) body.reason = payload.reason
+      // 仅 approve 传裁定额：没传时走后端默认（按申请金额扣划）
+      if (payload.amount != null) body.amount = payload.amount
       const response = await api.post(`/admin/after-sales/${id}/review`, body)
+      return { success: true, data: response.data }
+    } catch (err) {
+      error.value = err.message
+      return { success: false, error: err.message }
+    } finally {
+      submitting.value = false
+    }
+  }
+
+  // POST /orders/{orderId}/after-sales/{afterSaleId}/withdraw —— 老板撤诉（仅 PENDING 可撤）
+  async function withdrawAfterSale(orderId, afterSaleId) {
+    submitting.value = true
+    error.value = null
+    try {
+      const response = await api.post(`/orders/${orderId}/after-sales/${afterSaleId}/withdraw`)
       return { success: true, data: response.data }
     } catch (err) {
       error.value = err.message
@@ -182,5 +203,6 @@ export const useAfterSalesStore = defineStore('afterSales', () => {
     uploadAfterSaleImage,
     fetchAdminAfterSales,
     reviewAfterSale,
+    withdrawAfterSale,
   }
 })

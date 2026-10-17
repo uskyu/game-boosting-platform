@@ -33,15 +33,27 @@ describe('售后入口按钮（OrderList 我的派单卡片）', () => {
     const button = listSource.slice(buttonIndex - 400, buttonIndex + 60)
     expect(button).toMatch(/v-if="order\.status === 'COMPLETED'"/)
     expect(button).toMatch(/class="btn-danger !px-4 !py-2"/)
-    // 点击不能顺带触发卡片的整卡跳转
-    expect(button).toMatch(/@click\.stop="goToAfterSaleApply\(order\.id\)"/)
+    // 点击不能顺带触发卡片的整卡跳转；pending 时改开状态弹窗（见下条）
+    expect(button).toMatch(/@click\.stop="order\.after_sale_pending \? openAfterSaleStatus\(order\) : goToAfterSaleApply\(order\.id\)"/)
   })
 
-  it('disables the button and relabels it while an after-sale is pending', () => {
+  it('opens the after-sale status modal (instead of disabling) while pending', () => {
     const buttonIndex = listSource.indexOf('goToAfterSaleApply(order.id)')
     const button = listSource.slice(buttonIndex - 400, buttonIndex + 200)
-    expect(button).toMatch(/:disabled="order\.after_sale_pending"/)
+    expect(button).toMatch(/order\.after_sale_pending \? openAfterSaleStatus\(order\) : goToAfterSaleApply\(order\.id\)/)
     expect(button).toMatch(/\{\{ order\.after_sale_pending \? '售后处理中' : '售后' \}\}/)
+    // 处理中不再禁用：老板要能进去看案情并撤诉
+    expect(button).not.toMatch(/:disabled="order\.after_sale_pending"/)
+  })
+
+  it('wires the AfterSaleStatusModal with withdraw refresh', () => {
+    expect(listSource).toMatch(/import AfterSaleStatusModal from '@\/components\/AfterSaleStatusModal\.vue'/)
+    expect(listSource).toMatch(/<AfterSaleStatusModal/)
+    expect(listSource).toMatch(/v-model="afterSaleStatusOpen"/)
+    expect(listSource).toMatch(/:order-id="afterSaleStatusOrderId"/)
+    expect(listSource).toMatch(/@withdrawn="onAfterSaleWithdrawn"/)
+    // 撤回成功后刷新派单列表，按钮态与 after_sale_pending 标记由接口重算
+    expect(listSource).toMatch(/function onAfterSaleWithdrawn\(\)\s*\{\s*fetchOrders\(\)/)
   })
 
   it('sits before 重建订单 in the card action row', () => {

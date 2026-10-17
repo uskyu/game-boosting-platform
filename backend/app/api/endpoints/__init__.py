@@ -38,7 +38,6 @@ from app.api.endpoints.reviews import router as reviews_router
 from app.api.endpoints.search import router as search_router
 from app.api.endpoints.site import router as site_router
 from app.api.endpoints.services import router as services_router
-from app.api.endpoints.support import router as support_router
 from app.api.endpoints.users import router as users_router
 from app.api.endpoints.wallet import router as wallet_router, withdrawals_router
 
@@ -70,7 +69,6 @@ __all__ = [
     "search_router",
     "site_router",
     "services_router",
-    "support_router",
     "users_router",
     "wallet_router",
     "withdrawals_router",

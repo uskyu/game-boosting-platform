@@ -15,13 +15,15 @@ class AfterSaleStatus(str, PyEnum):
     PENDING = "PENDING"
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
+    CLOSED = "CLOSED"
 
 
 class OrderAfterSale(Base):
     """An after-sale claim raised by the order publisher on a COMPLETED order.
 
     售后单 PENDING 期间该单打手禁止提现；管理员审阅通过/驳回，通过时的
-    扣款划转由 after_sale_service.settle_approved_funds 承接。
+    扣款划转由 after_sale_service.settle_approved_funds 承接。CLOSED 为
+    平台未做裁定的关结态：管理员关闭或老板主动撤回，均不动资金。
     """
 
     __tablename__ = "order_after_sales"

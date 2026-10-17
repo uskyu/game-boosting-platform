@@ -665,6 +665,50 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  // 联系管理员 / 售后兜底「联系平台协助」共用入口：先取在线管理员，再直达会话，
+  // 可选预填一条消息（售后兜底的案情说明）。原 AI 客服页已下线，人工沟通
+  // 统一收敛到这条路。
+  // 直达平台管理员会话：admin-target 拿第一个活跃管理员 → 建 PRIVATE 会话
+  // （不带 order_id：管理员不是订单参与方，带 order_id 会撞订单会话校验）→
+  // 可选发送预填案情（订单号/金额由 presetMessage 承载，不依赖订单会话）。
+  async function startAdminConversation({ presetMessage = '' } = {}) {
+    await ensureAuthReady()
+    const authContext = captureAuthContext()
+    if (!isCurrentAuthContext(authContext)) return { success: false, stale: true }
+
+    let adminId = null
+    try {
+      const response = await api.get('/chat/admin-target')
+      if (!isCurrentAuthContext(authContext)) return { success: false, stale: true }
+      adminId = response.data?.admin_id ?? null
+    } catch (err) {
+      if (!isCurrentAuthContext(authContext)) return { success: false, stale: true, error: err.message }
+      error.value = err.message
+      return { success: false, error: err.message }
+    }
+
+    if (!adminId) {
+      const message = '暂无在线的管理员，请稍后重试'
+      error.value = message
+      return { success: false, error: message }
+    }
+
+    // 不带 order_id：管理员不是任何订单的参与方，带 order_id 会走订单会话
+    // 的参与者校验被 400 拦下；案情（订单号/金额）由 presetMessage 承载。
+    const conversationResult = await startConversation(adminId, null)
+    if (!conversationResult.success || !conversationResult.data) {
+      return conversationResult
+    }
+
+    const preset = presetMessage?.trim()
+    if (preset) {
+      // 预填消息失败不阻断：会话已建成，用户落到聊天页可手动补发案情
+      await sendMessage(conversationResult.data.id, preset)
+    }
+
+    return conversationResult
+  }
+
   async function markRead(conversationId, messageId = null) {
     const authContext = captureAuthContext()
     if (!isCurrentAuthContext(authContext)) return { success: false, stale: true }
@@ -1230,6 +1274,7 @@ export const useChatStore = defineStore('chat', () => {
     sendMessage,
     sendImage,
     startConversation,
+    startAdminConversation,
     markRead,
     recallMessage,
     deleteMessage,

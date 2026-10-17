@@ -1,7 +1,7 @@
 """售后申请 API。
 
-老板（订单发布者）对已完成订单发起/查询售后、上传凭证图片、查看「我的售后」；
-管理员在后台审阅并通过/驳回。
+老板（订单发布者）对已完成订单发起/查询售后、上传凭证图片、查看「我的售后」、
+撤回待处理售后；管理员在后台审阅并通过/驳回/关闭。
 
 路径约定与取消协商（/orders/{id}/cancel-requests）保持一致：订单维度的售后
 挂在 /orders 下，个人维度走 /after-sales，后台走 /admin/after-sales。
@@ -33,6 +33,7 @@ from app.services.after_sale_service import (
     list_my_after_sales,
     list_order_after_sales,
     review_after_sale,
+    withdraw_after_sale,
 )
 from app.services.file_service import save_image_bytes, validate_image_upload
 
@@ -163,7 +164,7 @@ async def list_my_after_sale_records(
     ] = "requester",
     status_filter: Annotated[
         str | None,
-        Query(alias="status", description="按售后状态筛选：PENDING/APPROVED/REJECTED"),
+        Query(alias="status", description="按售后状态筛选：PENDING/APPROVED/REJECTED/CLOSED"),
     ] = None,
 ) -> list[AfterSaleItem]:
     items = await list_my_after_sales(
@@ -183,7 +184,7 @@ async def list_after_sales_for_admin(
     current_admin: Annotated[User, Depends(get_current_admin)],
     status_filter: Annotated[
         str | None,
-        Query(alias="status", description="按售后状态筛选：PENDING/APPROVED/REJECTED"),
+        Query(alias="status", description="按售后状态筛选：PENDING/APPROVED/REJECTED/CLOSED"),
     ] = None,
     order_id: Annotated[int | None, Query(description="按订单 ID 筛选")] = None,
     q: Annotated[
@@ -211,11 +212,45 @@ async def list_after_sales_for_admin(
     )
 
 
+@after_sales_router.post(
+    "/orders/{order_id}/after-sales/{after_sale_id}/withdraw",
+    response_model=AfterSaleItem,
+    summary="撤回售后申请",
+    description="仅售后发布者本人可撤回待处理（PENDING）售后；撤回不动资金，打手提现限制解除",
+)
+async def withdraw_order_after_sale(
+    order_id: int,
+    after_sale_id: int,
+    current_user: CurrentUser,
+    db: DatabaseSession,
+) -> AfterSaleItem:
+    """老板撤诉：行锁售后单后交给 service 校验身份与状态（仅本人、仅 PENDING）。"""
+    result = await db.execute(
+        select(OrderAfterSale)
+        .where(
+            OrderAfterSale.id == after_sale_id,
+            OrderAfterSale.order_id == order_id,
+        )
+        .with_for_update()
+    )
+    after_sale = result.scalar_one_or_none()
+    if after_sale is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="售后申请不存在"
+        )
+    await withdraw_after_sale(db, after_sale=after_sale, user=current_user)
+    item = await get_after_sale_item(db, after_sale.id)
+    return AfterSaleItem.model_validate(item)
+
+
 @admin_after_sales_router.post(
     "/{after_sale_id}/review",
     response_model=AfterSaleItem,
     summary="审阅售后申请",
-    description="approve=通过（扣款划转由结算逻辑承接）；reject=驳回（必须填原因）",
+    description=(
+        "approve=通过（可传 amount 调裁定扣款额，默认=申请金额，划转由结算逻辑承接）；"
+        "reject=驳回、close=关闭（平台未做裁定），两者必须填原因"
+    ),
 )
 async def review_after_sale_record(
     after_sale_id: int,
@@ -237,6 +272,7 @@ async def review_after_sale_record(
         admin=current_admin,
         action=payload.action,
         reason=payload.reason,
+        amount=payload.amount,
     )
     item = await get_after_sale_item(db, after_sale.id)
     return AfterSaleItem.model_validate(item)

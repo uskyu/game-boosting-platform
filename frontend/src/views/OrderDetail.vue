@@ -6,10 +6,12 @@ import Lightbox from '@/components/Lightbox.vue'
 import OrderDeliverModal from '@/components/OrderDeliverModal.vue'
 import OrderTimeline from '@/components/OrderTimeline.vue'
 import { useAuthStore } from '@/stores/auth'
+import { useAfterSalesStore } from '@/stores/afterSales'
 import { useChatStore } from '@/stores/chat'
 import { useOrdersStore } from '@/stores/orders'
 import { getGameImage } from '@/data/gameImages'
 import api from '@/utils/api'
+import { buildAfterSaleAssistMessage } from '@/utils/afterSaleAssist'
 import { formatDateTime, formatDueCountdown, formatFeeRate, formatMoneyFixed, formatOrderPrice, formatPayoutDelay, formatPrice, formatSettlementDelay, formatShortDate, getAcceptWaitMeta, serverNow } from '@/utils/display'
 import { CANCEL_PENDING_CLAIM_META, getClaimSettlementMeta, getOrderStatusBadgeClass, getOrderStatusLabel, getOrderStatusMeta, getHumanStatusLabel, getHumanStatusSubtitle } from '@/utils/order'
 import { measureOrderFlowStage } from '@/utils/orderFlowTiming'
@@ -25,6 +27,7 @@ const router = useRouter()
 const authStore = useAuthStore()
 const chatStore = useChatStore()
 const ordersStore = useOrdersStore()
+const afterSalesStore = useAfterSalesStore()
 
 const errorMessage = ref('')
 const successMessage = ref('')
@@ -1066,6 +1069,60 @@ async function handleStartConversation() {
   }
 }
 
+// 联系管理员：原 /support AI 客服页已下线，改为直达管理员会话；
+// presetMessage 供售后兜底预填案情。loading/错误处理结构照抄 handleStartConversation。
+async function handleContactAdmin(options = {}) {
+  // 重入 guard：请求在飞时忽略连点，避免重复创建会话
+  if (chatLoading.value) {
+    return
+  }
+
+  chatLoading.value = true
+  errorMessage.value = ''
+  chatError.value = ''
+  successMessage.value = ''
+  try {
+    const result = await chatStore.startAdminConversation({
+      presetMessage: options.presetMessage || '',
+    })
+    if (result.success && result.data) {
+      router.push({ name: 'chat-detail', params: { id: result.data.id } })
+    } else if (result.success) {
+      // stale：会话其实已在服务端创建成功，只是本地会话上下文已切换
+      successMessage.value = '会话已创建，请到消息中心查看'
+    } else {
+      errorMessage.value = result.error || '打开会话失败，请稍后重试'
+      chatError.value = result.error || '打开会话失败，请稍后重试'
+    }
+  } catch (err) {
+    errorMessage.value = err?.message || '打开会话失败，请稍后重试'
+    chatError.value = err?.message || '打开会话失败，请稍后重试'
+  } finally {
+    // 任何路径都要复位，否则按钮永久停在"打开中..."
+    chatLoading.value = false
+  }
+}
+
+// 售后兜底：打手视角且本单有进行中售后时，展示「联系平台协助」入口。
+// 金额取自「我的售后」列表（按 order_id 局部匹配，全局 store 按需拉取，
+// 不影响页面其他逻辑）；拉取失败时省略金额，入口仍可用。
+const showAfterSaleAssist = computed(() => (
+  isBooster.value && !isOwner.value && order.value?.after_sale_pending === true
+))
+const myPendingAfterSale = computed(() => {
+  if (!showAfterSaleAssist.value) {
+    return null
+  }
+  const orderId = Number(order.value?.id)
+  return afterSalesStore.myAfterSales.find(
+    (item) => item?.status === 'PENDING' && Number(item.order_id) === orderId
+  ) || null
+})
+const afterSaleAssistMessage = computed(() => buildAfterSaleAssistMessage({
+  orderId: order.value?.id,
+  amount: myPendingAfterSale.value?.amount,
+}))
+
 async function fetchReviews(orderId = order.value?.id, loadSeq = detailLoadSeq) {
   if (!orderId || order.value?.status !== 'COMPLETED') {
     if (loadSeq === detailLoadSeq && String(props.id) === String(orderId)) {
@@ -1152,6 +1209,10 @@ async function loadDetail(orderId) {
     await Promise.all([
       fetchReviews(orderId, loadSeq),
       loadClaims(orderId, loadSeq),
+      // 售后兜底数据：仅打手视角且本单有进行中售后时才拉（按 order_id 局部匹配）
+      showAfterSaleAssist.value
+        ? afterSalesStore.fetchMyAfterSales({ role: 'booster', status: 'pending' })
+        : Promise.resolve(),
     ])
     if (loadSeq !== detailLoadSeq || String(props.id) !== String(orderId)) {
       return
@@ -1681,6 +1742,17 @@ onUnmounted(() => {
               申请平台介入
             </button>
 
+            <!-- 售后兜底：暂时联系不上发单人时，直达平台管理员会话并预填售后案情 -->
+            <button
+              v-if="showAfterSaleAssist"
+              type="button"
+              class="od-ops__chip btn-secondary w-full py-3"
+              :disabled="chatLoading"
+              @click="handleContactAdmin({ presetMessage: afterSaleAssistMessage })"
+            >
+              {{ chatLoading ? '打开中...' : '售后处理中·联系平台协助' }}
+            </button>
+
             <!-- 有待处理的取消协同时，提示进详情区处理（同意/拒绝） -->
             <span
               v-if="myPendingCancelRequest"
@@ -1733,9 +1805,10 @@ onUnmounted(() => {
                 v-else-if="isOwner || isAssignedBooster"
                 type="button"
                 class="btn-secondary w-full py-3"
-                @click="router.push({ name: 'support' })"
+                :disabled="chatLoading"
+                @click="handleContactAdmin()"
               >
-                联系管理员
+                {{ chatLoading ? '打开中...' : '联系管理员' }}
               </button>
             </template>
 

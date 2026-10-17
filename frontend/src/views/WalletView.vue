@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 
 import { useAuthStore } from '@/stores/auth'
 import { useAfterSalesStore } from '@/stores/afterSales'
+import { useChatStore } from '@/stores/chat'
 import { useOrdersStore } from '@/stores/orders'
 import { useWalletStore } from '@/stores/wallet'
 import { useWithdrawalSettingsStore } from '@/stores/withdrawalSettings'
@@ -16,6 +17,7 @@ import {
   getWithdrawalStatusTagClass,
 } from '@/stores/wallet'
 import { getClaimSettlementMeta } from '@/utils/order'
+import { buildAfterSaleAssistMessage } from '@/utils/afterSaleAssist'
 import { formatCount, formatDateTime, formatOrderPrice, formatPrice, serverNow } from '@/utils/display'
 import { describeRefreshRule, quotaNotice, validateWithdrawAmount } from '@/utils/withdrawRules'
 
@@ -25,6 +27,7 @@ const walletStore = useWalletStore()
 const authStore = useAuthStore()
 const ordersStore = useOrdersStore()
 const afterSalesStore = useAfterSalesStore()
+const chatStore = useChatStore()
 const withdrawalSettings = useWithdrawalSettingsStore()
 
 // 到账倒计时按秒跳动：now 用服务器校准时间（设备本地时钟可能偏差数秒）
@@ -345,6 +348,39 @@ async function fetchAfterSaleGuard() {
   // 管理员无打手提现场景，/after-sales/mine 对管理员无意义，跳过
   if (authStore.isAdmin) return
   await afterSalesStore.fetchMyAfterSales({ role: 'booster', status: 'pending' })
+}
+
+// 售后兜底：暂时联系不上发单人时，从冻结提示条直达平台管理员会话，
+// 预填售后案情（金额取自进行中售后记录）。与 store 的
+// hasPendingBoosterAfterSale 同判据：PENDING 即进行中。
+const pendingAfterSale = computed(() => (
+  afterSalesStore.myAfterSales.find((item) => item?.status === 'PENDING') || null
+))
+const afterSaleAssistLoading = ref(false)
+
+async function contactPlatformForAfterSale() {
+  const pending = pendingAfterSale.value
+  if (!pending || afterSaleAssistLoading.value) {
+    return
+  }
+  afterSaleAssistLoading.value = true
+  try {
+    const result = await chatStore.startAdminConversation({
+      presetMessage: buildAfterSaleAssistMessage({ orderId: pending.order_id, amount: pending.amount }),
+    })
+    if (result.success && result.data) {
+      router.push({ name: 'chat-detail', params: { id: result.data.id } })
+    } else if (result.success) {
+      // stale：会话其实已在服务端创建成功，只是本地会话上下文已切换
+      withdrawMessage.value = { type: 'info', text: '会话已创建，请到消息中心查看' }
+    } else {
+      withdrawMessage.value = { type: 'error', text: result.error || '联系平台失败，请稍后重试' }
+    }
+  } catch (err) {
+    withdrawMessage.value = { type: 'error', text: err?.message || '联系平台失败，请稍后重试' }
+  } finally {
+    afterSaleAssistLoading.value = false
+  }
 }
 
 // 统计卡＝白卡同款，仅数字颜色区分语义（文档 5 节：可用余额/提现=ink-1、冻结=warning、收入=success）
@@ -731,7 +767,15 @@ onUnmounted(() => {
       <div v-if="withdrawQuotaNotice.text" class="message-info mt-4">{{ withdrawQuotaNotice.text }}</div>
 
       <!-- 售后进行中冻结提现：与提现机会提示同款位置/样式 -->
-      <div v-if="afterSaleWithdrawBlocked" class="message-warning mt-4">售后处理中，暂不能提现，请等待售后结案</div>
+      <div v-if="afterSaleWithdrawBlocked" class="message-warning mt-4">售后处理中，暂不能提现，请等待售后结案<button
+        v-if="pendingAfterSale"
+        type="button"
+        class="btn-ghost ml-2 !px-3 !py-1 !text-xs"
+        :disabled="afterSaleAssistLoading"
+        @click="contactPlatformForAfterSale"
+      >
+        {{ afterSaleAssistLoading ? '打开中...' : '联系平台协助处理' }}
+      </button></div>
 
       <form class="mt-6 grid gap-5 lg:grid-cols-2" @submit.prevent="submitWithdrawal">
         <div>

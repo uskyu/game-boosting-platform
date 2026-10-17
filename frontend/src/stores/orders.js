@@ -188,6 +188,7 @@ export const useOrdersStore = defineStore('orders', () => {
       order.accept_available_at || '',
       order.my_claim?.status || '',
       order.cancel_pending ?? '',
+      order.after_sale_pending ?? '',
       order.my_claim?.cancel_pending ?? '',
       order.compensation_amount ?? '',
       order.title || '',

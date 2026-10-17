@@ -115,5 +115,10 @@ class AdminAfterSaleListResponse(BaseModel):
 class ReviewAfterSaleRequest(BaseModel):
     """管理员审阅售后申请。"""
 
-    action: Literal["approve", "reject"]
-    reason: str | None = Field(default=None, max_length=500, description="驳回原因；reject 时必填")
+    action: Literal["approve", "reject", "close"]
+    reason: str | None = Field(default=None, max_length=500, description="审阅原因；reject/close 时必填")
+    amount: Decimal | None = Field(
+        default=None,
+        ge=0,
+        description="裁定扣款金额（元）：仅 approve 有效，默认=售后申请金额，不能超过申请金额",
+    )

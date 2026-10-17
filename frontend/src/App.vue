@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import AppNavIcon from '@/components/AppNavIcon.vue'
@@ -184,8 +184,8 @@ watch([siteName, () => siteStore.settings.favicon_url], ([name, favicon]) => {
 }, { immediate: true })
 siteStore.fetchSettings()
 
-// 沉浸式页面（登录/注册/聊天详情/联系管理员）不显示底部 Tab，其余页面固定 5 Tab
-const immersiveRoutes = ['login', 'register', 'chat-detail', 'support']
+// 沉浸式页面（登录/注册/聊天详情）不显示底部 Tab，其余页面固定 5 Tab
+const immersiveRoutes = ['login', 'register', 'chat-detail']
 const showTabBar = computed(() => !immersiveRoutes.includes(route.name))
 
 // 桌面顶栏主导航（IA v2）：大厅 · 游戏 · 钱包 · 消息 · 运营(仅管理员)
@@ -291,12 +291,37 @@ const mobileTabItems = computed(() => [
   },
 ])
 
-const hideFooter = computed(() => ['login', 'register', 'message-center', 'chat-detail', 'settings', 'support'].includes(route.name))
+const hideFooter = computed(() => ['login', 'register', 'message-center', 'chat-detail', 'settings'].includes(route.name))
 
 function stopUnreadPolling() {
   if (unreadPollingTimer) {
     window.clearInterval(unreadPollingTimer)
     unreadPollingTimer = null
+  }
+}
+
+// 联系管理员（原 /support AI 客服页已下线）：直达管理员会话。
+// 布局组件没有页内消息区，失败/在飞状态用 toast + 按钮禁用态反馈。
+const adminContactLoading = ref(false)
+
+async function handleContactAdmin() {
+  if (adminContactLoading.value) {
+    return
+  }
+  adminContactLoading.value = true
+  try {
+    const result = await chatStore.startAdminConversation()
+    if (result.success && result.data) {
+      router.push({ name: 'chat-detail', params: { id: result.data.id } })
+    } else if (result.success) {
+      toastsStore.pushToast({ title: '会话已创建', body: '请到消息中心查看' })
+    } else {
+      toastsStore.pushToast({ title: '联系管理员失败', body: result.error || '请稍后重试' })
+    }
+  } catch (err) {
+    toastsStore.pushToast({ title: '联系管理员失败', body: err?.message || '请稍后重试' })
+  } finally {
+    adminContactLoading.value = false
   }
 }
 
@@ -597,7 +622,15 @@ onBeforeUnmount(() => {
             <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-3">服务</p>
             <div class="flex flex-col items-start gap-2.5">
               <router-link v-if="isAuthenticated && !isAdmin" to="/services" class="text-sm text-ink-2 transition-colors duration-base hover:text-primary">{{ copy.boosterDesk }}</router-link>
-              <router-link v-if="isAuthenticated" to="/support" class="text-sm text-ink-2 transition-colors duration-base hover:text-primary">联系管理员</router-link>
+              <button
+                v-if="isAuthenticated"
+                type="button"
+                class="text-left text-sm text-ink-2 transition-colors duration-base hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
+                :disabled="adminContactLoading"
+                @click="handleContactAdmin"
+              >
+                {{ adminContactLoading ? '打开中...' : '联系管理员' }}
+              </button>
             </div>
           </div>
         </div>
