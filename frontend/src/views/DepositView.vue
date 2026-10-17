@@ -162,7 +162,7 @@ onMounted(async () => {
             今日已接 <span class="font-semibold tabular-nums text-ink-1">{{ overview.daily_accepted_count }}</span> 单
             <span class="mx-2 text-ink-3">·</span>
             每日上限 {{ formatDailyLimit(overview.daily_accept_limit) }}
-            <span class="text-ink-3">（北京时间每日 12:00 刷新，取消的订单不计入）</span>
+            <span class="text-ink-3">（北京时间每日 0:00 刷新，取消的订单不计入）</span>
             <template v-if="overview.daily_limit_reset_at">
               <span class="mx-2 text-ink-3">·</span>
               下次刷新 {{ formatDateTime(overview.daily_limit_reset_at) }}

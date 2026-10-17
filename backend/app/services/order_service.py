@@ -920,7 +920,7 @@ class OrderService:
     async def _daily_accept_gate(self, booster_id: int) -> None:
         """每日接单量闸门（fail-fast，加在等待闸门之前）。
 
-        口径：按北京时间每天 12:00 刷新；窗口内接单且订单未取消才计数，
+        口径：按北京时间每天 0:00 刷新；窗口内接单且订单未取消才计数，
         被取消的不计；达到当前档位上限后拒绝接单，detail 带四项权益信息
         （档位标签 / 等级 / 已接数 / 上限）供前端弹窗。
 
@@ -942,7 +942,7 @@ class OrderService:
                 "code": "daily_accept_limit",
                 "message": (
                     f"今日接单量已达上限（{daily.accepted}/{daily.limit}），"
-                    f"每日12点刷新后恢复"
+                    f"每日0点刷新后恢复"
                 ),
                 "benefit": daily.label,
                 "level": daily.level,

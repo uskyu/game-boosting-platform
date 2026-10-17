@@ -1953,7 +1953,7 @@ onUnmounted(() => {
           <div class="modal-card" role="alertdialog" aria-modal="true" aria-label="接单量已达上限">
             <h3 class="text-lg font-semibold text-ink-1">今日接单量已达上限</h3>
             <p class="mt-3 text-sm leading-6 text-ink-2">
-              您当前权益等级的每日接单量已用完，每日 12:00 刷新后即可继续接单。
+              您当前权益等级的每日接单量已用完，每日 0:00 刷新后即可继续接单。
             </p>
             <dl class="mt-4 space-y-2 rounded-xl bg-surface-2 p-4 text-sm">
               <div class="flex items-center justify-between gap-3">

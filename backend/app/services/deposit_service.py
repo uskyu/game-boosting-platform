@@ -16,7 +16,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.product_time import product_local_date, product_noon_utc
+from app.core.product_time import product_day_bounds
 from app.models.deposit import (
     DEFAULT_DEPOSIT_RETURN_COOLDOWN_DAYS,
     DEFAULT_DEPOSIT_TIERS,
@@ -269,7 +269,7 @@ async def get_user_tier(db: AsyncSession, user_id: int) -> tuple[DepositTier | N
 
 
 # ---------------------------------------------------------------------------
-# 每日接单量（按北京时间每日 12:00 刷新）
+# 每日接单量（按北京时间每日 0:00 刷新）
 # ---------------------------------------------------------------------------
 
 
@@ -298,17 +298,10 @@ def normalize_daily_accept_limit(value: int | None) -> int | None:
 def daily_accept_window(now: datetime) -> tuple[datetime, datetime]:
     """每日接单量统计窗口，返回 (window_start, next_refresh)，均为 naive UTC。
 
-    与提现机会 DAILY_NOON 同一墙钟口径：now ≥ 今天 12:00（北京时间）则窗口
-    从今天 12:00 起算，否则从昨天 12:00 起算，每 24 小时滚动一次。
+    北京时间自然日 [今日 00:00, 次日 00:00)——凌晨 0 点刷新（老板 2026-10-17
+    确认；注意与提现机会的「每天 12:00 刷新」不同口径，勿再"顺手统一"）。
     """
-    now_utc = _as_utc(now)
-    noon_today = product_noon_utc(product_local_date(now_utc))
-    window_start = (
-        noon_today
-        if now_utc.replace(tzinfo=None) >= noon_today
-        else product_noon_utc(product_local_date(now_utc) - timedelta(days=1))
-    )
-    return window_start, window_start + timedelta(days=1)
+    return product_day_bounds(now)
 
 
 async def daily_accept_count(

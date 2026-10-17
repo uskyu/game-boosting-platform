@@ -18,7 +18,7 @@ class DepositTierResponse(BaseModel):
     settle_hours: int = Field(description="结账时效（小时）")
     daily_accept_limit: int | None = Field(
         default=None,
-        description="每日接单量上限（按北京时间每日 12:00 刷新；NULL/0 = 不限）",
+        description="每日接单量上限（按北京时间每日 0:00 刷新；NULL/0 = 不限）",
     )
     enabled: bool = Field(description="是否启用")
 
@@ -73,7 +73,7 @@ class DepositOverviewResponse(BaseModel):
         description="当前档位的每日接单量上限（NULL/0 = 不限）",
     )
     daily_accepted_count: int = Field(
-        default=0, description="我今日窗口（北京时间 12:00 刷新）已接且未取消的订单数"
+        default=0, description="我今日窗口（北京时间 0:00 刷新）已接且未取消的订单数"
     )
     daily_limit_reset_at: datetime | None = Field(
         default=None, description="每日接单量下次刷新时间（窗口起点 + 1 天，UTC）"

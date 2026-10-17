@@ -130,7 +130,7 @@ class DepositTier(Base):
         server_default="72",
     )
 
-    # 每日接单量上限（按北京时间每日 12:00 刷新；NULL/0 = 不限）。
+    # 每日接单量上限（按北京时间每日 0:00 刷新；NULL/0 = 不限）。
     # 统计口径：窗口内接单且订单未取消（CANCELLED 的 claim 不计数）。
     daily_accept_limit: Mapped[int | None] = mapped_column(
         Integer(),

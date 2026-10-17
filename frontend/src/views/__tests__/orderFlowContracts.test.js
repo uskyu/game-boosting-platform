@@ -190,7 +190,7 @@ describe('daily accept limit popup contracts', () => {
     expect(modalStart).toBeGreaterThan(-1)
     const modal = detailSource.slice(modalStart, modalStart + 1600)
     expect(modal).toMatch(/今日接单量已达上限/)
-    expect(modal).toMatch(/每日 12:00 刷新后即可继续接单/)
+    expect(modal).toMatch(/每日 0:00 刷新后即可继续接单/)
     expect(modal).toMatch(/你的权益[\s\S]*?dailyLimitInfo\?\.benefit/)
     expect(modal).toMatch(/你的权益等级[\s\S]*?dailyLimitInfo\?\.level/)
     expect(modal).toMatch(/你当前接单数[\s\S]*?dailyLimitInfo\?\.current/)
