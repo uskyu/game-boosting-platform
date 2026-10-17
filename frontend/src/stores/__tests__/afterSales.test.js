@@ -205,4 +205,28 @@ describe('afterSales store', () => {
     const failed = await store.withdrawAfterSale(12, 1)
     expect(failed).toEqual({ success: false, error: '该售后申请已处理，无法撤回' })
   })
+
+  it('acceptAfterSale posts to the accept endpoint and returns the settled record', async () => {
+    const store = useAfterSalesStore()
+    apiPost.mockResolvedValueOnce({ data: makeAfterSale(1, 'APPROVED') })
+
+    const result = await store.acceptAfterSale(12, 1)
+
+    expect(apiPost).toHaveBeenCalledWith('/orders/12/after-sales/1/accept')
+    expect(result).toEqual({ success: true, data: makeAfterSale(1, 'APPROVED') })
+    expect(store.submitting).toBe(false)
+  })
+
+  it('acceptAfterSale surfaces the backend Chinese detail on failure', async () => {
+    const store = useAfterSalesStore()
+    // api 拦截器已把 {detail} 解包成 err.message（见 utils/api.js readableApiError）
+    apiPost.mockRejectedValueOnce({ message: '余额不足，无法扣划售后款项' })
+
+    const result = await store.acceptAfterSale(12, 1)
+
+    expect(result.success).toBe(false)
+    expect(result.error).toBe('余额不足，无法扣划售后款项')
+    expect(store.error).toBe('余额不足，无法扣划售后款项')
+    expect(store.submitting).toBe(false)
+  })
 })

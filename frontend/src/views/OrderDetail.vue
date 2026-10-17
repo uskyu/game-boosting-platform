@@ -3,15 +3,14 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import Lightbox from '@/components/Lightbox.vue'
+import AfterSaleStatusModal from '@/components/AfterSaleStatusModal.vue'
 import OrderDeliverModal from '@/components/OrderDeliverModal.vue'
 import OrderTimeline from '@/components/OrderTimeline.vue'
 import { useAuthStore } from '@/stores/auth'
-import { useAfterSalesStore } from '@/stores/afterSales'
 import { useChatStore } from '@/stores/chat'
 import { useOrdersStore } from '@/stores/orders'
 import { getGameImage } from '@/data/gameImages'
 import api from '@/utils/api'
-import { buildAfterSaleAssistMessage } from '@/utils/afterSaleAssist'
 import { formatDateTime, formatDueCountdown, formatFeeRate, formatMoneyFixed, formatOrderPrice, formatPayoutDelay, formatPrice, formatSettlementDelay, formatShortDate, getAcceptWaitMeta, serverNow } from '@/utils/display'
 import { CANCEL_PENDING_CLAIM_META, getClaimSettlementMeta, getOrderStatusBadgeClass, getOrderStatusLabel, getOrderStatusMeta, getHumanStatusLabel, getHumanStatusSubtitle } from '@/utils/order'
 import { measureOrderFlowStage } from '@/utils/orderFlowTiming'
@@ -27,7 +26,6 @@ const router = useRouter()
 const authStore = useAuthStore()
 const chatStore = useChatStore()
 const ordersStore = useOrdersStore()
-const afterSalesStore = useAfterSalesStore()
 
 const errorMessage = ref('')
 const successMessage = ref('')
@@ -1103,25 +1101,25 @@ async function handleContactAdmin(options = {}) {
   }
 }
 
-// 售后兜底：打手视角且本单有进行中售后时，展示「联系平台协助」入口。
-// 金额取自「我的售后」列表（按 order_id 局部匹配，全局 store 按需拉取，
-// 不影响页面其他逻辑）；拉取失败时省略金额，入口仍可用。
+// 售后兜底：打手视角且本单有进行中售后时，展示「售后处理中」入口，
+// 打开弹窗查看案情并处理（同意退款 / 联系平台协助，弹窗内自行拉取售后数据）。
 const showAfterSaleAssist = computed(() => (
   isBooster.value && !isOwner.value && order.value?.after_sale_pending === true
 ))
-const myPendingAfterSale = computed(() => {
-  if (!showAfterSaleAssist.value) {
-    return null
+// 售后处理中弹窗（打手侧）
+const showAfterSaleModal = ref(false)
+
+// 同意退款成功：静默刷新订单详情（after_sale_pending 等标记由接口重算）。
+// fetchOrder 必须 silent：非静默会把全局 loading 置真，叠加后端广播
+// order_state_changed 触发的静默刷新后请求序号 +1，非静默请求回来时
+// 序号不匹配、loading 永不复位，整页卡死在骨架屏（白屏）。
+function onAfterSaleAccepted() {
+  const orderId = order.value?.id
+  if (orderId != null) {
+    ordersStore.fetchOrder(orderId, { silent: true }).catch(() => {})
   }
-  const orderId = Number(order.value?.id)
-  return afterSalesStore.myAfterSales.find(
-    (item) => item?.status === 'PENDING' && Number(item.order_id) === orderId
-  ) || null
-})
-const afterSaleAssistMessage = computed(() => buildAfterSaleAssistMessage({
-  orderId: order.value?.id,
-  amount: myPendingAfterSale.value?.amount,
-}))
+  successMessage.value = '已同意退款，款项已划给老板，售后结案'
+}
 
 async function fetchReviews(orderId = order.value?.id, loadSeq = detailLoadSeq) {
   if (!orderId || order.value?.status !== 'COMPLETED') {
@@ -1209,10 +1207,6 @@ async function loadDetail(orderId) {
     await Promise.all([
       fetchReviews(orderId, loadSeq),
       loadClaims(orderId, loadSeq),
-      // 售后兜底数据：仅打手视角且本单有进行中售后时才拉（按 order_id 局部匹配）
-      showAfterSaleAssist.value
-        ? afterSalesStore.fetchMyAfterSales({ role: 'booster', status: 'pending' })
-        : Promise.resolve(),
     ])
     if (loadSeq !== detailLoadSeq || String(props.id) !== String(orderId)) {
       return
@@ -1742,15 +1736,15 @@ onUnmounted(() => {
               申请平台介入
             </button>
 
-            <!-- 售后兜底：暂时联系不上发单人时，直达平台管理员会话并预填售后案情 -->
+            <!-- 售后兜底：暂时联系不上发单人时，打开售后弹窗（同意退款 / 联系平台协助）。
+                 文案不带「联系平台协助」：点击后是开面板而非直接起会话，避免误导 -->
             <button
               v-if="showAfterSaleAssist"
               type="button"
               class="od-ops__chip btn-secondary w-full py-3"
-              :disabled="chatLoading"
-              @click="handleContactAdmin({ presetMessage: afterSaleAssistMessage })"
+              @click="showAfterSaleModal = true"
             >
-              {{ chatLoading ? '打开中...' : '售后处理中·联系平台协助' }}
+              售后处理中·查看详情
             </button>
 
             <!-- 有待处理的取消协同时，提示进详情区处理（同意/拒绝） -->
@@ -2140,5 +2134,13 @@ onUnmounted(() => {
         </div>
       </div>
     </teleport>
+
+    <!-- 售后处理中（打手侧）：查看案情 / 同意退款（两步确认）/ 联系平台协助 -->
+    <AfterSaleStatusModal
+      v-model="showAfterSaleModal"
+      :order-id="order.id"
+      :viewer-role="'booster'"
+      @accepted="onAfterSaleAccepted"
+    />
   </div>
 </template>

@@ -4,7 +4,9 @@
 金额（≤订单派单价）。售后单 PENDING 期间该单打手禁止提现；
 管理后台审阅并通过/驳回/关闭，通过时的扣款划转由 ``settle_approved_funds``
 承接（打手可用余额 → 老板余额 + 双边流水，可按管理员裁定的实扣额划转）；
-PENDING 期间老板也可主动撤回（``withdraw_after_sale``，落 CLOSED 不动资金）。
+PENDING 期间老板也可主动撤回（``withdraw_after_sale``，落 CLOSED 不动资金），
+该单打手也可一键认栽（``accept_after_sale_as_booster``，按申请金额秒结划转，
+无需管理员审阅，reviewed_by 留空、后台靠 decision_reason 识别）。
 
 与 ``deposit_service`` 同为模块级函数风格：本模块只做规则判定与编排，
 资金划转调用 ``wallet_service`` 的行锁 + 流水原语（``_lock_wallet`` /
@@ -199,13 +201,16 @@ async def _notify_after_sale_resolved(
     after_sale: OrderAfterSale,
     action: str,
     settled_amount: Decimal | None = None,
+    accepted_by_booster: bool = False,
 ) -> None:
     """售后结案通知：双边（老板 + 打手）都收到结论。
 
     approve：按视角区分文案，打手侧告知扣划结果、老板侧告知收款结果，
-    金额取裁定实扣额；reject：双边同一驳回口径；close：平台未做裁定，
-    双边告知已关闭。不足额说明（decision_reason 里的差额备注）双方都带上。
-    类型/link 不变。
+    金额取裁定实扣额；``accepted_by_booster`` 为真时走打手认栽秒结路径，
+    双边改用「打手同意退款」口径（无管理员参与，reviewed_by 留空）。
+    reject：双边同一驳回口径；close：平台未做裁定，双边告知已关闭。
+    管理员审阅的通过文案会带上不足额说明（decision_reason 里的差额备注）；
+    打手认栽口径为固定文案，差额只落 decision_reason 后台留痕。类型/link 不变。
     """
     from app.api.notification_utils import notify_user
 
@@ -216,17 +221,30 @@ async def _notify_after_sale_resolved(
     if action == "approve":
         settled = _to_decimal(settled_amount).quantize(_CENT, rounding=ROUND_HALF_UP)
         suffix = f"：{after_sale.decision_reason}" if after_sale.decision_reason else ""
-        messages = {
-            after_sale.booster_id: (
-                "售后申请已通过",
-                f"订单「{label}」的售后申请已通过，"
-                f"已扣划 ¥{settled} 给老板{suffix}",
-            ),
-            after_sale.requester_id: (
-                "售后申请已通过",
-                f"订单「{label}」的售后申请已通过，已收款 ¥{settled}{suffix}",
-            ),
-        }
+        if accepted_by_booster:
+            messages = {
+                after_sale.booster_id: (
+                    "售后申请已通过",
+                    f"你已同意退款，¥{settled} 已从你的余额扣划给老板",
+                ),
+                after_sale.requester_id: (
+                    "售后申请已通过",
+                    f"订单「{label}」的售后申请已通过（打手同意退款），"
+                    f"已收款 ¥{settled}",
+                ),
+            }
+        else:
+            messages = {
+                after_sale.booster_id: (
+                    "售后申请已通过",
+                    f"订单「{label}」的售后申请已通过，"
+                    f"已扣划 ¥{settled} 给老板{suffix}",
+                ),
+                after_sale.requester_id: (
+                    "售后申请已通过",
+                    f"订单「{label}」的售后申请已通过，已收款 ¥{settled}{suffix}",
+                ),
+            }
     elif action == "close":
         content = f"订单「{label}」的售后申请已关闭，平台未做裁定"
         if after_sale.decision_reason:
@@ -764,6 +782,76 @@ async def withdraw_after_sale(
     return after_sale
 
 
+async def accept_after_sale_as_booster(
+    db: AsyncSession, *, after_sale: OrderAfterSale, booster: User
+) -> OrderAfterSale:
+    """打手认栽秒结：同意待处理售后，按申请金额直接划转，不等管理员。
+
+    校验：仅该单接单打手本人、仅 PENDING；一单一裁守卫与
+    ``review_after_sale`` 的 approve 分支同口径（同订单已有其他 APPROVED
+    售后时 400，唯一键 uq_wallet_tx_order_booster_type 也只支持每单一条
+    扣划流水）。
+
+    落 APPROVED、decision_reason 记「打手同意退款」（已有内容拼在前面）、
+    resolved_at=now；reviewed_by 保持 None——无管理员参与，后台列表靠
+    decision_reason 识别打款路径。先落扣款划转（``settle_approved_funds``
+    不传 amount，按申请金额全款扣，不足额时追加差额说明），再发双边
+    通知（打手侧「你已同意退款」口径，见 ``_notify_after_sale_resolved``
+    的 ``accepted_by_booster``）。
+    """
+    if booster.id != after_sale.booster_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="只有该订单的打手可以执行此操作",
+        )
+    if after_sale.status != AfterSaleStatus.PENDING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="该售后申请已处理",
+        )
+    # 一单一裁：同管理员 approve 的权威兜底（create 侧已拦多数场景）。
+    other_approved = await db.execute(
+        select(OrderAfterSale.id)
+        .where(
+            OrderAfterSale.order_id == after_sale.order_id,
+            OrderAfterSale.status == AfterSaleStatus.APPROVED,
+            OrderAfterSale.id != after_sale.id,
+        )
+        .limit(1)
+    )
+    if other_approved.scalar_one_or_none() is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="该订单已有已通过的售后申请，不能重复裁定",
+        )
+
+    existing = (after_sale.decision_reason or "").strip()
+    after_sale.status = AfterSaleStatus.APPROVED
+    after_sale.decision_reason = (
+        f"{existing}；打手同意退款" if existing else "打手同意退款"
+    )[:500]
+    after_sale.resolved_at = datetime.now(timezone.utc)
+    # reviewed_by 保持 None：无管理员审阅，后台靠 decision_reason 识别
+    await db.flush()
+    await db.refresh(after_sale)
+    logger.info(
+        "After-sale %s accepted by booster %s (instant settle)",
+        after_sale.id,
+        booster.id,
+    )
+    # 不传 amount：按申请金额全款扣划（不足额时差额说明由划转逻辑追加），
+    # 通知按申请金额播报，与管理员 approve 路径同口径。
+    await settle_approved_funds(db, after_sale=after_sale)
+    await _notify_after_sale_resolved(
+        db,
+        after_sale=after_sale,
+        action="approve",
+        settled_amount=after_sale.amount,
+        accepted_by_booster=True,
+    )
+    return after_sale
+
+
 async def has_pending_after_sale_for_booster(db: AsyncSession, booster_id: int) -> bool:
     """该打手是否仍有待处理售后（PENDING）：命中即禁止提现。"""
     result = await db.execute(
@@ -778,6 +866,7 @@ async def has_pending_after_sale_for_booster(db: AsyncSession, booster_id: int) 
 
 
 __all__ = [
+    "accept_after_sale_as_booster",
     "admin_list_after_sales",
     "create_after_sale",
     "get_after_sale_item",

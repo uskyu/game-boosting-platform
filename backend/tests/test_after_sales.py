@@ -1,4 +1,4 @@
-"""售后申请后端测试：发起校验 / 防重 / 禁提现 / 后台审阅 / 订单标记。
+"""售后申请后端测试：发起校验 / 防重 / 禁提现 / 后台审阅 / 打手秒结 / 订单标记。
 
 已完成订单的布置走真实流程（发布托管 → 接单 → 交付 → 老板确认），与
 test_orders / test_multi_claim 同一套路；只有「非已完成」用例才停在 PENDING。
@@ -121,6 +121,15 @@ async def _withdraw(
 ):
     return await client.post(
         f"/orders/{order_id}/after-sales/{after_sale_id}/withdraw",
+        headers=auth_header(user),
+    )
+
+
+async def _accept(
+    client: AsyncClient, user: dict, order_id: int, after_sale_id: int
+):
+    return await client.post(
+        f"/orders/{order_id}/after-sales/{after_sale_id}/accept",
         headers=auth_header(user),
     )
 
@@ -1104,3 +1113,215 @@ async def test_approve_blocked_when_another_approved_exists(
         select(OrderAfterSale.status).where(OrderAfterSale.id == second_id)
     )
     assert stored.scalar_one() == AfterSaleStatus.PENDING
+
+
+async def test_booster_accepts_after_sale_and_settles_instantly(
+    client: AsyncClient,
+    admin_user: dict,
+    booster_user: dict,
+    db_session: AsyncSession,
+    make_captcha,
+):
+    """打手同意退款：APPROVED + decision_reason=打手同意退款、reviewed_by 留空，
+    按申请金额全款秒结：打手 -amount、老板 +amount，双边流水 + 分视角通知。"""
+    publisher = await _register(
+        client, make_captcha, "aftersale-accept@example.com", "PubAccept"
+    )
+    publisher_id = publisher["user"]["id"]
+    booster_id = booster_user["user"]["id"]
+    order = await _completed_order(client, admin_user, publisher, booster_user)
+    await db_session.rollback()
+    assert (await _wallet(db_session, booster_id)).available_balance == Decimal("100.00")
+    assert (await _wallet(db_session, publisher_id)).available_balance == Decimal("100.00")
+
+    created = await _create_after_sale(client, publisher, order["id"], amount="30.00")
+    assert created.status_code == 201, created.text
+    accepted = await _accept(client, booster_user, order["id"], created.json()["id"])
+    assert accepted.status_code == 200, accepted.text
+    data = accepted.json()
+    assert data["status"] == "APPROVED"
+    assert data["decision_reason"] == "打手同意退款"
+    assert data["reviewed_by"] is None  # 无管理员参与，后台靠 decision_reason 识别
+    assert data["resolved_at"] is not None
+
+    # 按申请金额 30 全款秒结：打手 100 → 70，老板 100 → 130
+    await db_session.rollback()
+    assert (await _wallet(db_session, booster_id)).available_balance == Decimal("70.00")
+    assert (await _wallet(db_session, publisher_id)).available_balance == Decimal("130.00")
+
+    # 双边流水：打手 -30（100 → 70），老板 +30（100 → 130）
+    deduction = await _after_sale_ledger(
+        db_session, order_id=order["id"], user_id=booster_id
+    )
+    assert len(deduction) == 1
+    assert deduction[0].type == WalletTransactionType.AFTERSALE_DEDUCTION
+    assert deduction[0].amount == Decimal("-30.00")
+    assert deduction[0].balance_before == Decimal("100.00")
+    assert deduction[0].balance_after == Decimal("70.00")
+    refund = await _after_sale_ledger(
+        db_session, order_id=order["id"], user_id=publisher_id
+    )
+    assert len(refund) == 1
+    assert refund[0].type == WalletTransactionType.AFTERSALE_REFUND
+    assert refund[0].amount == Decimal("30.00")
+    assert refund[0].balance_before == Decimal("100.00")
+    assert refund[0].balance_after == Decimal("130.00")
+
+    # 分视角通知：打手侧「你已同意退款…扣划给老板」，老板侧「打手同意退款…已收款」
+    db_session.expire_all()
+    notifications = await db_session.execute(
+        select(Notification).where(
+            Notification.type == NotificationType.AFTERSALES_RESOLVED
+        )
+    )
+    by_user = {row.user_id: row.content for row in notifications.scalars().all()}
+    assert booster_id in by_user and publisher_id in by_user
+    assert "你已同意退款" in by_user[booster_id]
+    assert "已从你的余额扣划给老板" in by_user[booster_id]
+    assert "打手同意退款" in by_user[publisher_id]
+    assert "已收款 ¥30.00" in by_user[publisher_id]
+
+
+async def test_publisher_cannot_accept_after_sale(
+    client: AsyncClient,
+    admin_user: dict,
+    booster_user: dict,
+    make_captcha,
+):
+    """老板不是接单打手，不能同意退款：403，售后保持 PENDING。"""
+    publisher = await _register(
+        client, make_captcha, "aftersale-accept-pub@example.com", "PubAcceptPub"
+    )
+    order = await _completed_order(client, admin_user, publisher, booster_user)
+    created = await _create_after_sale(client, publisher, order["id"])
+    assert created.status_code == 201, created.text
+
+    forbidden = await _accept(client, publisher, order["id"], created.json()["id"])
+    assert forbidden.status_code == 403, forbidden.text
+    assert "只有该订单的打手可以执行此操作" in forbidden.json()["detail"]
+
+    as_booster = await client.get(
+        "/after-sales/mine", params={"role": "booster"}, headers=auth_header(booster_user)
+    )
+    assert as_booster.status_code == 200, as_booster.text
+    assert as_booster.json()[0]["status"] == "PENDING"
+
+
+async def test_accept_processed_after_sale_conflicts(
+    client: AsyncClient,
+    admin_user: dict,
+    booster_user: dict,
+    make_captcha,
+):
+    """已驳回（非 PENDING）的售后不能再同意退款：409。"""
+    publisher = await _register(
+        client, make_captcha, "aftersale-accept-done@example.com", "PubAcceptDone"
+    )
+    order = await _completed_order(client, admin_user, publisher, booster_user)
+    created = await _create_after_sale(client, publisher, order["id"])
+    assert created.status_code == 201, created.text
+
+    rejected = await _review(
+        client,
+        admin_user,
+        created.json()["id"],
+        {"action": "reject", "reason": "证据不足，驳回售后"},
+    )
+    assert rejected.status_code == 200, rejected.text
+
+    conflict = await _accept(client, booster_user, order["id"], created.json()["id"])
+    assert conflict.status_code == 409, conflict.text
+    assert "该售后申请已处理" in conflict.json()["detail"]
+
+
+async def test_accept_blocked_when_another_approved_exists(
+    client: AsyncClient,
+    admin_user: dict,
+    booster_user: dict,
+    db_session: AsyncSession,
+    make_captcha,
+):
+    """一单一裁兜底：同订单存在另一笔 APPROVED 时打手同意退款被 400 拦下。
+
+    create 侧已拦多数场景，这里直接插第二笔 PENDING 绕过发起校验，
+    专测秒结路径的权威兜底（仿 test_approve_blocked_when_another_approved_exists，
+    id 先取标量防 MissingGreenlet）。
+    """
+    publisher = await _register(
+        client, make_captcha, "aftersale-accept-dualp@example.com", "PubAcceptDual"
+    )
+    order = await _completed_order(client, admin_user, publisher, booster_user)
+    first = await _create_after_sale(client, publisher, order["id"], amount="30.00")
+    assert first.status_code == 201, first.text
+    assert (
+        await _review(client, admin_user, first.json()["id"], {"action": "approve"})
+    ).status_code == 200
+
+    # 直接插第二笔 PENDING（绕过 create 的「已有 APPROVED」拦截）
+    second = OrderAfterSale(
+        order_id=order["id"],
+        requester_id=publisher["user"]["id"],
+        booster_id=booster_user["user"]["id"],
+        reason="第二笔售后（绕过发起校验直插）",
+        images=[],
+        amount=Decimal("20.00"),
+        status=AfterSaleStatus.PENDING,
+    )
+    db_session.add(second)
+    await db_session.commit()
+    await db_session.refresh(second)
+    # id 先取标量：API 调用后实例属性过期，异步会话里再访问会触发懒加载
+    # （MissingGreenlet），后续查询一律用这个 int。
+    second_id = second.id
+
+    resp = await _accept(client, booster_user, order["id"], second_id)
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == "该订单已有已通过的售后申请，不能重复裁定"
+
+    await db_session.rollback()
+    stored = await db_session.execute(
+        select(OrderAfterSale.status).where(OrderAfterSale.id == second_id)
+    )
+    assert stored.scalar_one() == AfterSaleStatus.PENDING
+
+
+async def test_booster_accept_deducts_to_zero_and_notes_shortfall(
+    client: AsyncClient,
+    admin_user: dict,
+    booster_user: dict,
+    db_session: AsyncSession,
+    make_captcha,
+):
+    """打手可用余额不足：同意退款也只扣到 0，差额追加进 decision_reason。"""
+    publisher = await _register(
+        client, make_captcha, "aftersale-accept-short@example.com", "PubAcceptShort"
+    )
+    publisher_id = publisher["user"]["id"]
+    booster_id = booster_user["user"]["id"]
+    order = await _completed_order(client, admin_user, publisher, booster_user)
+    # 打手入账 100，管理员调账 -80 后可用余额只剩 20
+    await _fund_wallet(client, admin_user, booster_id, "-80.00")
+    await db_session.rollback()
+    assert (await _wallet(db_session, booster_id)).available_balance == Decimal("20.00")
+
+    created = await _create_after_sale(client, publisher, order["id"], amount="30.00")
+    assert created.status_code == 201, created.text
+    accepted = await _accept(client, booster_user, order["id"], created.json()["id"])
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["status"] == "APPROVED"
+
+    # 只按实际余额 20 扣划：打手 20 → 0，老板 100 → 120
+    await db_session.rollback()
+    assert (await _wallet(db_session, booster_id)).available_balance == Decimal("0.00")
+    assert (await _wallet(db_session, publisher_id)).available_balance == Decimal("120.00")
+
+    # 差额说明拼在「打手同意退款」之后
+    db_session.expire_all()
+    stored = await db_session.execute(
+        select(OrderAfterSale.decision_reason).where(
+            OrderAfterSale.id == created.json()["id"]
+        )
+    )
+    assert stored.scalar_one() == (
+        "打手同意退款；打手可用余额不足 ¥10.00，按实际余额 ¥20.00 扣收"
+    )

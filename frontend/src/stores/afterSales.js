@@ -187,6 +187,22 @@ export const useAfterSalesStore = defineStore('afterSales', () => {
     }
   }
 
+  // POST /orders/{orderId}/after-sales/{afterSaleId}/accept —— 打手同意退款
+  // （仅该单打手可调；成功后余额扣划给老板、售后结案，返回 status=APPROVED）
+  async function acceptAfterSale(orderId, afterSaleId) {
+    submitting.value = true
+    error.value = null
+    try {
+      const response = await api.post(`/orders/${orderId}/after-sales/${afterSaleId}/accept`)
+      return { success: true, data: response.data }
+    } catch (err) {
+      error.value = err.message
+      return { success: false, error: err.message }
+    } finally {
+      submitting.value = false
+    }
+  }
+
   return {
     myAfterSales,
     myAfterSalesLoading,
@@ -204,5 +220,6 @@ export const useAfterSalesStore = defineStore('afterSales', () => {
     fetchAdminAfterSales,
     reviewAfterSale,
     withdrawAfterSale,
+    acceptAfterSale,
   }
 })

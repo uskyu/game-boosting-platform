@@ -1,7 +1,8 @@
 """售后申请 API。
 
 老板（订单发布者）对已完成订单发起/查询售后、上传凭证图片、查看「我的售后」、
-撤回待处理售后；管理员在后台审阅并通过/驳回/关闭。
+撤回待处理售后；该单打手可一键认栽秒结（同意退款，不等管理员审阅）；
+管理员在后台审阅并通过/驳回/关闭。
 
 路径约定与取消协商（/orders/{id}/cancel-requests）保持一致：订单维度的售后
 挂在 /orders 下，个人维度走 /after-sales，后台走 /admin/after-sales。
@@ -27,6 +28,7 @@ from app.schemas.after_sale import (
     ReviewAfterSaleRequest,
 )
 from app.services.after_sale_service import (
+    accept_after_sale_as_booster,
     admin_list_after_sales,
     create_after_sale,
     get_after_sale_item,
@@ -239,6 +241,41 @@ async def withdraw_order_after_sale(
             status_code=status.HTTP_404_NOT_FOUND, detail="售后申请不存在"
         )
     await withdraw_after_sale(db, after_sale=after_sale, user=current_user)
+    item = await get_after_sale_item(db, after_sale.id)
+    return AfterSaleItem.model_validate(item)
+
+
+@after_sales_router.post(
+    "/orders/{order_id}/after-sales/{after_sale_id}/accept",
+    response_model=AfterSaleItem,
+    summary="打手同意退款",
+    description=(
+        "仅该单接单打手可对待处理（PENDING）售后一键认栽：按申请金额秒结扣划"
+        "（可用余额不足扣至 0 并追差额说明），无需管理员审阅"
+    ),
+)
+async def accept_order_after_sale(
+    order_id: int,
+    after_sale_id: int,
+    current_user: CurrentUser,
+    db: DatabaseSession,
+) -> AfterSaleItem:
+    """打手认栽秒结：行锁售后单、校验订单归属后交给 service 判身份与状态
+    （仅该订单的打手、仅 PENDING），回显结构与撤诉端点一致。"""
+    result = await db.execute(
+        select(OrderAfterSale).where(OrderAfterSale.id == after_sale_id).with_for_update()
+    )
+    after_sale = result.scalar_one_or_none()
+    if after_sale is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="售后申请不存在"
+        )
+    if after_sale.order_id != order_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="售后申请不属于该订单",
+        )
+    await accept_after_sale_as_booster(db, after_sale=after_sale, booster=current_user)
     item = await get_after_sale_item(db, after_sale.id)
     return AfterSaleItem.model_validate(item)
 

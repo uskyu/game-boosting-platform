@@ -217,6 +217,44 @@ async def test_claim_inside_window_counted(
     assert next_refresh == window_start + timedelta(days=1)
 
 
+async def test_window_starts_at_local_midnight_not_noon():
+    """口径锁定：窗口起点 = 北京时间当日 00:00（凌晨刷新），不是 12:00。
+
+    老板 2026-10-17 明确要夜间零点；这里把语义钉死，防止以后再被
+    "和提现机会统一口径"顺手改回中午。
+    """
+    window_start, next_refresh = daily_accept_window(datetime.now(timezone.utc))
+    beijing_start = window_start + timedelta(hours=8)  # naive UTC → 北京时间
+    assert beijing_start.hour == 0 and beijing_start.minute == 0
+    assert next_refresh - window_start == timedelta(days=1)
+
+
+async def test_claim_before_local_midnight_not_counted(
+    client: AsyncClient, admin_user: dict, booster_user: dict, db_session
+):
+    """昨晚 23:30（北京时间）接的单不计入今日——午夜间界区分用例。
+
+    若窗口被误改成中午 12:00，这条会失败（昨晚 23:30 落在中午窗口内）。
+    """
+    await _set_tiers(client, admin_user, tiers=[_tier(0, daily_accept_limit=1)])
+
+    first = await _make_order(client, admin_user)
+    assert (await _accept(client, booster_user, first["id"])).status_code == 200
+
+    window_start, _ = daily_accept_window(datetime.now(timezone.utc))
+    claim = (
+        await db_session.execute(
+            select(OrderClaim).where(OrderClaim.order_id == first["id"])
+        )
+    ).scalar_one()
+    # 窗口起点前 30 分钟 = 北京时间昨晚 23:30
+    claim.created_at = window_start - timedelta(minutes=30)
+    await db_session.commit()
+
+    second = await _make_order(client, admin_user)
+    assert (await _accept(client, booster_user, second["id"])).status_code == 200
+
+
 # ---------------------------------------------------------------------------
 # 管理端派单不受限
 # ---------------------------------------------------------------------------
