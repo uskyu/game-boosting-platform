@@ -191,7 +191,10 @@ const depositWaitText = computed(() => {
 })
 
 const depositSettleText = computed(() => {
-  const hours = Number(depositOverview.value?.settle_hours)
+  const raw = depositOverview.value?.settle_hours
+  // 留空（null）= 该档不承诺时长，按订单到账时效；不能当 0 显成「立即结算」
+  if (raw == null || raw === '') return '按订单时效'
+  const hours = Number(raw)
   if (!Number.isFinite(hours) || hours < 0) return '—'
   if (hours === 0) return '立即结算'
   if (hours < 24) return `${hours} 小时`

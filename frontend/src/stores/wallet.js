@@ -93,14 +93,17 @@ function buildPagination(data, fallbackPageSize) {
   }
 }
 
-// 保证金阶梯：数值可能以字符串返回，统一转 Number 便于前端比较与高亮
+// 保证金阶梯：数值可能以字符串返回，统一转 Number 便于前端比较与高亮。
+// 注意 `settle_hours` 的 **null 必须原样保留**：None = 该档留空、按订单到账
+// 时效结算；若用 toNumber(..., 0) 兜底会变成 0，而 0 的语义是「立即结算」，
+// 页面就会把「按订单时效」错显成「立即结算」（老板 2026-10-18 报的 bug）。
 function normalizeDepositTier(tier) {
   return {
     id: tier?.id,
     threshold: toNumber(tier?.threshold, 0),
     wait_seconds: toNumber(tier?.wait_seconds, 0),
     exempt_compensation: Boolean(tier?.exempt_compensation),
-    settle_hours: toNumber(tier?.settle_hours, 0),
+    settle_hours: tier?.settle_hours == null ? null : toNumber(tier.settle_hours, 0),
     daily_accept_limit: tier?.daily_accept_limit == null ? null : toNumber(tier.daily_accept_limit, 0),
     enabled: tier?.enabled !== false,
     updated_at: tier?.updated_at,
@@ -116,7 +119,8 @@ function normalizeDepositOverview(data) {
     current_threshold: source.current_threshold != null ? toNumber(source.current_threshold, 0) : null,
     wait_seconds: toNumber(source.wait_seconds, 0),
     exempt_compensation: Boolean(source.exempt_compensation),
-    settle_hours: toNumber(source.settle_hours, 0),
+    // 同上：null 必须保留，不能兜底成 0（0 = 立即结算）
+    settle_hours: source.settle_hours == null ? null : toNumber(source.settle_hours, 0),
     daily_accept_limit: source.daily_accept_limit == null ? null : toNumber(source.daily_accept_limit, 0),
     daily_accepted_count: toNumber(source.daily_accepted_count, 0),
     daily_limit_reset_at: source.daily_limit_reset_at || null,

@@ -26,6 +26,13 @@ describe('order template contract', () => {
     expect(formatSettlementDelay(25)).toBe('1天1小时')
   })
 
+  it('留空（null）不得被当成 0 显示成「立即结算」', () => {
+    // Number(null) === 0，若先转数字会把「按订单时效」错显成「立即结算」
+    expect(formatSettlementDelay(null)).toBe('')
+    expect(formatSettlementDelay(undefined)).toBe('')
+    expect(formatSettlementDelay('')).toBe('')
+  })
+
   it('distinguishes remaining wait from configured total wait', () => {
     const now = Date.parse('2026-09-10T12:00:00Z')
     const order = {

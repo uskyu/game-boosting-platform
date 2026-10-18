@@ -177,7 +177,15 @@ export function formatCount(value) {
   return countFormatter.format(Number.isNaN(numericValue) ? 0 : numericValue)
 }
 
+/**
+ * 结账时效展示（如 1天 / 12小时 / 立即结算）。
+ *
+ * ``null`` / ``undefined`` / ``''`` = 该档留空 → 返回空串（调用方自行显示
+ * 「按订单时效」）。**不能**让 null 走 Number() —— ``Number(null) === 0``
+ * 会被判成「立即结算」，把留空档位错显成立即结算（老板 2026-10-18 报的 bug）。
+ */
 export function formatSettlementDelay(hoursRaw) {
+  if (hoursRaw === null || hoursRaw === undefined || hoursRaw === '') return ''
   const hours = Number(hoursRaw)
   if (!Number.isFinite(hours) || hours < 0) return ''
   if (hours === 0) return '立即结算'

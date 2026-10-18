@@ -257,9 +257,9 @@ onMounted(async () => {
         </div>
         <p class="mt-1.5 text-xs text-ink-3">门槛不能重复；保存时以当前表格整表替换后台配置。</p>
         <p class="mt-1.5 text-xs text-ink-3">
-          结账时效<strong>留空表示该档不承诺加速</strong>，按打手所接订单设置的到账时效倒计时；
-          填写后仅当它<strong>比订单到账时效更快</strong>时才生效（档位是加速器，订单是基准）。
-          0 元档（0 保证金）不享受加速，留空即完全按订单时效。
+          结账时效<strong>留空表示该档不承诺时长</strong>，改按打手所接订单设置的到账时效倒计时；
+          填写了小时数就<strong>以档位为准</strong>（后台设置为基准，订单时效只在留空时兜底）。
+          填 0 表示<strong>交付即结算</strong>，与留空含义完全不同，别混用。
         </p>
         <p class="mt-1.5 text-xs text-ink-3">
           「接单免冻结」只影响<strong>接单时是否预冻结</strong>赔付金：勾选后该档位打手接单不再预冻结，
