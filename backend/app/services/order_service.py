@@ -1178,10 +1178,13 @@ class OrderService:
             else claim.settlement_due_at
         )
         # 展示用小时数：ORDER_DELAY 时按订单时效（留空则默认 3 天）给出，
-        # 前端用它渲染「3天」这类文案；快照名额沿用库里的快照小时数。
-        effective_hours = claim.settle_hours_snapshot
-        if order is not None and claim.settlement_mode_snapshot == "ORDER_DELAY":
-            effective_hours = deposit_service.order_payout_delay_hours(order)
+        # 前端用它渲染「3天」这类文案；快照名额沿用库里的快照小时数，
+        # 已结算/已取消名额不回报失效时长。
+        effective_hours = (
+            deposit_service.claim_effective_settle_hours(claim, order)
+            if order is not None
+            else claim.settle_hours_snapshot
+        )
         return {
             "id": claim.id,
             "order_id": claim.order_id,

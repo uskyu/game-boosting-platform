@@ -306,6 +306,17 @@ async def test_legacy_order_with_null_payout_delay_falls_back_to_three_days(
     ).scalar_one()
     assert Decimal(str(after)) > Decimal(str(before)), "到期结算后打手余额没有增加"
 
+    # 6) 结算后不得再回报"未来到账时间"：钱已经到账了，接口若还现算出一个
+    #    3 天后的时间，用户会以为还要等（库里已被结算流程清空）。
+    assert deposit_service.claim_effective_due(claim, row) is None
+    assert deposit_service.claim_effective_settle_hours(claim, row) is None
+    resp = await client.get(f"/orders/{order['id']}/claims", headers=auth_header(admin_user))
+    assert resp.status_code == 200, resp.text
+    settled_item = resp.json()["items"][0]
+    assert settled_item["status"] == "SETTLED"
+    assert settled_item["settlement_due_at"] is None
+    assert settled_item["settle_hours_snapshot"] is None
+
 
 async def test_explicit_zero_payout_delay_is_rejected(
     client: AsyncClient, admin_user: dict
@@ -495,6 +506,27 @@ class _FakeClaim:
         self.settlement_paused = settlement_paused
         self.status = ClaimLifecycleStatus.DELIVERED
         self.settled_at = None
+
+
+def test_order_payout_delay_hours_default_matrix():
+    """order_payout_delay_hours：只填天/只填小时照实折算，都没填才回落 3 天。
+
+    这条是所有到期时间计算的共同底座（调度器与接口都走它），必须逐格锁死：
+    任何一格错成 None 都会让对应名额永不结算。
+    """
+    from app.services.deposit_service import order_payout_delay_hours
+
+    # 都没填 → 默认 3 天（老板 2026-10-18：「不填默认 3 天」）
+    assert order_payout_delay_hours(_FakeOrder()) == 72
+    assert order_payout_delay_hours(_FakeOrder(None, None)) == 72
+    # 只填天 / 只填小时 → 照实折算，不能被默认值覆盖
+    assert order_payout_delay_hours(_FakeOrder(payout_delay_days=5)) == 120
+    assert order_payout_delay_hours(_FakeOrder(payout_delay_hours=12)) == 12
+    assert order_payout_delay_hours(_FakeOrder(payout_delay_days=1, payout_delay_hours=12)) == 36
+    # 显式 0 天：schema 层不会写入这种组合，但真出现也不能被当成"未设置"
+    assert order_payout_delay_hours(_FakeOrder(payout_delay_days=0, payout_delay_hours=5)) == 5
+    # 没有订单上下文 → 与"订单未设置"同义，仍给默认值（不再返回 None）
+    assert order_payout_delay_hours(None) == 72
 
 
 def test_none_tier_hours_is_not_zero_in_resolver():

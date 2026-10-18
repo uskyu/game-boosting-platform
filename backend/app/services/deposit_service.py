@@ -313,6 +313,19 @@ def _candidate_due_from_sources(
     return _as_utc(started_at) + timedelta(hours=hours)
 
 
+def claim_awaits_settlement(claim: OrderClaim) -> bool:
+    """该名额是否还在"等待到账"（未结算、未取消）。
+
+    只有这种名额才有"未来某个时间到账"的概念。已结算/已取消的名额必须停止
+    展示/回报到期时间，否则会凭空造出一个未来时间（钱早就到了，页面却说要
+    再等 3 天）。
+    """
+    if claim.settled_at is not None:
+        return False
+    status = getattr(claim.status, "value", claim.status)
+    return str(status) not in ("SETTLED", "CANCELLED")
+
+
 def claim_effective_due(
     claim: OrderClaim, order: Order | Any | None
 ) -> datetime | None:
@@ -324,9 +337,12 @@ def claim_effective_due(
     「还是没有」：0 元档留空 + 订单不填时效，于是永远算不出时间。
 
     这里按同一条口径现算一份只读的到期时间给接口用：
+    - 已结算/已取消 → None（不再有"待到账"，绝不造未来时间）；
     - ``ORDER_DELAY`` → 交付时间 + 订单时效（订单留空则默认 3 天）；
     - 其余快照 → 库里存的 ``settlement_due_at``（AFTER_APPROVAL 未审核时为 None）。
     """
+    if not claim_awaits_settlement(claim):
+        return None
     if claim.settlement_mode_snapshot == SETTLEMENT_MODE_ORDER_DELAY:
         if claim.delivered_at is None:
             return None
@@ -335,6 +351,21 @@ def claim_effective_due(
             return None
         return _as_utc(claim.delivered_at) + timedelta(hours=order_hours)
     return _as_utc(claim.settlement_due_at) if claim.settlement_due_at else None
+
+
+def claim_effective_settle_hours(
+    claim: OrderClaim, order: Order | Any | None
+) -> int | None:
+    """展示用结算小时数：ORDER_DELAY 名额按订单时效（留空则默认 3 天）。
+
+    与 ``claim_effective_due`` 同一口径：名额结算/取消后回落库里的快照值
+    （由结算流程清成 None），不再回报一个已经失效的时长。
+    """
+    if not claim_awaits_settlement(claim):
+        return claim.settle_hours_snapshot
+    if claim.settlement_mode_snapshot == SETTLEMENT_MODE_ORDER_DELAY:
+        return order_payout_delay_hours(order)
+    return claim.settle_hours_snapshot
 
 
 def _refresh_claim_settlement_terms(
