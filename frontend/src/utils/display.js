@@ -197,19 +197,36 @@ export function formatSettlementDelay(hoursRaw) {
 }
 
 /**
- * 到账时效统一展示：X天Y小时（如 1天 / 12小时 / 1天12小时 / 3天）。
- * 天和小时都为空（或都为 0）时返回空字符串 = 不设置。
+ * 到账时效展示：X天Y小时（如 1天 / 12小时 / 1天12小时 / 3天）。
+ *
+ * 两个字段都为空 = **发布时没填**，此时按默认 3 天展示，而不是返回空串：
+ * 返回空串会让「到账时效」整块被 v-if 隐藏，用户看到的是"这个订单没有到账
+ * 时间"（老板 2026-10-18 反馈的正是这个）。后端 ``DEFAULT_PAYOUT_DELAY_DAYS``
+ * 对同样输入做兜底，两处口径必须一致。
+ *
+ * 需要区分"显式填了 3 天"和"没填按默认 3 天"时用 ``payoutDelayInfo``。
  */
 export function formatPayoutDelay(order) {
-  if (!order) return ''
-  const days = Number(order.payout_delay_days)
-  const hours = Number(order.payout_delay_hours)
+  return payoutDelayInfo(order).text
+}
+
+/**
+ * 到账时效明细：``{ text, isDefault }``。
+ *
+ * ``isDefault=true`` 表示订单两个字段都为空、展示的是默认 3 天（供界面标注
+ * 「默认」）。显式填写时按填写值展示。
+ */
+export function payoutDelayInfo(order) {
+  const days = Number(order?.payout_delay_days)
+  const hours = Number(order?.payout_delay_hours)
   const hasDays = Number.isFinite(days) && days > 0
   const hasHours = Number.isFinite(hours) && hours > 0
-  if (!hasDays && !hasHours) return ''
+  if (!hasDays && !hasHours) {
+    return { text: `${DEFAULT_PAYOUT_DELAY_DAYS}天`, isDefault: true }
+  }
   const daysText = hasDays ? `${days}天` : ''
   const hoursText = hasHours ? `${hours}小时` : ''
-  return `${daysText}${hoursText}`
+  return { text: `${daysText}${hoursText}`, isDefault: false }
 }
 
 /**

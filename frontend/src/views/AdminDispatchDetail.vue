@@ -7,7 +7,7 @@ import { useChatStore } from '@/stores/chat'
 import { useOrdersStore } from '@/stores/orders'
 import { useServiceFeeStore } from '@/stores/serviceFee'
 import api from '@/utils/api'
-import { formatDateTime, formatFeeRate, formatMoneyFixed, formatOrderPrice, formatPayoutDelay, formatPrice, parsePayoutDelay, serviceFeeBreakdown } from '@/utils/display'
+import { formatDateTime, formatFeeRate, formatMoneyFixed, formatOrderPrice, formatPayoutDelay, formatPrice, parsePayoutDelay, payoutDelayInfo, serviceFeeBreakdown } from '@/utils/display'
 import { getClaimSettlementMeta, getOrderStatusBadgeClass, getOrderStatusLabel } from '@/utils/order'
 
 const props = defineProps({
@@ -630,7 +630,9 @@ onMounted(async () => {
           </div>
         </div>
 
-        <!-- 增量契约字段：老板ID / 炸单赔偿金 / 到账时效（有值才展示） -->
+        <!-- 增量契约字段：老板ID / 炸单赔偿金 / 到账时效。
+             到账时效即便订单没填也展示（= 默认 3 天），不再整块隐藏：
+             "订单没有到账时间"是老板 2026-10-18 反馈的问题。 -->
         <div v-if="order.boss_contact || Number(order.compensation_amount) > 0 || formatPayoutDelay(order) || orderServiceFeeView" class="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <div v-if="order.boss_contact" class="info-tile min-w-0">
             <p class="info-tile__label">老板ID</p>
@@ -640,9 +642,11 @@ onMounted(async () => {
             <p class="info-tile__label">炸单赔偿金</p>
             <p class="info-tile__value tabular-nums">{{ formatPrice(order.compensation_amount) }}</p>
           </div>
-          <div v-if="formatPayoutDelay(order)" class="info-tile">
+          <div class="info-tile">
             <p class="info-tile__label">到账时效</p>
-            <p class="info-tile__value tabular-nums">{{ formatPayoutDelay(order) }}到账</p>
+            <p class="info-tile__value tabular-nums">
+              {{ formatPayoutDelay(order) }}到账<span v-if="payoutDelayInfo(order).isDefault" class="text-ink-3">（默认）</span>
+            </p>
           </div>
           <div v-if="orderServiceFeeView" class="info-tile">
             <p class="info-tile__label">服务费 {{ orderServiceFeeView.rate }}</p>

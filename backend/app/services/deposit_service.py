@@ -107,33 +107,47 @@ def resolve_tier(tiers: list[DepositTier], deposit_balance: Decimal) -> DepositT
 
 
 # ---------------------------------------------------------------------------
-# 结算时效优先级（老板 2026-10-18 拍板 R3：订单为准，档位只是加速器）
+# 结算时效优先级（老板 2026-10-18 拍板：后台档位为基准、留空才兜底订单时效）
 #
-# 四个取值来源，按以下顺序合成 <b>有效结算小时数</b>：
-#   1. 订单自身 payout_delay_days / payout_delay_hours（老板对"这一单"的承诺）
-#   2. 档位 settle_hours（平台给"这一档"的权益）
+# 取值来源，按以下顺序合成 <b>有效结算小时数</b>：
+#   1. 档位 settle_hours（平台给"这一档"的权益，有值就按它，含 0 = 立即结算）
+#   2. 订单自身 payout_delay_days / payout_delay_hours（老板对"这一单"的承诺）
+#   3. 两边都留空 → 默认 3 天（DEFAULT_PAYOUT_DELAY_DAYS）
 #
 # 规则（单一事实来源，snapshot 与调度器都调这里，禁止各自复制）：
-#   - 订单**未**设置时效  → 用档位时长兜底（含 0 元档；否则老行为会倒退成
-#     "永不自动结算"）；
-#   - 订单**已**设置时效  → 以订单为准；只有**真正缴过保证金**的档位
-#     （threshold > 0）且其 settle_hours **更短**时才加速，其余一律按订单时效；
-#   - 档位 settle_hours 为 NULL = 该档不承诺加速，完全按订单时效；
-#   - 两边都没有 → None（= 永不自动结算，需人工审核，既有语义）。
+#   - 档位 settle_hours 有值 → 按档位时长（0 小时 = 交付即结算）；
+#   - 档位 settle_hours 为 NULL = 该档不承诺时长 → 按订单时效；
+#   - 订单也没填（两项都 NULL）→ 按默认 3 天，**不是**"永不自动结算"；
+#   - 保证金模式关闭 / 模式退化 → 同样走订单时效（含默认 3 天）。
 #
-# 0 元档不享受加速，是老板投诉的核心修正：此前 0 保证金档的 72 小时会把
-# 订单设的「5 天」直接覆盖掉（"这个订单结账时间其实没什么用"）。
+# 0 元档留空是老板有意的配置（0 保证金打手也能接单），此时到期时间
+# 完全由订单时效决定；订单也没填就是默认 3 天。
 # ---------------------------------------------------------------------------
 
 
 def order_payout_delay_hours(order: Any | None) -> int | None:
-    """订单自身到账时效折算成小时；两项都留空 = 未设置（返回 None）。"""
+    """订单自身到账时效折算成小时。
+
+    两项都留空（发单时没填）时返回 **默认 3 天 = 72 小时**，而不是 None：
+
+    老板 2026-10-18 再次拍板 —— 「发布订单不填到账时效，就按默认 3 天到账」。
+    表单留空只是没表态，不代表"永不结算"；此前这里返回 None 会让 0 元档
+    （结账时效也留空）的名额永远算不出到期时间，页面上既没有倒计时也
+    不会自动打款，老板看到的就是"还是没有到账时间"。
+
+    显式填 0 天 0 小时在 schema 层已被拒绝，所以这里不会把"立即结算"吞成
+    默认值；保持 ``max(..., 0)`` 只是防御坏数据。
+    """
+    from app.models.order import DEFAULT_PAYOUT_DELAY_DAYS
+
     if order is None:
-        return None
+        # 没有订单上下文（纯算法/legacy 校验路径）：调用方按"订单未设置"处理，
+        # 这里仍返回默认值，保证与有订单时的"留空"语义一致。
+        return DEFAULT_PAYOUT_DELAY_DAYS * 24
     days = getattr(order, "payout_delay_days", None)
     hours = getattr(order, "payout_delay_hours", None)
     if days is None and hours is None:
-        return None
+        return DEFAULT_PAYOUT_DELAY_DAYS * 24
     return max(int(days or 0), 0) * 24 + max(int(hours or 0), 0)
 
 
@@ -297,6 +311,30 @@ def _candidate_due_from_sources(
     if started_at is None:
         return None
     return _as_utc(started_at) + timedelta(hours=hours)
+
+
+def claim_effective_due(
+    claim: OrderClaim, order: Order | Any | None
+) -> datetime | None:
+    """展示用的到期时间（API 序列化专用，不改库）。
+
+    ``ORDER_DELAY`` 名额按设计**不落盘** ``settlement_due_at``（到期时间由订单
+    时效现算，订单被改后才不会留下陈旧时间）。但接口如果把 None 直接吐给前端，
+    打手端就既没有倒计时、也看不到"哪天到账"——老板 2026-10-18 反馈的正是这个
+    「还是没有」：0 元档留空 + 订单不填时效，于是永远算不出时间。
+
+    这里按同一条口径现算一份只读的到期时间给接口用：
+    - ``ORDER_DELAY`` → 交付时间 + 订单时效（订单留空则默认 3 天）；
+    - 其余快照 → 库里存的 ``settlement_due_at``（AFTER_APPROVAL 未审核时为 None）。
+    """
+    if claim.settlement_mode_snapshot == SETTLEMENT_MODE_ORDER_DELAY:
+        if claim.delivered_at is None:
+            return None
+        order_hours = order_payout_delay_hours(order)
+        if order_hours is None:
+            return None
+        return _as_utc(claim.delivered_at) + timedelta(hours=order_hours)
+    return _as_utc(claim.settlement_due_at) if claim.settlement_due_at else None
 
 
 def _refresh_claim_settlement_terms(

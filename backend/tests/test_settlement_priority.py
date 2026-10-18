@@ -4,7 +4,8 @@
 
 - 档位 ``settle_hours`` **有值** → **按档位时间结算**（含 0 小时 = 交付即结算）；
 - 档位 ``settle_hours`` **留空（NULL）** → 兜底按订单 ``payout_delay_*``；
-- 两边都没有 → 永不自动结算（既有语义）。
+- 订单也没填（两项都 NULL）→ **默认 3 天**（``DEFAULT_PAYOUT_DELAY_DAYS``），
+  到期后由调度器自动结算；**不是**"永不结算"（老板 2026-10-18 第二次纠正）。
 
 **资金事故红线**：``settle_hours`` 的 None 绝不能被折算成 0 小时。0 小时的
 语义是「交付即结算」，会把在途名额立刻推到到期并批量提前打款；而
@@ -239,6 +240,73 @@ async def test_blank_payout_delay_defaults_to_three_days(
     assert _aware(due) == _aware(claim.delivered_at) + timedelta(days=3)
 
 
+async def test_legacy_order_with_null_payout_delay_falls_back_to_three_days(
+    client: AsyncClient, admin_user: dict, booster_user: dict, db_session
+):
+    """库里 payout_delay_* 仍为 NULL 的历史订单 → 到期按默认 3 天，不是永不结算。
+
+    老板 2026-10-18 线上遇到的正是这个：0 元档留空 + 订单字段是 NULL，
+    到期时间算不出来 → 页面既没有倒计时也不会自动打款（"还是没有到账时间"）。
+    新发单会在 schema 层落 3 天，但**存量单**必须靠解析层兜底。
+    """
+    from app.models.order import Order
+
+    await _set_deposit(client, admin_user, tiers=[_tier(0, settle_hours=None)])
+    order = await _create_order(client, admin_user, payout_delay_days=3)
+    await _accept_deliver(client, admin_user, booster_user, order["id"])
+
+    # 模拟存量单：把落库的 3 天还原成 NULL（老板那个订单的真实状态）
+    row = await _order_row(db_session, order["id"])
+    row.payout_delay_days = None
+    row.payout_delay_hours = None
+    await db_session.flush()
+
+    claim = await _claim(db_session, order["id"])
+    assert claim.settlement_mode_snapshot == "ORDER_DELAY"
+
+    # 1) 调度器口径：交付 + 3 天
+    assert _aware(_order_delay_due(claim, row)) == _aware(
+        claim.delivered_at
+    ) + timedelta(days=3)
+    # 2) resolver 口径：同样是 3 天（不能是 None）
+    due = await _effective_due(db_session, claim, row)
+    assert due is not None
+    assert _aware(due) == _aware(claim.delivered_at) + timedelta(days=3)
+    # 3) 接口口径：必须把算出来的到期时间吐给前端，否则页面没东西可显示
+    from app.services import deposit_service
+
+    assert _aware(deposit_service.claim_effective_due(claim, row)) == _aware(
+        claim.delivered_at
+    ) + timedelta(days=3)
+    # 4) 没到期前不结算（3 天内不能提前打款）
+    assert await scan_due_payouts(db_session) == []
+
+    # 5) 到期后必须真的自动打款 —— 这才是老板要的「3 天到账」，
+    #    只算出一个时间却不结算等于永远不到账。
+    from app.models.wallet import Wallet
+
+    booster_id = booster_user["user"]["id"]
+    before = (
+        await db_session.execute(
+            select(Wallet.available_balance).where(Wallet.user_id == booster_id)
+        )
+    ).scalar_one()
+    await db_session.commit()
+    settled = await scan_due_payouts(
+        db_session, now=_aware(claim.delivered_at) + timedelta(days=3, seconds=1)
+    )
+    await db_session.commit()
+    assert claim.id in settled, "ORDER_DELAY + 订单未填时效的名额到期后没有被自动结算"
+    await db_session.refresh(claim)
+    assert claim.status == ClaimLifecycleStatus.SETTLED
+    after = (
+        await db_session.execute(
+            select(Wallet.available_balance).where(Wallet.user_id == booster_id)
+        )
+    ).scalar_one()
+    assert Decimal(str(after)) > Decimal(str(before)), "到期结算后打手余额没有增加"
+
+
 async def test_explicit_zero_payout_delay_is_rejected(
     client: AsyncClient, admin_user: dict
 ):
@@ -363,6 +431,13 @@ async def test_order_blank_delay_with_null_tier_uses_default_three_days(
     assert _aware(due) == _aware(claim.delivered_at) + timedelta(days=3)
     # 3 天内未到期 → 调度器不结算
     assert await scan_due_payouts(db_session) == []
+    # 到期后必须真的结算（只算时间不打款 = 老板说的"还是不到账"）
+    await db_session.commit()
+    settled = await scan_due_payouts(
+        db_session, now=_aware(claim.delivered_at) + timedelta(days=3, seconds=1)
+    )
+    await db_session.commit()
+    assert claim.id in settled
 
 
 # ---------------------------------------------------------------------------
@@ -429,7 +504,8 @@ def test_none_tier_hours_is_not_zero_in_resolver():
     1. 已有 72h 快照的 claim（旧配置下交付）→ 留空后仍保持 72h（只缩短，
        不因留空把时间清成 0，也不延长到订单的 5 天）；
     2. ORDER_DELAY 快照的 claim（订单 5 天）→ 仍按订单 5 天；
-    3. ORDER_DELAY 快照且订单也无时效 → None（永不自动结算），而非立即到期。
+    3. ORDER_DELAY 快照且订单也无时效 → **默认 3 天**（老板 2026-10-18：
+       发布不填到账时效按 3 天），而不是"立刻到期"、也不是"永不结算"。
     """
     setting = _make_settings()
     tier = _FakeTier(0, None)
@@ -461,16 +537,16 @@ def test_none_tier_hours_is_not_zero_in_resolver():
     )
     assert due2 == delivered + timedelta(days=5)
 
-    # 场景 3：ORDER_DELAY 快照但订单也没有时效 → None，而不是「立即到期」
+    # 场景 3：ORDER_DELAY 快照但订单也没有时效 → 默认 3 天，而不是「立即到期」
     empty_claim = _FakeClaim(
         mode="ORDER_DELAY", hours=None, due=None, delivered_at=delivered
     )
-    assert (
-        deposit_service.resolve_unsettled_settlement_due(
-            empty_claim, tier, setting, order=_FakeOrder()
-        )
-        is None
+    due3 = deposit_service.resolve_unsettled_settlement_due(
+        empty_claim, tier, setting, order=_FakeOrder()
     )
+    # 老板 2026-10-18：不填到账时效 = 默认 3 天（不是永不结算、更不是立即到账）
+    assert due3 == delivered + timedelta(days=3)
+    assert due3 != delivered
 
 
 def test_tier_settle_hours_helper_keeps_none():
@@ -520,7 +596,7 @@ def test_plan_settlement_terms_matrix():
     )
     assert (plan.mode, plan.hours) == ("ORDER_DELAY", None)
 
-    # 档位留空 + 订单也未设 → 永不自动结算
+    # 档位留空 + 订单也未设 → 模式仍是 ORDER_DELAY（到期时间按默认 3 天现算）
     plan = deposit_service.plan_settlement_terms(
         _FakeTier(0, None), _FakeOrder(), setting
     )

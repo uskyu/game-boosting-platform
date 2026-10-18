@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { cleanTemplatePayload, resetOrderForm } from '../orderTemplates'
-import { DEFAULT_PAYOUT_DELAY_DAYS, formatSettlementDelay, formatShortDate, getAcceptWaitMeta, parsePayoutDelay } from '../display'
+import { DEFAULT_PAYOUT_DELAY_DAYS, formatPayoutDelay, formatSettlementDelay, formatShortDate, getAcceptWaitMeta, parsePayoutDelay, payoutDelayInfo } from '../display'
 
 describe('order template contract', () => {
   it('trims strings, omits blanks, preserves zero, and excludes unknown fields', () => {
@@ -40,6 +40,39 @@ describe('order template contract', () => {
     expect(parsePayoutDelay(null, null)).toEqual({ days: null, hours: null })
     // 显式 0 天 0 小时仍报错
     expect(parsePayoutDelay(0, 0).error).toContain('3 天')
+  })
+
+  it('订单没填到账时效时展示默认 3 天，绝不返回空串', () => {
+    // 老板 2026-10-18：返回空串会让「到账时效」整块被 v-if 隐藏，
+    // 用户看到的就是"这个订单没有到账时间"。
+    for (const blank of [
+      { payout_delay_days: null, payout_delay_hours: null },
+      {},
+      { payout_delay_days: '', payout_delay_hours: '' },
+      { payout_delay_days: 0, payout_delay_hours: 0 },
+    ]) {
+      expect(formatPayoutDelay(blank)).toBe('3天')
+      expect(payoutDelayInfo(blank)).toEqual({ text: '3天', isDefault: true })
+    }
+    // null / undefined 订单也不能抛
+    expect(formatPayoutDelay(null)).toBe('3天')
+    expect(formatPayoutDelay(undefined)).toBe('3天')
+  })
+
+  it('订单显式填了时效就按填的显示，且不标「默认」', () => {
+    expect(payoutDelayInfo({ payout_delay_days: 5 })).toEqual({ text: '5天', isDefault: false })
+    expect(payoutDelayInfo({ payout_delay_days: 3 })).toEqual({ text: '3天', isDefault: false })
+    expect(payoutDelayInfo({ payout_delay_hours: 12 })).toEqual({ text: '12小时', isDefault: false })
+    expect(payoutDelayInfo({ payout_delay_days: 1, payout_delay_hours: 12 })).toEqual({
+      text: '1天12小时',
+      isDefault: false,
+    })
+    // 显式填 3 天与"没填按默认 3 天"文案相同，但 isDefault 必须能区分
+    expect(formatPayoutDelay({ payout_delay_days: null, payout_delay_hours: null })).toBe(
+      formatPayoutDelay({ payout_delay_days: 3 }),
+    )
+    expect(payoutDelayInfo({ payout_delay_days: 3 }).isDefault).toBe(false)
+    expect(payoutDelayInfo({}).isDefault).toBe(true)
   })
 
   it('distinguishes remaining wait from configured total wait', () => {

@@ -1161,8 +1161,27 @@ class OrderService:
         booster_email: str | None = None,
         booster_deposit_balance: Decimal | None = None,
         booster_compensation_available: Decimal | None = None,
+        order: Order | None = None,
     ) -> dict[str, Any]:
-        """Serialize a claim into the public API contract shape."""
+        """Serialize a claim into the public API contract shape.
+
+        ``settlement_due_at`` 用 ``claim_effective_due`` 现算：ORDER_DELAY 名额
+        库里不存 due（到期时间由订单时效现算），直接吐 None 会让前端没有倒计时、
+        也看不到到账日期（老板 2026-10-18 报的「还是没有」）。传入 ``order``
+        即可让这条口径生效；没传时退回原始字段，保持既有调用方行为。
+        """
+        from app.services import deposit_service
+
+        effective_due = (
+            deposit_service.claim_effective_due(claim, order)
+            if order is not None
+            else claim.settlement_due_at
+        )
+        # 展示用小时数：ORDER_DELAY 时按订单时效（留空则默认 3 天）给出，
+        # 前端用它渲染「3天」这类文案；快照名额沿用库里的快照小时数。
+        effective_hours = claim.settle_hours_snapshot
+        if order is not None and claim.settlement_mode_snapshot == "ORDER_DELAY":
+            effective_hours = deposit_service.order_payout_delay_hours(order)
         return {
             "id": claim.id,
             "order_id": claim.order_id,
@@ -1181,8 +1200,8 @@ class OrderService:
             "approved_deduction": claim.approved_deduction,
             "approved_note": claim.approved_note,
             "settlement_mode_snapshot": claim.settlement_mode_snapshot,
-            "settle_hours_snapshot": claim.settle_hours_snapshot,
-            "settlement_due_at": claim.settlement_due_at,
+            "settle_hours_snapshot": effective_hours,
+            "settlement_due_at": effective_due,
             "settled_at": claim.settled_at,
             "is_first": order_booster_id == claim.booster_id,
             "booster_deposit_balance": booster_deposit_balance,
@@ -1213,6 +1232,7 @@ class OrderService:
             booster_deposit_balance=(
                 _to_decimal(deposit_balance) if deposit_balance is not None else _ZERO
             ),
+            order=order,
         )
 
     async def get_order_claim_view(
@@ -1252,6 +1272,7 @@ class OrderService:
                 _to_decimal(deposit_balance) if deposit_balance is not None else _ZERO
             ),
             booster_compensation_available=compensation_available,
+            order=order,
         )
 
     async def claims_view_for_booster(
@@ -1288,6 +1309,7 @@ class OrderService:
                 booster_compensation_available=compensation_by_order.get(
                     order.id, _ZERO
                 ),
+                order=order,
             )
         return views
 
@@ -1472,6 +1494,7 @@ class OrderService:
                 order_status=order.status,
                 booster_nickname=username,
                 booster_email=email,
+                order=order,
             )
             wallet = wallet_by_booster.get(claim.booster_id)
             item["cancel_pending"] = claim.id in pending_claim_ids
@@ -1642,6 +1665,7 @@ class OrderService:
                 booster_compensation_available=compensation_by_order.get(
                     order.id, _ZERO
                 ),
+                order=order,
             )
             item["order"] = {
                 "id": order.id,
@@ -2150,9 +2174,7 @@ class OrderService:
         # 才能读到 SETTLED，否则订单永远停在 LOCKED。
         await self._db.flush()
 
-    async def auto_settle_due_claim(
-        self, order: Order, claim: OrderClaim, *, delay_from_tier: bool = False
-    ) -> bool:
+    async def auto_settle_due_claim(self, order: Order, claim: OrderClaim) -> bool:
         """Auto-settle a due claim using its stored approval terms."""
         if claim.status != ClaimLifecycleStatus.DELIVERED:
             return False
@@ -2160,13 +2182,11 @@ class OrderService:
             return False
         if await self._has_pending_cancel_request(order_id=order.id, claim_id=claim.id):
             return False
-        if (
-            claim.settlement_mode_snapshot in (None, SETTLEMENT_MODE_ORDER_DELAY)
-            and not delay_from_tier
-            and order.payout_delay_days is None
-            and order.payout_delay_hours is None
-        ):
-            return False
+        # 旧实现在这里对「订单没填 payout_delay_* 且档位也没给时长」的名额直接
+        # return False（当时的语义是"两边都没承诺 → 永不自动结算，需人工审核"）。
+        # 老板 2026-10-18 改为「发布不填到账时效 = 默认 3 天」后，该情形已由
+        # DEFAULT_PAYOUT_DELAY_DAYS 兜底、到期时间恒定可算，这道拦截会让钱
+        # 永远不到账（线上表现就是"还是没有"），故删除。
         # A held AFTER_APPROVAL claim must have a concrete review snapshot.
         # Older partial snapshot data is left untouched for manual recovery;
         # never recalculate an arbitrary payout at scheduler time.

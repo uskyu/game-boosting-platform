@@ -31,9 +31,17 @@ from app.models.deposit import (
 from app.models.notification import NotificationType
 from app.models.order import ClaimLifecycleStatus, Order, OrderClaim
 from app.models.wallet import Wallet
+from app.services.deposit_service import order_payout_delay_hours
 from app.services.order_service import get_order_service
 
 logger = logging.getLogger(__name__)
+
+
+def order_settlement_hours(order: Order) -> int:
+    """订单到账时效（小时）：两项都留空时按默认 3 天，永不为 None。"""
+    hours = order_payout_delay_hours(order)
+    # order_payout_delay_hours 已对"未设置"回落到默认 3 天；这里只防御坏数据。
+    return hours if hours is not None else 72
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -44,13 +52,17 @@ def _as_utc(value: datetime) -> datetime:
 
 
 def _order_delay_due(claim: OrderClaim, order: Order) -> datetime | None:
-    """保证金模式关闭时的原有规则：交付时间 + 订单自身的到账时效。"""
-    days = order.payout_delay_days
-    hours = getattr(order, "payout_delay_hours", None)
-    if (days is None and hours is None) or claim.delivered_at is None:
+    """交付时间 + 订单到账时效（订单留空则按默认 3 天）。
+
+    老板 2026-10-18：「发布订单不填到账时效就按默认 3 天」。此前订单两项
+    都 NULL 时这里返回 None，等于该名额永不自动结算 —— 0 元档（结账时效也
+    留空）叠加订单不填时效，打手就永远看不到到账时间也永远拿不到钱。
+    显式 0 天 0 小时在 schema 层已被拒，所以兜底不会把"立即结算"吃掉。
+    """
+    if claim.delivered_at is None:
         return None
     return _as_utc(claim.delivered_at) + timedelta(
-        days=int(days or 0), hours=int(hours or 0)
+        hours=order_settlement_hours(order)
     )
 
 
@@ -296,21 +308,12 @@ async def scan_due_payouts(
                     continue
 
                 order_service = get_order_service(db)
+                # 到期即结算（结算金额与条款由快照/审核值决定）。此前这里还要传
+                # delay_from_tier 去规避「订单没填时效就不许结算」的旧拦截；老板
+                # 2026-10-18 定下「不填 = 默认 3 天」后该拦截已删除，参数一并去掉。
                 done = await order_service.auto_settle_due_claim(
                     locked_order,
                     locked_claim,
-                    # 「档位在兜底」= 该名额的快照不是显式快照模式，且当前确实
-                    # 有档位声明了结账时效（留空的档位不构成兜底依据）。
-                    delay_from_tier=(
-                        locked_claim.settlement_mode_snapshot
-                        not in (
-                            SETTLEMENT_MODE_AFTER_DELIVERY,
-                            SETTLEMENT_MODE_AFTER_APPROVAL,
-                        )
-                        and locked_deposit_on
-                        and locked_tier is not None
-                        and locked_tier.settle_hours is not None
-                    ),
                 )
             if done:
                 # 每个名额结算完立刻提交：行锁只持有到本名额结束，不再跨名额

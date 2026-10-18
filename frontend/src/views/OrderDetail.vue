@@ -12,7 +12,7 @@ import { useChatStore } from '@/stores/chat'
 import { useOrdersStore } from '@/stores/orders'
 import { getGameImage } from '@/data/gameImages'
 import api from '@/utils/api'
-import { formatDateTime, formatDueCountdown, formatFeeRate, formatMoneyFixed, formatOrderPrice, formatPayoutDelay, formatPrice, formatSettlementDelay, formatShortDate, getAcceptWaitMeta, serverNow } from '@/utils/display'
+import { formatDateTime, formatDueCountdown, formatFeeRate, formatMoneyFixed, formatOrderPrice, formatPayoutDelay, formatPrice, formatSettlementDelay, formatShortDate, getAcceptWaitMeta, payoutDelayInfo, serverNow } from '@/utils/display'
 import { CANCEL_PENDING_CLAIM_META, getClaimSettlementMeta, getOrderStatusBadgeClass, getOrderStatusLabel, getOrderStatusMeta, getHumanStatusLabel, getHumanStatusSubtitle } from '@/utils/order'
 import { measureOrderFlowStage } from '@/utils/orderFlowTiming'
 
@@ -427,6 +427,12 @@ function claimBoosterName(claim) {
 }
 
 // 服务费拆分：后端按有效费率回显（分位四舍五入，与结算同口径）；费率 0 时不展示
+// 到账时效是否为「没填 → 默认 3 天」：是则在数值后标注「默认」，让用户分得清
+// 「我自己填了 3 天」和「我没填、系统按 3 天算」。
+function payoutDelayIsDefault(o) {
+  return payoutDelayInfo(o).isDefault
+}
+
 const serviceFeeView = computed(() => {
   const fee = Number(order.value?.service_fee_amount ?? 0)
   if (!(fee > 0)) return null
@@ -1405,9 +1411,13 @@ onUnmounted(() => {
             <p class="info-tile__label">炸单赔偿金</p>
             <p class="info-tile__value tabular-nums text-warning">{{ formatPrice(order.compensation_amount) }}</p>
           </div>
-          <div v-if="formatPayoutDelay(order)" class="od-key__item">
+          <!-- 到账时效：发布时没填也照样展示默认 3 天（不能 v-if 隐藏，
+               否则用户看到的是"这个订单没有到账时间"——老板 2026-10-18 反馈）。 -->
+          <div class="od-key__item">
             <p class="info-tile__label">到账时效</p>
-            <p class="info-tile__value">{{ formatPayoutDelay(order) }}</p>
+            <p class="info-tile__value">
+              {{ formatPayoutDelay(order) }}<span v-if="payoutDelayIsDefault(order)" class="text-ink-3">（默认）</span>
+            </p>
           </div>
           <div v-if="order.require_delivery_image" class="od-key__item">
             <p class="info-tile__label">结单要求</p>
@@ -2202,20 +2212,27 @@ onUnmounted(() => {
       </div>
     </teleport>
 
-    <!-- 售后处理中（打手侧）：查看案情 / 同意退款（两步确认）/ 联系平台协助 -->
-    <AfterSaleStatusModal
-      v-model="showAfterSaleModal"
-      :order-id="order.id"
-      :viewer-role="'booster'"
-      @accepted="onAfterSaleAccepted"
-    />
+    <!-- 售后弹窗必须放在 v-if="order" 保护范围内：它们直接读 order.id，
+         order 为 null（未加载完 / 拉取失败 / 订单不存在）时求值会抛
+         「Cannot read properties of null (reading 'id')」，把整个模板的渲染
+         打断 —— 表现为整页白屏，连「订单加载失败 / 重新加载」的兜底分支都
+         显示不出来（老板 2026-10-18 报的线上白屏就是这个）。 -->
+    <template v-if="order">
+      <!-- 售后处理中（打手侧）：查看案情 / 同意退款（两步确认）/ 联系平台协助 -->
+      <AfterSaleStatusModal
+        v-model="showAfterSaleModal"
+        :order-id="order.id"
+        :viewer-role="'booster'"
+        @accepted="onAfterSaleAccepted"
+      />
 
-    <!-- 售后处理中（老板侧，详情页操作卡「售后处理中」打开）：查看案情 / 撤回售后。
-         与打手侧实例并存但互斥（owner 与 booster 不会同时成立），默认 viewerRole='boss'。 -->
-    <AfterSaleStatusModal
-      v-model="showAfterSaleStatusModal"
-      :order-id="order.id"
-      @withdrawn="onAfterSaleWithdrawn"
-    />
+      <!-- 售后处理中（老板侧，详情页操作卡「售后处理中」打开）：查看案情 / 撤回售后。
+           与打手侧实例并存但互斥（owner 与 booster 不会同时成立），默认 viewerRole='boss'。 -->
+      <AfterSaleStatusModal
+        v-model="showAfterSaleStatusModal"
+        :order-id="order.id"
+        @withdrawn="onAfterSaleWithdrawn"
+      />
+    </template>
   </div>
 </template>
