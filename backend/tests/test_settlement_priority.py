@@ -575,6 +575,40 @@ async def test_refresh_never_zeroes_in_flight_claim(
     assert claim.id in settled
 
 
+async def test_refresh_syncs_snapshot_mode_when_tier_gains_hours(
+    client: AsyncClient, admin_user: dict, booster_user: dict, db_session
+):
+    """档位从留空改为有值：刷新后快照 mode 必须跟着变成 AFTER_DELIVERY。
+
+    否则会留下「mode=ORDER_DELAY（按订单算）却带固定小时数/到期时间」的
+    自相矛盾行；这种行在保证金总开关关闭后被 _marker_due 按订单时效重算，
+    到期时间会凭空变长（老板 2026-10-18 线上名额 43 就是这个形态）。
+    """
+    # 1) 档位留空 → 交付时快照为 ORDER_DELAY（不落小时数、不落 due）
+    await _set_deposit(client, admin_user, tiers=[_tier(0, settle_hours=None)])
+    order = await _create_order(client, admin_user, payout_delay_days=5)
+    await _accept_deliver(client, admin_user, booster_user, order["id"])
+
+    claim = await _claim(db_session, order["id"])
+    assert claim.settlement_mode_snapshot == "ORDER_DELAY"
+    assert claim.settle_hours_snapshot is None
+
+    # 2) 后台把该档改成 100 小时
+    await _set_deposit(client, admin_user, tiers=[_tier(0, settle_hours=100)])
+    await db_session.commit()
+
+    # 3) 读路径触发刷新
+    resp = await client.get("/orders/claims/mine", headers=auth_header(booster_user))
+    assert resp.status_code == 200, resp.text
+    await db_session.commit()
+    await db_session.refresh(claim)
+
+    # 4) mode 与小时数同源，不再自相矛盾
+    assert claim.settle_hours_snapshot == 100
+    assert claim.settlement_mode_snapshot == "AFTER_DELIVERY"
+    assert claim.settlement_due_at == claim.delivered_at + timedelta(hours=100)
+
+
 async def test_refresh_after_null_tier_keeps_snapshot_claim(
     client: AsyncClient, admin_user: dict, booster_user: dict, db_session
 ):

@@ -361,6 +361,14 @@ def _refresh_claim_settlement_terms(
     if next_hours is not None and old_hours != next_hours:
         claim.settle_hours_snapshot = next_hours
         changed = True
+    # mode 必须与小时数同源：档位一旦给出时长，该名额就是「按档位计时」，
+    # 快照的 mode 要跟着改，否则会留下「mode=ORDER_DELAY（按订单算）却带固定
+    # 小时数与到期时间」的自相矛盾快照 —— 这种行在保证金总开关关闭后会被
+    # 调度器的 _marker_due 按订单时效重算，到期时间凭空变长。
+    # （此处 next_hours 非 None 已保证 plan.mode 是快照模式，不会是 ORDER_DELAY）
+    if next_hours is not None and existing_mode != plan.mode:
+        claim.settlement_mode_snapshot = plan.mode
+        changed = True
     if old_due != new_due:
         claim.settlement_due_at = new_due
         changed = True
@@ -380,9 +388,10 @@ async def refresh_unsettled_claim_settlements(
     scheduler can therefore catch up old unsettled claims without touching
     settled claims or approved payout terms.
 
-    老板 2026-10-18 R3：结算时效以订单为准、档位只做加速器，因此这里必须
-    带出每个名额所属订单（``payout_delay_*``）。档位 ``settle_hours`` 留空
-    （None）时不会把时长写成 0 —— 见 ``_refresh_claim_settlement_terms``。
+    老板 2026-10-18 口径：档位设了结账时效就按档位，留空才兜底订单时效，
+    因此这里必须带出每个名额所属订单（``payout_delay_*``）。档位
+    ``settle_hours`` 留空（None）时不会把时长写成 0，也不会落盘到期时间
+    —— 见 ``_refresh_claim_settlement_terms``。
     """
     if claims is None:
         result = await db.execute(

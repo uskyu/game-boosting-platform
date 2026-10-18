@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { createPinia, setActivePinia } from 'pinia'
 
 const apiGet = vi.fn()
@@ -72,5 +73,23 @@ describe('保证金概览的 settle_hours 归一化', () => {
     await store.fetchDepositOverview()
 
     expect(store.depositOverview.settle_hours).toBe(48)
+  })
+})
+
+describe('后台保证金设置：不得重新引入「必须含 0 元档」校验', () => {
+  const source = readFileSync(
+    new URL('../../components/admin/AdminDepositSettings.vue', import.meta.url),
+    'utf8',
+  )
+
+  it('保存前不再拦截缺少 0 元档的阶梯', () => {
+    // 老板有意删掉 0 元档好让 0 保证金打手能接单；该校验会把后台保存卡死
+    // （后端 2026-10-18 已撤除，前端必须同步）。
+    expect(source).not.toContain('保证金阶梯必须包含一条启用中的 0 元档')
+    expect(source).not.toContain('zeroEnabled')
+  })
+
+  it('结账时效留空仍发 null（不代填 0）', () => {
+    expect(source).toMatch(/settle_hours === '' \|\| tier\.settle_hours == null/)
   })
 })

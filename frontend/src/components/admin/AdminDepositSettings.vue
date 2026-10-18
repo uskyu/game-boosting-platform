@@ -126,19 +126,10 @@ async function save() {
     return
   }
 
-  // 0 档防呆（与后端同一规则，前端先拦一次给出更快的反馈）：
-  // 只要存在启用中的档位，就必须有一条启用中的 0 元档，否则 0 保证金打手
-  // 会按 resolve_tier 的「or tiers[0]」兜底继承下一档权益（含免冻结赔付金，
-  // 属资金敞口）。全部停用属退化配置，不拦。
-  if (form.tiers.some((tier) => tier.enabled)) {
-    const zeroEnabled = form.tiers.some(
-      (tier) => tier.enabled && Number(tier.threshold) === 0,
-    )
-    if (!zeroEnabled) {
-      notice.value = { type: 'error', text: '保证金阶梯必须包含一条启用中的 0 元档（0 保证金档）' }
-      return
-    }
-  }
+  // 这里**故意不做**「阶梯必须含 0 元档」的校验（2026-10-18 与后端一并撤除）。
+  // 老板有意删掉 0 元档：原始默认 0 元档 exempt_compensation=False，会让
+  // 0 保证金打手接单时必须冻结赔付金（余额 0 即接不了单）；删掉后 0 保证金
+  // 打手兜底到最低档、继承免冻结才接得上单。保留该校验会把后台保存卡死。
 
   saving.value = true
   const result = await store.updateDepositSettings({
