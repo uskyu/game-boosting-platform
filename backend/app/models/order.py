@@ -60,6 +60,15 @@ class PaymentStatus(str, PyEnum):
     REFUNDED = "REFUNDED"
 
 
+# 到账时效默认值（天）：发布 / 编辑订单时「天」「小时」都留空即采用该默认。
+#
+# 老板 2026-10-18 要求：发单不填到账时效时默认按 3 天算。这样既避免了
+# 「档位留空 + 订单也没设」导致名额永不自动结算的空档，也让每张单都有
+# 明确的到账承诺。默认值只在两端都为 None 时生效；显式填 0 天 0 小时
+# 仍视为无意义输入被拒绝。
+DEFAULT_PAYOUT_DELAY_DAYS = 3
+
+
 class Order(Base):
     """
     Order model representing game boosting service requests.
@@ -160,7 +169,8 @@ class Order(Base):
     compensation_amount: Mapped[Decimal | None] = mapped_column(
         Numeric(precision=10, scale=2), nullable=True
     )
-    # 到账时效：天部分 0-30 + 小时部分 0-23（都为 null=不设置；交付后到时自动结算）
+    # 到账时效：天部分 0-30 + 小时部分 0-23（都为 null=采用默认 3 天；
+    # 交付后到时自动结算）。见 DEFAULT_PAYOUT_DELAY_DAYS。
     payout_delay_days: Mapped[int | None] = mapped_column(nullable=True)
     payout_delay_hours: Mapped[int | None] = mapped_column(nullable=True)
     # 老板开关：开启后打手必须上传 ≥1 张完成截图才能提交结单申请

@@ -2164,7 +2164,7 @@ onMounted(async () => {
                 />
               </div>
               <div>
-                <label class="label" for="publish-payout-delay-days">到账时效（都不填=不设置）</label>
+                <label class="label" for="publish-payout-delay-days">到账时效（不填按默认 3 天）</label>
                 <div class="flex items-center gap-2">
                   <input id="publish-payout-delay-days" v-model="publishModal.payout_delay_days" type="number" min="0" max="30" step="1" class="input" placeholder="天（0-30）" />
                   <span class="text-sm text-ink-3">天</span>

@@ -10,7 +10,7 @@ from typing import Annotated, Any, Literal
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 
 from app.core.money import resolve_service_fee_rate
-from app.models.order import PaymentStatus, ClaimStatus
+from app.models.order import DEFAULT_PAYOUT_DELAY_DAYS, PaymentStatus, ClaimStatus
 from app.models.order_cancel_request import OrderCancelRequestStatus
 from app.schemas.serializers import serialize_datetime_utc
 from app.services.html_sanitizer import sanitize_note_html
@@ -279,9 +279,17 @@ class OrderCreate(BaseModel):
     def validate_payout_delay(self) -> "OrderCreate":
         days = self.payout_delay_days if self.payout_delay_days is not None else None
         hours = self.payout_delay_hours if self.payout_delay_hours is not None else None
-        # 都为 null = 不设置（允许）；显式 0 天 0 小时 = 无意义，拒绝
+        # 天与小时都留空 → 采用默认到账时效（老板 2026-10-18：不填按 3 天算）。
+        # 这样订单总有明确到账承诺，不会落到「档位留空 + 订单也没设 = 永不自动结算」。
+        if days is None and hours is None:
+            self.payout_delay_days = DEFAULT_PAYOUT_DELAY_DAYS
+            self.payout_delay_hours = 0
+            return self
+        # 显式 0 天 0 小时 = 无意义，拒绝
         if days == 0 and hours == 0:
-            raise ValueError("到账时效不能同时为 0 天 0 小时（不设置请都留空）")
+            raise ValueError(
+                f"到账时效不能同时为 0 天 0 小时（不填按默认 {DEFAULT_PAYOUT_DELAY_DAYS} 天）"
+            )
         return self
 
     @model_validator(mode="after")
@@ -351,10 +359,16 @@ class OrderUpdate(BaseModel):
         if "payout_delay_days" in self.model_fields_set and "payout_delay_hours" in self.model_fields_set:
             days = self.payout_delay_days
             hours = self.payout_delay_hours
+            # 两项都显式清空 → 与发布同口径，回落到默认到账时效（3 天），
+            # 避免编辑后出现「两边都没设 = 永不自动结算」的空档。
             if days is None and hours is None:
-                return self  # 不设置
+                self.payout_delay_days = DEFAULT_PAYOUT_DELAY_DAYS
+                self.payout_delay_hours = 0
+                return self
             if (days or 0) <= 0 and (hours or 0) <= 0:
-                raise ValueError("到账时效需至少设置天数或小时数中的一项（不设置请都留空）")
+                raise ValueError(
+                    f"到账时效需至少设置天数或小时数中的一项（不填按默认 {DEFAULT_PAYOUT_DELAY_DAYS} 天）"
+                )
         return self
 
 

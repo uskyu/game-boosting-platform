@@ -7,7 +7,7 @@ import { useOrdersStore } from '@/stores/orders'
 import { useOrderTemplatesStore } from '@/stores/orderTemplates'
 import { useServiceFeeStore } from '@/stores/serviceFee'
 import api from '@/utils/api'
-import { formatFeeRate, formatMoneyFixed, parsePayoutDelay, serviceFeeBreakdown } from '@/utils/display'
+import { DEFAULT_PAYOUT_DELAY_DAYS, formatFeeRate, formatMoneyFixed, parsePayoutDelay, serviceFeeBreakdown } from '@/utils/display'
 import { getPublishButtonLabel } from '@/utils/humanCopy'
 import { cleanTemplatePayload, resetOrderForm } from '@/utils/orderTemplates'
 import { measureOrderFlowStage } from '@/utils/orderFlowTiming'
@@ -127,6 +127,8 @@ const formData = ref({
   max_claims: 1,
   compensation_enabled: false,
   compensation_amount: '',
+  // 到账时效：表单保持留空（不预填）。不填时后端按默认 3 天算
+  // （老板 2026-10-18），发布人想改再点下面的快捷选项或手填。
   payout_delay_days: '',
   payout_delay_hours: '',
   // 老板开关：必须上传完成截图才能申请结单（默认开启）
@@ -523,7 +525,7 @@ onMounted(async () => {
           <input id="create-boss-contact" v-model="formData.boss_contact" type="text" class="input" maxlength="64" placeholder="接单后打手可见，用于添加你为好友" />
         </div>
         <div>
-          <label class="label" for="create-payout-delay-days">到账时效（都不填=不设置）</label>
+          <label class="label" for="create-payout-delay-days">到账时效（不填按默认 {{ DEFAULT_PAYOUT_DELAY_DAYS }} 天）</label>
           <div class="flex items-center gap-2">
             <input id="create-payout-delay-days" v-model="formData.payout_delay_days" type="number" min="0" max="30" step="1" class="input" placeholder="天（0-30）" />
             <span class="text-sm text-ink-3">天</span>

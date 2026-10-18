@@ -213,8 +213,16 @@ export function formatPayoutDelay(order) {
 }
 
 /**
+ * 到账时效默认值（天）：发布/编辑订单时两端都留空即采用该默认。
+ *
+ * 老板 2026-10-18：发单不填到账时效按 3 天算。前端预填这个值让发布人看得见，
+ * 后端 `DEFAULT_PAYOUT_DELAY_DAYS` 对同样输入做兜底（两处必须保持一致）。
+ */
+export const DEFAULT_PAYOUT_DELAY_DAYS = 3
+
+/**
  * 到账时效表单解析：两个 number input（天 0-30，小时 0-23）→ payload。
- * 返回 { days, hours }（null = 不设置）或 { error }。
+ * 返回 { days, hours }（null = 未设置，由后端回落到默认 3 天）或 { error }。
  */
 export function parsePayoutDelay(daysRaw, hoursRaw) {
   const daysEmpty = daysRaw === '' || daysRaw == null
@@ -229,7 +237,7 @@ export function parsePayoutDelay(daysRaw, hoursRaw) {
     return { error: '到账小时需为 0-23 的整数' }
   }
   if (days === 0 && hours === 0) {
-    return { error: '到账时效需至少设置天数或小时数（不设置请都留空）' }
+    return { error: `到账时效需至少设置天数或小时数（不填按默认 ${DEFAULT_PAYOUT_DELAY_DAYS} 天）` }
   }
   return { days: daysEmpty ? null : days, hours: hoursEmpty ? null : hours }
 }

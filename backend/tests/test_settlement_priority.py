@@ -219,6 +219,45 @@ async def test_null_tier_settle_hours_uses_order_delay(
     assert _aware(due) == _aware(claim.delivered_at) + timedelta(days=5)
 
 
+async def test_blank_payout_delay_defaults_to_three_days(
+    client: AsyncClient, admin_user: dict, booster_user: dict, db_session
+):
+    """发布订单不填到账时效 → 按默认 3 天落库并据此倒计时（老板 2026-10-18）。
+
+    这样「档位留空 + 订单也没设」的空档不再存在，每张单都有明确到账承诺。
+    """
+    await _set_deposit(client, admin_user, tiers=[_tier(0, settle_hours=None)])
+    order = await _create_order(client, admin_user)  # 不传 payout_delay_*
+    await _accept_deliver(client, admin_user, booster_user, order["id"])
+
+    claim = await _claim(db_session, order["id"])
+    row = await _order_row(db_session, order["id"])
+    assert row.payout_delay_days == 3
+    assert row.payout_delay_hours == 0
+
+    due = await _effective_due(db_session, claim, row)
+    assert _aware(due) == _aware(claim.delivered_at) + timedelta(days=3)
+
+
+async def test_explicit_zero_payout_delay_is_rejected(
+    client: AsyncClient, admin_user: dict
+):
+    """显式 0 天 0 小时仍被拒（无意义输入），只有「留空」才走默认 3 天。"""
+    resp = await client.post(
+        "/orders/create",
+        json={
+            "game_name": "王者荣耀",
+            "current_rank": "钻石",
+            "target_rank": "王者",
+            "price": "100.00",
+            "payout_delay_days": 0,
+            "payout_delay_hours": 0,
+        },
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 422, resp.text
+
+
 # ---------------------------------------------------------------------------
 # 3. 真保证金档位更快 → 加速器生效
 # ---------------------------------------------------------------------------
@@ -290,24 +329,27 @@ async def test_tier_slower_than_order_still_wins(
 # ---------------------------------------------------------------------------
 
 
-async def test_order_without_delay_falls_back_to_tier(
+async def test_order_blank_delay_uses_default_and_tier_wins(
     client: AsyncClient, admin_user: dict, booster_user: dict, db_session
 ):
-    """订单未设到账时效 + 0 档 72h → due = 交付 + 72 小时。"""
-    await _set_deposit(client, admin_user, tiers=[_tier(0, settle_hours=72)])
+    """订单不填到账时效（= 默认 3 天）+ 档位 24h → 按档位 24h（档位优先）。"""
+    await _set_deposit(client, admin_user, tiers=[_tier(0, settle_hours=24)])
     order = await _create_order(client, admin_user)
     await _accept_deliver(client, admin_user, booster_user, order["id"])
 
     claim = await _claim(db_session, order["id"])
+    row = await _order_row(db_session, order["id"])
+    assert row.payout_delay_days == 3  # 不填 → 默认 3 天
+
     assert claim.settlement_mode_snapshot == "AFTER_DELIVERY"
-    assert claim.settle_hours_snapshot == 72
-    assert claim.settlement_due_at == claim.delivered_at + timedelta(hours=72)
+    assert claim.settle_hours_snapshot == 24
+    assert claim.settlement_due_at == claim.delivered_at + timedelta(hours=24)
 
 
-async def test_order_without_delay_and_null_tier_never_auto_settles(
+async def test_order_blank_delay_with_null_tier_uses_default_three_days(
     client: AsyncClient, admin_user: dict, booster_user: dict, db_session
 ):
-    """订单未设时效 + 档位留空 → ORDER_DELAY + due=None（永不自动结算）。"""
+    """订单不填（= 默认 3 天）+ 档位留空 → 按订单默认 3 天，不再「永不结算」。"""
     await _set_deposit(client, admin_user, tiers=[_tier(0, settle_hours=None)])
     order = await _create_order(client, admin_user)
     await _accept_deliver(client, admin_user, booster_user, order["id"])
@@ -315,7 +357,11 @@ async def test_order_without_delay_and_null_tier_never_auto_settles(
     claim = await _claim(db_session, order["id"])
     assert claim.settlement_mode_snapshot == "ORDER_DELAY"
     assert claim.settle_hours_snapshot is None
-    assert claim.settlement_due_at is None
+    due = await _effective_due(
+        db_session, claim, await _order_row(db_session, order["id"])
+    )
+    assert _aware(due) == _aware(claim.delivered_at) + timedelta(days=3)
+    # 3 天内未到期 → 调度器不结算
     assert await scan_due_payouts(db_session) == []
 
 

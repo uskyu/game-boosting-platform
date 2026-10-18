@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { cleanTemplatePayload, resetOrderForm } from '../orderTemplates'
-import { formatSettlementDelay, formatShortDate, getAcceptWaitMeta } from '../display'
+import { DEFAULT_PAYOUT_DELAY_DAYS, formatSettlementDelay, formatShortDate, getAcceptWaitMeta, parsePayoutDelay } from '../display'
 
 describe('order template contract', () => {
   it('trims strings, omits blanks, preserves zero, and excludes unknown fields', () => {
@@ -31,6 +31,15 @@ describe('order template contract', () => {
     expect(formatSettlementDelay(null)).toBe('')
     expect(formatSettlementDelay(undefined)).toBe('')
     expect(formatSettlementDelay('')).toBe('')
+  })
+
+  it('到账时效留空发 null（由后端按默认 3 天兜底），不代填 0', () => {
+    expect(DEFAULT_PAYOUT_DELAY_DAYS).toBe(3)
+    // 两端都留空 → 发 null/null，交给后端回落默认；若发 0 会变成「交付即结算」
+    expect(parsePayoutDelay('', '')).toEqual({ days: null, hours: null })
+    expect(parsePayoutDelay(null, null)).toEqual({ days: null, hours: null })
+    // 显式 0 天 0 小时仍报错
+    expect(parsePayoutDelay(0, 0).error).toContain('3 天')
   })
 
   it('distinguishes remaining wait from configured total wait', () => {
