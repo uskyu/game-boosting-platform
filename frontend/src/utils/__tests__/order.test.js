@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -7,8 +9,11 @@ import {
   getHallOrderDisplayBadgeClass,
   getHallOrderDisplayStatus,
   getOrderDisplayStatus,
+  getOrderStatusLabel,
   isClaimCancelPending,
 } from '@/utils/order'
+
+const listSource = readFileSync(new URL('../../views/OrderList.vue', import.meta.url), 'utf8')
 
 describe('申请取消中（CANCELLING）状态展示', () => {
   it('筛选项包含申请取消中且放在进行中之后', () => {
@@ -34,6 +39,34 @@ describe('申请取消中（CANCELLING）状态展示', () => {
   it('CANCELLING 有中文标签与徽标样式', () => {
     expect(ORDER_STATUS_META.CANCELLING.label).toBe('申请取消中')
     expect(ORDER_STATUS_META.CANCELLING.badgeClass).toBeTruthy()
+  })
+})
+
+describe('售后中（AFTER_SALE）筛选值', () => {
+  it('派单状态筛选项包含售后中，且放在已完成之后', () => {
+    const values = ORDER_STATUS_OPTIONS.map((option) => option.value)
+    expect(values).toContain('AFTER_SALE')
+    expect(ORDER_STATUS_OPTIONS.find((option) => option.value === 'AFTER_SALE').label).toBe('售后中')
+    expect(values.indexOf('AFTER_SALE')).toBeGreaterThan(values.indexOf('COMPLETED'))
+  })
+
+  it('AFTER_SALE 不是订单真实状态，不进 ORDER_STATUS_META', () => {
+    expect(ORDER_STATUS_META.AFTER_SALE).toBeUndefined()
+    // 走 fallback，证明没有被当成真实订单状态渲染徽标
+    expect(getOrderStatusLabel('AFTER_SALE')).toBe('AFTER_SALE')
+  })
+
+  it('接单状态筛选也含售后中，且走后端过滤（fetchClaims 不对它特判）', () => {
+    expect(listSource).toMatch(/\{ value: 'AFTER_SALE', label: '售后中' \}/)
+    const fetchStart = listSource.indexOf('async function fetchClaims(')
+    const fetchEnd = listSource.indexOf('function switchTab(')
+    expect(fetchStart).toBeGreaterThan(-1)
+    expect(fetchEnd).toBeGreaterThan(fetchStart)
+    const fetchBody = listSource.slice(fetchStart, fetchEnd)
+    // 只有 DISPUTED 被归一成 undefined（本地过滤），AFTER_SALE 必须原样透传给服务端。
+    // 若有人把 AFTER_SALE 也加成"本地过滤"，这条断言会失败 —— 守住分页口径。
+    expect(fetchBody).toMatch(/claimStatus\.value === 'DISPUTED' \? undefined : \(claimStatus\.value \|\| undefined\)/)
+    expect(fetchBody).not.toMatch(/AFTER_SALE/)
   })
 })
 

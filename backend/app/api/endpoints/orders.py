@@ -154,19 +154,29 @@ async def _apply_accept_window(
 # 表示订单（或名额）存在待处理的取消协商（老板 2026-10-07 要求单独可筛）。
 CANCEL_PENDING_FILTER = "CANCELLING"
 
+# 「售后中」筛选值：与 OrderStatus / ClaimLifecycleStatus 正交，表示订单（我的派单）
+# 或名额所属订单（我的接单）存在进行中（PENDING）的售后申请（老板 2026-10-18 要求）。
+# 售后结案后自动不再命中，无需额外状态字段；与 CANCELLING 同一手法（伪值筛选）。
+AFTER_SALE_FILTER = "AFTER_SALE"
 
-def _resolve_order_status_filter(value: str | None) -> tuple[OrderStatus | None, bool]:
-    """把 status 查询参数解析成 (订单状态, 是否仅看待处理取消协商)。
 
-    CANCELLING 不是订单状态枚举值，用第二个返回值单独表达；其余取值仍按
-    OrderStatus 严格校验，非法值返回中文 422（替代枚举自带的 422）。
+def _resolve_order_status_filter(
+    value: str | None,
+) -> tuple[OrderStatus | None, bool, bool]:
+    """把 status 查询参数解析成 (订单状态, 是否仅看待处理取消协商, 是否仅看售后中)。
+
+    CANCELLING / AFTER_SALE 都不是订单状态枚举值，用后两个返回值单独表达；其余
+    取值仍按 OrderStatus 严格校验，非法值返回中文 422（替代枚举自带的 422）。
+    两个伪值互斥：只可能有一个为 True。
     """
     if not value:
-        return None, False
+        return None, False, False
     if value == CANCEL_PENDING_FILTER:
-        return None, True
+        return None, True, False
+    if value == AFTER_SALE_FILTER:
+        return None, False, True
     try:
-        return OrderStatus(value), False
+        return OrderStatus(value), False, False
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -174,14 +184,18 @@ def _resolve_order_status_filter(value: str | None) -> tuple[OrderStatus | None,
         )
 
 
-def _resolve_claim_status_filter(value: str | None) -> tuple[ClaimLifecycleStatus | None, bool]:
-    """名额状态筛选解析：CANCELLING=该名额有取消协商挂起，其余按枚举校验。"""
+def _resolve_claim_status_filter(
+    value: str | None,
+) -> tuple[ClaimLifecycleStatus | None, bool, bool]:
+    """名额状态筛选解析：CANCELLING=该名额有取消协商挂起，AFTER_SALE=售后中，其余按枚举校验。"""
     if not value:
-        return None, False
+        return None, False, False
     if value == CANCEL_PENDING_FILTER:
-        return None, True
+        return None, True, False
+    if value == AFTER_SALE_FILTER:
+        return None, False, True
     try:
-        return ClaimLifecycleStatus(value), False
+        return ClaimLifecycleStatus(value), False, False
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -430,7 +444,7 @@ async def list_orders(
         str | None,
         Query(
             alias="status",
-            description="按订单状态筛选；CANCELLING=申请取消中（有待处理的取消协商）",
+            description="按订单状态筛选；CANCELLING=申请取消中（有待处理的取消协商）；AFTER_SALE=售后中（存在进行中的售后申请）",
         ),
     ] = None,
     page: Annotated[
@@ -484,7 +498,9 @@ async def list_orders(
         else None
     )
 
-    resolved_status, cancel_pending_only = _resolve_order_status_filter(status_filter)
+    resolved_status, cancel_pending_only, after_sale_only = _resolve_order_status_filter(
+        status_filter
+    )
     orders, total, hall_max_updated_at, hall_earliest_deadline = await order_service.list_orders(
         user=current_user,
         game_name=game_name,
@@ -495,6 +511,7 @@ async def list_orders(
         boss_contact=effective_boss_contact,
         q=q,
         cancel_pending_only=cancel_pending_only,
+        after_sale_only=after_sale_only,
     )
 
     # Calculate total pages
@@ -710,7 +727,7 @@ async def list_my_claims(
         str | None,
         Query(
             alias="status",
-            description="按名额状态筛选：CLAIMED/DELIVERED/SETTLED/CANCELLED；CANCELLING=该名额有取消协商挂起（申请取消中）",
+            description="按名额状态筛选：CLAIMED/DELIVERED/SETTLED/CANCELLED；CANCELLING=该名额有取消协商挂起（申请取消中）；AFTER_SALE=售后中（该名额所属订单存在进行中的售后申请）",
         ),
     ] = None,
     page: Annotated[
@@ -748,8 +765,8 @@ async def list_my_claims(
         )
 
     order_service = get_order_service(db)
-    resolved_claim_status, cancel_pending_only = _resolve_claim_status_filter(
-        status_filter
+    resolved_claim_status, cancel_pending_only, after_sale_only = (
+        _resolve_claim_status_filter(status_filter)
     )
     items, total = await order_service.list_my_claims(
         current_user.id,
@@ -759,6 +776,7 @@ async def list_my_claims(
         q=q,
         boss_contact=boss_contact,
         cancel_pending_only=cancel_pending_only,
+        after_sale_only=after_sale_only,
     )
     pages = (total + page_size - 1) // page_size if total > 0 else 0
     return MyOrderClaimListResponse(

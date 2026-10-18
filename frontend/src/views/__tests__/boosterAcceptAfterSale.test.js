@@ -103,3 +103,31 @@ describe('订单详情打手侧售后入口', () => {
     expect(accepted).toMatch(/successMessage\.value = '已同意退款，款项已划给老板，售后结案'/)
   })
 })
+
+describe('订单详情老板侧售后入口（2026-10-18 从我的派单列表迁入）', () => {
+  it('mounts a second boss-side modal that defaults to viewerRole="boss"', () => {
+    // 打手侧实例保留 viewer-role="booster"；老板侧实例不传，走组件默认 'boss'
+    const bossModal = slice(detailSource, 'v-model="showAfterSaleStatusModal"', '/>')
+    expect(bossModal).toMatch(/:order-id="order\.id"/)
+    expect(bossModal).toMatch(/@withdrawn="onAfterSaleWithdrawn"/)
+    // 老板实例不能带 booster 视角，否则显示「同意退款」而不是「撤回售后」
+    expect(bossModal).not.toMatch(/viewer-role/)
+    expect(modalSource).toMatch(/viewerRole: \{ type: String, default: 'boss' \}/)
+  })
+
+  it('guards the one-approval-per-order rule before entering the apply page', () => {
+    // after_sale_pending 只覆盖 PENDING；APPROVED 后按钮会「复活」，
+    // 这里按需补拉该单售后记录并禁用，避免老板填完表单才被后端 400 拒。
+    const gate = slice(detailSource, 'async function refreshAfterSaleGate(', '\n}')
+    expect(gate).toMatch(/afterSalesStore\.fetchOrderAfterSales\(orderId\)/)
+    expect(gate).toMatch(/item\.status === 'APPROVED'/)
+    expect(gate).toMatch(/isOwner\.value/)
+    expect(gate).toMatch(/order\.value\?\.status !== 'COMPLETED'/)
+    // 详情加载完成后异步补算，不阻塞首屏骨架屏
+    expect(detailSource).toMatch(/refreshAfterSaleGate\(orderId\)\.catch\(\(\) => \{\}\)/)
+    // 禁用态沿用 operator 顺序：pending 可点（撤回），已裁定才禁用
+    const buttonIndex = detailSource.indexOf('goToAfterSaleApply(order.id)')
+    const button = detailSource.slice(buttonIndex - 600, buttonIndex + 400)
+    expect(button).toMatch(/:disabled="afterSaleApproved"/)
+  })
+})

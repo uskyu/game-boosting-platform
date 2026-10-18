@@ -1,14 +1,15 @@
 """到账时效自动结算调度器。
 
-计时起点由「保证金管理」的结账时效模式决定：
+计时起点与时长按「订单到账时效为准、保证金档位只做加速器」的 R3 口径
+（老板 2026-10-18 拍板）由 ``deposit_service.plan_settlement_terms`` 统一裁定：
 
-- ``AFTER_DELIVERY``（默认）：打手交付后开始计时，到期自动按全额、无扣除
-  走与人工审核相同的结算函数（老板仍可提前手动审核，立即打款）；
-- ``AFTER_APPROVAL``：老板审核通过后才开始计时，通过后再压档位对应时长结算
-  （审核通过不立即入账，由本调度器到期放款）。
+- 订单设了 ``payout_delay_days`` / ``payout_delay_hours`` → 以订单时效为准；
+  只有真正缴过保证金（threshold > 0）且 ``settle_hours`` 更短的档位才加速；
+- 订单没设 → 档位 ``settle_hours`` 兜底；档位留空则无法自动结算；
+- 计时起点仍由「保证金管理」的 ``settlement_mode`` 决定：
+  ``AFTER_DELIVERY`` 从交付起算，``AFTER_APPROVAL`` 从老板审核通过起算。
 
-保证金模式关闭时退回原有规则：按订单自身的 ``payout_delay_days`` /
-``payout_delay_hours`` 从交付时间起算。
+``SETTLEMENT_MODE_ORDER_DELAY`` 表示「到期时间由订单自身时效现算」。
 
 ``scan_due_payouts`` 是可注入 ``now`` 的扫描函数（便于测试，不依赖真实时间
 流逝）；app.main 的 lifespan 启动后台任务每 10 分钟调用。
@@ -70,6 +71,7 @@ def _legacy_deposit_due(
     claim: OrderClaim,
     tier: DepositTier | None,
     settlement_mode: str,
+    order: Order | None = None,
 ) -> datetime | None:
     """Recover the pre-033 deposit due time without guessing.
 
@@ -78,9 +80,12 @@ def _legacy_deposit_due(
     present: delivered_at for AFTER_DELIVERY, or approved_at for
     AFTER_APPROVAL. A missing approval timestamp is intentionally not treated
     as immediately due.
+
+    档位 ``settle_hours`` 留空（None）时回落到订单时效（R3，2026-10-18）；
+    **绝不**把它当成 0 小时（0 小时 = 立即结算 = 提前打款事故）。
     """
-    if tier is None:
-        return None
+    if tier is None or tier.settle_hours is None:
+        return _order_delay_due(claim, order) if order is not None else None
     if settlement_mode == SETTLEMENT_MODE_AFTER_APPROVAL:
         if claim.approved_at is None:
             return None
@@ -89,7 +94,7 @@ def _legacy_deposit_due(
         if claim.delivered_at is None:
             return None
         started_at = claim.delivered_at
-    return _as_utc(started_at) + timedelta(hours=max(int(tier.settle_hours or 0), 0))
+    return _as_utc(started_at) + timedelta(hours=max(int(tier.settle_hours), 0))
 
 
 def _legacy_due(
@@ -103,11 +108,12 @@ def _legacy_due(
     """Resolve a pre-033 claim using the old scheduler contract.
 
     Legacy deposit-enabled claims used tier timing first.  The old order-delay
-    rule applies only when deposit mode was disabled, preserving both the old
-    AFTER_APPROVAL ``approved_at`` origin and the proper tier gate.
+    rule applies when deposit mode was disabled or the tier declares no
+    duration, preserving both the old AFTER_APPROVAL ``approved_at`` origin and
+    the proper tier gate.
     """
     if deposit_enabled:
-        return _legacy_deposit_due(claim, tier, settlement_mode)
+        return _legacy_deposit_due(claim, tier, settlement_mode, order)
     return _order_delay_due(claim, order)
 
 
@@ -183,11 +189,22 @@ async def scan_due_payouts(
             # Recalculate the candidate deadline from the current balance as
             # well as the stored marker, so a pre-deployment high balance can
             # shorten an old claim before we take the settlement locks.
+            # R3：结算时效以订单为准，故必须把订单传进去（档位留空时回落到
+            # 订单 payout_delay_*；档位无启用行时同样回落而不是跳过）。
             candidate_due = deposit_service.resolve_unsettled_settlement_due(
                 claim,
                 candidate_tier,
                 setting,
+                order=order,
             )
+            if candidate_due is None and candidate_tier is None:
+                # 保证金开启但没有启用档位的极端配置：仍按订单时效兜底，
+                # 不能像旧实现那样直接放弃该名额（否则永不自动结算）。
+                candidate_due = (
+                    _marker_due(claim, order)
+                    if claim.settlement_mode_snapshot is not None
+                    else _order_delay_due(claim, order)
+                )
         else:
             candidate_due = (
                 _marker_due(claim, order)
@@ -256,7 +273,14 @@ async def scan_due_payouts(
                         locked_claim,
                         locked_tier,
                         locked_setting,
+                        order=locked_order,
                     )
+                    if locked_due is None and locked_tier is None:
+                        locked_due = (
+                            _marker_due(locked_claim, locked_order)
+                            if locked_claim.settlement_mode_snapshot is not None
+                            else _order_delay_due(locked_claim, locked_order)
+                        )
                 else:
                     locked_due = (
                         _marker_due(locked_claim, locked_order)
@@ -276,6 +300,8 @@ async def scan_due_payouts(
                 done = await order_service.auto_settle_due_claim(
                     locked_order,
                     locked_claim,
+                    # 「档位在兜底」= 该名额的快照不是显式快照模式，且当前确实
+                    # 有档位声明了结账时效（留空的档位不构成兜底依据）。
                     delay_from_tier=(
                         locked_claim.settlement_mode_snapshot
                         not in (
@@ -284,6 +310,7 @@ async def scan_due_payouts(
                         )
                         and locked_deposit_on
                         and locked_tier is not None
+                        and locked_tier.settle_hours is not None
                     ),
                 )
             if done:

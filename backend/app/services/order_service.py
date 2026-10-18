@@ -496,6 +496,7 @@ class OrderService:
         boss_contact: str | None = None,
         q: str | None = None,
         cancel_pending_only: bool = False,
+        after_sale_only: bool = False,
     ) -> tuple[list[Order], int, datetime | None, datetime | None]:
         """
         List orders with filtering and pagination.
@@ -511,6 +512,8 @@ class OrderService:
                 own orders by the boss ID they filled in.
             cancel_pending_only: When true, return only orders with a pending
                 cancellation negotiation (「申请取消中」筛选).
+            after_sale_only: When true, return only orders with a pending
+                after-sale request (「售后中」筛选)；与订单状态正交。
             page: Page number (1-indexed).
             page_size: Items per page.
 
@@ -631,6 +634,11 @@ class OrderService:
             )
             query = query.where(pending_cancel_exists)
             count_query = count_query.where(pending_cancel_exists)
+        elif after_sale_only:
+            # 「售后中」：存在进行中（PENDING）售后申请的订单（与订单状态正交，
+            # 售后期间订单本身仍处于 COMPLETED）。复用上面已构造的 after_sale_exists。
+            query = query.where(after_sale_exists)
+            count_query = count_query.where(after_sale_exists)
         elif status_filter:
             if mine_published and user is not None and status_filter == OrderStatus.DELIVERED:
                 # 派单（我的发布）语义的「待确认」：名额制交付只把 claim 推到
@@ -824,30 +832,43 @@ class OrderService:
         """Capture the initial settlement timing when a post-033 claim is delivered.
 
         NULL is reserved for claims created before migration 033.  New claims
-        use ORDER_DELAY when deposit mode is disabled or no enabled tier is
-        available, so the scheduler can distinguish an explicit fallback from
-        legacy data.
+        use ``SETTLEMENT_MODE_ORDER_DELAY`` when the order itself carries the
+        payout terms (or when deposit rules cannot provide a duration), so the
+        scheduler can distinguish an explicit order-delay marker from legacy
+        data.
+
+        老板 2026-10-18 拍板 R3（订单为准、档位只是加速器）：
+        - 订单设了 ``payout_delay_*`` → 以订单时效为准；只有**真正缴过保证金**
+          （threshold > 0）的档位、且 ``settle_hours`` 更短时才加速；
+        - 订单没设 → 档位 ``settle_hours`` 兜底（0 元档也算）；
+        - 档位 ``settle_hours`` 留空 → 纯按订单时效；
+        - 两边都没有 → ORDER_DELAY + due=None（永不自动结算，既有语义）。
+        具体优先级只在 ``deposit_service.plan_settlement_terms`` 一处定义。
         """
         from app.services import deposit_service
 
         setting = await deposit_service.get_or_create_deposit_setting(self._db)
-        if not setting.enabled:
+        tier = None
+        if setting.enabled:
+            tier, _balance = await deposit_service.get_user_tier(
+                self._db, claim.booster_id
+            )
+
+        plan = deposit_service.plan_settlement_terms(tier, order, setting)
+
+        if plan.mode == SETTLEMENT_MODE_ORDER_DELAY:
+            # ORDER_DELAY 语义 = 到期时间由订单时效现算（调度器 _order_delay_due），
+            # 快照不落小时数、也不落 due（保持既有契约：客户端的展示倒计时由
+            # 调度/查询路径按订单时效现算，避免订单被改后留下陈旧时间）。
             claim.settlement_mode_snapshot = SETTLEMENT_MODE_ORDER_DELAY
-            return
-        tier, _balance = await deposit_service.get_user_tier(self._db, claim.booster_id)
-        if tier is None:
-            claim.settlement_mode_snapshot = SETTLEMENT_MODE_ORDER_DELAY
+            claim.settle_hours_snapshot = None
+            claim.settlement_due_at = None
             return
 
-        hours = max(int(tier.settle_hours or 0), 0)
-        mode = setting.settlement_mode
-        if mode not in (SETTLEMENT_MODE_AFTER_DELIVERY, SETTLEMENT_MODE_AFTER_APPROVAL):
-            claim.settlement_mode_snapshot = SETTLEMENT_MODE_ORDER_DELAY
-            return
-        claim.settlement_mode_snapshot = mode
-        claim.settle_hours_snapshot = hours
-        if mode == SETTLEMENT_MODE_AFTER_DELIVERY:
-            claim.settlement_due_at = delivered_at + timedelta(hours=hours)
+        claim.settlement_mode_snapshot = plan.mode
+        claim.settle_hours_snapshot = plan.hours
+        if plan.mode == SETTLEMENT_MODE_AFTER_DELIVERY:
+            claim.settlement_due_at = delivered_at + timedelta(hours=plan.hours or 0)
         else:
             # AFTER_APPROVAL gets its due time only at review.
             claim.settlement_due_at = None
@@ -1479,6 +1500,7 @@ class OrderService:
         q: str | None = None,
         boss_contact: str | None = None,
         cancel_pending_only: bool = False,
+        after_sale_only: bool = False,
     ) -> tuple[list[dict[str, Any]], int]:
         """
         Paginated claims of one booster (我的报名), newest first.
@@ -1491,6 +1513,11 @@ class OrderService:
         ``cancel_pending_only`` restricts the page to claims with a pending
         cancellation negotiation; every item also carries a ``cancel_pending``
         flag so the 我的接单 cards can show 「申请取消中」 instead of 进行中.
+
+        ``after_sale_only`` restricts the page to claims whose order has a
+        pending after-sale request **for this very booster**；带 booster_id
+        匹配是刻意的：只有真正被冻结提现的那个打手才在「售后中」里看到该单，
+        与 has_pending_after_sale_for_booster 及卡片现有标签同口径。
         """
         from app.services import deposit_service
 
@@ -1505,6 +1532,16 @@ class OrderService:
                     select(OrderCancelRequest.id).where(
                         OrderCancelRequest.claim_id == OrderClaim.id,
                         OrderCancelRequest.status == OrderCancelRequestStatus.PENDING,
+                    )
+                )
+            )
+        elif after_sale_only:
+            conditions.append(
+                exists(
+                    select(OrderAfterSale.id).where(
+                        OrderAfterSale.order_id == OrderClaim.order_id,
+                        OrderAfterSale.booster_id == OrderClaim.booster_id,
+                        OrderAfterSale.status == AfterSaleStatus.PENDING,
                     )
                 )
             )

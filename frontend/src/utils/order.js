@@ -45,6 +45,11 @@ export const ORDER_STATUS_OPTIONS = [
   { value: 'CANCELLING', label: '申请取消中' },
   { value: 'DELIVERED', label: '待确认' },
   { value: 'COMPLETED', label: '已完成' },
+  // 「售后中」是服务端伪值（与 CANCELLING 同一手法，不是 OrderStatus 枚举值）：
+  // 命中「存在进行中（PENDING）售后申请」的订单，与订单自身状态正交，
+  // 售后结案后自动不再命中。不要往 ORDER_STATUS_META 里加，否则会被
+  // getOrderStatusLabel / getOrderStatusBadgeClass 当成真实订单状态。
+  { value: 'AFTER_SALE', label: '售后中' },
   { value: 'DISPUTED', label: '争议中' },
   { value: 'CANCELLED', label: '已取消' },
 ]

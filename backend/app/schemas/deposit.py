@@ -15,7 +15,10 @@ class DepositTierResponse(BaseModel):
     threshold: Decimal = Field(description="保证金门槛（元）")
     wait_seconds: int = Field(description="接单等待秒数（0 = 立即可接）")
     exempt_compensation: bool = Field(description="是否免除炸单赔付金冻结")
-    settle_hours: int = Field(description="结账时效（小时）")
+    settle_hours: int | None = Field(
+        default=None,
+        description="结账时效（小时）；null = 该档不承诺加速，按订单到账时效倒计时",
+    )
     daily_accept_limit: int | None = Field(
         default=None,
         description="每日接单量上限（按北京时间每日 0:00 刷新；NULL/0 = 不限）",
@@ -31,7 +34,14 @@ class DepositTierUpsert(BaseModel):
     threshold: Decimal = Field(..., ge=0, description="保证金门槛（元）")
     wait_seconds: int = Field(..., ge=0, le=86400, description="接单等待秒数")
     exempt_compensation: bool = Field(default=False, description="是否免除炸单赔付金冻结")
-    settle_hours: int = Field(..., ge=0, le=8760, description="结账时效（小时）")
+    # 留空（null）= 该档不承诺加速，完全按打手所接订单的到账时效倒计时。
+    # 老板 2026-10-18 R3：档位只是可选加速器，订单到账时效才是基准。
+    settle_hours: int | None = Field(
+        default=None,
+        ge=0,
+        le=8760,
+        description="结账时效（小时）；留空 = 按订单到账时效",
+    )
     daily_accept_limit: int | None = Field(
         default=None,
         ge=0,
@@ -67,7 +77,10 @@ class DepositOverviewResponse(BaseModel):
     )
     wait_seconds: int = Field(default=0, description="当前档位的接单等待秒数")
     exempt_compensation: bool = Field(default=False, description="当前档位是否免除炸单赔付金")
-    settle_hours: int = Field(default=72, description="当前档位的结账时效（小时）")
+    settle_hours: int | None = Field(
+        default=None,
+        description="当前档位的结账时效（小时）；null = 该档不承诺加速，按订单到账时效",
+    )
     daily_accept_limit: int | None = Field(
         default=None,
         description="当前档位的每日接单量上限（NULL/0 = 不限）",

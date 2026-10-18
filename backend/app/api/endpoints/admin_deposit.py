@@ -77,6 +77,22 @@ async def update_deposit_settings(
             detail="保证金阶梯的门槛不能重复",
         )
 
+    # 0 档防呆：只要存在启用中的档位，就必须同时存在一条**启用中的 0 元档**。
+    # 理由：resolve_tier() 在没有任何档位 ≤ 余额时会用 `or tiers[0]` 兜底成
+    # 最低一档；若 0 元档被删除/停用，0 保证金打手会继承下一档的全部权益——
+    # 包括 exempt_compensation=True（接单不预冻结炸单赔付金），属资金敞口。
+    # 全部档位都停用属退化配置（调度器已回落到订单到账时效），不在此拦。
+    if any(item.enabled for item in payload.tiers):
+        zero_enabled = any(
+            item.enabled and Decimal(str(item.threshold)) == 0
+            for item in payload.tiers
+        )
+        if not zero_enabled:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="保证金阶梯必须包含一条启用中的 0 元档（0 保证金档）",
+            )
+
     setting = await deposit_service.get_or_create_deposit_setting(db)
     setting.enabled = payload.enabled
     setting.return_cooldown_days = payload.return_cooldown_days
@@ -99,6 +115,7 @@ async def update_deposit_settings(
                 ),
                 wait_seconds=item.wait_seconds,
                 exempt_compensation=item.exempt_compensation,
+                # None = 该档不承诺加速（按订单到账时效），原样落库
                 settle_hours=item.settle_hours,
                 # 0 与 None 同义 = 不限，统一归一成 None 再写库
                 daily_accept_limit=deposit_service.normalize_daily_accept_limit(

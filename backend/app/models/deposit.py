@@ -122,12 +122,15 @@ class DepositTier(Base):
         server_default="0",
     )
 
-    # 结账时效（小时）：打手交付后经过该时长自动审核通过并结算
-    settle_hours: Mapped[int] = mapped_column(
+    # 结账时效（小时）：该档位作为「加速器」向打手承诺的最短到账时长。
+    # - 有值：交付后经过该时长自动审核通过并结算（老板 2026-10-18 起，
+    #   仅当它比订单自身的到账时效更快时生效；更慢则以订单时效为准）；
+    # - NULL：该档不承诺加速，完全按打手所接订单的 payout_delay_* 倒计时。
+    #   只有真正缴过保证金的档位（threshold > 0）才有「加速」资格，0 元档
+    #   留空即表示「按订单时效」——0 保证金不享受提前拿钱。
+    settle_hours: Mapped[int | None] = mapped_column(
         Integer(),
-        nullable=False,
-        default=72,
-        server_default="72",
+        nullable=True,
     )
 
     # 每日接单量上限（按北京时间每日 0:00 刷新；NULL/0 = 不限）。

@@ -37,6 +37,27 @@ export function isPendingAfterSale(item) {
   return item?.status === 'PENDING'
 }
 
+// 后端「可扣款不足」结构化 detail 的 code（见 after_sale_service.settle_approved_funds）
+export const INSUFFICIENT_FUNDS_CODE = 'after_sale_insufficient_funds'
+
+/**
+ * 从 api 拦截器抛出的错误里解出「可扣款不足」的结构化信息。
+ * 拦截器已把 detail 的 message 解成 err.message，完整结构留在 err.original；
+ * 非该类错误返回 null（调用方继续走通用错误文案）。
+ */
+export function parseInsufficientFundsError(err) {
+  const detail = err?.original?.response?.data?.detail
+  if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return null
+  if (detail.code !== INSUFFICIENT_FUNDS_CODE) return null
+  return {
+    message: String(detail.message || err?.message || ''),
+    required: String(detail.required ?? ''),
+    available: String(detail.available ?? ''),
+    deposit: String(detail.deposit ?? ''),
+    shortfall: String(detail.shortfall ?? ''),
+  }
+}
+
 export const useAfterSalesStore = defineStore('afterSales', () => {
   // State
   const myAfterSales = ref([])
@@ -188,7 +209,9 @@ export const useAfterSalesStore = defineStore('afterSales', () => {
   }
 
   // POST /orders/{orderId}/after-sales/{afterSaleId}/accept —— 打手同意退款
-  // （仅该单打手可调；成功后余额扣划给老板、售后结案，返回 status=APPROVED）
+  // （仅该单打手可调；成功后「可用余额 → 保证金」扣划给老板、售后结案，
+  // 返回 status=APPROVED）。可扣款不足时后端 400 + 结构化 detail，
+  // 由 parseInsufficientFundsError 解出缺口金额供弹窗提示。
   async function acceptAfterSale(orderId, afterSaleId) {
     submitting.value = true
     error.value = null
@@ -197,7 +220,11 @@ export const useAfterSalesStore = defineStore('afterSales', () => {
       return { success: true, data: response.data }
     } catch (err) {
       error.value = err.message
-      return { success: false, error: err.message }
+      const result = { success: false, error: err.message }
+      const insufficient = parseInsufficientFundsError(err)
+      // 只在命中结构化缺口错误时附加字段，保持既有 {success,error} 契约不变
+      if (insufficient) result.insufficient = insufficient
+      return result
     } finally {
       submitting.value = false
     }
@@ -221,5 +248,4 @@ export const useAfterSalesStore = defineStore('afterSales', () => {
     reviewAfterSale,
     withdrawAfterSale,
     acceptAfterSale,
-  }
-})
+  }})

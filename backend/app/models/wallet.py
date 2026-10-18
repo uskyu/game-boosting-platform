@@ -50,9 +50,11 @@ class WalletTransactionType(str, PyEnum):
     # 取消订单赔偿（发单员对进行中订单发起取消时直扣打手保证金，无需对方同意）
     CANCEL_COMPENSATION_IN = "CANCEL_COMPENSATION_IN"        # 取消赔偿入账，发单员可用余额 (+)
     CANCEL_COMPENSATION_DEDUCT = "CANCEL_COMPENSATION_DEDUCT"  # 取消赔偿扣除，打手保证金扣减 (-)
-    # 售后扣划（老板对已完成订单的售后通过：打手可用余额 → 老板可用余额）
+    # 售后扣划（老板对已完成订单的售后通过：打手「可用余额 → 保证金」→ 老板可用余额）
     AFTERSALE_DEDUCTION = "AFTERSALE_DEDUCTION"  # 售后扣划，打手可用余额扣减 (-)
     AFTERSALE_REFUND = "AFTERSALE_REFUND"        # 售后收款，老板可用余额增加 (+)
+    AFTERSALE_DEPOSIT_DEDUCTION = "AFTERSALE_DEPOSIT_DEDUCTION"
+    # 售后扣划（保证金抵扣），打手保证金扣减 (-)，可用余额不变
 
 
 class Wallet(Base):
@@ -97,7 +99,8 @@ class Wallet(Base):
     )
 
     # 保证金余额：由可用余额转入，转入后冻结不可消费、不可提现，
-    # 仅用于保证金档位权益（优先接单/免炸单赔付金/结账时效）与炸单扣款。
+    # 仅用于保证金档位权益（优先接单/免炸单赔付金/结账时效）、炸单扣款
+    # 与售后扣划的补足部分（可用余额不足时抵扣差额）。
     # 与 frozen_balance 区分开，避免和提现冻结、发单托管混在一个池子里。
     deposit_balance: Mapped[Decimal] = mapped_column(
         Numeric(precision=12, scale=2),

@@ -3,6 +3,7 @@ import { compileScript, parse } from '@vue/compiler-sfc'
 import { describe, expect, it } from 'vitest'
 
 const listSource = readFileSync(new URL('../OrderList.vue', import.meta.url), 'utf8')
+const detailSource = readFileSync(new URL('../OrderDetail.vue', import.meta.url), 'utf8')
 const walletSource = readFileSync(new URL('../WalletView.vue', import.meta.url), 'utf8')
 const adminSource = readFileSync(new URL('../AdminView.vue', import.meta.url), 'utf8')
 const applySource = readFileSync(new URL('../AfterSaleApplyView.vue', import.meta.url), 'utf8')
@@ -22,48 +23,72 @@ function slice(source, startMarker, endMarker) {
   return source.slice(start, end)
 }
 
-describe('售后入口按钮（OrderList 我的派单卡片）', () => {
-  it('compiles OrderList with the new after-sale button', () => {
-    compileView(listSource, 'OrderList.vue')
+describe('售后入口按钮（OrderDetail 右侧「操作」卡，2026-10-18 从列表迁入）', () => {
+  it('compiles OrderDetail with the after-sale button', () => {
+    compileView(detailSource, 'OrderDetail.vue')
   })
 
-  it('renders the danger-styled 售后 button only for COMPLETED orders', () => {
-    const buttonIndex = listSource.indexOf('goToAfterSaleApply(order.id)')
+  it('renders the danger-styled 售后 button only for owner on COMPLETED orders', () => {
+    const buttonIndex = detailSource.indexOf('goToAfterSaleApply(order.id)')
     expect(buttonIndex).toBeGreaterThan(-1)
-    const button = listSource.slice(buttonIndex - 400, buttonIndex + 60)
-    expect(button).toMatch(/v-if="order\.status === 'COMPLETED'"/)
-    expect(button).toMatch(/class="btn-danger !px-4 !py-2"/)
-    // 点击不能顺带触发卡片的整卡跳转；pending 时改开状态弹窗（见下条）
-    expect(button).toMatch(/@click\.stop="order\.after_sale_pending \? openAfterSaleStatus\(order\) : goToAfterSaleApply\(order\.id\)"/)
+    const button = detailSource.slice(buttonIndex - 600, buttonIndex + 400)
+    expect(button).toMatch(/v-if="isOwner && order\.status === 'COMPLETED'"/)
+    // 与「申请取消」同款通栏红胶囊：老板要求「红框跟申请取消一样」
+    expect(button).toMatch(/class="od-ops__chip btn-danger w-full py-3"/)
+    // pending 时改开状态弹窗（可查看案情并撤回）
+    expect(button).toMatch(/order\.after_sale_pending \? \(showAfterSaleStatusModal = true\) : goToAfterSaleApply\(order\.id\)/)
+    expect(button).toMatch(/\{\{ afterSaleApproved \? '售后已处理' : \(order\.after_sale_pending \? '售后处理中' : '售后'\) \}\}/)
   })
 
-  it('opens the after-sale status modal (instead of disabling) while pending', () => {
-    const buttonIndex = listSource.indexOf('goToAfterSaleApply(order.id)')
-    const button = listSource.slice(buttonIndex - 400, buttonIndex + 200)
-    expect(button).toMatch(/order\.after_sale_pending \? openAfterSaleStatus\(order\) : goToAfterSaleApply\(order\.id\)/)
-    expect(button).toMatch(/\{\{ order\.after_sale_pending \? '售后处理中' : '售后' \}\}/)
-    // 处理中不再禁用：老板要能进去看案情并撤诉
+  it('sits directly above 重建订单 in the ops card (老板：放到「重建订单」上面)', () => {
+    expect(detailSource.indexOf('goToAfterSaleApply(order.id)'))
+      .toBeLessThan(detailSource.indexOf('rebuildOrder(order.id)'))
+  })
+
+  it('stays clickable while pending so the owner can withdraw', () => {
+    const buttonIndex = detailSource.indexOf('goToAfterSaleApply(order.id)')
+    const button = detailSource.slice(buttonIndex - 600, buttonIndex + 400)
+    // 处理中只降不透明度，不能 :disabled —— 禁用后老板没法进弹窗撤诉
+    expect(button).toMatch(/:class="order\.after_sale_pending \? 'opacity-60' : ''"/)
     expect(button).not.toMatch(/:disabled="order\.after_sale_pending"/)
   })
 
-  it('wires the AfterSaleStatusModal with withdraw refresh', () => {
-    expect(listSource).toMatch(/import AfterSaleStatusModal from '@\/components\/AfterSaleStatusModal\.vue'/)
-    expect(listSource).toMatch(/<AfterSaleStatusModal/)
-    expect(listSource).toMatch(/v-model="afterSaleStatusOpen"/)
-    expect(listSource).toMatch(/:order-id="afterSaleStatusOrderId"/)
-    expect(listSource).toMatch(/@withdrawn="onAfterSaleWithdrawn"/)
-    // 撤回成功后刷新派单列表，按钮态与 after_sale_pending 标记由接口重算
-    expect(listSource).toMatch(/function onAfterSaleWithdrawn\(\)\s*\{\s*fetchOrders\(\)/)
-  })
-
-  it('sits before 重建订单 in the card action row', () => {
-    expect(listSource.indexOf('goToAfterSaleApply(order.id)'))
-      .toBeLessThan(listSource.indexOf('rebuildOrder(order.id)'))
+  it('wires the boss-side AfterSaleStatusModal with withdraw refresh', () => {
+    expect(detailSource).toMatch(/import AfterSaleStatusModal from '@\/components\/AfterSaleStatusModal\.vue'/)
+    expect(detailSource).toMatch(/v-model="showAfterSaleStatusModal"/)
+    expect(detailSource).toMatch(/@withdrawn="onAfterSaleWithdrawn"/)
+    // 撤回成功后静默刷新详情并重算「一单一裁」判据
+    const withdrawn = slice(detailSource, 'function onAfterSaleWithdrawn(', '\n}')
+    expect(withdrawn).toMatch(/ordersStore\.fetchOrder\(orderId, \{ silent: true \}\)/)
+    expect(withdrawn).toMatch(/refreshAfterSaleGate\(orderId\)/)
   })
 
   it('navigates to the after-sale apply route by name', () => {
-    const nav = slice(listSource, 'function goToAfterSaleApply(', '\n}')
+    const nav = slice(detailSource, 'function goToAfterSaleApply(', '\n}')
     expect(nav).toMatch(/router\.push\(\{ name: 'afterSaleApply', params: \{ id: orderId \} \}\)/)
+  })
+})
+
+describe('列表侧只读售后标记（OrderList 我的派单卡片）', () => {
+  it('compiles OrderList without the migrated button', () => {
+    compileView(listSource, 'OrderList.vue')
+  })
+
+  it('no longer carries the after-sale action button or its modal', () => {
+    // 申请入口整体迁到详情页：列表里不能再有售后按钮/弹窗，避免两处维护
+    expect(listSource).not.toMatch(/goToAfterSaleApply/)
+    expect(listSource).not.toMatch(/openAfterSaleStatus/)
+    expect(listSource).not.toMatch(/<AfterSaleStatusModal/)
+    expect(listSource).not.toMatch(/afterSaleStatusOpen/)
+    // 也不该残留未使用的 import
+    expect(listSource).not.toMatch(/import AfterSaleStatusModal/)
+  })
+
+  it('keeps a read-only 售后处理中 badge in the card badge row', () => {
+    // 老板要能在列表里看出哪单被发起了售后（与打手侧 claims 卡同款 amber tag）
+    const badge = slice(listSource, '<span v-if="order.after_sale_pending"', '</span>')
+    expect(badge).toContain('售后处理中')
+    expect(badge).toMatch(/tag !bg-warning-soft !text-warning/)
   })
 })
 
@@ -200,9 +225,13 @@ describe('管理后台售后管理 tab（AdminView）', () => {
     // 原因截断 + 点击看全文
     expect(section).toMatch(/class="truncate text-sm text-ink-2">\{\{ item\.reason \|\| '—' \}\}/)
     expect(section).toMatch(/@click="afterSaleReasonDetail = item"/)
-    // 凭证缩略图点击新窗口看大图
-    expect(section).toMatch(/@click\.stop="openAfterSaleImage\(image\.url\)"/)
-    expect(adminSource).toMatch(/if \(url\) window\.open\(url, '_blank', 'noopener'\)/)
+    // 凭证缩略图：点击在站内灯箱打开，不再 window.open / _blank
+    // （微信内置浏览器没有标签页，target=_blank / window.open 必跳出站内）
+    expect(section).toMatch(/@click\.stop="openAfterSaleLightbox\(item, index\)"/)
+    expect(adminSource).toMatch(/openAfterSaleLightbox\(afterSaleReasonDetail, index\)/)
+    expect(adminSource).not.toMatch(/openAfterSaleImage/)
+    expect(adminSource).not.toMatch(/window\.open\(/)
+    expect(adminSource).not.toMatch(/target="_blank"/)
   })
 
   it('offers 通过/驳回 only for PENDING and reviews through the store', () => {

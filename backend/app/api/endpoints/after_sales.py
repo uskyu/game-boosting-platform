@@ -250,8 +250,9 @@ async def withdraw_order_after_sale(
     response_model=AfterSaleItem,
     summary="打手同意退款",
     description=(
-        "仅该单接单打手可对待处理（PENDING）售后一键认栽：按申请金额秒结扣划"
-        "（可用余额不足扣至 0 并追差额说明），无需管理员审阅"
+        "仅该单接单打手可对待处理（PENDING）售后一键认栽：按申请金额秒结扣划，"
+        "先从可用余额扣、不足部分从保证金补扣；两处合计仍不足时返回 400 并告知"
+        "缺口金额（售后保持待处理、资金零变动），无需管理员审阅"
     ),
 )
 async def accept_order_after_sale(
@@ -285,7 +286,8 @@ async def accept_order_after_sale(
     response_model=AfterSaleItem,
     summary="审阅售后申请",
     description=(
-        "approve=通过（可传 amount 调裁定扣款额，默认=申请金额，划转由结算逻辑承接）；"
+        "approve=通过（可传 amount 调裁定扣款额，默认=申请金额；扣款顺序为"
+        "「打手可用余额 → 保证金」，合计不足时返回 400 且不结案）；"
         "reject=驳回、close=关闭（平台未做裁定），两者必须填原因"
     ),
 )

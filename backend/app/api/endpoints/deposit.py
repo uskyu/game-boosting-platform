@@ -52,7 +52,8 @@ async def get_my_deposit(
         current_threshold=tier.threshold if tier else None,
         wait_seconds=tier.wait_seconds if tier else 0,
         exempt_compensation=tier.exempt_compensation if tier else False,
-        settle_hours=tier.settle_hours if tier else 72,
+        # None = 当前档不承诺加速，按订单到账时效（不再硬编码 72 兜底）
+        settle_hours=tier.settle_hours if tier else None,
         daily_accept_limit=daily_status.limit,
         daily_accepted_count=daily_status.accepted,
         daily_limit_reset_at=daily_status.next_refresh_at,

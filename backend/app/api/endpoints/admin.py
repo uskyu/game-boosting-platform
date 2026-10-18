@@ -106,7 +106,7 @@ async def list_all_orders_for_admin(
     current_admin: Annotated[User, Depends(get_current_admin)],
     status_filter: Annotated[
         str | None,
-        Query(alias="status", description="按订单状态筛选；CANCELLING=申请取消中（有待处理的取消协商）"),
+        Query(alias="status", description="按订单状态筛选；CANCELLING=申请取消中（有待处理的取消协商）；AFTER_SALE=售后中（存在进行中的售后申请）"),
     ] = None,
     game_name: Annotated[
         str | None,
@@ -127,7 +127,9 @@ async def list_all_orders_for_admin(
     from app.api.endpoints.orders import _resolve_order_status_filter
 
     order_service = get_order_service(db)
-    resolved_status, cancel_pending_only = _resolve_order_status_filter(status_filter)
+    resolved_status, cancel_pending_only, after_sale_only = (
+        _resolve_order_status_filter(status_filter)
+    )
     orders, total, _hall_max_updated_at, _hall_earliest_deadline = await order_service.list_orders(
         user=current_admin,
         game_name=game_name,
@@ -137,6 +139,7 @@ async def list_all_orders_for_admin(
         boss_contact=boss_contact,
         q=q,
         cancel_pending_only=cancel_pending_only,
+        after_sale_only=after_sale_only,
     )
     pages = (total + page_size - 1) // page_size if total > 0 else 0
 
@@ -146,12 +149,17 @@ async def list_all_orders_for_admin(
     pending_cancel_ids = await order_service.pending_cancel_order_ids(
         [order.id for order in orders]
     )
+    # 「售后中」标记：后台列表也要能看出哪单有进行中售后（与用户端列表同口径）
+    pending_after_sale_ids = await order_service.pending_after_sale_order_ids(
+        [order.id for order in orders]
+    )
     for response in responses:
         counts = status_counts.get(response.id, {})
         response.pending_review_count = counts.get("PENDING_REVIEW", 0)
         response.settled_count = counts.get("SETTLED", 0)
         # 「申请取消中」：取消协商挂起期间徽标不再显示进行中
         response.cancel_pending = response.id in pending_cancel_ids
+        response.after_sale_pending = response.id in pending_after_sale_ids
 
     return OrderListResponse(
         items=responses,

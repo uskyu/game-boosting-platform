@@ -3,10 +3,17 @@
 老板（订单发布者）可对「已完成」订单发起售后：文字原因 + 凭证图片 +
 金额（≤订单派单价）。售后单 PENDING 期间该单打手禁止提现；
 管理后台审阅并通过/驳回/关闭，通过时的扣款划转由 ``settle_approved_funds``
-承接（打手可用余额 → 老板余额 + 双边流水，可按管理员裁定的实扣额划转）；
-PENDING 期间老板也可主动撤回（``withdraw_after_sale``，落 CLOSED 不动资金），
-该单打手也可一键认栽（``accept_after_sale_as_booster``，按申请金额秒结划转，
-无需管理员审阅，reviewed_by 留空、后台靠 decision_reason 识别）。
+承接（打手「可用余额 → 保证金」→ 老板可用余额 + 双边流水，可按管理员裁定的
+实扣额划转）；PENDING 期间老板也可主动撤回（``withdraw_after_sale``，
+落 CLOSED 不动资金），该单打手也可一键认栽
+（``accept_after_sale_as_booster``，按申请金额秒结划转，无需管理员审阅，
+reviewed_by 留空、后台靠 decision_reason 识别）。
+
+扣款口径（老板 2026-10-18 拍板）：先扣可用余额，不足部分从打手保证金补扣；
+两处合计仍不足时**拒绝结案**并返回 400（不落状态、不动资金），让打手先充值
+或缴纳保证金后重试——不再按可用余额静默截断。保证金扣减单独记
+``AFTERSALE_DEPOSIT_DEDUCTION`` 流水（只动 deposit_balance），可用余额那条沿用
+``AFTERSALE_DEDUCTION``，两条流水各自与 ``balance_before/after`` 对得上。
 
 与 ``deposit_service`` 同为模块级函数风格：本模块只做规则判定与编排，
 资金划转调用 ``wallet_service`` 的行锁 + 流水原语（``_lock_wallet`` /
@@ -14,6 +21,7 @@ PENDING 期间老板也可主动撤回（``withdraw_after_sale``，落 CLOSED �
 """
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
@@ -28,6 +36,7 @@ from app.models.notification import NotificationType
 from app.models.order import Order, OrderStatus
 from app.models.order_after_sale import AfterSaleStatus, OrderAfterSale
 from app.models.user import User, UserRole
+from app.models.wallet import WalletTransaction, WalletTransactionType
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +60,25 @@ def _to_decimal(value: Decimal | int | str | None) -> Decimal:
     if value is None or value == "":
         return _ZERO
     return Decimal(str(value))
+
+
+@dataclass(frozen=True)
+class AfterSaleSettlement:
+    """一次售后结案的实扣拆分（金额均已量化到分）。
+
+    约定：``from_available + from_deposit == actual == 应扣额``。
+    新口径下不存在「少扣」的结案，所以没有短款字段；可扣款不足时会直接
+    抛 400，售后保持 PENDING、资金零变动。
+    """
+
+    from_available: Decimal
+    from_deposit: Decimal
+
+    @property
+    def actual(self) -> Decimal:
+        return (self.from_available + self.from_deposit).quantize(
+            _CENT, rounding=ROUND_HALF_UP
+        )
 
 
 def _image_url_prefix(user_id: int) -> str:
@@ -202,15 +230,18 @@ async def _notify_after_sale_resolved(
     action: str,
     settled_amount: Decimal | None = None,
     accepted_by_booster: bool = False,
+    settlement: "AfterSaleSettlement | None" = None,
 ) -> None:
     """售后结案通知：双边（老板 + 打手）都收到结论。
 
     approve：按视角区分文案，打手侧告知扣划结果、老板侧告知收款结果，
-    金额取裁定实扣额；``accepted_by_booster`` 为真时走打手认栽秒结路径，
-    双边改用「打手同意退款」口径（无管理员参与，reviewed_by 留空）。
+    金额取**实扣额**（``settlement.actual``；缺省回落到 ``settled_amount``，
+    两者在新口径下恒等，仅防御旧调用方）；动用保证金抵扣时补一句分项构成，
+    让打手清楚钱从可用余额扣了多少、从保证金扣了多少。
+    ``accepted_by_booster`` 为真时走打手认栽秒结路径，双边改用「打手同意退款」
+    口径（无管理员参与，reviewed_by 留空）。
     reject：双边同一驳回口径；close：平台未做裁定，双边告知已关闭。
-    管理员审阅的通过文案会带上不足额说明（decision_reason 里的差额备注）；
-    打手认栽口径为固定文案，差额只落 decision_reason 后台留痕。类型/link 不变。
+    类型/link 不变。
     """
     from app.api.notification_utils import notify_user
 
@@ -219,30 +250,47 @@ async def _notify_after_sale_resolved(
     label = _order_label(order) if order is not None else f"订单 #{after_sale.order_id}"
     link = f"/orders/{after_sale.order_id}"
     if action == "approve":
-        settled = _to_decimal(settled_amount).quantize(_CENT, rounding=ROUND_HALF_UP)
+        # 实扣额优先取结算返回的分项合计：通知金额必须等于真实划转额，
+        # 不能再按申请额/裁定额猜（历史 bug：短款结案时双方都被告知全额）。
+        actual = (
+            settlement.actual
+            if settlement is not None
+            else _to_decimal(settled_amount).quantize(_CENT, rounding=ROUND_HALF_UP)
+        )
         suffix = f"：{after_sale.decision_reason}" if after_sale.decision_reason else ""
         if accepted_by_booster:
+            # 打手认栽口径是固定文案、不带 decision_reason，所以分项构成在这里补；
+            # 只动可用余额时保留原话术（「从你的余额扣划」仍成立）。
+            offset_note = ""
+            if settlement is not None and settlement.from_deposit > _ZERO:
+                offset_note = (
+                    f"（可用余额 ¥{settlement.from_available}"
+                    f" + 保证金 ¥{settlement.from_deposit}）"
+                )
+            booster_source = "账户" if offset_note else "余额"
             messages = {
                 after_sale.booster_id: (
                     "售后申请已通过",
-                    f"你已同意退款，¥{settled} 已从你的余额扣划给老板",
+                    f"你已同意退款，¥{actual} 已从你的{booster_source}扣划给老板{offset_note}",
                 ),
                 after_sale.requester_id: (
                     "售后申请已通过",
                     f"订单「{label}」的售后申请已通过（打手同意退款），"
-                    f"已收款 ¥{settled}",
+                    f"已收款 ¥{actual}",
                 ),
             }
         else:
+            # 管理员路径：suffix 已带上 decision_reason（含保证金抵扣分项），
+            # 不再重复拼一遍构成，避免文案自相重复。
             messages = {
                 after_sale.booster_id: (
                     "售后申请已通过",
                     f"订单「{label}」的售后申请已通过，"
-                    f"已扣划 ¥{settled} 给老板{suffix}",
+                    f"已扣划 ¥{actual} 给老板{suffix}",
                 ),
                 after_sale.requester_id: (
                     "售后申请已通过",
-                    f"订单「{label}」的售后申请已通过，已收款 ¥{settled}{suffix}",
+                    f"订单「{label}」的售后申请已通过，已收款 ¥{actual}{suffix}",
                 ),
             }
     elif action == "close":
@@ -555,9 +603,10 @@ async def review_after_sale(
     decision_reason，再由 ``settle_approved_funds`` 按实扣额划转。
     reject/close：必填原因、不动资金；close 落 CLOSED（平台未做裁定）。
 
-    approve 分支在状态落库之后调用 ``settle_approved_funds`` 承接扣款划转，
-    且先行于结案通知：不足额时划转会往 decision_reason 追加差额说明，
-    通知里才能带上最终扣划结果。
+    approve 分支先在落库前完成扣款划转（``settle_approved_funds``）：
+    「可用余额 + 保证金」不足时它抛 400，整个请求事务回滚，售后保持 PENDING、
+    双方余额零变动；划转成功后才落 APPROVED 并发通知，保证通知金额等于实扣额。
+    动用保证金抵扣时划转会往 decision_reason 追加分项构成。
     """
     if after_sale.status != AfterSaleStatus.PENDING:
         raise HTTPException(
@@ -611,10 +660,18 @@ async def review_after_sale(
                 detail="该订单已有已通过的售后申请，不能重复裁定",
             )
 
-    now = datetime.now(timezone.utc)
-    after_sale.status = _STATUS_BY_ACTION[action]
+    # 先写 decision_reason（settle 会在其后追加保证金抵扣分项）与操作人，
+    # 再扣款，最后落状态：资金划转失败（可扣款不足 400）时异常让整个请求事务
+    # 回滚，售后保持 PENDING、双方余额零变动。
     after_sale.decision_reason = decision_reason
     after_sale.reviewed_by = admin.id
+    settlement: AfterSaleSettlement | None = None
+    if action == "approve":
+        settlement = await settle_approved_funds(
+            db, after_sale=after_sale, amount=settled_amount
+        )
+    now = datetime.now(timezone.utc)
+    after_sale.status = _STATUS_BY_ACTION[action]
     after_sale.resolved_at = now
     await db.flush()
     await db.refresh(after_sale)
@@ -624,12 +681,12 @@ async def review_after_sale(
         action,
         admin.id,
     )
-    if action == "approve":
-        # 先落扣款划转（不足额时会往 decision_reason 追加差额说明），
-        # 再发双边通知，保证通知里能带上最终扣划结果。
-        await settle_approved_funds(db, after_sale=after_sale, amount=settled_amount)
     await _notify_after_sale_resolved(
-        db, after_sale=after_sale, action=action, settled_amount=settled_amount
+        db,
+        after_sale=after_sale,
+        action=action,
+        settled_amount=settled_amount,
+        settlement=settlement,
     )
     return after_sale
 
@@ -648,82 +705,160 @@ def _append_adjustment_note(
     return combined[:500]
 
 
-def _append_shortfall_note(
-    after_sale: OrderAfterSale, *, requested: Decimal, actual: Decimal
+def _append_deposit_offset_note(
+    after_sale: OrderAfterSale, *, from_available: Decimal, from_deposit: Decimal
 ) -> None:
-    """可用余额不足时把差额追加进 decision_reason。
+    """动用了保证金抵扣时，把扣款构成追加进 decision_reason（后台/售后详情可查）。
 
-    形如「打手可用余额不足 ¥X.XX，按实际余额 ¥Y.YY 扣收」；decision_reason
-    已有内容（管理员审阅意见）时以分号拼接，无内容时不带分号前缀。
+    形如「可用余额扣 ¥4.60 + 保证金抵扣 ¥15.40」；decision_reason 已有内容
+    （管理员审阅意见 / 打手同意退款）时以分号拼接，截断到 500 字。
+    未动用保证金时不追加，保持既有文案完全不变。
     """
-    shortfall = (requested - actual).quantize(_CENT, rounding=ROUND_HALF_UP)
-    note = f"打手可用余额不足 ¥{shortfall}，按实际余额 ¥{actual} 扣收"
+    note = f"可用余额扣 ¥{from_available} + 保证金抵扣 ¥{from_deposit}"
     existing = (after_sale.decision_reason or "").strip()
     combined = f"{existing}；{note}" if existing else note
     after_sale.decision_reason = combined[:500]
 
 
 async def settle_approved_funds(
-    db: AsyncSession, *, after_sale: OrderAfterSale, amount: Decimal | None = None
-) -> None:
-    """售后通过的扣款划转：打手可用余额 → 老板可用余额 + 双边流水。
+    db: AsyncSession,
+    *,
+    after_sale: OrderAfterSale,
+    amount: Decimal | None = None,
+    insufficient_hint: str = "请先充值或缴纳保证金后再同意退款",
+) -> AfterSaleSettlement:
+    """售后通过的扣款划转：打手「可用余额 → 保证金」→ 老板可用余额 + 双边流水。
 
-    口径（与取消赔偿划转同一套钱包原语，全部走 wallet_service 的行锁 +
-    流水原语）：
-    - 实扣额 = ``amount``（未传则取售后申请金额），只扣打手可用余额：
-      可用 ≥ 实扣额时扣实扣额，不足则扣至 0；
-    - 实扣金额等额划进老板（requester）可用余额；
-    - 双边各记一条 wallet_transactions 流水（扣款记负、收款记正），
-      balance_before/after 快照双方各自的可用余额；
-    - 不足额时把差额追加进 decision_reason，通知与后台留痕都能看到。
+    口径（老板 2026-10-18 拍板）：
+    - 应扣额 = ``amount``（未传则取售后申请金额），金额 ≤ 0 时直接返回零拆分；
+    - 先扣打手可用余额，不足的部分从打手保证金补扣；
+    - 两处合计仍不足 → 抛 ``HTTPException 400``：不扣任何钱、不落状态
+      （调用方的状态写入随请求事务整体回滚），并在 detail 里写明缺口金额；
+    - 足额时等额划进老板（requester）可用余额，平台不抽成；
+    - 双边各记流水：可用余额腿 ``AFTERSALE_DEDUCTION``（``available_delta`` 为负）、
+      保证金腿 ``AFTERSALE_DEPOSIT_DEDUCTION``（只动 ``deposit_balance``，
+      ``balance_before == balance_after``，钱包页不会出现「金额与余额对不上」）。
 
-    行锁顺序固定「先打手后老板」（与 decide_cancel_request 的划转一致），
-    且打手钱包行锁住之后才读可用余额算实扣，并发提现/划转排队到本事务之后。
+    锁顺序固定「先打手后老板」（与 decide_cancel_request 的划转一致）；
+    保证金与可用余额在同一行 ``wallets`` 上，加保证金腿不新增任何行锁，
+    因此不会引入新的锁序依赖。校验一律在 ``_lock_wallet`` 之后进行，
+    并发提现/划转排队到本事务之后，读到的余额即最终扣款依据。
+
+    注意：保证金总开关（``DepositSetting.enabled``）关闭时**仍然照扣**——
+    该余额是打手自己的钱（关闭时 transfer_out 也照样放行），不扣就形成
+    「关掉开关躲售后赔付」的漏洞；开关只影响档位权益，不影响扣款本身。
     """
     # 延迟导入：wallet_service 的提现闸门反向延迟导入本模块，
     # 模块级导入会形成循环依赖（见 wallet_service.create_withdrawal）。
-    from app.models.wallet import WalletTransactionType
     from app.services.wallet_service import get_wallet_service
 
-    effective = (
+    required = (
         _to_decimal(amount).quantize(_CENT, rounding=ROUND_HALF_UP)
         if amount is not None
         else _to_decimal(after_sale.amount).quantize(_CENT, rounding=ROUND_HALF_UP)
     )
-    if effective <= _ZERO:
-        return None
+    if required <= _ZERO:
+        return AfterSaleSettlement(from_available=_ZERO, from_deposit=_ZERO)
 
     wallet_service = get_wallet_service(db)
     booster_wallet = await wallet_service.get_or_create_wallet(after_sale.booster_id)
     booster_wallet = await wallet_service._lock_wallet(booster_wallet.id)
-    actual = min(effective, _to_decimal(booster_wallet.available_balance)).quantize(
+
+    available = _to_decimal(booster_wallet.available_balance)
+    deposit = _to_decimal(booster_wallet.deposit_balance)
+    from_available = min(required, available).quantize(_CENT, rounding=ROUND_HALF_UP)
+    remainder = required - from_available
+    from_deposit = min(remainder, deposit).quantize(_CENT, rounding=ROUND_HALF_UP)
+    shortfall = (required - from_available - from_deposit).quantize(
         _CENT, rounding=ROUND_HALF_UP
     )
-    if actual < effective:
+    if shortfall > _ZERO:
+        # 资金与状态都不动：异常让整个请求事务回滚（app/db/session.py）。
         logger.warning(
-            "After-sale %s deduction capped: requested %s but booster %s available %s",
+            "After-sale %s settlement rejected: required %s, booster %s available %s, deposit %s, shortfall %s",
             after_sale.id,
-            effective,
+            required,
             after_sale.booster_id,
-            booster_wallet.available_balance,
+            available,
+            deposit,
+            shortfall,
         )
-        _append_shortfall_note(after_sale, requested=effective, actual=actual)
-    if actual <= _ZERO:
-        await db.flush()
-        return None
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "after_sale_insufficient_funds",
+                "message": (
+                    f"可用余额 ¥{available} + 保证金 ¥{deposit} 不足以覆盖本次扣款 "
+                    f"¥{required}，尚缺 ¥{shortfall}；{insufficient_hint}"
+                ),
+                "required": str(required),
+                "available": str(available),
+                "deposit": str(deposit),
+                "shortfall": str(shortfall),
+            },
+        )
 
-    # 打手扣款：与 consume_cancel_compensation 的可用余额路径同一原语
-    # （行锁 + balance_before/after 快照 + 流水），只动可用余额。
-    await wallet_service._apply(
-        booster_wallet,
-        tx_type=WalletTransactionType.AFTERSALE_DEDUCTION,
-        amount=-actual,
-        available_delta=-actual,
-        order_id=after_sale.order_id,
-        booster_id=after_sale.booster_id,
-        operator_id=after_sale.reviewed_by,
-        remark=f"订单 #{after_sale.order_id} 售后扣划给老板",
+    # 流水级幂等兜底：状态机（售后单行锁 + 仅 PENDING + 一单一裁）已挡住绝大多数
+    # 重复，这里照 deduct_compensation 的做法再查一次，把唯一键冲突变成可读的 409。
+    existing = await db.execute(
+        select(WalletTransaction.id).where(
+            WalletTransaction.order_id == after_sale.order_id,
+            WalletTransaction.booster_id == after_sale.booster_id,
+            WalletTransaction.type.in_(
+                (
+                    WalletTransactionType.AFTERSALE_DEDUCTION,
+                    WalletTransactionType.AFTERSALE_DEPOSIT_DEDUCTION,
+                )
+            ),
+        )
     )
+    if existing.first() is not None:
+        logger.warning(
+            "After-sale %s settlement skipped: ledger already exists for order %s booster %s",
+            after_sale.id,
+            after_sale.order_id,
+            after_sale.booster_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="该售后申请已结算，请刷新后确认",
+        )
+
+    # 可用余额腿：与 consume_cancel_compensation 的可用余额路径同一原语。
+    if from_available > _ZERO:
+        await wallet_service._apply(
+            booster_wallet,
+            tx_type=WalletTransactionType.AFTERSALE_DEDUCTION,
+            amount=-from_available,
+            available_delta=-from_available,
+            order_id=after_sale.order_id,
+            booster_id=after_sale.booster_id,
+            operator_id=after_sale.reviewed_by,
+            remark=f"订单 #{after_sale.order_id} 售后扣划给老板",
+        )
+    # 保证金腿：单独一条流水只动 deposit_balance（余额快照不变），
+    # 避免把两条腿挤在一条流水里导致 amount 与 balance_after 对不上。
+    if from_deposit > _ZERO:
+        await wallet_service._apply(
+            booster_wallet,
+            tx_type=WalletTransactionType.AFTERSALE_DEPOSIT_DEDUCTION,
+            amount=-from_deposit,
+            available_delta=_ZERO,
+            deposit_delta=-from_deposit,
+            order_id=after_sale.order_id,
+            booster_id=after_sale.booster_id,
+            operator_id=after_sale.reviewed_by,
+            remark=f"订单 #{after_sale.order_id} 售后扣划（保证金抵扣）",
+        )
+
+    settlement = AfterSaleSettlement(
+        from_available=from_available, from_deposit=from_deposit
+    )
+    actual = settlement.actual
+    if from_deposit > _ZERO:
+        _append_deposit_offset_note(
+            after_sale, from_available=from_available, from_deposit=from_deposit
+        )
     # 老板收款：与取消赔偿入账同一原语（credit 只对 ORDER_INCOME 累计收入，
     # 售后收款不计入累计收入）。
     requester_wallet = await wallet_service.get_or_create_wallet(after_sale.requester_id)
@@ -738,14 +873,16 @@ async def settle_approved_funds(
     )
     await db.flush()
     logger.info(
-        "After-sale %s settled: booster %s -%s, requester %s +%s (requested %s)",
+        "After-sale %s settled: booster %s available -%s deposit -%s, requester %s +%s (required %s)",
         after_sale.id,
         after_sale.booster_id,
-        actual,
+        from_available,
+        from_deposit,
         after_sale.requester_id,
         actual,
-        effective,
+        required,
     )
+    return settlement
 
 
 async def withdraw_after_sale(
@@ -794,10 +931,14 @@ async def accept_after_sale_as_booster(
 
     落 APPROVED、decision_reason 记「打手同意退款」（已有内容拼在前面）、
     resolved_at=now；reviewed_by 保持 None——无管理员参与，后台列表靠
-    decision_reason 识别打款路径。先落扣款划转（``settle_approved_funds``
-    不传 amount，按申请金额全款扣，不足额时追加差额说明），再发双边
-    通知（打手侧「你已同意退款」口径，见 ``_notify_after_sale_resolved``
-    的 ``accepted_by_booster``）。
+    decision_reason 识别打款路径。
+
+    扣款在落库之前完成（``settle_approved_funds`` 不传 amount，按申请金额全款
+    扣）：可用余额不足时自动从保证金补扣，动用保证金会把分项构成追加进
+    decision_reason；「可用余额 + 保证金」仍不足时它抛 400，售后保持 PENDING、
+    双方余额零变动，打手可先充值/缴纳保证金后重试。通知按**实扣额**播报
+    （打手侧「你已同意退款」口径，见 ``_notify_after_sale_resolved`` 的
+    ``accepted_by_booster``）。
     """
     if booster.id != after_sale.booster_id:
         raise HTTPException(
@@ -826,10 +967,17 @@ async def accept_after_sale_as_booster(
         )
 
     existing = (after_sale.decision_reason or "").strip()
-    after_sale.status = AfterSaleStatus.APPROVED
     after_sale.decision_reason = (
         f"{existing}；打手同意退款" if existing else "打手同意退款"
     )[:500]
+    # 先扣款、后落状态：不足额时 settle_approved_funds 抛 400 早于状态写入，
+    # 异常让整个请求事务回滚 → 售后仍 PENDING、双方余额零变动、无流水。
+    settlement = await settle_approved_funds(
+        db,
+        after_sale=after_sale,
+        insufficient_hint="请先充值或缴纳保证金后再同意退款",
+    )
+    after_sale.status = AfterSaleStatus.APPROVED
     after_sale.resolved_at = datetime.now(timezone.utc)
     # reviewed_by 保持 None：无管理员审阅，后台靠 decision_reason 识别
     await db.flush()
@@ -839,15 +987,13 @@ async def accept_after_sale_as_booster(
         after_sale.id,
         booster.id,
     )
-    # 不传 amount：按申请金额全款扣划（不足额时差额说明由划转逻辑追加），
-    # 通知按申请金额播报，与管理员 approve 路径同口径。
-    await settle_approved_funds(db, after_sale=after_sale)
     await _notify_after_sale_resolved(
         db,
         after_sale=after_sale,
         action="approve",
-        settled_amount=after_sale.amount,
+        settled_amount=settlement.actual,
         accepted_by_booster=True,
+        settlement=settlement,
     )
     return after_sale
 
@@ -875,5 +1021,6 @@ __all__ = [
     "list_order_after_sales",
     "review_after_sale",
     "settle_approved_funds",
+    "AfterSaleSettlement",
     "withdraw_after_sale",
 ]

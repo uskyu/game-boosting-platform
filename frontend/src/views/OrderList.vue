@@ -6,7 +6,6 @@ import { useChatStore } from '@/stores/chat'
 import { useAuthStore } from '@/stores/auth'
 import { useAfterSalesStore, isPendingAfterSale } from '@/stores/afterSales'
 import { useOrdersStore } from '@/stores/orders'
-import AfterSaleStatusModal from '@/components/AfterSaleStatusModal.vue'
 import { formatCount, formatDateTime, formatOrderPrice, formatPayoutDelay, formatPrice, formatShortDate } from '@/utils/display'
 import { ORDER_STATUS_OPTIONS, CANCEL_PENDING_CLAIM_META, getClaimSettlementMeta, getOrderDisplayStatus, getOrderStatusBadgeClass, getOrderStatusLabel, isClaimCancelPending } from '@/utils/order'
 import { buildAfterSaleAssistMessage } from '@/utils/afterSaleAssist'
@@ -115,10 +114,13 @@ const claimStatusOptions = [
   { value: 'CANCELLING', label: '申请取消中' },
   { value: 'DELIVERED', label: '待确认' },
   { value: 'SETTLED', label: '已结算' },
-  { value: 'CANCELLED', label: '已取消' },
   // 后端 GET /orders/claims/mine 的 status 支持 CLAIMED/DELIVERED/SETTLED/CANCELLED，
   // DISPUTED 走本地过滤（按 claim.order.status === 'DISPUTED'），不调服务端过滤；
-  // CANCELLING 由服务端按「该名额有取消协商挂起」过滤。
+  // CANCELLING 由服务端按「该名额有取消协商挂起」过滤；
+  // AFTER_SALE 由服务端按「该名额所属订单存在自己的进行中售后」过滤（分页口径一致，
+  // 不能用本地过滤，否则第 2 页之后的售后单会被漏掉）。
+  { value: 'AFTER_SALE', label: '售后中' },
+  { value: 'CANCELLED', label: '已取消' },
   { value: 'DISPUTED', label: '争议中' },
 ]
 
@@ -128,6 +130,38 @@ const displayedClaims = computed(() => {
     return myClaims.value.filter((claim) => claim.order?.status === 'DISPUTED' || claim.status === 'DISPUTED')
   }
   return myClaims.value
+})
+
+// 空状态文案：有筛选条件（状态/搜索/老板ID）时说明「没有符合条件的」，避免误报
+// 「还没接过单 / 还没有派过单」。（老板 2026-10-18：筛「售后中」0 条时会被误读成没数据）
+const hasClaimFilters = computed(() =>
+  Boolean(claimStatus.value || claimSearch.value.trim() || claimBossContact.value.trim()),
+)
+const claimsEmptyTitle = computed(() =>
+  hasClaimFilters.value ? '没有符合条件的接单' : '还没接过单',
+)
+const claimsEmptyCopy = computed(() => {
+  if (hasClaimFilters.value) {
+    return claimStatus.value === 'AFTER_SALE'
+      ? '暂无售后中的订单；有订单被发起售后时会出现在这里。'
+      : '换个关键词或状态试试。'
+  }
+  return '去大厅看看，有合适的单子直接接。'
+})
+
+const hasPublishedFilters = computed(() =>
+  Boolean(selectedStatus.value || searchGame.value.trim() || searchBossContact.value.trim()),
+)
+const publishedEmptyTitle = computed(() =>
+  hasPublishedFilters.value ? '没有符合条件的订单' : '还没有派过单',
+)
+const publishedEmptyCopy = computed(() => {
+  if (hasPublishedFilters.value) {
+    return selectedStatus.value === 'AFTER_SALE'
+      ? '暂无售后中的订单；有订单被发起售后时会出现在这里。'
+      : '换个关键词或状态试试。'
+  }
+  return '点右上角「发布订单」，把需求挂到大厅让打手接。'
 })
 
 function getOrderUnreadCount(orderId) {
@@ -352,29 +386,9 @@ function rebuildOrder(orderId) {
   router.push({ path: '/orders/create', query: { recycle: String(orderId), mode: 'rebuild' } })
 }
 
-// 售后申请：仅已完成单可发起；该单有进行中售后时按钮禁跳申请页，
-// 改开「售后处理中」状态弹窗（可查看案情并撤回售后）。
-function goToAfterSaleApply(orderId) {
-  router.push({ name: 'afterSaleApply', params: { id: orderId } })
-}
-
-// 售后处理中弹窗（老板侧）：afterSaleStatusOrderId 非空即打开
-const afterSaleStatusOrderId = ref(null)
-const afterSaleStatusOpen = computed({
-  get: () => afterSaleStatusOrderId.value != null,
-  set: (open) => {
-    if (!open) afterSaleStatusOrderId.value = null
-  },
-})
-
-function openAfterSaleStatus(order) {
-  afterSaleStatusOrderId.value = order.id
-}
-
-// 撤回成功后刷新派单列表：按钮恢复可发起，after_sale_pending 标记由列表接口重算
-function onAfterSaleWithdrawn() {
-  fetchOrders()
-}
+// 售后申请入口 / 「售后处理中」撤回弹窗已整体迁到订单详情页操作卡
+// （老板 2026-10-18：按钮放到「重建订单」上方）。列表只保留徽标行的
+// 「售后处理中」只读标记，不再承载任何售后操作。
 
 // 售后兜底（仅 claims 卡片用）：打手进行中售后 → 「联系平台协助」直达管理员
 // 会话，预填案情。数据源为「我的售后」（role=booster, status=pending），
@@ -631,8 +645,9 @@ onUnmounted(() => {
 
       <section v-else-if="!claimsLoading" class="empty-state">
         <div class="empty-state__icon" aria-hidden="true">🎮</div>
-        <h2 class="empty-state__title">还没接过单</h2>
-        <p class="empty-state__copy">去大厅看看，有合适的单子直接接。</p>
+        <!-- 筛选/搜索命中 0 条时不能再说「还没接过单」，否则用户以为数据丢了 -->
+        <h2 class="empty-state__title">{{ claimsEmptyTitle }}</h2>
+        <p class="empty-state__copy">{{ claimsEmptyCopy }}</p>
       </section>
 
       <section v-if="claimsPagination.pages > 1" class="surface-card p-5">
@@ -697,6 +712,9 @@ onUnmounted(() => {
               <div class="min-w-0">
                 <div class="flex flex-wrap items-center gap-2">
                   <span :class="getPublisherStatusMeta(order).badgeClass">{{ getPublisherStatusMeta(order).label }}</span>
+                  <!-- 售后处理中（只读标记）：申请/查看入口已迁到订单详情页操作卡，
+                       列表只留状态可发现性，避免老板在列表里看不出哪单被发起了售后 -->
+                  <span v-if="order.after_sale_pending" class="tag !bg-warning-soft !text-warning">售后处理中</span>
                   <span v-if="Number(order.pending_review_count)" class="tag !bg-warning-soft !text-warning">
                     {{ order.pending_review_count }} 人待确认
                   </span>
@@ -719,17 +737,9 @@ onUnmounted(() => {
             </div>
             <!-- 重建/续单：老板要求所有订单都可操作（打手一次性交全部单、进行中单
                  争议无回应时先派再谈），不再限状态；都带原单进创建页预填。
-                 售后：仅已完成单可申请；进行中售后（after_sale_pending）置灰。 -->
+                 售后申请入口已迁到订单详情页右侧「操作」卡（2026-10-18），
+                 列表只保留上方徽标行的「售后处理中」只读标记。 -->
             <div class="mt-3 flex flex-wrap justify-end gap-2">
-              <button
-                v-if="order.status === 'COMPLETED'"
-                type="button"
-                class="btn-danger !px-4 !py-2"
-                :class="order.after_sale_pending ? 'opacity-60' : ''"
-                @click.stop="order.after_sale_pending ? openAfterSaleStatus(order) : goToAfterSaleApply(order.id)"
-              >
-                {{ order.after_sale_pending ? '售后处理中' : '售后' }}
-              </button>
               <button
                 type="button"
                 class="btn-secondary !px-4 !py-2"
@@ -754,8 +764,9 @@ onUnmounted(() => {
 
       <section v-else-if="!loading" class="empty-state">
         <div class="empty-state__icon" aria-hidden="true">🗂️</div>
-        <h2 class="empty-state__title">还没有派过单</h2>
-        <p class="empty-state__copy">点右上角「发布订单」，把需求挂到大厅让打手接。</p>
+        <!-- 同上：筛选命中 0 条时说「没有符合条件的订单」，不要说「还没有派过单」 -->
+        <h2 class="empty-state__title">{{ publishedEmptyTitle }}</h2>
+        <p class="empty-state__copy">{{ publishedEmptyCopy }}</p>
       </section>
 
       <section v-if="pagination.pages > 1" class="surface-card p-5">
@@ -769,13 +780,6 @@ onUnmounted(() => {
           </div>
         </div>
       </section>
-
-      <!-- 售后处理中：查看案情 / 撤回售后（老板侧） -->
-      <AfterSaleStatusModal
-        v-model="afterSaleStatusOpen"
-        :order-id="afterSaleStatusOrderId"
-        @withdrawn="onAfterSaleWithdrawn"
-      />
     </template>
   </div>
 </template>

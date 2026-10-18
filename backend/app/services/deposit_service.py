@@ -11,6 +11,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
+from typing import Any
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, select
@@ -26,7 +27,7 @@ from app.models.deposit import (
     DepositSetting,
     DepositTier,
 )
-from app.models.order import ClaimLifecycleStatus, OrderClaim
+from app.models.order import ClaimLifecycleStatus, Order, OrderClaim
 from app.models.user import User
 from app.services.wallet_service import get_wallet_service
 
@@ -105,6 +106,110 @@ def resolve_tier(tiers: list[DepositTier], deposit_balance: Decimal) -> DepositT
     return matched or tiers[0]
 
 
+# ---------------------------------------------------------------------------
+# 结算时效优先级（老板 2026-10-18 拍板 R3：订单为准，档位只是加速器）
+#
+# 四个取值来源，按以下顺序合成 <b>有效结算小时数</b>：
+#   1. 订单自身 payout_delay_days / payout_delay_hours（老板对"这一单"的承诺）
+#   2. 档位 settle_hours（平台给"这一档"的权益）
+#
+# 规则（单一事实来源，snapshot 与调度器都调这里，禁止各自复制）：
+#   - 订单**未**设置时效  → 用档位时长兜底（含 0 元档；否则老行为会倒退成
+#     "永不自动结算"）；
+#   - 订单**已**设置时效  → 以订单为准；只有**真正缴过保证金**的档位
+#     （threshold > 0）且其 settle_hours **更短**时才加速，其余一律按订单时效；
+#   - 档位 settle_hours 为 NULL = 该档不承诺加速，完全按订单时效；
+#   - 两边都没有 → None（= 永不自动结算，需人工审核，既有语义）。
+#
+# 0 元档不享受加速，是老板投诉的核心修正：此前 0 保证金档的 72 小时会把
+# 订单设的「5 天」直接覆盖掉（"这个订单结账时间其实没什么用"）。
+# ---------------------------------------------------------------------------
+
+
+def order_payout_delay_hours(order: Any | None) -> int | None:
+    """订单自身到账时效折算成小时；两项都留空 = 未设置（返回 None）。"""
+    if order is None:
+        return None
+    days = getattr(order, "payout_delay_days", None)
+    hours = getattr(order, "payout_delay_hours", None)
+    if days is None and hours is None:
+        return None
+    return max(int(days or 0), 0) * 24 + max(int(hours or 0), 0)
+
+
+def tier_settle_hours(tier: DepositTier | None) -> int | None:
+    """档位声明的结账时效；None = 该档留空（不承诺时长）。
+
+    注意：**不能**把 None 折算成 0 —— 0 小时的含义是「交付即结算」，会把
+    在途名额立刻推到到期（资金事故）。留空必须一路保持 None。
+    """
+    if tier is None or tier.settle_hours is None:
+        return None
+    return max(int(tier.settle_hours), 0)
+
+
+def tier_is_earned(tier: DepositTier | None) -> bool:
+    """该档是否代表**真实缴纳过保证金**（门槛 > 0）。
+
+    0 元档 = 没交保证金，不享受「提前拿钱」的加速资格，只作为兜底时长。
+    """
+    if tier is None:
+        return False
+    return Decimal(str(tier.threshold or 0)) > 0
+
+
+@dataclass(frozen=True)
+class SettlementPlan:
+    """一次结算的权威结果：用哪种计时模式 + 多少小时。
+
+    ``mode == SETTLEMENT_MODE_ORDER_DELAY`` 表示「到期时间由订单自身时效
+    现算」（``hours`` 恒为 None，由 ``_order_delay_due`` 负责）；其余快照
+    模式用 ``hours`` 落盘到 ``settle_hours_snapshot``。
+    """
+
+    mode: str
+    hours: int | None
+
+
+def plan_settlement_terms(
+    tier: DepositTier | None,
+    order: Any | None,
+    setting: DepositSetting,
+) -> SettlementPlan:
+    """按 R3 优先级算出该名额应当使用的结算模式与小时数（纯函数）。"""
+    order_hours = order_payout_delay_hours(order)
+    tier_hours = tier_settle_hours(tier)
+    configured = _configured_settlement_mode(setting)
+
+    if order_hours is None:
+        # 订单没约定 → 档位兜底（0 元档也算）。
+        if tier_hours is None or configured == SETTLEMENT_MODE_ORDER_DELAY:
+            return SettlementPlan(SETTLEMENT_MODE_ORDER_DELAY, None)
+        return SettlementPlan(configured, tier_hours)
+
+    # 订单已约定 → 以订单为准；只有真保证金档位、且更快时才加速。
+    if (
+        tier_hours is not None
+        and tier_is_earned(tier)
+        and tier_hours < order_hours
+        and configured != SETTLEMENT_MODE_ORDER_DELAY
+    ):
+        return SettlementPlan(configured, tier_hours)
+    return SettlementPlan(SETTLEMENT_MODE_ORDER_DELAY, None)
+
+
+def resolve_settlement_hours(
+    tier: DepositTier | None,
+    order: Any | None,
+    setting: DepositSetting,
+) -> int | None:
+    """该名额的有效结算小时数（None = 不自动结算）。"""
+    plan = plan_settlement_terms(tier, order, setting)
+    if plan.mode == SETTLEMENT_MODE_ORDER_DELAY:
+        return order_payout_delay_hours(order)
+    return plan.hours
+
+
 _SNAPSHOT_SETTLEMENT_MODES = (
     SETTLEMENT_MODE_AFTER_DELIVERY,
     SETTLEMENT_MODE_AFTER_APPROVAL,
@@ -131,6 +236,8 @@ def resolve_unsettled_settlement_due(
     claim: OrderClaim,
     tier: DepositTier | None,
     setting: DepositSetting,
+    *,
+    order: Order | Any | None = None,
 ) -> datetime | None:
     """Resolve a claim's current due time without lengthening it.
 
@@ -138,76 +245,120 @@ def resolve_unsettled_settlement_due(
     tier may shorten the timer, while legacy/fallback snapshots are upgraded
     to the currently configured mode. This pure resolver is safe to use while
     the scheduler is deciding which rows need locking.
-    """
-    if tier is None:
-        return None
 
-    current_hours = max(int(tier.settle_hours or 0), 0)
+    老板 2026-10-18 R3 口径（详见 ``plan_settlement_terms``）：
+    - 订单设了到账时效 → 以订单为准；只有真保证金档位更快时才加速；
+    - 订单没设 → 档位兜底；
+    - 档位 ``settle_hours is None`` **绝不**折算成 0 小时（那会让在途名额
+      立刻到期，属资金事故），而是回落到订单时效。
+    ``order`` 缺省为 None 时按"订单未设置时效"处理，调用方应尽量传入。
+    """
     existing_mode = claim.settlement_mode_snapshot
     existing_hours = claim.settle_hours_snapshot
 
     if existing_mode in _SNAPSHOT_SETTLEMENT_MODES:
-        if (
-            existing_hours is not None
-            and int(existing_hours) <= current_hours
-            and claim.settlement_due_at is not None
-        ):
-            return _as_utc(claim.settlement_due_at)
-        mode = existing_mode
-        # A missing due marker is repaired at the old duration unless the
-        # current tier is faster; never invent a longer timer during repair.
-        effective_hours = current_hours
-        if existing_hours is not None:
-            effective_hours = min(effective_hours, max(int(existing_hours), 0))
-    else:
-        mode = _configured_settlement_mode(setting)
-        effective_hours = current_hours
+        # 已有快照：只允许"不延长"。先按当前档位/订单重算一个候选，
+        # 再与旧条款取更早者，绝不因档位留空而把时间推到过去。
+        candidate = _candidate_due_from_sources(claim, tier, setting, order, existing_mode)
+        existing_due = _as_utc(claim.settlement_due_at) if claim.settlement_due_at else None
+        if existing_due is not None and candidate is not None:
+            return min(existing_due, candidate)
+        return existing_due if existing_due is not None else candidate
 
+    # ORDER_DELAY / NULL（legacy）：按当前有效来源重算。
+    candidate = _candidate_due_from_sources(claim, tier, setting, order, None)
+    return candidate
+
+
+def _candidate_due_from_sources(
+    claim: OrderClaim,
+    tier: DepositTier | None,
+    setting: DepositSetting,
+    order: Order | Any | None,
+    prefer_mode: str | None,
+) -> datetime | None:
+    """按 R3 优先级算出一个到期时间（不含"只缩短"约束）。"""
+    plan = plan_settlement_terms(tier, order, setting)
+    if plan.mode == SETTLEMENT_MODE_ORDER_DELAY:
+        # 走订单时效：起点固定是交付时间（订单时效语义就是"交付后到时"）。
+        if claim.delivered_at is None:
+            return None
+        order_hours = order_payout_delay_hours(order)
+        if order_hours is None:
+            return None
+        return _as_utc(claim.delivered_at) + timedelta(hours=order_hours)
+
+    hours = plan.hours
+    if hours is None:
+        return None
+    mode = prefer_mode or plan.mode
     started_at = _claim_settlement_start(claim, mode)
     if started_at is None:
         return None
-    return _as_utc(started_at) + timedelta(hours=effective_hours)
+    return _as_utc(started_at) + timedelta(hours=hours)
 
 
 def _refresh_claim_settlement_terms(
     claim: OrderClaim,
-    tier: DepositTier,
+    tier: DepositTier | None,
     setting: DepositSetting,
+    *,
+    order: Order | Any | None = None,
 ) -> bool:
-    """Shorten one unsettled claim to the current deposit tier if needed."""
-    current_hours = max(int(tier.settle_hours or 0), 0)
+    """Shorten one unsettled claim to the current deposit tier if needed.
+
+    只缩短、绝不延长；且档位 ``settle_hours is None`` 时不把时长写成 0。
+    ``tier is None``（无启用档位）= 只按订单时效，"每次都不产生变化"。
+    """
     existing_mode = claim.settlement_mode_snapshot
+    new_due = resolve_unsettled_settlement_due(claim, tier, setting, order=order)
+    plan = plan_settlement_terms(tier, order, setting)
+    next_hours = plan.hours  # ORDER_DELAY → None（不落盘小时数）
+
+    if next_hours is None:
+        # ORDER_DELAY 语义 = 到期时间由订单时效**现算**（_order_delay_due），
+        # 因此绝不落盘 due/hours（否则订单时效之后被改会留下陈旧时间）。
+        # 也绝不回填 ``settlement_mode_snapshot``：legacy claim 的结算一直被
+        # 调度器的 _legacy_due 分支处理，一旦打上 AFTER_APPROVAL 标记，就会撞上
+        # auto_settle_due_claim 的「approved_payout_amount 必须存在」守卫
+        # （而 legacy 没有该字段）→ 该名额将永远无法自动结算。
+        return False
 
     if existing_mode is None:
-        mode = _configured_settlement_mode(setting)
-        if mode == SETTLEMENT_MODE_ORDER_DELAY:
+        # legacy claim：只写小时数与到期时间，保持 mode 为 NULL（既有契约）。
+        if new_due is None:
             return False
-
-        new_due = resolve_unsettled_settlement_due(claim, tier, setting)
+        old_due = _as_utc(claim.settlement_due_at) if claim.settlement_due_at else None
+        if old_due is not None and new_due >= old_due:
+            return False
         changed = False
-        if claim.settle_hours_snapshot != current_hours:
-            claim.settle_hours_snapshot = current_hours
+        if claim.settle_hours_snapshot != next_hours:
+            claim.settle_hours_snapshot = next_hours
             changed = True
-        if claim.settlement_due_at != new_due:
+        if old_due != new_due:
             claim.settlement_due_at = new_due
             changed = True
         return changed
 
     old_hours = claim.settle_hours_snapshot
     old_due = _as_utc(claim.settlement_due_at) if claim.settlement_due_at else None
-    new_due = resolve_unsettled_settlement_due(claim, tier, setting)
+
+    # 只有"确实变早"或"补上缺失的到期时间"才刷新；档位留空(0)不构成缩短理由。
     should_refresh = (
-        old_hours is None
-        or current_hours < int(old_hours)
+        (new_due is not None and old_due is not None and new_due < old_due)
         or (old_due is None and new_due is not None)
-        or (new_due is not None and old_due is not None and new_due < old_due)
+        or (
+            next_hours is not None
+            and old_hours is None
+            and new_due is not None
+        )
     )
     if not should_refresh:
         return False
 
     changed = False
-    if old_hours != current_hours:
-        claim.settle_hours_snapshot = current_hours
+    if next_hours is not None and old_hours != next_hours:
+        claim.settle_hours_snapshot = next_hours
         changed = True
     if old_due != new_due:
         claim.settlement_due_at = new_due
@@ -227,6 +378,10 @@ async def refresh_unsettled_claim_settlements(
     a high deposit balance before this behavior was deployed; reads and the
     scheduler can therefore catch up old unsettled claims without touching
     settled claims or approved payout terms.
+
+    老板 2026-10-18 R3：结算时效以订单为准、档位只做加速器，因此这里必须
+    带出每个名额所属订单（``payout_delay_*``）。档位 ``settle_hours`` 留空
+    （None）时不会把时长写成 0 —— 见 ``_refresh_claim_settlement_terms``。
     """
     if claims is None:
         result = await db.execute(
@@ -245,18 +400,36 @@ async def refresh_unsettled_claim_settlements(
     setting = await get_or_create_deposit_setting(db)
     if not setting.enabled:
         return 0
+    # 档位为 None（无启用档位）时不再直接 return：此时应回落到订单时效，
+    # 否则"保证金开启但无档位"的名额永远不会自动结算（既有洞，2026-10-18 修）。
     tier, _balance = await get_user_tier(db, user_id)
-    if tier is None:
-        return 0
 
-    changed = sum(
-        _refresh_claim_settlement_terms(claim, tier, setting)
-        for claim in claims
-        if claim.status in _UNFINISHED_CLAIM_STATES and claim.settled_at is None
-    )
+    order_by_id = await _orders_by_claim(db, claims)
+    changed = 0
+    for claim in claims:
+        if claim.status not in _UNFINISHED_CLAIM_STATES or claim.settled_at is not None:
+            continue
+        if _refresh_claim_settlement_terms(
+            claim,
+            tier,
+            setting,
+            order=order_by_id.get(claim.order_id),
+        ):
+            changed += 1
     if changed:
         await db.flush()
     return changed
+
+
+async def _orders_by_claim(
+    db: AsyncSession, claims: list[OrderClaim]
+) -> dict[int, Order]:
+    """批量取名额所属订单（一条 IN 查询，禁止 N+1）。"""
+    order_ids = {claim.order_id for claim in claims}
+    if not order_ids:
+        return {}
+    result = await db.execute(select(Order).where(Order.id.in_(order_ids)))
+    return {order.id: order for order in result.scalars().all()}
 
 
 async def get_user_tier(db: AsyncSession, user_id: int) -> tuple[DepositTier | None, Decimal]:

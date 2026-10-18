@@ -30,7 +30,9 @@ function cloneTiers(tiers) {
     threshold: tier.threshold != null ? Number(tier.threshold) : 0,
     wait_seconds: Number(tier.wait_seconds) || 0,
     exempt_compensation: Boolean(tier.exempt_compensation),
-    settle_hours: Number(tier.settle_hours) || 0,
+    // null 必须保留为 null（= 该档不承诺加速，按订单到账时效倒计时）；
+    // 不能退化成 0 —— 0 小时的语义是「交付即结算」，会造成提前打款。
+    settle_hours: tier.settle_hours == null ? null : Number(tier.settle_hours),
     // null = 不限；输入框清空时是 ''，保存时统一归一
     daily_accept_limit: tier.daily_accept_limit == null ? null : Number(tier.daily_accept_limit),
     enabled: tier.enabled !== false,
@@ -98,10 +100,15 @@ async function save() {
       notice.value = { type: 'error', text: '接单等待秒数需为不小于 0 的整数' }
       return
     }
-    const settle = Number(tier.settle_hours)
-    if (!Number.isInteger(settle) || settle < 0) {
-      notice.value = { type: 'error', text: '结账时效需为不小于 0 的整数（小时）' }
-      return
+    // 结账时效：留空（null / ''）= 该档不承诺加速，按订单到账时效倒计时；
+    // 其余须为不小于 0 的整数小时
+    const settleRaw = tier.settle_hours
+    if (settleRaw !== null && settleRaw !== '') {
+      const settle = Number(settleRaw)
+      if (!Number.isInteger(settle) || settle < 0) {
+        notice.value = { type: 'error', text: '结账时效需为不小于 0 的整数（小时，留空 = 按订单到账时效）' }
+        return
+      }
     }
     // 每日接单量：留空（null/''）或 0 = 不限；其余须为 0-999 整数
     const daily = tier.daily_accept_limit
@@ -119,6 +126,20 @@ async function save() {
     return
   }
 
+  // 0 档防呆（与后端同一规则，前端先拦一次给出更快的反馈）：
+  // 只要存在启用中的档位，就必须有一条启用中的 0 元档，否则 0 保证金打手
+  // 会按 resolve_tier 的「or tiers[0]」兜底继承下一档权益（含免冻结赔付金，
+  // 属资金敞口）。全部停用属退化配置，不拦。
+  if (form.tiers.some((tier) => tier.enabled)) {
+    const zeroEnabled = form.tiers.some(
+      (tier) => tier.enabled && Number(tier.threshold) === 0,
+    )
+    if (!zeroEnabled) {
+      notice.value = { type: 'error', text: '保证金阶梯必须包含一条启用中的 0 元档（0 保证金档）' }
+      return
+    }
+  }
+
   saving.value = true
   const result = await store.updateDepositSettings({
     enabled: form.enabled,
@@ -130,7 +151,11 @@ async function save() {
       threshold: Number(tier.threshold),
       wait_seconds: Number(tier.wait_seconds),
       exempt_compensation: Boolean(tier.exempt_compensation),
-      settle_hours: Number(tier.settle_hours),
+      // 留空 = 按订单到账时效（发 null；不要发 0，0 小时会被当成立即结算）
+      settle_hours:
+        tier.settle_hours === '' || tier.settle_hours == null
+          ? null
+          : Number(tier.settle_hours),
       // 0 与空串同义 = 不限，统一发 null（后端同样归一）
       daily_accept_limit:
         tier.daily_accept_limit === '' || tier.daily_accept_limit == null
@@ -232,6 +257,11 @@ onMounted(async () => {
         </div>
         <p class="mt-1.5 text-xs text-ink-3">门槛不能重复；保存时以当前表格整表替换后台配置。</p>
         <p class="mt-1.5 text-xs text-ink-3">
+          结账时效<strong>留空表示该档不承诺加速</strong>，按打手所接订单设置的到账时效倒计时；
+          填写后仅当它<strong>比订单到账时效更快</strong>时才生效（档位是加速器，订单是基准）。
+          0 元档（0 保证金）不享受加速，留空即完全按订单时效。
+        </p>
+        <p class="mt-1.5 text-xs text-ink-3">
           「接单免冻结」只影响<strong>接单时是否预冻结</strong>赔付金：勾选后该档位打手接单不再预冻结，
           真正炸单时赔付金<strong>直接从保证金里扣</strong>，并不是免除赔付责任。
         </p>
@@ -250,7 +280,7 @@ onMounted(async () => {
                 <th class="px-2 py-2 font-medium">接单等待（秒）</th>
                 <th class="px-2 py-2 font-medium">每日接单量（0点刷新）</th>
                 <th class="px-2 py-2 font-medium">接单免冻结赔付金</th>
-                <th class="px-2 py-2 font-medium">结账时效（小时）</th>
+                <th class="px-2 py-2 font-medium">结账时效（小时，留空=按订单）</th>
                 <th class="px-2 py-2 font-medium">启用</th>
                 <th class="px-2 py-2 font-medium">操作</th>
               </tr>
@@ -282,7 +312,15 @@ onMounted(async () => {
                   </label>
                 </td>
                 <td class="px-2 py-2">
-                  <input v-model.number="tier.settle_hours" type="number" min="0" step="1" class="input h-10 w-24" />
+                  <input
+                    v-model="tier.settle_hours"
+                    type="number"
+                    min="0"
+                    step="1"
+                    placeholder="留空=按订单"
+                    aria-label="结账时效（小时，留空按订单到账时效）"
+                    class="input h-10 w-24"
+                  />
                 </td>
                 <td class="px-2 py-2">
                   <input v-model="tier.enabled" type="checkbox" aria-label="启用该档位" />

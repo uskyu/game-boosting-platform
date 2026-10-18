@@ -11,6 +11,7 @@
 import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
+import Lightbox from '@/components/Lightbox.vue'
 import { useChatStore } from '@/stores/chat'
 import {
   getAfterSaleStatusLabel,
@@ -58,6 +59,19 @@ function imageList(item) {
     .filter((image) => image?.url)
 }
 
+// 凭证站内大图（老板/打手两侧共用）。用 computed 而不是在模板里直接调
+// imageList(display)：模板每次渲染都会生成新数组，会让 Lightbox 的 normalized
+// computed 无谓重算；computed 只在 display 变化时产出新引用。
+const displayImages = computed(() => imageList(display.value))
+const lightbox = ref({ visible: false, index: 0 })
+
+// 关掉弹窗时必须复位灯箱：Lightbox 的滚动锁 / ESC 监听挂在非 immediate 的
+// watch(visible) 上，只有 false→true 的跳变才会重新挂载。若不复位，下次重开
+// 弹窗时 Lightbox 以 visible=true 重新挂载 → 遮罩亮着但不锁滚动、ESC 失效。
+function openLightbox(index) {
+  lightbox.value = { visible: true, index }
+}
+
 async function load() {
   if (props.orderId == null) return
   loading.value = true
@@ -75,6 +89,9 @@ async function load() {
 watch(
   () => props.modelValue,
   (open) => {
+    // 复位灯箱（无论开还是关）：防止上次关弹窗时残留 visible=true 导致重开时
+    // Lightbox 以 true 挂载却不锁滚动 / 不监听 ESC。
+    lightbox.value = { visible: false, index: 0 }
     if (!open) return
     confirmWithdraw.value = false
     confirmAccept.value = false
@@ -203,19 +220,22 @@ function close() {
             </p>
           </div>
 
-          <div v-if="imageList(display).length" class="mt-3">
+          <!-- 售后凭证：点击在站内灯箱看大图。
+               不能用<a>+新窗口打开 —— 微信内置浏览器没有标签页，会把图片
+               URL 当新页面打开（跳出站内、无返回入口），项目也未接 JSSDK。 -->
+          <div v-if="displayImages.length" class="mt-3">
             <p class="text-xs font-medium text-ink-2">售后凭证</p>
             <div class="mt-1 flex flex-wrap gap-2">
-              <a
-                v-for="(image, index) in imageList(display)"
+              <button
+                v-for="(image, index) in displayImages"
                 :key="image.url || index"
-                :href="image.url"
-                target="_blank"
-                rel="noopener"
+                type="button"
                 class="admin-order-thumb"
+                :aria-label="`查看售后凭证 ${index + 1}`"
+                @click.stop="openLightbox(index)"
               >
                 <img :src="image.url" :alt="image.name || `售后凭证 ${index + 1}`" loading="lazy" />
-              </a>
+              </button>
             </div>
           </div>
 
@@ -272,6 +292,18 @@ function close() {
 
         <div v-else class="mt-4 text-sm text-ink-2">该订单暂无售后记录。</div>
       </div>
+
+      <!-- 售后凭证站内大图：放在 scrim 内、modal-card 之后。
+           ① Lightbox 自己还会 teleport 到 body，层级不受此处嵌套影响；
+           ② 弹窗关闭（v-if=false）时它会随之卸载，onBeforeUnmount(cleanup) 复位
+              body.overflow，不会把整页滚动永久锁死。
+           z-index 120 高于本弹窗的 z-50，关闭后回到本弹窗、状态不丢。 -->
+      <Lightbox
+        :images="displayImages"
+        :visible="lightbox.visible"
+        :start-index="lightbox.index"
+        @close="lightbox.visible = false"
+      />
     </div>
   </teleport>
 </template>

@@ -2,6 +2,9 @@
 
 已完成订单的布置走真实流程（发布托管 → 接单 → 交付 → 老板确认），与
 test_orders / test_multi_claim 同一套路；只有「非已完成」用例才停在 PENDING。
+
+扣款口径（老板 2026-10-18 拍板）：先扣可用余额 → 不足部分从保证金补扣 →
+两处合计仍不足则 400 拒绝结案（售后保持 PENDING、双方余额零变动）。
 """
 
 from decimal import Decimal
@@ -14,6 +17,7 @@ from app.models.notification import Notification, NotificationType
 from app.models.order import Order, OrderStatus
 from app.models.order_after_sale import AfterSaleStatus, OrderAfterSale
 from app.models.wallet import Wallet, WalletTransaction, WalletTransactionType
+from app.services import deposit_service
 from tests.conftest import auth_header
 
 
@@ -44,6 +48,18 @@ async def _fund_wallet(
     response = await client.post(
         f"/admin/wallets/{user_id}/adjust",
         json={"amount": amount, "reason": "测试入账"},
+        headers=auth_header(admin_user),
+    )
+    assert response.status_code == 200, response.text
+
+
+async def _deposit(
+    client: AsyncClient, admin_user: dict, user_id: int, amount: str
+) -> None:
+    """管理员调保证金（独立余额池，不动可用余额）。"""
+    response = await client.post(
+        f"/admin/users/{user_id}/adjust-deposit",
+        json={"delta": amount, "remark": "测试保证金"},
         headers=auth_header(admin_user),
     )
     assert response.status_code == 200, response.text
@@ -144,7 +160,7 @@ async def _wallet(db: AsyncSession, user_id: int) -> Wallet:
 async def _after_sale_ledger(
     db: AsyncSession, *, order_id: int, user_id: int
 ) -> list[WalletTransaction]:
-    """某用户钱包上与该订单相关的售后流水（扣款/收款）。"""
+    """某用户钱包上与该订单相关的售后流水（可用余额扣款/保证金扣款/收款）。"""
     result = await db.execute(
         select(WalletTransaction)
         .join(Wallet, WalletTransaction.wallet_id == Wallet.id)
@@ -154,12 +170,28 @@ async def _after_sale_ledger(
             WalletTransaction.type.in_(
                 (
                     WalletTransactionType.AFTERSALE_DEDUCTION,
+                    WalletTransactionType.AFTERSALE_DEPOSIT_DEDUCTION,
                     WalletTransactionType.AFTERSALE_REFUND,
                 )
             ),
         )
     )
     return list(result.scalars().all())
+
+
+async def _wallet_ledger_by_type(
+    db: AsyncSession, *, order_id: int, user_id: int
+) -> dict[WalletTransactionType, list[WalletTransaction]]:
+    """按流水类型分组，便于断言「可用余额几条、保证金几条」。"""
+    grouped: dict[WalletTransactionType, list[WalletTransaction]] = {}
+    for row in await _after_sale_ledger(db, order_id=order_id, user_id=user_id):
+        grouped.setdefault(row.type, []).append(row)
+    return grouped
+
+
+async def _deposit_balance(db: AsyncSession, user_id: int) -> Decimal:
+    """直读用户保证金余额。"""
+    return (await _wallet(db, user_id)).deposit_balance
 
 
 async def test_non_publisher_cannot_create_after_sale(
@@ -602,24 +634,32 @@ async def test_approved_after_sale_transfers_funds_and_writes_bilateral_ledger(
     assert "已收款 ¥30.00" in by_user[publisher_id]
 
 
-async def test_approved_after_sale_deducts_to_zero_and_notes_shortfall(
+async def test_approved_after_sale_uses_deposit_to_cover_shortfall(
     client: AsyncClient,
     admin_user: dict,
     booster_user: dict,
     db_session: AsyncSession,
     make_captcha,
 ):
-    """打手可用余额不足：扣至 0，差额写进 decision_reason，老板只收实扣。"""
+    """管理员 approve 路径：可用余额不足时从保证金补扣，老板足额收款。
+
+    老板 2026-10-18 截图场景的复现：申请 ¥30，打手可用 ¥20、保证金 ¥50。
+    期望：可用 20 → 0、保证金 50 → 40、老板 +30；两条扣款流水（可用 + 保证金），
+    各一条 AFTERSALE_DEDUCTION / AFTERSALE_DEPOSIT_DEDUCTION。
+    """
     publisher = await _register(
-        client, make_captcha, "aftersale-short@example.com", "PubShort"
+        client, make_captcha, "aftersale-dep-approve@example.com", "PubDepApprove"
     )
     publisher_id = publisher["user"]["id"]
     booster_id = booster_user["user"]["id"]
     order = await _completed_order(client, admin_user, publisher, booster_user)
-    # 打手入账 100，管理员调账 -80 后可用余额只剩 20
+    # 打手入账 100，管理员调账 -80 后可用余额只剩 20；另缴 50 保证金
     await _fund_wallet(client, admin_user, booster_id, "-80.00")
+    await _deposit(client, admin_user, booster_id, "50.00")
     await db_session.rollback()
-    assert (await _wallet(db_session, booster_id)).available_balance == Decimal("20.00")
+    booster_before = await _wallet(db_session, booster_id)
+    assert booster_before.available_balance == Decimal("20.00")
+    assert booster_before.deposit_balance == Decimal("50.00")
 
     created = await _create_after_sale(client, publisher, order["id"], amount="30.00")
     assert created.status_code == 201, created.text
@@ -630,39 +670,60 @@ async def test_approved_after_sale_deducts_to_zero_and_notes_shortfall(
         {"action": "approve", "reason": "同意售后赔付"},
     )
     assert approved.status_code == 200, approved.text
+    assert approved.json()["status"] == "APPROVED"
+    # 扣款构成写进 decision_reason，后台/售后详情可核对
+    assert approved.json()["decision_reason"] == (
+        "同意售后赔付；可用余额扣 ¥20.00 + 保证金抵扣 ¥10.00"
+    )
 
+    # 打手：可用 20 → 0，保证金 50 → 40；老板足额 +30
     await db_session.rollback()
     booster_wallet = await _wallet(db_session, booster_id)
     assert booster_wallet.available_balance == Decimal("0.00")
+    assert booster_wallet.deposit_balance == Decimal("40.00")
     publisher_wallet = await _wallet(db_session, publisher_id)
-    assert publisher_wallet.available_balance == Decimal("120.00")
+    assert publisher_wallet.available_balance == Decimal("130.00")
 
-    # 差额说明拼在管理员审阅意见之后
-    db_session.expire_all()
-    stored = await db_session.execute(
-        select(OrderAfterSale.decision_reason).where(
-            OrderAfterSale.id == created.json()["id"]
-        )
-    )
-    assert stored.scalar_one() == (
-        "同意售后赔付；打手可用余额不足 ¥10.00，按实际余额 ¥20.00 扣收"
-    )
-
-    # 流水按实扣金额记账：打手 -20（20 → 0），老板 +20（100 → 120）
-    deduction = await _after_sale_ledger(
+    # 流水分两条腿：可用余额 -20（20 → 0），保证金 -10（可用余额快照不变）
+    grouped = await _wallet_ledger_by_type(
         db_session, order_id=order["id"], user_id=booster_id
     )
-    assert len(deduction) == 1
-    assert deduction[0].amount == Decimal("-20.00")
-    assert deduction[0].balance_before == Decimal("20.00")
-    assert deduction[0].balance_after == Decimal("0.00")
+    assert len(grouped[WalletTransactionType.AFTERSALE_DEDUCTION]) == 1
+    available_tx = grouped[WalletTransactionType.AFTERSALE_DEDUCTION][0]
+    assert available_tx.amount == Decimal("-20.00")
+    assert available_tx.balance_before == Decimal("20.00")
+    assert available_tx.balance_after == Decimal("0.00")
+
+    assert len(grouped[WalletTransactionType.AFTERSALE_DEPOSIT_DEDUCTION]) == 1
+    deposit_tx = grouped[WalletTransactionType.AFTERSALE_DEPOSIT_DEDUCTION][0]
+    assert deposit_tx.amount == Decimal("-10.00")
+    # 保证金腿只动 deposit_balance，可用余额快照前后一致（钱包页不会歪）
+    assert deposit_tx.balance_before == Decimal("0.00")
+    assert deposit_tx.balance_after == Decimal("0.00")
+    assert deposit_tx.order_id == order["id"]
+    assert deposit_tx.booster_id == booster_id
+
     refund = await _after_sale_ledger(
         db_session, order_id=order["id"], user_id=publisher_id
     )
     assert len(refund) == 1
-    assert refund[0].amount == Decimal("20.00")
+    assert refund[0].type == WalletTransactionType.AFTERSALE_REFUND
+    assert refund[0].amount == Decimal("30.00")
     assert refund[0].balance_before == Decimal("100.00")
-    assert refund[0].balance_after == Decimal("120.00")
+    assert refund[0].balance_after == Decimal("130.00")
+
+    # 通知金额为实扣额（= 申请额），老板侧足额
+    db_session.expire_all()
+    notifications = await db_session.execute(
+        select(Notification).where(
+            Notification.type == NotificationType.AFTERSALES_RESOLVED
+        )
+    )
+    by_user = {row.user_id: row.content for row in notifications.scalars().all()}
+    assert "已扣划 ¥30.00 给老板" in by_user[booster_id]
+    # 管理员路径把 decision_reason 后缀带进通知，抵扣构成随之可见
+    assert "可用余额扣 ¥20.00 + 保证金抵扣 ¥10.00" in by_user[booster_id]
+    assert "已收款 ¥30.00" in by_user[publisher_id]
 
 
 async def test_rejected_after_sale_leaves_wallets_untouched(
@@ -1285,43 +1346,451 @@ async def test_accept_blocked_when_another_approved_exists(
     assert stored.scalar_one() == AfterSaleStatus.PENDING
 
 
-async def test_booster_accept_deducts_to_zero_and_notes_shortfall(
+async def test_booster_accept_uses_deposit_to_cover_shortfall(
     client: AsyncClient,
     admin_user: dict,
     booster_user: dict,
     db_session: AsyncSession,
     make_captcha,
 ):
-    """打手可用余额不足：同意退款也只扣到 0，差额追加进 decision_reason。"""
+    """打手同意退款：可用余额不足时从保证金补扣，老板足额收款（老板截图场景）。
+
+    申请 ¥20、可用 ¥4.60、保证金 ¥119 —— 期望可用 0、保证金 103.60、老板 +20。
+    """
     publisher = await _register(
-        client, make_captcha, "aftersale-accept-short@example.com", "PubAcceptShort"
+        client, make_captcha, "aftersale-accept-dep@example.com", "PubAcceptDep"
     )
     publisher_id = publisher["user"]["id"]
     booster_id = booster_user["user"]["id"]
     order = await _completed_order(client, admin_user, publisher, booster_user)
-    # 打手入账 100，管理员调账 -80 后可用余额只剩 20
-    await _fund_wallet(client, admin_user, booster_id, "-80.00")
+    # 打手入账 100，调账 -95.40 后可用只剩 4.60；另缴 119 保证金
+    await _fund_wallet(client, admin_user, booster_id, "-95.40")
+    await _deposit(client, admin_user, booster_id, "119.00")
     await db_session.rollback()
-    assert (await _wallet(db_session, booster_id)).available_balance == Decimal("20.00")
+    assert (await _wallet(db_session, booster_id)).available_balance == Decimal("4.60")
+    assert (await _deposit_balance(db_session, booster_id)) == Decimal("119.00")
 
-    created = await _create_after_sale(client, publisher, order["id"], amount="30.00")
+    created = await _create_after_sale(client, publisher, order["id"], amount="20.00")
     assert created.status_code == 201, created.text
     accepted = await _accept(client, booster_user, order["id"], created.json()["id"])
     assert accepted.status_code == 200, accepted.text
-    assert accepted.json()["status"] == "APPROVED"
+    data = accepted.json()
+    assert data["status"] == "APPROVED"
+    assert data["reviewed_by"] is None
+    assert data["decision_reason"] == "打手同意退款；可用余额扣 ¥4.60 + 保证金抵扣 ¥15.40"
 
-    # 只按实际余额 20 扣划：打手 20 → 0，老板 100 → 120
     await db_session.rollback()
-    assert (await _wallet(db_session, booster_id)).available_balance == Decimal("0.00")
+    booster_wallet = await _wallet(db_session, booster_id)
+    assert booster_wallet.available_balance == Decimal("0.00")
+    assert booster_wallet.deposit_balance == Decimal("103.60")
     assert (await _wallet(db_session, publisher_id)).available_balance == Decimal("120.00")
 
-    # 差额说明拼在「打手同意退款」之后
+    grouped = await _wallet_ledger_by_type(
+        db_session, order_id=order["id"], user_id=booster_id
+    )
+    assert len(grouped[WalletTransactionType.AFTERSALE_DEDUCTION]) == 1
+    assert grouped[WalletTransactionType.AFTERSALE_DEDUCTION][0].amount == Decimal("-4.60")
+    assert len(grouped[WalletTransactionType.AFTERSALE_DEPOSIT_DEDUCTION]) == 1
+    deposit_tx = grouped[WalletTransactionType.AFTERSALE_DEPOSIT_DEDUCTION][0]
+    assert deposit_tx.amount == Decimal("-15.40")
+    assert deposit_tx.balance_before == Decimal("0.00")
+    assert deposit_tx.balance_after == Decimal("0.00")
+
+    # 通知金额 == 实扣额（20，不再是截断后的 4.60），并说明扣款构成
     db_session.expire_all()
-    stored = await db_session.execute(
-        select(OrderAfterSale.decision_reason).where(
-            OrderAfterSale.id == created.json()["id"]
+    notifications = await db_session.execute(
+        select(Notification).where(
+            Notification.type == NotificationType.AFTERSALES_RESOLVED
         )
     )
-    assert stored.scalar_one() == (
-        "打手同意退款；打手可用余额不足 ¥10.00，按实际余额 ¥20.00 扣收"
+    by_user = {row.user_id: row.content for row in notifications.scalars().all()}
+    assert "你已同意退款" in by_user[booster_id]
+    assert "¥20.00 已从你的账户扣划给老板" in by_user[booster_id]
+    assert "可用余额 ¥4.60 + 保证金 ¥15.40" in by_user[booster_id]
+    assert "已收款 ¥20.00" in by_user[publisher_id]
+
+
+async def test_deposit_offset_prefers_available_balance_first(
+    client: AsyncClient,
+    admin_user: dict,
+    booster_user: dict,
+    db_session: AsyncSession,
+    make_captcha,
+):
+    """扣款顺序回归：先扣可用余额，不足的部分才从保证金补（与取消赔偿同口径）。"""
+    publisher = await _register(
+        client, make_captcha, "aftersale-order@example.com", "PubOrderSeq"
     )
+    booster_id = booster_user["user"]["id"]
+    order = await _completed_order(client, admin_user, publisher, booster_user)
+    # 打手入账 100，调账 -90 后可用 10；保证金 100
+    await _fund_wallet(client, admin_user, booster_id, "-90.00")
+    await _deposit(client, admin_user, booster_id, "100.00")
+    await db_session.rollback()
+
+    created = await _create_after_sale(client, publisher, order["id"], amount="20.00")
+    assert created.status_code == 201, created.text
+    accepted = await _accept(client, booster_user, order["id"], created.json()["id"])
+    assert accepted.status_code == 200, accepted.text
+
+    await db_session.rollback()
+    booster_wallet = await _wallet(db_session, booster_id)
+    # 可用 10 全扣（→0），保证金只需补 10（100 → 90）；不是反过来先扣保证金
+    assert booster_wallet.available_balance == Decimal("0.00")
+    assert booster_wallet.deposit_balance == Decimal("90.00")
+
+    grouped = await _wallet_ledger_by_type(
+        db_session, order_id=order["id"], user_id=booster_id
+    )
+    assert grouped[WalletTransactionType.AFTERSALE_DEDUCTION][0].amount == Decimal("-10.00")
+    assert (
+        grouped[WalletTransactionType.AFTERSALE_DEPOSIT_DEDUCTION][0].amount
+        == Decimal("-10.00")
+    )
+
+
+async def test_accept_rejected_when_total_funds_insufficient(
+    client: AsyncClient,
+    admin_user: dict,
+    booster_user: dict,
+    db_session: AsyncSession,
+    make_captcha,
+):
+    """核心用例：可用 + 保证金仍不足 → 400，售后仍 PENDING，双方余额零变动。
+
+    这是老板拍板的硬要求（禁止静默少收结案）：报错让打手知道还缺多少，
+    而不是扣到哪算哪。断言资金、流水、状态三处都没动。
+    """
+    publisher = await _register(
+        client, make_captcha, "aftersale-insufficient@example.com", "PubInsufficient"
+    )
+    publisher_id = publisher["user"]["id"]
+    booster_id = booster_user["user"]["id"]
+    order = await _completed_order(client, admin_user, publisher, booster_user)
+    # 打手入账 100，调账 -99 后可用 1；保证金 2 → 合计 3 < 申请 20
+    await _fund_wallet(client, admin_user, booster_id, "-99.00")
+    await _deposit(client, admin_user, booster_id, "2.00")
+    await db_session.rollback()
+    booster_before = await _wallet(db_session, booster_id)
+    assert booster_before.available_balance == Decimal("1.00")
+    assert booster_before.deposit_balance == Decimal("2.00")
+    publisher_before = (await _wallet(db_session, publisher_id)).available_balance
+
+    created = await _create_after_sale(client, publisher, order["id"], amount="20.00")
+    assert created.status_code == 201, created.text
+    after_sale_id = created.json()["id"]
+
+    rejected = await _accept(client, booster_user, order["id"], after_sale_id)
+    assert rejected.status_code == 400, rejected.text
+    detail = rejected.json()["detail"]
+    # 结构化 error：前端可据此给出「缺多少、怎么办」的可操作提示
+    assert detail["code"] == "after_sale_insufficient_funds"
+    assert "尚缺 ¥17.00" in detail["message"]
+    assert "请先充值或缴纳保证金后再同意退款" in detail["message"]
+    assert detail["required"] == "20.00"
+    assert detail["available"] == "1.00"
+    assert detail["deposit"] == "2.00"
+    assert detail["shortfall"] == "17.00"
+
+    # 状态不变：售后仍 PENDING（不会被静默结案）
+    await db_session.rollback()
+    stored = await db_session.execute(
+        select(OrderAfterSale.status, OrderAfterSale.resolved_at).where(
+            OrderAfterSale.id == after_sale_id
+        )
+    )
+    status_value, resolved_at = stored.one()
+    assert status_value == AfterSaleStatus.PENDING
+    assert resolved_at is None
+
+    # 资金零变动：双方可用余额、打手保证金都没动
+    await db_session.rollback()
+    booster_after = await _wallet(db_session, booster_id)
+    assert booster_after.available_balance == Decimal("1.00")
+    assert booster_after.deposit_balance == Decimal("2.00")
+    assert (await _wallet(db_session, publisher_id)).available_balance == publisher_before
+
+    # 零售后流水（双方都没有）
+    assert (
+        await _after_sale_ledger(db_session, order_id=order["id"], user_id=booster_id)
+        == []
+    )
+    assert (
+        await _after_sale_ledger(db_session, order_id=order["id"], user_id=publisher_id)
+        == []
+    )
+
+    # 打手仍被禁提现（售后还挂着）
+    blocked = await client.post(
+        "/withdrawals",
+        json={
+            "amount": "1.00",
+            "channel": "ALIPAY",
+            "account_name": "张三",
+            "account_no": "13800000000",
+        },
+        headers=auth_header(booster_user),
+    )
+    assert blocked.status_code == 400, blocked.text
+    assert "售后处理中" in blocked.json()["detail"]
+
+
+async def test_admin_approve_rejected_when_total_funds_insufficient(
+    client: AsyncClient,
+    admin_user: dict,
+    booster_user: dict,
+    db_session: AsyncSession,
+    make_captcha,
+):
+    """管理员 approve 同样不允许静默少收：可扣款不足 → 400、不结案、零变动。"""
+    publisher = await _register(
+        client, make_captcha, "aftersale-admin-insuf@example.com", "PubAdminInsuf"
+    )
+    publisher_id = publisher["user"]["id"]
+    booster_id = booster_user["user"]["id"]
+    order = await _completed_order(client, admin_user, publisher, booster_user)
+    await _fund_wallet(client, admin_user, booster_id, "-100.00")  # 可用 0
+    await _deposit(client, admin_user, booster_id, "10.00")
+    await db_session.rollback()
+
+    created = await _create_after_sale(client, publisher, order["id"], amount="30.00")
+    assert created.status_code == 201, created.text
+    rejected = await _review(
+        client, admin_user, created.json()["id"], {"action": "approve"}
+    )
+    assert rejected.status_code == 400, rejected.text
+    detail = rejected.json()["detail"]
+    assert detail["code"] == "after_sale_insufficient_funds"
+    assert detail["shortfall"] == "20.00"
+
+    await db_session.rollback()
+    stored = await db_session.execute(
+        select(OrderAfterSale.status).where(OrderAfterSale.id == created.json()["id"])
+    )
+    assert stored.scalar_one() == AfterSaleStatus.PENDING
+    booster_after = await _wallet(db_session, booster_id)
+    assert booster_after.available_balance == Decimal("0.00")
+    assert booster_after.deposit_balance == Decimal("10.00")
+    assert (
+        await _after_sale_ledger(db_session, order_id=order["id"], user_id=booster_id)
+        == []
+    )
+
+
+async def test_admin_approve_adjusted_amount_only_deducts_settled_amount(
+    client: AsyncClient,
+    admin_user: dict,
+    booster_user: dict,
+    db_session: AsyncSession,
+    make_captcha,
+):
+    """管理员裁定额（20 < 申请 30）低于可用余额：只扣裁定额，保证金不动。"""
+    publisher = await _register(
+        client, make_captcha, "aftersale-adj-dep@example.com", "PubAdjDep"
+    )
+    publisher_id = publisher["user"]["id"]
+    booster_id = booster_user["user"]["id"]
+    order = await _completed_order(client, admin_user, publisher, booster_user)
+    await _deposit(client, admin_user, booster_id, "100.00")
+    await db_session.rollback()
+
+    created = await _create_after_sale(client, publisher, order["id"], amount="30.00")
+    assert created.status_code == 201, created.text
+    approved = await _review(
+        client,
+        admin_user,
+        created.json()["id"],
+        {"action": "approve", "reason": "协商后部分赔付", "amount": "20.00"},
+    )
+    assert approved.status_code == 200, approved.text
+    # 未动用保证金 → decision_reason 只有裁定说明，不追加抵扣分项
+    assert approved.json()["decision_reason"] == "协商后部分赔付；裁定扣款 ¥20.00（申请 ¥30.00）"
+
+    await db_session.rollback()
+    booster_wallet = await _wallet(db_session, booster_id)
+    assert booster_wallet.available_balance == Decimal("80.00")  # 100 - 20
+    assert booster_wallet.deposit_balance == Decimal("100.00")  # 保证金不动
+    assert (await _wallet(db_session, publisher_id)).available_balance == Decimal("120.00")
+
+    grouped = await _wallet_ledger_by_type(
+        db_session, order_id=order["id"], user_id=booster_id
+    )
+    assert len(grouped[WalletTransactionType.AFTERSALE_DEDUCTION]) == 1
+    assert grouped[WalletTransactionType.AFTERSALE_DEDUCTION][0].amount == Decimal("-20.00")
+    # 保证金腿不存在：可用余额够时不写多余的保证金流水
+    assert WalletTransactionType.AFTERSALE_DEPOSIT_DEDUCTION not in grouped
+
+
+async def test_repeat_accept_conflicts_and_writes_single_ledger_row(
+    client: AsyncClient,
+    admin_user: dict,
+    booster_user: dict,
+    db_session: AsyncSession,
+    make_captcha,
+):
+    """连点两次同意：第二次 409，且各类流水仍各只有一条（不重复扣款）。"""
+    publisher = await _register(
+        client, make_captcha, "aftersale-repeat@example.com", "PubRepeat"
+    )
+    publisher_id = publisher["user"]["id"]
+    booster_id = booster_user["user"]["id"]
+    order = await _completed_order(client, admin_user, publisher, booster_user)
+    # 可用 10 + 保证金 100，申请 20 → 触发两条腿
+    await _fund_wallet(client, admin_user, booster_id, "-90.00")
+    await _deposit(client, admin_user, booster_id, "100.00")
+    await db_session.rollback()
+
+    created = await _create_after_sale(client, publisher, order["id"], amount="20.00")
+    assert created.status_code == 201, created.text
+    after_sale_id = created.json()["id"]
+
+    first = await _accept(client, booster_user, order["id"], after_sale_id)
+    assert first.status_code == 200, first.text
+    second = await _accept(client, booster_user, order["id"], after_sale_id)
+    assert second.status_code == 409, second.text
+    assert "该售后申请已处理" in second.json()["detail"]
+
+    await db_session.rollback()
+    booster_wallet = await _wallet(db_session, booster_id)
+    assert booster_wallet.available_balance == Decimal("0.00")
+    assert booster_wallet.deposit_balance == Decimal("90.00")  # 只扣了 10
+    assert (await _wallet(db_session, publisher_id)).available_balance == Decimal("120.00")
+
+    grouped = await _wallet_ledger_by_type(
+        db_session, order_id=order["id"], user_id=booster_id
+    )
+    assert len(grouped[WalletTransactionType.AFTERSALE_DEDUCTION]) == 1
+    assert len(grouped[WalletTransactionType.AFTERSALE_DEPOSIT_DEDUCTION]) == 1
+    # 出款流水记在老板钱包上，打手侧不产生 AFTERSALE_REFUND
+    assert WalletTransactionType.AFTERSALE_REFUND not in grouped
+
+
+async def test_deposit_offset_works_when_deposit_switch_disabled(
+    client: AsyncClient,
+    admin_user: dict,
+    booster_user: dict,
+    db_session: AsyncSession,
+    make_captcha,
+):
+    """保证金总开关关闭时仍然照扣（否则等于「关开关躲售后赔付」）。"""
+    publisher = await _register(
+        client, make_captcha, "aftersale-depoff@example.com", "PubDepOff"
+    )
+    publisher_id = publisher["user"]["id"]
+    booster_id = booster_user["user"]["id"]
+    order = await _completed_order(client, admin_user, publisher, booster_user)
+    await _fund_wallet(client, admin_user, booster_id, "-90.00")  # 可用 10
+    await _deposit(client, admin_user, booster_id, "50.00")
+    await db_session.rollback()
+    # 默认就是关闭态，显式断言一次，避免默认值变化让本用例失去意义
+    assert await deposit_service.is_deposit_enabled(db_session) is False
+
+    created = await _create_after_sale(client, publisher, order["id"], amount="20.00")
+    assert created.status_code == 201, created.text
+    accepted = await _accept(client, booster_user, order["id"], created.json()["id"])
+    assert accepted.status_code == 200, accepted.text
+
+    await db_session.rollback()
+    booster_wallet = await _wallet(db_session, booster_id)
+    assert booster_wallet.available_balance == Decimal("0.00")
+    # 扣款不看开关：保证金照扣 10，剩 40
+    assert booster_wallet.deposit_balance == Decimal("40.00")
+    assert (await _wallet(db_session, publisher_id)).available_balance == Decimal("120.00")
+
+
+async def test_deposit_deduction_does_not_touch_frozen_balance(
+    client: AsyncClient,
+    admin_user: dict,
+    booster_user: dict,
+    db_session: AsyncSession,
+    make_captcha,
+):
+    """保证金抵扣只动 deposit_balance：frozen_balance（提现/托管/炸单冻结）绝不受影响。"""
+    publisher = await _register(
+        client, make_captcha, "aftersale-frozen@example.com", "PubFrozen"
+    )
+    booster_id = booster_user["user"]["id"]
+    order = await _completed_order(client, admin_user, publisher, booster_user)
+    await _fund_wallet(client, admin_user, booster_id, "-90.00")  # 可用 10
+    await _deposit(client, admin_user, booster_id, "50.00")
+    # 另造一笔提现冻结 5 元：frozen_balance 是共享池，售后绝不能碰
+    await db_session.rollback()
+    await client.post(
+        "/withdrawals",
+        json={
+            "amount": "5.00",
+            "channel": "ALIPAY",
+            "account_name": "张三",
+            "account_no": "13800000000",
+        },
+        headers=auth_header(booster_user),
+    )
+    await db_session.rollback()
+    before = await _wallet(db_session, booster_id)
+    assert before.frozen_balance == Decimal("5.00")
+    assert before.available_balance == Decimal("5.00")
+
+    created = await _create_after_sale(client, publisher, order["id"], amount="20.00")
+    assert created.status_code == 201, created.text
+    # 可用 5 + 保证金 50 = 55 ≥ 20，可以结案
+    accepted = await _accept(client, booster_user, order["id"], created.json()["id"])
+    assert accepted.status_code == 200, accepted.text
+
+    await db_session.rollback()
+    after = await _wallet(db_session, booster_id)
+    assert after.frozen_balance == Decimal("5.00")  # 冻结池分文未动
+    assert after.available_balance == Decimal("0.00")  # 可用 5 全扣
+    assert after.deposit_balance == Decimal("35.00")  # 保证金补扣 15
+
+    # 且没有写出炸单/取消赔偿两类流水（未越界消费其他冻结）
+    ledger = await _after_sale_ledger(
+        db_session, order_id=order["id"], user_id=booster_id
+    )
+    types = {row.type for row in ledger}
+    assert types == {
+        WalletTransactionType.AFTERSALE_DEDUCTION,
+        WalletTransactionType.AFTERSALE_DEPOSIT_DEDUCTION,
+    }
+
+
+async def test_deposit_deduction_to_zero_does_not_break_resolve_tier(
+    client: AsyncClient,
+    admin_user: dict,
+    booster_user: dict,
+    db_session: AsyncSession,
+    make_captcha,
+):
+    """保证金被扣到 0 后档位解析不崩：掉到最低档（预期行为，不额外报错）。"""
+    publisher = await _register(
+        client, make_captcha, "aftersale-tier@example.com", "PubTier"
+    )
+    booster_id = booster_user["user"]["id"]
+    order = await _completed_order(client, admin_user, publisher, booster_user)
+    await _fund_wallet(client, admin_user, booster_id, "-100.00")  # 可用 0
+    await _deposit(client, admin_user, booster_id, "60.00")
+    await db_session.rollback()
+
+    tiers = await deposit_service.list_tiers(db_session)
+    # 先把标量取出来：API 调用会让会话失效，之后再访问 ORM 属性会触发懒加载
+    min_threshold = tiers[0].threshold
+    tier_before, balance_before = await deposit_service.get_user_tier(
+        db_session, booster_id
+    )
+    assert balance_before == Decimal("60.00")
+    assert tier_before is not None
+
+    created = await _create_after_sale(client, publisher, order["id"], amount="60.00")
+    assert created.status_code == 201, created.text
+    accepted = await _accept(client, booster_user, order["id"], created.json()["id"])
+    assert accepted.status_code == 200, accepted.text
+
+    await db_session.rollback()
+    assert (await _deposit_balance(db_session, booster_id)) == Decimal("0.00")
+    # 档位解析不抛异常，掉到最低档（门槛 0）
+    tier_after, balance_after = await deposit_service.get_user_tier(
+        db_session, booster_id
+    )
+    assert balance_after == Decimal("0.00")
+    assert tier_after is not None
+    assert tier_after.threshold == min_threshold
+    assert tier_after.threshold == Decimal("0.00")

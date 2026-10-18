@@ -10,7 +10,7 @@ vi.mock('@/utils/api', () => ({
   },
 }))
 
-import { useAfterSalesStore } from '@/stores/afterSales'
+import { useAfterSalesStore, parseInsufficientFundsError } from '@/stores/afterSales'
 
 let pinia
 
@@ -228,5 +228,65 @@ describe('afterSales store', () => {
     expect(result.error).toBe('余额不足，无法扣划售后款项')
     expect(store.error).toBe('余额不足，无法扣划售后款项')
     expect(store.submitting).toBe(false)
+  })
+
+  it('acceptAfterSale exposes the structured shortfall when funds are insufficient', async () => {
+    const store = useAfterSalesStore()
+    // 后端可扣款不足时返回结构化 detail（after_sale_insufficient_funds），
+    // api 拦截器把 message 提成 err.message、完整响应留在 err.original。
+    const detail = {
+      code: 'after_sale_insufficient_funds',
+      message: '可用余额 ¥4.60 + 保证金 ¥10.00 不足以覆盖本次扣款 ¥20.00，尚缺 ¥5.40；请先充值或缴纳保证金后再同意退款',
+      required: '20.00',
+      available: '4.60',
+      deposit: '10.00',
+      shortfall: '5.40',
+    }
+    apiPost.mockRejectedValueOnce({
+      status: 400,
+      message: detail.message,
+      original: { response: { data: { detail } } },
+    })
+
+    const result = await store.acceptAfterSale(12, 1)
+
+    expect(result.success).toBe(false)
+    expect(result.insufficient).toEqual({
+      message: detail.message,
+      required: '20.00',
+      available: '4.60',
+      deposit: '10.00',
+      shortfall: '5.40',
+    })
+    expect(store.submitting).toBe(false)
+  })
+
+  it('acceptAfterSale omits the shortfall field for unrelated errors', async () => {
+    const store = useAfterSalesStore()
+    apiPost.mockRejectedValueOnce({
+      status: 409,
+      message: '该售后申请已处理',
+      original: { response: { data: { detail: '该售后申请已处理' } } },
+    })
+
+    const result = await store.acceptAfterSale(12, 1)
+
+    expect(result).toEqual({ success: false, error: '该售后申请已处理' })
+    expect('insufficient' in result).toBe(false)
+  })
+
+  it('parseInsufficientFundsError ignores non-structured details', () => {
+    expect(parseInsufficientFundsError(undefined)).toBeNull()
+    expect(parseInsufficientFundsError({ message: '普通字符串 detail' })).toBeNull()
+    expect(
+      parseInsufficientFundsError({
+        original: { response: { data: { detail: { code: 'other_code', message: 'x' } } } },
+      })
+    ).toBeNull()
+    expect(
+      parseInsufficientFundsError({
+        original: { response: { data: { detail: { code: 'after_sale_insufficient_funds' } } } },
+      })
+    ).toMatchObject({ required: '', shortfall: '' })
   })
 })

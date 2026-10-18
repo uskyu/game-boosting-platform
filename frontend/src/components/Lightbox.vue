@@ -110,6 +110,12 @@ onBeforeUnmount(cleanup)
 <style scoped>
 .lb-overlay {
   position: fixed;
+  /* 兼容老 Android X5 内核（Chrome < 87 不认 inset 简写）：先写四条物理属性兜底，
+     再写 inset 供现代内核覆写。微信内置浏览器是主要目标环境。 */
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
   inset: 0;
   z-index: 120;
   display: flex;
@@ -166,6 +172,9 @@ onBeforeUnmount(cleanup)
 }
 
 .lb-close {
+  /* 先给 16px 兜底：老 Android X5 不支持 env() 时整条 max() 声明会被丢弃，
+     兜底一行保证关闭按钮仍在右上角，不会退回静态定位。 */
+  top: 16px;
   top: max(16px, env(safe-area-inset-top));
   right: 16px;
 }
@@ -185,6 +194,7 @@ onBeforeUnmount(cleanup)
 
 .lb-caption {
   position: absolute;
+  bottom: 16px; /* 同 .lb-close：老 X5 不支持 env() 时的兜底 */
   bottom: max(16px, env(safe-area-inset-bottom));
   left: 0;
   right: 0;

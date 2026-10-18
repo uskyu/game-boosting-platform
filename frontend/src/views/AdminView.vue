@@ -607,8 +607,13 @@ function afterSaleImageList(item) {
     .filter((image) => image?.url)
 }
 
-function openAfterSaleImage(url) {
-  if (url) window.open(url, '_blank', 'noopener')
+// 售后凭证：站内灯箱预览（复用订单图片/收款二维码同一个 orderLightbox 实例，
+// 不再 window.open 把图片 URL 当新页面——微信内置浏览器没有标签页，会直接跳出站内）。
+// 单实例语义：每次点击整对象覆盖 {visible, images, index}，不会残留上一层图片。
+function openAfterSaleLightbox(item, index) {
+  const images = afterSaleImageList(item)
+  if (!images.length) return
+  orderLightbox.value = { visible: true, images, index }
 }
 
 function openAfterSaleApproveModal(item) {
@@ -1609,7 +1614,7 @@ onMounted(async () => {
 
             <div class="flex shrink-0 flex-col items-end gap-3">
               <p class="text-2xl font-semibold tabular-nums text-price">{{ formatPrice(item.amount) }}</p>
-              <!-- 凭证缩略图：点击新窗口看大图 -->
+              <!-- 凭证缩略图：点击在站内灯箱看大图 -->
               <div v-if="afterSaleImageList(item).length" class="flex flex-wrap justify-end gap-2">
                 <button
                   v-for="(image, index) in afterSaleImageList(item)"
@@ -1617,7 +1622,7 @@ onMounted(async () => {
                   type="button"
                   class="admin-order-thumb"
                   :aria-label="`查看售后凭证 ${index + 1}`"
-                  @click.stop="openAfterSaleImage(image.url)"
+                  @click.stop="openAfterSaleLightbox(item, index)"
                 >
                   <img :src="image.url" :alt="image.name || `售后凭证 ${index + 1}`" loading="lazy" />
                 </button>
@@ -2018,7 +2023,7 @@ onMounted(async () => {
                 type="button"
                 class="admin-order-thumb"
                 :aria-label="`查看售后凭证 ${index + 1}`"
-                @click="openAfterSaleImage(image.url)"
+                @click="openAfterSaleLightbox(afterSaleReasonDetail, index)"
               >
                 <img :src="image.url" :alt="image.name || `售后凭证 ${index + 1}`" loading="lazy" />
               </button>
@@ -2420,43 +2425,9 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-/* ── 订单卡片图片缩略条：56-64px 圆角小图，横向一排可滚动 ── */
-.admin-order-thumbs {
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: thin;
-  overscroll-behavior-x: contain;
-  padding-bottom: 2px;
-}
-
-.admin-order-thumb {
-  flex: 0 0 auto;
-  width: 60px;
-  height: 60px;
-  padding: 0;
-  overflow: hidden;
-  border-radius: 14px;
-  border: 1px solid var(--line-1);
-  background: var(--surface-2);
-  cursor: zoom-in;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
-}
-
-.admin-order-thumb:hover {
-  transform: translateY(-1px);
-  box-shadow: var(--shadow-card-hover);
-}
-
-.admin-order-thumb:active {
-  transform: scale(0.94);
-}
-
-.admin-order-thumb img {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
+/* 注：.admin-order-thumbs / .admin-order-thumb 已提升到 assets/main.css 的
+   @layer components —— AfterSaleStatusModal 也在用该类名，而它 teleport 到 body，
+   scoped 规则作用不到，故必须全局定义（单一来源，勿在此处重复）。 */
 
 /* ── 编辑弹窗：已有附件缩略图 + 右上角删除按钮 ── */
 .admin-edit-thumb {

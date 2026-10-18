@@ -29,10 +29,14 @@ function messageClass(type) {
   return 'message-info'
 }
 
-// 结账时效展示：<24 小时显示「X 小时」；能被 24 整除显示「X 天」；其余显示「X 小时」
+// 结账时效展示：
+// - null = 该档不承诺加速，按订单到账时效倒计时（老板 2026-10-18 R3）；
+// - 0 = 交付即结算；<24 小时显示「X 小时」；能被 24 整除显示「X 天」。
 function formatSettleHours(hours) {
+  if (hours === null || hours === undefined || hours === '') return '按订单时效'
   const value = Number(hours)
-  if (!Number.isFinite(value) || value <= 0) return '-'
+  if (!Number.isFinite(value) || value < 0) return '按订单时效'
+  if (value === 0) return '立即结算'
   if (value < 24) return `${value} 小时`
   if (value % 24 === 0) return `${value / 24} 天`
   return `${value} 小时`

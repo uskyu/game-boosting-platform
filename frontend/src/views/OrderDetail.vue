@@ -6,6 +6,7 @@ import Lightbox from '@/components/Lightbox.vue'
 import AfterSaleStatusModal from '@/components/AfterSaleStatusModal.vue'
 import OrderDeliverModal from '@/components/OrderDeliverModal.vue'
 import OrderTimeline from '@/components/OrderTimeline.vue'
+import { useAfterSalesStore } from '@/stores/afterSales'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import { useOrdersStore } from '@/stores/orders'
@@ -26,6 +27,7 @@ const router = useRouter()
 const authStore = useAuthStore()
 const chatStore = useChatStore()
 const ordersStore = useOrdersStore()
+const afterSalesStore = useAfterSalesStore()
 
 const errorMessage = ref('')
 const successMessage = ref('')
@@ -1121,6 +1123,47 @@ function onAfterSaleAccepted() {
   successMessage.value = '已同意退款，款项已划给老板，售后结案'
 }
 
+// ── 老板侧售后入口（原「我的派单」列表卡片迁入，2026-10-18）──────────────
+// 一单一裁：已有 APPROVED 售后的订单不能再发起（后端 400），但列表/详情接口
+// 只给 after_sale_pending（仅 PENDING），无法区分「从没申请过」与「已裁定过」。
+// 这里按需补拉一次该单售后记录（复用既有 GET /orders/{id}/after-sales），
+// 避免老板点进申请页、填完表单才被拒。拉不到时按「无已裁定售后」处理，
+// 后端那层校验仍是最终权威。
+const afterSaleApproved = ref(false)
+// 售后处理中弹窗（老板侧）：查看案情 / 撤回售后
+const showAfterSaleStatusModal = ref(false)
+
+// 售后申请：仅已完成单可发起（路由见 router/index.js afterSaleApply）
+function goToAfterSaleApply(orderId) {
+  router.push({ name: 'afterSaleApply', params: { id: orderId } })
+}
+
+async function refreshAfterSaleGate(orderId = order.value?.id) {
+  // 非老板、非已完成没有售后入口；PENDING 与 APPROVED 互斥，进行中时无需再拉
+  if (!isOwner.value || orderId == null || order.value?.status !== 'COMPLETED') {
+    afterSaleApproved.value = false
+    return
+  }
+  if (order.value?.after_sale_pending) {
+    afterSaleApproved.value = false
+    return
+  }
+  const result = await afterSalesStore.fetchOrderAfterSales(orderId)
+  // 期间换单/换号：丢弃不属于当前订单的结果
+  if (String(order.value?.id) !== String(orderId)) return
+  if (!result.success) return
+  afterSaleApproved.value = (result.data || []).some((item) => item.status === 'APPROVED')
+}
+
+// 撤回成功：售后由 PENDING 转 CLOSED，需同时刷新订单标记与「已裁定」判据
+function onAfterSaleWithdrawn() {
+  const orderId = order.value?.id
+  if (orderId == null) return
+  ordersStore.fetchOrder(orderId, { silent: true })
+    .then(() => refreshAfterSaleGate(orderId))
+    .catch(() => {})
+}
+
 async function fetchReviews(orderId = order.value?.id, loadSeq = detailLoadSeq) {
   if (!orderId || order.value?.status !== 'COMPLETED') {
     if (loadSeq === detailLoadSeq && String(props.id) === String(orderId)) {
@@ -1178,6 +1221,8 @@ async function loadDetail(orderId) {
   errorMessage.value = ''
   successMessage.value = ''
   showPayoutModal.value = false
+  // 换单先复位「一单一裁」判据：否则上一单的已裁定态会短暂禁用新单的售后按钮
+  afterSaleApproved.value = false
 
   // 命中缓存（详情快照或列表卡片）就先把页面铺满再静默补全：跨境链路上详情
   // 请求要 1-2 秒，整页骨架屏在老板眼里就是「点开一片白」。
@@ -1213,6 +1258,11 @@ async function loadDetail(orderId) {
     }
     // 报名名单就绪后再拉协商记录：myClaim 的回退来源此时才可用
     await loadCancelRequests(orderId, loadSeq)
+    // 售后「一单一裁」判据：不阻塞首屏（骨架屏不等它），失败按可申请处理，
+    // 后端 create 校验仍是最终权威。
+    if (loadSeq === detailLoadSeq) {
+      refreshAfterSaleGate(orderId).catch(() => {})
+    }
   } finally {
     // 只有最新一次加载能收起骨架，避免慢响应把新页面的骨架提前关掉
     if (loadSeq === detailLoadSeq) {
@@ -1241,6 +1291,8 @@ watch(() => chatStore.lastOrderStateChange, (change) => {
   ordersStore.fetchOrder(props.id, { silent: true }).then((result) => {
     if (result.success && !result.stale) {
       loadClaims()
+      // 售后结案（管理员裁定 / 打手同意退款）也是订单状态变化：重算一单一裁判据
+      refreshAfterSaleGate(props.id).catch(() => {})
     }
   }).catch(() => {})
 })
@@ -1764,6 +1816,21 @@ onUnmounted(() => {
               取消订单
             </button>
 
+            <!-- 售后（原「我的派单」列表卡片迁入，老板 2026-10-18 要求放到「重建订单」
+                 上方）：仅老板对已完成单可发起；进行中售后改开状态弹窗（可查看案情
+                 并撤回），此时保持可点、只降不透明度——禁用就没法撤诉了；
+                 已裁定通过（一单一裁）时禁用，避免填完表单才被后端 400 拒。 -->
+            <button
+              v-if="isOwner && order.status === 'COMPLETED'"
+              type="button"
+              class="od-ops__chip btn-danger w-full py-3"
+              :class="order.after_sale_pending ? 'opacity-60' : ''"
+              :disabled="afterSaleApproved"
+              @click="order.after_sale_pending ? (showAfterSaleStatusModal = true) : goToAfterSaleApply(order.id)"
+            >
+              {{ afterSaleApproved ? '售后已处理' : (order.after_sale_pending ? '售后处理中' : '售后') }}
+            </button>
+
             <!-- 重建 / 续单：老板要求所有订单都可操作（不限状态，打手交全部单/
                  进行中单争议无回应时先派再谈），带原单进创建页预填 -->
             <button
@@ -2141,6 +2208,14 @@ onUnmounted(() => {
       :order-id="order.id"
       :viewer-role="'booster'"
       @accepted="onAfterSaleAccepted"
+    />
+
+    <!-- 售后处理中（老板侧，详情页操作卡「售后处理中」打开）：查看案情 / 撤回售后。
+         与打手侧实例并存但互斥（owner 与 booster 不会同时成立），默认 viewerRole='boss'。 -->
+    <AfterSaleStatusModal
+      v-model="showAfterSaleStatusModal"
+      :order-id="order.id"
+      @withdrawn="onAfterSaleWithdrawn"
     />
   </div>
 </template>
