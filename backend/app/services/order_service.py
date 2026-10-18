@@ -837,11 +837,9 @@ class OrderService:
         scheduler can distinguish an explicit order-delay marker from legacy
         data.
 
-        老板 2026-10-18 拍板 R3（订单为准、档位只是加速器）：
-        - 订单设了 ``payout_delay_*`` → 以订单时效为准；只有**真正缴过保证金**
-          （threshold > 0）的档位、且 ``settle_hours`` 更短时才加速；
-        - 订单没设 → 档位 ``settle_hours`` 兜底（0 元档也算）；
-        - 档位 ``settle_hours`` 留空 → 纯按订单时效；
+        老板 2026-10-18 拍板（后台档位为基准、留空才兜底订单时效）：
+        - 档位 ``settle_hours`` 有值 → 按档位时间结算（含 0 小时 = 交付即结算）；
+        - 档位留空（NULL）→ 兜底按订单 ``payout_delay_*``；
         - 两边都没有 → ORDER_DELAY + due=None（永不自动结算，既有语义）。
         具体优先级只在 ``deposit_service.plan_settlement_terms`` 一处定义。
         """

@@ -1,11 +1,10 @@
 """到账时效自动结算调度器。
 
-计时起点与时长按「订单到账时效为准、保证金档位只做加速器」的 R3 口径
+计时起点与时长按「后台档位设为基准、档位留空才兜底订单时效」的口径
 （老板 2026-10-18 拍板）由 ``deposit_service.plan_settlement_terms`` 统一裁定：
 
-- 订单设了 ``payout_delay_days`` / ``payout_delay_hours`` → 以订单时效为准；
-  只有真正缴过保证金（threshold > 0）且 ``settle_hours`` 更短的档位才加速；
-- 订单没设 → 档位 ``settle_hours`` 兜底；档位留空则无法自动结算；
+- 档位 ``settle_hours`` 有值 → 按档位时间结算（含 0 小时 = 交付即结算）；
+- 档位留空（NULL）→ 兜底按订单 ``payout_delay_days`` / ``payout_delay_hours``；
 - 计时起点仍由「保证金管理」的 ``settlement_mode`` 决定：
   ``AFTER_DELIVERY`` 从交付起算，``AFTER_APPROVAL`` 从老板审核通过起算。
 

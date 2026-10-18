@@ -151,7 +151,8 @@ def tier_settle_hours(tier: DepositTier | None) -> int | None:
 def tier_is_earned(tier: DepositTier | None) -> bool:
     """该档是否代表**真实缴纳过保证金**（门槛 > 0）。
 
-    0 元档 = 没交保证金，不享受「提前拿钱」的加速资格，只作为兜底时长。
+    保留此判据仅供后台展示/审计使用；2026-10-18 起它**不再参与**结账时效
+    裁定（新口径是「档位设了就按档位、留空才看订单」，与是否缴过保证金无关）。
     """
     if tier is None:
         return False
@@ -176,25 +177,25 @@ def plan_settlement_terms(
     order: Any | None,
     setting: DepositSetting,
 ) -> SettlementPlan:
-    """按 R3 优先级算出该名额应当使用的结算模式与小时数（纯函数）。"""
-    order_hours = order_payout_delay_hours(order)
+    """算出该名额应当使用的结算模式与小时数（纯函数，全站唯一裁定点）。
+
+    老板 2026-10-18 口径（**后台档位为基准，订单时效做兜底**）：
+
+    - 后台档位设了结账时效（``settle_hours`` 有值）→ **按档位时间结算**，
+      包括显式的 0 小时（= 交付即结算，老板要的「单完结就到账」）；
+    - 后台档位**留空**（``settle_hours`` 为 NULL）→ 该档不承诺时长，
+      兜底按**该订单自身的到账时效**（``payout_delay_*``）倒计时；
+    - 保证金模式关闭 / 结算模式退化 → 一律走订单时效（既有行为）。
+
+    注意 ``None`` 与 ``0`` 语义完全不同，任何一处把 None 折算成 0 都会让
+    在途名额立刻到期（资金事故）——判空必须一路保持 None。
+    """
     tier_hours = tier_settle_hours(tier)
-    configured = _configured_settlement_mode(setting)
-
-    if order_hours is None:
-        # 订单没约定 → 档位兜底（0 元档也算）。
-        if tier_hours is None or configured == SETTLEMENT_MODE_ORDER_DELAY:
-            return SettlementPlan(SETTLEMENT_MODE_ORDER_DELAY, None)
-        return SettlementPlan(configured, tier_hours)
-
-    # 订单已约定 → 以订单为准；只有真保证金档位、且更快时才加速。
-    if (
-        tier_hours is not None
-        and tier_is_earned(tier)
-        and tier_hours < order_hours
-        and configured != SETTLEMENT_MODE_ORDER_DELAY
-    ):
-        return SettlementPlan(configured, tier_hours)
+    if tier_hours is not None and _configured_settlement_mode(
+        setting
+    ) != SETTLEMENT_MODE_ORDER_DELAY:
+        return SettlementPlan(_configured_settlement_mode(setting), tier_hours)
+    # 档位留空（或结算模式不可用）→ 兜底：到期时间由订单自身时效现算
     return SettlementPlan(SETTLEMENT_MODE_ORDER_DELAY, None)
 
 
@@ -246,9 +247,9 @@ def resolve_unsettled_settlement_due(
     to the currently configured mode. This pure resolver is safe to use while
     the scheduler is deciding which rows need locking.
 
-    老板 2026-10-18 R3 口径（详见 ``plan_settlement_terms``）：
-    - 订单设了到账时效 → 以订单为准；只有真保证金档位更快时才加速；
-    - 订单没设 → 档位兜底；
+    老板 2026-10-18 口径（详见 ``plan_settlement_terms``）：
+    - 后台档位设了结账时效 → 按档位时间；
+    - 档位留空（NULL）→ 兜底按订单自身的到账时效；
     - 档位 ``settle_hours is None`` **绝不**折算成 0 小时（那会让在途名额
       立刻到期，属资金事故），而是回落到订单时效。
     ``order`` 缺省为 None 时按"订单未设置时效"处理，调用方应尽量传入。
@@ -277,7 +278,7 @@ def _candidate_due_from_sources(
     order: Order | Any | None,
     prefer_mode: str | None,
 ) -> datetime | None:
-    """按 R3 优先级算出一个到期时间（不含"只缩短"约束）。"""
+    """按当前有效来源算出一个到期时间（不含"只缩短"约束）。"""
     plan = plan_settlement_terms(tier, order, setting)
     if plan.mode == SETTLEMENT_MODE_ORDER_DELAY:
         # 走订单时效：起点固定是交付时间（订单时效语义就是"交付后到时"）。

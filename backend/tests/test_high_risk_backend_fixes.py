@@ -387,16 +387,16 @@ async def test_post_033_no_tier_claim_uses_explicit_order_delay_marker(
     assert claim.settlement_mode_snapshot == "ORDER_DELAY"
 
 
-async def test_legacy_zero_tier_does_not_override_order_delay(
+async def test_legacy_claim_follows_tier_settle_hours(
     client: AsyncClient, admin_user: dict, booster_user: dict, db_session
 ):
-    """老板 2026-10-18 拍板 R3：**有意变更旧契约**。
+    """老板 2026-10-18 最终口径：**档位设了时间就按档位**。
 
-    旧契约（本次改前）：legacy claim 只要保证金开启就一律按档位 settle_hours
-    结算（0 元档 1h 会覆盖订单的 23h）——这正是老板投诉的
-    「0 档位 72 小时让订单结账时间没用」。
-    新契约：0 元档（threshold = 0，即没缴保证金）不享受加速，按订单时效
-    23h 结算；已交付 2h 尚未到期，因此调度器不结算。
+    契约演进（同一个用例锁定过两版，避免后人反复推翻）：
+    - 旧版：legacy claim 一律按档位 settle_hours；
+    - 中间版（R3）：订单优先、0 元档不加速 → 按订单 23h；
+    - **现版**：后台档位有值即以档位为准，订单时效只在档位留空时兜底。
+      本例档位 1h → 按 1h；已交付 2h > 1h，因此调度器应当结算。
     """
     await _enable_deposit(client, admin_user, settlement_mode="AFTER_DELIVERY", tiers=[{"threshold": 0, "wait_seconds": 0, "exempt_compensation": True, "settle_hours": 1, "enabled": True}])
     order = await _create_order(client, admin_user, payout_delay_hours=23)
@@ -408,12 +408,8 @@ async def test_legacy_zero_tier_does_not_override_order_delay(
     claim.settlement_due_at = None
     claim.delivered_at = datetime.now(timezone.utc) - timedelta(hours=2)
     await db_session.commit()
-    # 订单 23h 才是基准：交付仅 2h，不得结算
-    assert claim.id not in await scan_due_payouts(db_session)
-    # 交付满 24h 后（> 23h 时效）才结算
-    settled = await scan_due_payouts(
-        db_session, now=datetime.now(timezone.utc) + timedelta(hours=22)
-    )
+    # 档位 1h 为准：交付已满 2h → 结算（若改回"订单优先"这条会红）
+    settled = await scan_due_payouts(db_session)
     await db_session.commit()
     assert claim.id in settled
 

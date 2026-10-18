@@ -77,21 +77,17 @@ async def update_deposit_settings(
             detail="保证金阶梯的门槛不能重复",
         )
 
-    # 0 档防呆：只要存在启用中的档位，就必须同时存在一条**启用中的 0 元档**。
-    # 理由：resolve_tier() 在没有任何档位 ≤ 余额时会用 `or tiers[0]` 兜底成
-    # 最低一档；若 0 元档被删除/停用，0 保证金打手会继承下一档的全部权益——
-    # 包括 exempt_compensation=True（接单不预冻结炸单赔付金），属资金敞口。
-    # 全部档位都停用属退化配置（调度器已回落到订单到账时效），不在此拦。
-    if any(item.enabled for item in payload.tiers):
-        zero_enabled = any(
-            item.enabled and Decimal(str(item.threshold)) == 0
-            for item in payload.tiers
-        )
-        if not zero_enabled:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="保证金阶梯必须包含一条启用中的 0 元档（0 保证金档）",
-            )
+    # 这里**故意不做**「阶梯必须含 0 元档」的校验（2026-10-18 撤除）。
+    #
+    # 曾经的实现要求存在启用中的 0 元档，理由是 resolve_tier() 会用
+    # `or tiers[0]` 把 0 保证金打手兜底成最低一档，从而继承其权益。但该前提
+    # 与老板的实际配置相反，硬拦会直接卡死后台保存：
+    #   - 老板有意删掉了 0 元档——原始默认 0 元档是 exempt_compensation=False，
+    #     会让 0 保证金打手接单时必须冻结炸单赔付金（余额 0 即 400 接不了单）；
+    #     删掉后 0 保证金打手兜底到 100 档、继承免冻结，才接得上单。
+    #   - 老板 2026-10-18 亦明确表态「0 保证金识别到 100 保证金那个问题不大」。
+    # 因此「0 保证金兜底到最低档」是**有意的承重行为，不要当成 bug 修**：
+    # 移除 0 元档就等于允许 0 保证金打手接单，属产品决策而非数据缺陷。
 
     setting = await deposit_service.get_or_create_deposit_setting(db)
     setting.enabled = payload.enabled

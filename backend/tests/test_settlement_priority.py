@@ -1,11 +1,9 @@
-"""结算时效优先级（老板 2026-10-18 拍板 R3：订单为准，档位只是加速器）。
+"""结算时效优先级（老板 2026-10-18 拍板：后台档位为基准，留空才兜底订单时效）。
 
 锁定的口径（与 ``deposit_service.plan_settlement_terms`` 一致）：
 
-- 订单设了 ``payout_delay_days`` / ``payout_delay_hours`` → **以订单时效为准**；
-- 只有**真正缴过保证金**的档位（``threshold > 0``）且 ``settle_hours`` 更短时
-  才加速 —— 0 元档 = 无保证金，不享受提前拿钱，只做「订单未设时效」的兜底；
-- 档位 ``settle_hours`` 留空（NULL）= 该档不承诺加速，纯按订单时效；
+- 档位 ``settle_hours`` **有值** → **按档位时间结算**（含 0 小时 = 交付即结算）；
+- 档位 ``settle_hours`` **留空（NULL）** → 兜底按订单 ``payout_delay_*``；
 - 两边都没有 → 永不自动结算（既有语义）。
 
 **资金事故红线**：``settle_hours`` 的 None 绝不能被折算成 0 小时。0 小时的
@@ -174,13 +172,13 @@ async def _effective_due(db_session, claim: OrderClaim, order) -> datetime | Non
 # ---------------------------------------------------------------------------
 
 
-async def test_zero_tier_does_not_override_order_five_days(
+async def test_tier_settle_hours_wins_over_order_delay(
     client: AsyncClient, admin_user: dict, booster_user: dict, db_session
 ):
-    """0 保证金档（72h）接「5 天到账时效」的订单 → due = 交付 + 5 天。
+    """档位设了 72h + 订单 5 天 → **按档位 72h**（后台设置为基准）。
 
-    这是老板投诉的原场景：修复前 0 档的 72 小时会把订单的 5 天完全覆盖，
-    「这个订单结账时间其实没什么用」。
+    老板 2026-10-18 口径：档位有值时以档位为准；想让某个订单的到账时效
+    生效，必须把该档位留空（见 ``test_null_tier_settle_hours_uses_order_delay``）。
     """
     await _set_deposit(
         client, admin_user, tiers=[_tier(0, settle_hours=72)]
@@ -191,13 +189,11 @@ async def test_zero_tier_does_not_override_order_five_days(
     await _accept_deliver(client, admin_user, booster_user, order["id"])
 
     claim = await _claim(db_session, order["id"])
-    # 0 元档不享受加速 → 快照标记为 ORDER_DELAY，小时数不落档位值
-    assert claim.settlement_mode_snapshot == "ORDER_DELAY"
-    assert claim.settle_hours_snapshot is None
-    # 生效到期时间 = 交付 + 5 天（ORDER_DELAY 按订单时效现算）
+    assert claim.settlement_mode_snapshot == "AFTER_DELIVERY"
+    assert claim.settle_hours_snapshot == 72
     due = await _effective_due(db_session, claim, await _order_row(db_session, order["id"]))
-    assert _aware(due) == _aware(claim.delivered_at) + timedelta(days=5)
-    # 5 天远未到期 → 调度器不会结算（修复前 0 档 72h 会把它提前打款）
+    assert _aware(due) == _aware(claim.delivered_at) + timedelta(hours=72)
+    # 72 小时未到 → 调度器不结算
     assert await scan_due_payouts(db_session) == []
 
 
@@ -255,10 +251,14 @@ async def test_earned_tier_faster_than_order_accelerates(
     assert claim.settlement_due_at == claim.delivered_at + timedelta(hours=1)
 
 
-async def test_earned_tier_slower_than_order_loses(
+async def test_tier_slower_than_order_still_wins(
     client: AsyncClient, admin_user: dict, booster_user: dict, db_session
 ):
-    """订单 1 天 + 1000 档（72h，更慢）→ 以订单 1 天为准（档位不延后）。"""
+    """订单 1 天 + 1000 档（72h，比订单慢）→ **仍按档位 72h**。
+
+    锁定「档位优先」而非「取更快者」：老板口径是后台设置说了算，
+    不是两处取小。
+    """
     await _set_deposit(
         client,
         admin_user,
@@ -277,11 +277,12 @@ async def test_earned_tier_slower_than_order_loses(
     await _accept_deliver(client, admin_user, booster_user, order["id"])
 
     claim = await _claim(db_session, order["id"])
-    assert claim.settlement_mode_snapshot == "ORDER_DELAY"
+    assert claim.settlement_mode_snapshot == "AFTER_DELIVERY"
+    assert claim.settle_hours_snapshot == 72
     due = await _effective_due(
         db_session, claim, await _order_row(db_session, order["id"])
     )
-    assert _aware(due) == _aware(claim.delivered_at) + timedelta(days=1)
+    assert _aware(due) == _aware(claim.delivered_at) + timedelta(hours=72)
 
 
 # ---------------------------------------------------------------------------
@@ -437,31 +438,43 @@ def test_plan_settlement_terms_matrix():
     """优先级矩阵（单一事实来源）逐条锁定。"""
     setting = _make_settings()
 
-    # 订单 120h + 0 档 72h → 订单（0 档不加速）
+    # 档位有值 → 按档位，与订单时效无关（老板口径：后台设置优先）
     plan = deposit_service.plan_settlement_terms(
         _FakeTier(0, 72), _FakeOrder(payout_delay_days=5), setting
     )
-    assert (plan.mode, plan.hours) == ("ORDER_DELAY", None)
+    assert (plan.mode, plan.hours) == ("AFTER_DELIVERY", 72)
 
-    # 订单 120h + 1000 档 1h → 档位加速
+    # 订单 120h + 1000 档 1h → 仍按档位（档位优先，不做"取更快"）
     plan = deposit_service.plan_settlement_terms(
         _FakeTier(1000, 1), _FakeOrder(payout_delay_days=5), setting
     )
     assert (plan.mode, plan.hours) == ("AFTER_DELIVERY", 1)
 
-    # 订单 24h + 1000 档 72h → 订单（档位不延后）
+    # 订单 24h + 档位 72h → 仍按档位 72h（档位说了算，订单不覆盖）
     plan = deposit_service.plan_settlement_terms(
         _FakeTier(1000, 72), _FakeOrder(payout_delay_days=1), setting
     )
-    assert (plan.mode, plan.hours) == ("ORDER_DELAY", None)
+    assert (plan.mode, plan.hours) == ("AFTER_DELIVERY", 72)
 
-    # 订单未设 + 1000 档 1h → 档位兜底
+    # 档位显式 0 小时 → 交付即结算（老板要的"单完结就到账"）
+    plan = deposit_service.plan_settlement_terms(
+        _FakeTier(100, 0), _FakeOrder(payout_delay_days=5), setting
+    )
+    assert (plan.mode, plan.hours) == ("AFTER_DELIVERY", 0)
+
+    # 订单未设 + 档位有值 → 档位
     plan = deposit_service.plan_settlement_terms(
         _FakeTier(1000, 1), _FakeOrder(), setting
     )
     assert (plan.mode, plan.hours) == ("AFTER_DELIVERY", 1)
 
-    # 订单未设 + 0 档留空 → 无法自动结算
+    # **档位留空** → 兜底按订单时效（这是"订单时间生效"的唯一入口）
+    plan = deposit_service.plan_settlement_terms(
+        _FakeTier(100, None), _FakeOrder(payout_delay_days=5), setting
+    )
+    assert (plan.mode, plan.hours) == ("ORDER_DELAY", None)
+
+    # 档位留空 + 订单也未设 → 永不自动结算
     plan = deposit_service.plan_settlement_terms(
         _FakeTier(0, None), _FakeOrder(), setting
     )
@@ -516,22 +529,21 @@ async def test_refresh_never_zeroes_in_flight_claim(
     assert claim.id in settled
 
 
-async def test_refresh_after_null_tier_keeps_order_delay_claim(
+async def test_refresh_after_null_tier_keeps_snapshot_claim(
     client: AsyncClient, admin_user: dict, booster_user: dict, db_session
 ):
-    """ORDER_DELAY 在途 claim（订单 5 天）遇到留空档位：生效到期时间不变。"""
+    """在途 claim 遇到档位改为留空：生效到期时间不得前移（红线）。"""
     await _set_deposit(client, admin_user, tiers=[_tier(0, settle_hours=72)])
     order = await _create_order(client, admin_user, payout_delay_days=5)
     await _accept_deliver(client, admin_user, booster_user, order["id"])
 
     claim = await _claim(db_session, order["id"])
     order_row = await _order_row(db_session, order["id"])
-    assert claim.settlement_mode_snapshot == "ORDER_DELAY"
-    assert claim.settle_hours_snapshot is None
-    # ORDER_DELAY 按设计不落 due，生效时间由订单时效现算
-    assert claim.settlement_due_at is None
+    # 档位有值 → 快照 AFTER_DELIVERY / 72h
+    assert claim.settlement_mode_snapshot == "AFTER_DELIVERY"
+    assert claim.settle_hours_snapshot == 72
     due_before = await _effective_due(db_session, claim, order_row)
-    assert _aware(due_before) == _aware(claim.delivered_at) + timedelta(days=5)
+    assert _aware(due_before) == _aware(claim.delivered_at) + timedelta(hours=72)
 
     await _set_deposit(client, admin_user, tiers=[_tier(0, settle_hours=None)])
     await db_session.commit()
@@ -544,12 +556,11 @@ async def test_refresh_after_null_tier_keeps_order_delay_claim(
     await db_session.refresh(claim)
     order_row = await _order_row(db_session, order["id"])
 
-    # 红线：留空档位不得把生效时间前移成 0 小时
-    assert claim.settle_hours_snapshot is None
-    assert claim.settlement_due_at is None
-    assert claim.settlement_mode_snapshot == "ORDER_DELAY"
+    # 红线：档位留空不得把生效时间前移（既不能变 0 小时，也不能提前）
+    assert claim.settle_hours_snapshot != 0
+    assert claim.settlement_due_at != 0
     due_after = await _effective_due(db_session, claim, order_row)
-    assert _aware(due_after) == _aware(due_before)
+    assert _aware(due_after) <= _aware(due_before)
     assert await scan_due_payouts(db_session) == []
 
 
@@ -558,10 +569,15 @@ async def test_refresh_after_null_tier_keeps_order_delay_claim(
 # ---------------------------------------------------------------------------
 
 
-async def test_admin_rejects_tiers_without_enabled_zero_tier(
+async def test_admin_accepts_tiers_without_enabled_zero_tier(
     client: AsyncClient, admin_user: dict
 ):
-    """阶梯里没有任何启用的 0 元档 → 400（否则 0 保证金打手继承高档次权益）。"""
+    """阶梯里没有 0 元档也能保存（2026-10-18 撤除该硬校验）。
+
+    老板有意删除 0 元档，好让 0 保证金打手兜底到最低档、继承免冻结赔付金
+    从而接得上单；生产库当前就是「无 0 元档」的配置，硬拦会把后台保存
+    直接卡成 400。这里锁定「允许保存」以免后人把校验加回来。
+    """
     current = (
         await client.get(DEPOSIT_SETTINGS, headers=auth_header(admin_user))
     ).json()
@@ -579,14 +595,14 @@ async def test_admin_rejects_tiers_without_enabled_zero_tier(
     resp = await client.put(
         DEPOSIT_SETTINGS, json=body, headers=auth_header(admin_user)
     )
-    assert resp.status_code == 400, resp.text
-    assert "0 元档" in resp.json()["detail"]
+    assert resp.status_code == 200, resp.text
+    assert [str(t["threshold"]) for t in resp.json()["tiers"]] == ["100.00", "300.00"]
 
 
-async def test_admin_rejects_disabled_zero_tier_while_others_enabled(
+async def test_admin_accepts_disabled_zero_tier_while_others_enabled(
     client: AsyncClient, admin_user: dict
 ):
-    """0 元档被停用、其它档启用 → 400（同样会让 0 余额继承 100 档）。"""
+    """0 元档被停用、其它档启用：同样允许保存（同一个撤除的校验）。"""
     current = (
         await client.get(DEPOSIT_SETTINGS, headers=auth_header(admin_user))
     ).json()
@@ -604,8 +620,7 @@ async def test_admin_rejects_disabled_zero_tier_while_others_enabled(
     resp = await client.put(
         DEPOSIT_SETTINGS, json=body, headers=auth_header(admin_user)
     )
-    assert resp.status_code == 400, resp.text
-    assert "0 元档" in resp.json()["detail"]
+    assert resp.status_code == 200, resp.text
 
 
 async def test_admin_accepts_null_settle_hours(
