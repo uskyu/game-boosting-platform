@@ -228,7 +228,14 @@ async def chat_websocket(websocket: WebSocket) -> None:
             websocket.receive_json(),
             timeout=5,
         )
-    except (asyncio.TimeoutError, WebSocketDisconnect, ValueError):
+    except WebSocketDisconnect:
+        # 客户端在发认证消息前就断开（关页面/弱网/切后台）——这是常态，不是错误。
+        # 此时连接已关，**不能再发 close 帧**：Starlette 会抛
+        # "Unexpected ASGI message 'websocket.close' after sending 'websocket.close'"
+        # 在线上日志里刷成 ERROR/堆栈，干扰真正的故障排查。
+        return
+    except (asyncio.TimeoutError, ValueError):
+        # 仍在连接上（只是没按时发/格式错）：正常回一个策略性关闭帧
         await websocket.close(
             code=status.WS_1008_POLICY_VIOLATION,
             reason="认证超时或格式无效",
