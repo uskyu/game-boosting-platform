@@ -803,22 +803,29 @@ class OrderService:
         前端在当页数组上 filter 出来的数字必然与真实情况对不上（把待审核
         名额也算进「进行中」、翻页还会变）。
 
-        口径与列表可见范围一致（``build_hall_visibility_scope``），但按
-        「名额」而非「订单状态」切分，这才是打手眼里的真实含义：
+        **两把尺子，按身份分开算**——这是老板 2026-10-19 二次反馈的核心：
 
-        - 待接单：还能抢的订单（PENDING 且仍有空位、未截止、未归档）
-        - 进行中：已有人接但**还没交交付**的名额（CLAIMED 且未结算）
-        - 待审核：已提交交付、等老板确认的名额（DELIVERED 且未结算）
-        - 今日完成：今天（北京时间自然日）结算完成的名额数
+        - 管理员看的是**平台盘子**：全平台多少个待接单 / 在进行 / 待审核 /
+          今日结算了多少。
+        - 打手看的是**自己的活**：我手上还有几个没交、我交了几个在等确认、
+          我今天结算了几单。绝不能把别人的名额算进「我的进行中」，
+          更不能把别人结算的单算进「我的今日完成」——否则打手没干活也看到
+          数字在涨（老板原话：「我一天啥也没干，今日完成也是有」）。
 
-        「待审核」单独列出是关键：以前把它并进「进行中」，打手会以为自己
-        还有一堆活在手上。老板原话：「把待交付审核的也算在进行中，然后数
-        也不准」。
+        早先的实现用 ``claim.order_id IN (可见订单)`` 统计名额，而可见订单
+        里包含**所有可抢订单**，于是别人的名额被算进自己的数字；单打手的
+        测试数据碰巧对得上，一多打手就串味。
+
+        Returns:
+            {"pending": 待接单, "active": 进行中, "pending_review": 待审核,
+             "completed_today": 今日完成}
         """
         now = datetime.now(timezone.utc)
-        scope = build_hall_visibility_scope(user)
+        is_admin = user.role == UserRole.ADMIN
 
-        # 待接单：可抢订单（多名额订单仍有空位才算）
+        # 待接单：还能抢的订单（PENDING 且仍有空位、未截止、未归档）。
+        # 这一项两边同义——都是「大厅里我现在能接多少单」，唯一区别是
+        # 打手要按可见范围过滤（管理员本来就看得全）。
         pending_query = select(func.count(Order.id)).where(
             Order.status == OrderStatus.PENDING,
             Order.claim_status == ClaimStatus.OPEN,
@@ -826,36 +833,38 @@ class OrderService:
             or_(Order.deadline.is_(None), Order.deadline > now),
             Order.claimed_count < Order.max_claims,
         )
-        if scope is not None:
-            pending_query = pending_query.where(scope)
+        if not is_admin:
+            scope = build_hall_visibility_scope(user)
+            if scope is not None:
+                pending_query = pending_query.where(scope)
         pending_count = int((await self._db.execute(pending_query)).scalar() or 0)
 
-        # 名额维度统计：按 claim 状态分组，且只算未结算的（settled_at IS NULL）
-        claim_scope = []
-        if scope is not None:
-            # 名额统计同样限定在「该用户可见/相关」的订单范围内
-            claim_scope.append(
-                OrderClaim.order_id.in_(select(Order.id).where(scope))
-            )
+        # 名额维度：**一律以「我自己的名额」为准**（booster_id == 当前用户），
+        # 管理员才是全平台。不做「可见订单内所有名额」——那会把别人的活
+        # 算成自己的。
+        claim_base = select(OrderClaim.status, func.count(OrderClaim.id)).where(
+            OrderClaim.settled_at.is_(None)
+        )
+        if not is_admin:
+            claim_base = claim_base.where(OrderClaim.booster_id == user.id)
         claim_rows = await self._db.execute(
-            select(OrderClaim.status, func.count(OrderClaim.id))
-            .where(*claim_scope, OrderClaim.settled_at.is_(None))
-            .group_by(OrderClaim.status)
+            claim_base.group_by(OrderClaim.status)
         )
         claim_map = {row[0]: int(row[1] or 0) for row in claim_rows.all()}
         active_count = claim_map.get(ClaimLifecycleStatus.CLAIMED, 0)
         review_count = claim_map.get(ClaimLifecycleStatus.DELIVERED, 0)
 
-        # 今日完成：按北京时间自然日的 [00:00, 次日00:00) 取结算时间
+        # 今日完成：按北京时间自然日的 [00:00, 次日00:00) 取结算时间。
+        # 打手只算自己今天结算的；管理员算全平台。
         day_start, day_end = product_day_bounds(datetime.now(timezone.utc))
         completed_query = select(func.count(OrderClaim.id)).where(
             OrderClaim.settled_at.is_not(None),
             OrderClaim.settled_at >= day_start,
             OrderClaim.settled_at < day_end,
         )
-        if scope is not None:
+        if not is_admin:
             completed_query = completed_query.where(
-                OrderClaim.order_id.in_(select(Order.id).where(scope))
+                OrderClaim.booster_id == user.id
             )
         completed_today = int(
             (await self._db.execute(completed_query)).scalar() or 0
