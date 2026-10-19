@@ -558,10 +558,17 @@ async def get_hall_digest(
     """
     order_service = get_order_service(db)
     count, max_updated_at, earliest_deadline = await order_service.hall_digest(current_user)
+    # 顶部统计条的全量数字（2026-10-19 老板反馈「进行中 19 不准」）：
+    # 前端以前在当页 20 条上 filter，翻页会变、也把待审核混进了进行中。
+    stats = await order_service.hall_stats(current_user)
     return HallDigestResponse(
         count=count,
         max_updated_at=max_updated_at,
         earliest_deadline=earliest_deadline,
+        pending_count=stats["pending"],
+        active_count=stats["active"],
+        pending_review_count=stats["pending_review"],
+        completed_today=stats["completed_today"],
     )
 
 

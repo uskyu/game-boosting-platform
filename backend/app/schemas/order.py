@@ -131,7 +131,18 @@ class OrderCreate(BaseModel):
         examples=["王者", "星耀", "大师"],
     )
 
-    title: str | None = Field(default=None, max_length=200, description="订单标题")
+    # 老板 2026-10-19 拍板：标题必填、需求描述可选。
+    #
+    # 之前两者是反的（标题可选、描述必填），发单页大量出现没有标题的订单，
+    # 派单列表和大厅卡片只能拿游戏名凑；描述反而常被随手填个「1」应付。
+    # 后端在这一层强制，前端置灰只是体验层，不能只靠它。
+    title: str = Field(
+        min_length=1,
+        max_length=200,
+        description="订单标题（必填）",
+        examples=["三角洲烽火地带上分单"],
+    )
+
     intro: str | None = Field(default=None, max_length=5000, description="订单简介")
     description: str | None = Field(default=None, max_length=5000, description="简介别名")
 
@@ -267,6 +278,18 @@ class OrderCreate(BaseModel):
         """纯空白视同未填；返回去空白后的值，避免「 」这种脏数据入库。"""
         if not value.strip():
             raise ValueError("请填写老板ID")
+        return value.strip()
+
+    @field_validator("title")
+    @classmethod
+    def title_not_blank(cls, value: str) -> str:
+        """标题必填（2026-10-19 老板拍板）：空串 / 纯空白都算没填。
+
+        ``min_length=1`` 拦不住纯空格，这里补一道并去掉首尾空白，
+        避免「 」这种看起来有标题、实际渲染为空的脏数据。
+        """
+        if not value.strip():
+            raise ValueError("请填写订单标题")
         return value.strip()
 
     @model_validator(mode="after")
@@ -765,7 +788,13 @@ class OrderListResponse(BaseModel):
 
 
 class HallDigestResponse(BaseModel):
-    """大厅对账摘要：轻量轮询先拉摘要，无变化则不拉全量列表。"""
+    """大厅对账摘要：轻量轮询先拉摘要，无变化则不拉全量列表。
+
+    顺带带上顶部统计条的全量数字（2026-10-19）：统计条以前是前端在当页
+    列表上 filter 出来的，翻页/只拉 20 条都会让数字失真，而且把「待审核」
+    名额混进了「进行中」。数字改由服务端按全量口径一次算好，随摘要下发，
+    不额外增加请求。
+    """
 
     count: int = Field(description="当前可见订单数")
     max_updated_at: datetime | None = Field(
@@ -774,6 +803,10 @@ class HallDigestResponse(BaseModel):
     earliest_deadline: datetime | None = Field(
         default=None, description="可见订单中最早的截止时间（未设截止则忽略）"
     )
+    pending_count: int = Field(default=0, description="待接单（还能抢的订单）")
+    active_count: int = Field(default=0, description="进行中名额（已接单、尚未交付）")
+    pending_review_count: int = Field(default=0, description="待审核名额（已交付、等确认）")
+    completed_today: int = Field(default=0, description="今日完成名额数（北京时间自然日）")
 
     @field_serializer("max_updated_at", "earliest_deadline")
     def _serialize_datetimes(self, value: datetime | None, _info) -> str | None:
@@ -785,6 +818,10 @@ class HallDigestResponse(BaseModel):
                 "count": 12,
                 "max_updated_at": "2026-10-13T08:30:00+00:00",
                 "earliest_deadline": "2026-10-14T12:00:00+00:00",
+                "pending_count": 3,
+                "active_count": 5,
+                "pending_review_count": 2,
+                "completed_today": 4,
             }
         }
     )

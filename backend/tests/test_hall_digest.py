@@ -78,7 +78,16 @@ async def test_hall_digest_requires_auth_and_returns_shape(
     assert unauthenticated.status_code in (401, 403)
 
     digest = await _digest(client, booster_user)
-    assert digest == {"count": 0, "max_updated_at": None, "earliest_deadline": None}
+    assert digest == {
+        "count": 0,
+        "max_updated_at": None,
+        "earliest_deadline": None,
+        # 顶部统计条的全量数字（2026-10-19 新增）：空库全为 0
+        "pending_count": 0,
+        "active_count": 0,
+        "pending_review_count": 0,
+        "completed_today": 0,
+    }
 
 
 async def test_new_claimable_order_changes_count(
@@ -212,7 +221,15 @@ async def test_invisible_order_changes_do_not_affect_viewer(
     assert resp.status_code == 200, resp.text
 
     baseline = await _digest(client, booster_user)
-    assert baseline == {"count": 0, "max_updated_at": None, "earliest_deadline": None}
+    # 对账基线仍是三个字段；统计条四个数字（2026-10-19 新增）此时应全为 0。
+    # 后者也必须在「不可见订单被改」时保持不变，所以一起进基线比对。
+    assert baseline["count"] == 0
+    assert baseline["max_updated_at"] is None
+    assert baseline["earliest_deadline"] is None
+    assert baseline["pending_count"] == 0
+    assert baseline["active_count"] == 0
+    assert baseline["pending_review_count"] == 0
+    assert baseline["completed_today"] == 0
 
     # 对该查看者不可见的订单继续被修改（标题/截止都改，updated_at 也被 SQLAlchemy 刷新）
     await db_session.execute(

@@ -64,6 +64,12 @@ function isCurrentTier(tier) {
 
 const canReturn = computed(() => Boolean(overview.value?.can_return))
 
+// 冷却天数由后端按后台配置下发（默认 7 天）；缺失时回退到 7，避免文案出现 undefined
+const cooldownDays = computed(() => {
+  const value = Number(overview.value?.return_cooldown_days)
+  return Number.isFinite(value) && value > 0 ? value : 7
+})
+
 const currentTierLabel = computed(() => {
   const threshold = overview.value?.current_threshold
   return threshold == null ? '暂未形成档位' : `≥ ${formatPrice(threshold)} 档`
@@ -216,7 +222,10 @@ onMounted(async () => {
         <!-- 转回余额：can_return=false 时禁用并展示原因；保证金为 0 时也无可转回 -->
         <section class="surface-card p-6 sm:p-8">
           <h2 class="text-2xl font-semibold text-ink-1">转回余额</h2>
-          <p class="mt-2 text-sm text-ink-2">把保证金转回可用余额。若存在未完成订单，需满足冷却时间后才可转回。</p>
+          <!-- 冷却天数取自后台配置（默认 7 天），直接写进文案，打手不用点下去才知道要等多久 -->
+          <p class="mt-2 text-sm text-ink-2">
+            把保证金转回可用余额。若存在未完成订单，最后一单完结后冷却 {{ cooldownDays }} 天即可转回余额。
+          </p>
 
           <div v-if="outMessage.text" class="mt-4" :class="messageClass(outMessage.type)">{{ outMessage.text }}</div>
           <div v-if="!canReturn && overview.return_block_reason" class="message-warning mt-4">

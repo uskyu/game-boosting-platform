@@ -44,6 +44,8 @@ async def test_create_order_no_auth(client: AsyncClient):
 
 
 # ── 老板ID必填契约（2026-10-05 老板拍板）：用 raw_client 绕过 conftest 注入垫片 ──
+# 标题自 2026-10-19 起同样必填，这几条用例都显式带上标题，
+# 才能确认 422 确实来自 boss_contact 而不是缺标题。
 
 
 async def test_create_order_requires_boss_contact(raw_client: AsyncClient, admin_user: dict):
@@ -51,6 +53,7 @@ async def test_create_order_requires_boss_contact(raw_client: AsyncClient, admin
         "/orders/create",
         json={
             "game_name": "王者荣耀",
+            "title": "测试订单",
             "price": "500.00",
         },
         headers=auth_header(admin_user),
@@ -65,6 +68,7 @@ async def test_create_order_rejects_blank_boss_contact(raw_client: AsyncClient, 
         "/orders/create",
         json={
             "game_name": "王者荣耀",
+            "title": "测试订单",
             "price": "500.00",
             "boss_contact": "   ",
         },
@@ -80,6 +84,7 @@ async def test_create_order_strips_boss_contact(raw_client: AsyncClient, admin_u
         "/orders/create",
         json={
             "game_name": "王者荣耀",
+            "title": "测试订单",
             "price": "500.00",
             "boss_contact": "  boss-001  ",
         },
@@ -87,6 +92,99 @@ async def test_create_order_strips_boss_contact(raw_client: AsyncClient, admin_u
     )
     assert resp.status_code == 201
     assert resp.json()["boss_contact"] == "boss-001"
+
+
+# ── 标题必填 / 需求描述可选（2026-10-19 老板拍板）──
+# 老板原话：「标题改为必填项，这个需求描述改为可选」。之前两者是反的：
+# 描述必填导致大量订单随手填「1」应付，标题反而可以空着，
+# 派单列表和大厅卡片只能拿游戏名凑。
+
+
+async def test_create_order_requires_title(raw_client: AsyncClient, admin_user: dict):
+    """不传标题 → 422，且错误信息明确指向标题。"""
+    resp = await raw_client.post(
+        "/orders/create",
+        json={
+            "game_name": "王者荣耀",
+            "price": "500.00",
+            "boss_contact": "B0001",
+        },
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 422
+    errors = resp.json()["errors"]
+    assert any("标题" in e["message"] for e in errors)
+
+
+async def test_create_order_rejects_blank_title(raw_client: AsyncClient, admin_user: dict):
+    """纯空白标题不算填了（min_length=1 拦不住空格，靠 validator 兜）。"""
+    resp = await raw_client.post(
+        "/orders/create",
+        json={
+            "game_name": "王者荣耀",
+            "title": "   ",
+            "price": "500.00",
+            "boss_contact": "B0001",
+        },
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 422
+    errors = resp.json()["errors"]
+    assert any("标题" in e["message"] for e in errors)
+
+
+async def test_create_order_strips_title(raw_client: AsyncClient, admin_user: dict):
+    resp = await raw_client.post(
+        "/orders/create",
+        json={
+            "game_name": "王者荣耀",
+            "title": "  星耀上王者  ",
+            "price": "500.00",
+            "boss_contact": "B0001",
+        },
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 201
+    assert resp.json()["title"] == "星耀上王者"
+
+
+async def test_create_order_allows_missing_description(
+    raw_client: AsyncClient, admin_user: dict
+):
+    """需求描述改为可选：有标题、没描述也能发单，且落库为 NULL。"""
+    resp = await raw_client.post(
+        "/orders/create",
+        json={
+            "game_name": "王者荣耀",
+            "title": "测试订单",
+            "price": "500.00",
+            "boss_contact": "B0001",
+        },
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 201, resp.text
+    data = resp.json()
+    assert data["title"] == "测试订单"
+    assert data["description_raw"] is None
+
+
+async def test_create_order_blank_description_stored_as_null(
+    raw_client: AsyncClient, admin_user: dict
+):
+    """描述传空串 / 纯空白同样归一为 NULL，不留下渲染为空的脏值。"""
+    resp = await raw_client.post(
+        "/orders/create",
+        json={
+            "game_name": "王者荣耀",
+            "title": "测试订单",
+            "price": "500.00",
+            "boss_contact": "B0001",
+            "description_raw": "   ",
+        },
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["description_raw"] is None
 
 
 async def test_accept_order(

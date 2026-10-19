@@ -575,6 +575,59 @@ class WalletService:
         )
         return order
 
+    async def reverse_recharge(
+        self,
+        order: RechargeOrder,
+        *,
+        operator_id: int | None = None,
+        remark: str | None = None,
+    ) -> WalletTransaction:
+        """把一笔已入账的充值冲正：从可用余额扣回，记 ``RECHARGE_REVERSAL``。
+
+        仅在管理员把 ``SUCCESS`` 的充值单改判失败时调用（见
+        ``recharge_service.admin_update_status``）。三条硬约束：
+
+        1. **不允许把余额扣成负数**：用户可能已经把充值花掉了（发单托管 /
+           提现），此时直接 400 让管理员先走「钱包调账」，绝不静默截断——
+           截断会凭空产生差额，账对不上。
+        2. **不带 ``recharge_order_id``**：``uq_wallet_tx_recharge_order``
+           那条唯一键是给易支付回调入账用的幂等防线；冲正若也带上，
+           一笔单只能冲正一次、且改判成功后无法再冲，语义会被绑死。
+           商户单号写进 ``remark``，靠类型 + 备注追溯。
+        3. ``total_income`` 不变：充值从来不计入累计收入，冲正同理。
+
+        Raises:
+            HTTPException: 可用余额不足时 400。
+        """
+        amount = _to_decimal(order.amount).quantize(_CENT, rounding=ROUND_HALF_UP)
+        if amount <= _ZERO:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="充值金额异常，无法冲正",
+            )
+
+        wallet = await self.get_or_create_wallet(order.user_id)
+        # get_or_create_wallet 返回的可能是缓存对象；这里读实时余额给出准确提示
+        wallet = await self._lock_wallet(wallet.id)
+        available = _to_decimal(wallet.available_balance)
+        if available < amount:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"用户可用余额不足：需扣回 ¥{amount:.2f}，当前可用仅 ¥{available:.2f}。"
+                    "请先通过「钱包调账」补足差额，再改为失败。"
+                ),
+            )
+
+        return await self._apply(
+            wallet,
+            tx_type=WalletTransactionType.RECHARGE_REVERSAL,
+            amount=-amount,
+            available_delta=-amount,
+            operator_id=operator_id,
+            remark=remark or f"充值冲正 {order.trade_no}",
+        )
+
     async def list_recharges(
         self,
         *,

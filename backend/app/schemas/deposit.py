@@ -96,6 +96,11 @@ class DepositOverviewResponse(BaseModel):
     return_block_reason: str | None = Field(
         default=None, description="不允许转回时的中文原因"
     )
+    # 冷却天数由后台「保证金管理」配置（默认 7 天）。前端要把它写进说明文案，
+    # 让打手在转回之前就知道要等多久，不必等点下去被拒才看到原因。
+    return_cooldown_days: int = Field(
+        default=7, description="保证金转回余额的冷却天数（后台可配）"
+    )
 
     tiers: list[DepositTierResponse] = Field(default_factory=list, description="全部生效阶梯")
 

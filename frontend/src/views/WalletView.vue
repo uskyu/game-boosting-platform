@@ -12,6 +12,7 @@ import {
   TRANSACTION_TYPE_META,
   WITHDRAWAL_CHANNELS,
   getChannelLabel,
+  getRechargeStatusMeta,
   getTransactionTypeLabel,
   getWithdrawalStatusLabel,
   getWithdrawalStatusTagClass,
@@ -71,16 +72,8 @@ function closeRecharge() {
   showRechargeModal.value = false
 }
 
-const RECHARGE_STATUS_META = {
-  PENDING: { label: '待支付', tagClass: '!bg-warning-soft !text-warning' },
-  SUCCESS: { label: '已到账', tagClass: '!bg-success-soft !text-success' },
-  CLOSED: { label: '已关闭', tagClass: '!bg-surface-3 !text-ink-2' },
-}
-
-function getRechargeStatusMeta(status) {
-  return RECHARGE_STATUS_META[status] || { label: status || '未知状态', tagClass: '!bg-surface-3 !text-ink-2' }
-}
-
+// 充值记录状态标签统一走 store 的 RECHARGE_STATUS_META（含 FAILED），
+// 避免用户端与后台「支付记录」两处文案各写一份、改一处漏一处。
 function getRechargeMethodLabel(type) {
   return rechargeConfig.value.pay_methods.find((item) => item.type === type)?.name || type || '-'
 }
@@ -691,7 +684,10 @@ onUnmounted(() => {
             <p v-if="!depositOverview?.can_return && depositOverview?.return_block_reason" class="mt-2 text-xs text-warning">
               {{ depositOverview.return_block_reason }}
             </p>
-            <p v-else class="helper-text">转回后保证金减少，档位权益会随之变化。</p>
+            <p v-else class="helper-text">
+              转回后保证金减少，档位权益会随之变化。最后一单完结后冷却
+              {{ depositOverview?.return_cooldown_days || 7 }} 天即可转回。
+            </p>
           </div>
           <button
             class="btn-secondary min-h-[44px]"

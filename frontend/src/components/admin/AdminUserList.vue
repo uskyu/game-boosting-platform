@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useAdminUsersStore } from '@/stores/adminUsers'
+import { getTransactionTypeLabel } from '@/stores/wallet'
 import { formatDateTime, formatPrice } from '@/utils/display'
 import { getClaimStatusMeta } from '@/utils/order'
 
@@ -341,15 +342,10 @@ async function loadTransactions(page = 1) {
   current.loading = false
 }
 
-const TX_TYPE_LABELS = {
-  ORDER_INCOME: '订单收入 (+)',
-  ADMIN_ADJUST: '管理员调账 (±)',
-  WITHDRAWAL_FREEZE: '提现冻结 (-)',
-  WITHDRAWAL_REFUND: '提现驳回回补 (+)',
-  WITHDRAWAL_PAID: '提现打款 (-)',
-}
+// 流水类型文案统一走 store（此前这里只列了 5 种，托管/保证金/售后/充值等
+// 一律原样显示英文枚举值）。方向后缀由金额正负单独渲染，这里只取名称。
 function txTypeLabel(type) {
-  return TX_TYPE_LABELS[type] || type || '-'
+  return getTransactionTypeLabel(type)
 }
 function txAmountLabel(amount) {
   const value = Number(amount ?? 0)

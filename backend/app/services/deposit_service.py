@@ -615,16 +615,23 @@ async def daily_accept_status(db: AsyncSession, booster_id: int) -> DailyAcceptS
     )
 
 
+async def get_return_cooldown_days(db: AsyncSession) -> int:
+    """读取「保证金转回余额」的冷却天数（后台可配，默认 7 天）。
+
+    前端要把这个数字写进说明文案（老板 2026-10-19 要求：「这样他们知道
+    冷却多久」），所以单独暴露，不埋在 ``return_block_reason`` 里。
+    """
+    setting = await get_or_create_deposit_setting(db)
+    return int(setting.return_cooldown_days or DEFAULT_DEPOSIT_RETURN_COOLDOWN_DAYS)
+
+
 async def return_block_reason(db: AsyncSession, user_id: int) -> str | None:
     """保证金转回余额的冷却期校验（None = 可转回）。
 
     规则：没有未完成的名额，且最后一个已结算名额距今满 N 天
     （N 由后台「保证金管理」配置，默认 7 天）。
     """
-    setting = await get_or_create_deposit_setting(db)
-    cooldown_days = int(
-        setting.return_cooldown_days or DEFAULT_DEPOSIT_RETURN_COOLDOWN_DAYS
-    )
+    cooldown_days = await get_return_cooldown_days(db)
 
     unfinished = await db.execute(
         select(func.count(OrderClaim.id)).where(
@@ -633,7 +640,11 @@ async def return_block_reason(db: AsyncSession, user_id: int) -> str | None:
         )
     )
     if int(unfinished.scalar() or 0) > 0:
-        return "还有未完成的订单，请先完成全部订单"
+        # 顺带把冷却期告诉打手：完成订单后还要等几天，现在就能算清楚
+        return (
+            f"还有未完成的订单，请先完成全部订单"
+            f"（最后一单完结后需冷却 {cooldown_days} 天才能转回）"
+        )
 
     last_settled = await db.execute(
         select(func.max(OrderClaim.settled_at)).where(
@@ -731,6 +742,7 @@ __all__ = [
     "refresh_unsettled_claim_settlements",
     "resolve_tier",
     "resolve_unsettled_settlement_due",
+    "get_return_cooldown_days",
     "return_block_reason",
     "tier_level_and_label",
     "transfer_in",

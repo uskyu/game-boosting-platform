@@ -511,7 +511,9 @@ async def test_admin_after_sale_list_and_approve(
     payload = listed.json()
     assert payload["total"] == 1
     assert payload["items"][0]["username"] == "PubAdmin"
-    assert payload["items"][0]["order"]["title"] is None  # 建单未填标题
+    # 标题自 2026-10-19 起必填，conftest 的建单垫片统一注入「测试订单」；
+    # 这里断言它确实透传进售后单的 order 快照（此前断言 None = 建单未填标题）。
+    assert payload["items"][0]["order"]["title"] == "测试订单"
 
     approved = await _review(
         client, admin_user, created.json()["id"], {"action": "approve"}

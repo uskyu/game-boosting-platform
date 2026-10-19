@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, joinedload, selectinload
 
+from app.core.product_time import product_day_bounds
 from app.core.security import encrypt_text, escape_like
 from app.models.booster_service import BoosterService
 from app.models.deposit import (
@@ -251,13 +252,21 @@ class OrderService:
             price_min=order_data.price_min or order_data.price,
             price_max=order_data.price_max or order_data.price,
             title=order_data.title,
-            intro=order_data.intro or order_data.description,
-            description=order_data.description or order_data.intro,
+            intro=(
+                (order_data.intro or order_data.description or "").strip() or None
+            ),
+            description=(
+                (order_data.description or order_data.intro or "").strip() or None
+            ),
             max_claims=order_data.max_claims,
             claim_status=ClaimStatus.OPEN,
             deadline=order_data.deadline,
             attachments=order_data.attachments,
-            description_raw=order_data.description_raw,
+            # 需求描述自 2026-10-19 起可选：空串归一为 NULL，
+            # 避免列表卡片拿到 "" 却又不回退到 AI 摘要/标题
+            description_raw=(
+                (order_data.description_raw or "").strip() or None
+            ),
             description_ai=order_data.description_ai,
             ai_tags=ai_tags,
             game_account=order_data.game_account,
@@ -379,6 +388,13 @@ class OrderService:
             target_rank=target_rank,
             price=price,
             status=OrderStatus.LOCKED,
+            # 服务卡订单没有标题输入框，按「游戏 + 服务类型」自动生成：
+            # 标题自 2026-10-19 起必填，不生成会留下永远没有标题的订单。
+            title=(
+                f"{service.game.name} {service.service_type}单".strip()
+                if service.service_type
+                else f"{service.game.name} 服务单"
+            ),
             description_raw=payload.description_raw,
             description_ai=payload.description_ai,
             ai_tags=ai_tags,
@@ -779,6 +795,78 @@ class OrderService:
             query = query.where(scope)
         row = (await self._db.execute(query)).one()
         return int(row[0] or 0), _ensure_utc(row[1]), _ensure_utc(row[2])
+
+    async def hall_stats(self, user: User) -> dict[str, int]:
+        """大厅顶部统计条的全量口径数字（老板 2026-10-19 反馈「数字不准」）。
+
+        这里刻意**不复用列表页的数据**：大厅只显示可抢订单，列表一页 20 条，
+        前端在当页数组上 filter 出来的数字必然与真实情况对不上（把待审核
+        名额也算进「进行中」、翻页还会变）。
+
+        口径与列表可见范围一致（``build_hall_visibility_scope``），但按
+        「名额」而非「订单状态」切分，这才是打手眼里的真实含义：
+
+        - 待接单：还能抢的订单（PENDING 且仍有空位、未截止、未归档）
+        - 进行中：已有人接但**还没交交付**的名额（CLAIMED 且未结算）
+        - 待审核：已提交交付、等老板确认的名额（DELIVERED 且未结算）
+        - 今日完成：今天（北京时间自然日）结算完成的名额数
+
+        「待审核」单独列出是关键：以前把它并进「进行中」，打手会以为自己
+        还有一堆活在手上。老板原话：「把待交付审核的也算在进行中，然后数
+        也不准」。
+        """
+        now = datetime.now(timezone.utc)
+        scope = build_hall_visibility_scope(user)
+
+        # 待接单：可抢订单（多名额订单仍有空位才算）
+        pending_query = select(func.count(Order.id)).where(
+            Order.status == OrderStatus.PENDING,
+            Order.claim_status == ClaimStatus.OPEN,
+            Order.is_archived.is_(False),
+            or_(Order.deadline.is_(None), Order.deadline > now),
+            Order.claimed_count < Order.max_claims,
+        )
+        if scope is not None:
+            pending_query = pending_query.where(scope)
+        pending_count = int((await self._db.execute(pending_query)).scalar() or 0)
+
+        # 名额维度统计：按 claim 状态分组，且只算未结算的（settled_at IS NULL）
+        claim_scope = []
+        if scope is not None:
+            # 名额统计同样限定在「该用户可见/相关」的订单范围内
+            claim_scope.append(
+                OrderClaim.order_id.in_(select(Order.id).where(scope))
+            )
+        claim_rows = await self._db.execute(
+            select(OrderClaim.status, func.count(OrderClaim.id))
+            .where(*claim_scope, OrderClaim.settled_at.is_(None))
+            .group_by(OrderClaim.status)
+        )
+        claim_map = {row[0]: int(row[1] or 0) for row in claim_rows.all()}
+        active_count = claim_map.get(ClaimLifecycleStatus.CLAIMED, 0)
+        review_count = claim_map.get(ClaimLifecycleStatus.DELIVERED, 0)
+
+        # 今日完成：按北京时间自然日的 [00:00, 次日00:00) 取结算时间
+        day_start, day_end = product_day_bounds(datetime.now(timezone.utc))
+        completed_query = select(func.count(OrderClaim.id)).where(
+            OrderClaim.settled_at.is_not(None),
+            OrderClaim.settled_at >= day_start,
+            OrderClaim.settled_at < day_end,
+        )
+        if scope is not None:
+            completed_query = completed_query.where(
+                OrderClaim.order_id.in_(select(Order.id).where(scope))
+            )
+        completed_today = int(
+            (await self._db.execute(completed_query)).scalar() or 0
+        )
+
+        return {
+            "pending": pending_count,
+            "active": active_count,
+            "pending_review": review_count,
+            "completed_today": completed_today,
+        }
 
     async def accept_window_wait(self, viewer: User) -> tuple[bool, int]:
         """返回 (保证金模式是否开启, 查看者接单等待秒数)。

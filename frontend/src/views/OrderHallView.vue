@@ -158,12 +158,22 @@ const unreadMap = computed(() => {
   }, {})
 })
 
-// 顶部统计条：大数字（24px semibold tabular-nums，文档 5 节统计卡标准）
-const hallStats = computed(() => [
-  { key: 'pending', label: '待接单', value: formatCount(orders.value.filter((item) => item.status === 'PENDING').length), tone: 'text-ink-1' },
-  { key: 'locked', label: '进行中', value: formatCount(orders.value.filter((item) => item.status === 'LOCKED').length), tone: 'text-primary' },
-  { key: 'done', label: '今日完成', value: formatCount(orders.value.filter((item) => item.status === 'COMPLETED').length), tone: 'text-success' },
-])
+// 顶部统计条：大数字（24px semibold tabular-nums，文档 5 节统计卡标准）。
+//
+// 数字一律取服务端全量口径（/orders/hall-digest 随摘要下发），**不能**在
+// 当前页数组上 filter：大厅一页只有 20 条，翻页/筛选都会让数字跳变，
+// 而且「进行中」会把手上的待审核交付一起算进去（老板 2026-10-19 报的就是这个）。
+// 摘要还没回来时显示「—」，绝不显示 0 冒充真实数字。
+const hallStats = computed(() => {
+  const stats = ordersStore.hallStats
+  const pick = (value) => (value == null ? '—' : formatCount(value))
+  return [
+    { key: 'pending', label: '待接单', value: pick(stats?.pending_count), tone: 'text-ink-1' },
+    { key: 'locked', label: '进行中', value: pick(stats?.active_count), tone: 'text-primary' },
+    { key: 'review', label: '待审核', value: pick(stats?.pending_review_count), tone: 'text-warning' },
+    { key: 'done', label: '今日完成', value: pick(stats?.completed_today), tone: 'text-success' },
+  ]
+})
 
 function getOrderUnreadCount(orderId) {
   return Number(unreadMap.value[orderId] || 0)
@@ -490,6 +500,9 @@ async function startHallLifecycle() {
   lastHallFullRefreshAt = 0
   hallDigestUnavailable = false
   fetchOrders()
+  // 顶部统计条全量数字：随摘要接口一起回来。首屏直接拉一次，
+  // 而不是等列表响应（列表那三个 hall_* 字段只是对账基线，不含名额统计）。
+  ordersStore.fetchHallDigest().catch(() => {})
   // 站点设置决定「今日已接单」区块是否渲染；App 启动时已预取，这里基本直接命中缓存
   await siteStore.fetchSettings()
   if (hallRecentClaimsVisible.value) {

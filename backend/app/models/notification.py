@@ -30,6 +30,7 @@ class NotificationType(str, PyEnum):
     ORDER_CANCEL_REQUEST_RESOLVED = "ORDER_CANCEL_REQUEST_RESOLVED"  # 取消申请已同意/拒绝
     AFTERSALES_CREATED = "AFTERSALES_CREATED"        # 老板发起售后申请，待平台裁定
     AFTERSALES_RESOLVED = "AFTERSALES_RESOLVED"      # 售后申请已通过/驳回
+    RECHARGE_UPDATED = "RECHARGE_UPDATED"            # 充值记录被管理员人工改判成功/失败
 
 
 class Notification(Base):

@@ -193,7 +193,7 @@ const canPublish = computed(() => {
   return Boolean(
     selectedGame.value
     && !gameOffline.value
-    && formData.value.description_raw.trim()
+    && formData.value.title.trim()
     && Number(formData.value.price) > 0
   )
 })
@@ -270,7 +270,7 @@ async function prefillFromOrder(orderId, mode) {
 async function publishOrder() {
   if (submitting.value) return
   if (!canPublish.value) {
-    errorMessage.value = '游戏、需求和价格都是必填项。'
+    errorMessage.value = '游戏、标题和价格都是必填项。'
     return
   }
 
@@ -331,12 +331,18 @@ async function publishOrder() {
       }
 
       const title = formData.value.title.trim()
+      // 标题必填（2026-10-19 老板拍板）：这里再拦一道，后端同样强制
+      if (!title) {
+        errorMessage.value = '请填写订单标题'
+        return
+      }
       const payload = {
         game_id: selectedGame.value.id,
         game_name: selectedGame.value.name,
-        title: title || null,
+        title,
         price: Number(formData.value.price),
-        description_raw: formData.value.description_raw.trim(),
+        // 需求描述改为可选：留空就不传，后端归一为 NULL，列表会自动回退到标题/AI 摘要
+        description_raw: formData.value.description_raw.trim() || null,
         service_type: '陪玩',
         notes: formData.value.notes.trim() || null,
         boss_contact: bossContact || null,
@@ -496,12 +502,12 @@ onMounted(async () => {
         </div>
 
         <div class="sm:col-span-2">
-          <label class="label" for="create-title">订单标题（可选）</label>
+          <label class="label" for="create-title">订单标题 <span class="text-danger">*</span></label>
           <input id="create-title" v-model="formData.title" type="text" maxlength="200" class="input" placeholder="例如：三角洲烽火地带上分单" />
         </div>
 
         <div class="sm:col-span-2">
-          <label class="label" for="create-description">需求描述 *</label>
+          <label class="label" for="create-description">需求描述（可选）</label>
           <textarea
             id="create-description"
             v-model="formData.description_raw"

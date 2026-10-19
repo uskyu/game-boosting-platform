@@ -69,6 +69,10 @@ export const useOrdersStore = defineStore('orders', () => {
   // 只由列表响应写入——它代表"与当前列表同批"的摘要；摘要探测结果不回写，
   // 避免视图把探测快照误当列表基线。
   const hallDigest = ref(null)
+  // 大厅顶部统计条的全量数字（2026-10-19）：待接单 / 进行中 / 待审核 / 今日完成。
+  // 由 hall-digest 接口下发（服务端按全量口径算），**不再**在当页列表上 filter。
+  // 与 hallDigest 分开存：摘要基线有自己的"只由列表写入"约束，统计数字没有。
+  const hallStats = ref(null)
 
   // Getters
   const hasOrders = computed(() => orders.value.length > 0)
@@ -387,6 +391,18 @@ export const useOrdersStore = defineStore('orders', () => {
     }
   }
 
+  // 保存顶部统计条数字（只由 hall-digest 接口写入；字段缺失时保持 null，
+  // 视图显示「—」而不是把 0 当成真实数字）
+  function setHallStats(stats) {
+    if (!stats) return
+    hallStats.value = {
+      pending_count: Number(stats.pending_count ?? 0),
+      active_count: Number(stats.active_count ?? 0),
+      pending_review_count: Number(stats.pending_review_count ?? 0),
+      completed_today: Number(stats.completed_today ?? 0),
+    }
+  }
+
   // GET /orders/hall-digest → { count, max_updated_at, earliest_deadline }
   // 不写共享 loading（摘要只是断线兜边的判断输入，不驱动任何骨架屏），失败也不写
   // 共享 error（静默探测失败由调用方按"摘要不可用"退回全量刷新，不该在大厅顶部
@@ -400,6 +416,8 @@ export const useOrdersStore = defineStore('orders', () => {
         // 因此 stale 结果不带 data。
         return { success: true, stale: true }
       }
+      // 统计条数字随摘要一起回来：成功一次即刷新（视图顶部不再依赖列表分页）
+      setHallStats(response.data)
       return { success: true, data: response.data }
     } catch (err) {
       if (requestSeq !== digestRequestSeq) {
@@ -1059,6 +1077,7 @@ export const useOrdersStore = defineStore('orders', () => {
     cancelRequestsOrderId,
     cancelRequestsLoading,
     hallDigest,
+    hallStats,
     // Getters
     hasOrders,
     pendingOrders,
@@ -1071,6 +1090,7 @@ export const useOrdersStore = defineStore('orders', () => {
     fetchOrders,
     fetchHallDigest,
     setHallDigest,
+    setHallStats,
     setOrdersContext,
     hasOrdersForContext,
     refreshOrdersContext,

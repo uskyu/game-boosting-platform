@@ -55,6 +55,10 @@ class WalletTransactionType(str, PyEnum):
     AFTERSALE_REFUND = "AFTERSALE_REFUND"        # 售后收款，老板可用余额增加 (+)
     AFTERSALE_DEPOSIT_DEDUCTION = "AFTERSALE_DEPOSIT_DEDUCTION"
     # 售后扣划（保证金抵扣），打手保证金扣减 (-)，可用余额不变
+    # 充值冲正（管理员把已到账充值改判失败）：可用余额扣回 (-)。
+    # 冲正流水不带 recharge_order_id（那列的唯一键只给易支付回调入账用），
+    # 商户单号写在 remark 里，靠类型 + 备注追溯。
+    RECHARGE_REVERSAL = "RECHARGE_REVERSAL"
 
 
 class Wallet(Base):

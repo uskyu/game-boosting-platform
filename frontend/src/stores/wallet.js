@@ -23,6 +23,47 @@ export const TRANSACTION_TYPE_META = {
   WITHDRAWAL_REFUND: { label: '提现退回', direction: 'in' },
   WITHDRAWAL_PAID: { label: '提现打款', direction: 'out' },
   RECHARGE: { label: '充值入账', direction: 'in' },
+  // 人工把已到账充值改判失败时的冲正，可用余额扣回
+  RECHARGE_REVERSAL: { label: '充值冲正', direction: 'out' },
+  // 下面这些是既有流水类型，此前漏登记会直接显示英文枚举值
+  ESCROW_HOLD: { label: '发单托管', direction: 'out' },
+  ESCROW_RELEASE: { label: '托管退回', direction: 'in' },
+  ORDER_PAYMENT: { label: '订单打款', direction: 'out' },
+  DEPOSIT_HOLD: { label: '赔偿金冻结', direction: 'out' },
+  DEPOSIT_RELEASE: { label: '赔偿金解冻', direction: 'in' },
+  COMPENSATION_DEDUCT: { label: '炸单赔偿', direction: 'out' },
+  DEPOSIT_TRANSFER_IN: { label: '转入保证金', direction: 'out' },
+  DEPOSIT_TRANSFER_OUT: { label: '保证金转回', direction: 'in' },
+  CANCEL_COMPENSATION_IN: { label: '取消赔偿入账', direction: 'in' },
+  CANCEL_COMPENSATION_DEDUCT: { label: '取消赔偿扣除', direction: 'out' },
+  AFTERSALE_DEDUCTION: { label: '售后扣划', direction: 'out' },
+  AFTERSALE_REFUND: { label: '售后收款', direction: 'in' },
+  AFTERSALE_DEPOSIT_DEDUCTION: { label: '售后保证金抵扣', direction: 'out' },
+}
+
+// 充值（支付）记录状态：与后端 RechargeStatus 一一对应，包括 058 新增的 FAILED
+export const RECHARGE_STATUS_META = {
+  PENDING: { label: '待支付', tagClass: '!bg-warning-soft !text-warning' },
+  SUCCESS: { label: '已到账', tagClass: '!bg-success-soft !text-success' },
+  CLOSED: { label: '已关闭', tagClass: '!bg-surface-3 !text-ink-2' },
+  FAILED: { label: '失败', tagClass: '!bg-danger-soft !text-danger' },
+}
+
+export const RECHARGE_STATUS_OPTIONS = [
+  { value: '', label: '全部状态' },
+  { value: 'PENDING', label: '待支付' },
+  { value: 'SUCCESS', label: '已到账' },
+  { value: 'FAILED', label: '失败' },
+  { value: 'CLOSED', label: '已关闭' },
+]
+
+export function getRechargeStatusMeta(status) {
+  return (
+    RECHARGE_STATUS_META[status] || {
+      label: status || '未知状态',
+      tagClass: '!bg-surface-3 !text-ink-2',
+    }
+  )
 }
 
 export const WITHDRAWAL_STATUS_META = {
@@ -126,6 +167,8 @@ function normalizeDepositOverview(data) {
     daily_limit_reset_at: source.daily_limit_reset_at || null,
     can_return: Boolean(source.can_return),
     return_block_reason: source.return_block_reason || '',
+    // 冷却天数（后台可配，默认 7）：转回说明文案要用它
+    return_cooldown_days: toNumber(source.return_cooldown_days, 7),
     tiers: Array.isArray(source.tiers) ? source.tiers.map(normalizeDepositTier) : [],
   }
 }
@@ -163,6 +206,17 @@ export const useWalletStore = defineStore('wallet', () => {
   const myRechargesPagination = ref({ page: 1, pageSize: 10, total: 0, pages: 1 })
   const paymentSettings = ref(null)
   const paymentSettingsLoading = ref(false)
+  // 后台「支付记录」：全平台充值单 + 顶部统计
+  const adminRecharges = ref([])
+  const adminRechargesLoading = ref(false)
+  const adminRechargesPagination = ref({ page: 1, pageSize: 20, total: 0, pages: 1 })
+  const adminRechargeStats = ref({
+    total: 0,
+    success: 0,
+    pending: 0,
+    failed: 0,
+    success_amount: 0,
+  })
   const depositOverview = ref(null)
   const depositOverviewLoading = ref(false)
   const depositSubmitting = ref(false)
@@ -492,8 +546,65 @@ export const useWalletStore = defineStore('wallet', () => {
     }
   }
 
-  // ── 保证金（用户侧）──
+  // ── 后台「支付记录」──
 
+  // GET /admin/payment/recharges：全平台充值单（分页 + 状态筛选 + 关键词搜索）
+  async function fetchAdminRecharges(options = {}) {
+    adminRechargesLoading.value = true
+    error.value = null
+
+    try {
+      const params = {
+        page: options.page || adminRechargesPagination.value.page,
+        page_size: options.pageSize || adminRechargesPagination.value.pageSize,
+      }
+      if (options.status) params.status = options.status
+      if (options.q) params.q = options.q
+
+      const response = await api.get('/admin/payment/recharges', { params })
+      const data = response.data || {}
+      adminRecharges.value = data.items || []
+      adminRechargesPagination.value = buildPagination(
+        data,
+        adminRechargesPagination.value.pageSize
+      )
+      if (data.stats) {
+        adminRechargeStats.value = {
+          total: toNumber(data.stats.total, 0),
+          success: toNumber(data.stats.success, 0),
+          pending: toNumber(data.stats.pending, 0),
+          failed: toNumber(data.stats.failed, 0),
+          success_amount: toNumber(data.stats.success_amount, 0),
+        }
+      }
+      return { success: true, data }
+    } catch (err) {
+      error.value = err.message
+      return { success: false, error: err.message }
+    } finally {
+      adminRechargesLoading.value = false
+    }
+  }
+
+  // POST /admin/payment/recharges/{id}/status：人工改判成功 / 失败
+  async function setAdminRechargeStatus(id, status, reason) {
+    submitting.value = true
+    error.value = null
+
+    try {
+      const payload = { status }
+      if (reason != null && String(reason).trim()) payload.reason = String(reason).trim()
+      const response = await api.post(`/admin/payment/recharges/${id}/status`, payload)
+      return { success: true, data: response.data }
+    } catch (err) {
+      error.value = err.message
+      return { success: false, error: err.message }
+    } finally {
+      submitting.value = false
+    }
+  }
+
+  // ── 保证金（用户侧）──
   // GET /wallet/deposit：保证金概览 + 阶梯权益（管理员调用返回 403）
   async function fetchDepositOverview() {
     depositOverviewLoading.value = true
@@ -613,6 +724,10 @@ export const useWalletStore = defineStore('wallet', () => {
     myRechargesPagination,
     paymentSettings,
     paymentSettingsLoading,
+    adminRecharges,
+    adminRechargesLoading,
+    adminRechargesPagination,
+    adminRechargeStats,
     depositOverview,
     depositOverviewLoading,
     depositSubmitting,
@@ -638,6 +753,8 @@ export const useWalletStore = defineStore('wallet', () => {
     fetchMyRecharges,
     fetchPaymentSettings,
     updatePaymentSettings,
+    fetchAdminRecharges,
+    setAdminRechargeStatus,
     fetchDepositOverview,
     transferToDeposit,
     transferFromDeposit,

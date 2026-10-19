@@ -13,6 +13,7 @@ import AdminDashboard from '@/components/admin/AdminDashboard.vue'
 import AdminUserList from '@/components/admin/AdminUserList.vue'
 import AdminSiteSettings from '@/components/admin/AdminSiteSettings.vue'
 import AdminPaymentSettings from '@/components/admin/AdminPaymentSettings.vue'
+import AdminRechargeRecords from '@/components/admin/AdminRechargeRecords.vue'
 import AdminServiceFeeSettings from '@/components/admin/AdminServiceFeeSettings.vue'
 import AdminWithdrawalRuleSettings from '@/components/admin/AdminWithdrawalRuleSettings.vue'
 import AdminWithdrawalCategorySettings from '@/components/admin/AdminWithdrawalCategorySettings.vue'
@@ -61,7 +62,7 @@ const walletStore = useWalletStore()
 const afterSalesStore = useAfterSalesStore()
 const withdrawalPayoutStore = useWithdrawalPayoutStore()
 
-const TAB_KEYS = ['dashboard', 'orders', 'withdrawals', 'afterSales', 'wallet-adjust', 'games', 'users', 'site', 'payment', 'service-fee', 'withdrawal-rule', 'withdrawal-category', 'payout-batches', 'deposit', 'announcements']
+const TAB_KEYS = ['dashboard', 'orders', 'withdrawals', 'afterSales', 'wallet-adjust', 'games', 'users', 'site', 'payment', 'recharges', 'service-fee', 'withdrawal-rule', 'withdrawal-category', 'payout-batches', 'deposit', 'announcements']
 
 function normalizeTab(tab) {
   const value = Array.isArray(tab) ? tab[0] : tab
@@ -894,11 +895,14 @@ async function submitPublishModal() {
   const payload = {
     game_id: game.id,
     game_name: game.name,
+    // 标题必填（2026-10-19 老板拍板）：管理员没填就按「游戏名 派单」自动生成，
+    // 保证派单列表和大厅卡片都有可读标题，不再落到「无标题订单」。
     title: state.title.trim() || `${game.name} 派单`,
     intro: state.intro.trim() || state.description.trim() || null,
     price,
     max_claims: Number(state.max_claims) || 1,
     deadline: state.deadline || null,
+    // 需求描述可选：留空不传，后端归一为 NULL
     description_raw: state.description.trim() || null,
     service_type: ADMIN_PUBLISH_SERVICE_TYPE,
     server: state.server.trim() || null,
@@ -1246,6 +1250,7 @@ onMounted(async () => {
           <button v-if="isAdmin" type="button" :class="activeTab === 'users' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'users'">用户管理</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'site' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'site'">站点管理</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'payment' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'payment'">支付设置</button>
+          <button v-if="isAdmin" type="button" :class="activeTab === 'recharges' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'recharges'">支付记录</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'service-fee' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'service-fee'">服务费设置</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'withdrawal-rule' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'withdrawal-rule'">提现规则</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'withdrawal-category' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'withdrawal-category'">提现分类</button>
@@ -1261,6 +1266,7 @@ onMounted(async () => {
     <AdminUserList v-else-if="activeTab === 'users'" />
     <AdminSiteSettings v-else-if="activeTab === 'site'" />
     <AdminPaymentSettings v-else-if="activeTab === 'payment'" />
+    <AdminRechargeRecords v-else-if="activeTab === 'recharges'" />
     <AdminServiceFeeSettings v-else-if="activeTab === 'service-fee'" />
     <AdminWithdrawalRuleSettings v-else-if="activeTab === 'withdrawal-rule'" />
     <AdminWithdrawalCategorySettings v-else-if="activeTab === 'withdrawal-category'" />
