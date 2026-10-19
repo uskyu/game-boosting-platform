@@ -115,8 +115,13 @@ describe('order list admin late-auth defaults', () => {
     expect(watchEnd).toBeGreaterThan(watchStart)
     const adminWatch = listSource.slice(watchStart, watchEnd)
 
-    // URL 指定 tab / 用户手动点过 tab 时一律让位；非管理员不动
-    expect(adminWatch).toMatch(/if \(!isAdmin \|\| userTouchedTab \|\| route\.query\.tab\) \{\s*return\s*\}/)
+    // URL 指定 tab / 用户手动点过 tab / 上次明确选过 Tab（记忆）时一律让位；
+    // 非管理员不动。
+    // 2026-10-19 新增 rememberedAtMount：管理员上次自己选了「我的接单」，
+    // 不能被「管理员默认看派单」强行改回来。
+    expect(adminWatch).toMatch(
+      /if \(!isAdmin \|\| userTouchedTab \|\| route\.query\.tab \|\| rememberedAtMount\) \{\s*return\s*\}/
+    )
 
     // 初始管理员：只切默认 tab，watch 自身不发请求（首屏请求在 onMounted，避免重复）
     const initialBranchStart = adminWatch.indexOf('wasAdmin === undefined')

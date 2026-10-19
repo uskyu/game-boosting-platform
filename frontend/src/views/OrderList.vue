@@ -20,7 +20,39 @@ const afterSalesStore = useAfterSalesStore()
 // 双栏：我的接单（claims/mine）/ 我的派单（自己发布的订单）
 // 搜索与 Tab 状态同步进 URL query：从详情页/其他页面返回、刷新、前进后退都能恢复，
 // 否则组件重建即清空搜索，列表闪回全量（老板反馈的"搜索失效回归大厅"）。
-const activeTab = ref(route.query.tab === 'claims' || route.query.tab === 'published' ? route.query.tab : 'claims')
+//
+// 老板 2026-10-19：页面要**记住上次打开的 Tab**。URL 只在页面内导航时带 tab，
+// 从导航栏/「返回列表」这类入口进来是没有 query 的，以前一律回落 claims，
+// 想看派单的人每次都得手动再点一下。现在无 query 时读本地存储。
+const ORDER_TAB_STORAGE_KEY = 'gb.orders.lastTab'
+
+function readRememberedTab() {
+  try {
+    const saved = localStorage.getItem(ORDER_TAB_STORAGE_KEY)
+    return saved === 'claims' || saved === 'published' ? saved : null
+  } catch {
+    // 隐私模式/存储被禁用：读不到就当没有，退回默认逻辑
+    return null
+  }
+}
+
+function rememberTab(tab) {
+  if (tab !== 'claims' && tab !== 'published') return
+  try {
+    localStorage.setItem(ORDER_TAB_STORAGE_KEY, tab)
+  } catch {
+    // 写不进去不影响功能，只是下次回到默认
+  }
+}
+
+const initialQueryTab = route.query.tab === 'claims' || route.query.tab === 'published'
+  ? route.query.tab
+  : null
+// 初始优先级的完整链条：URL 显式指定 > 上次记忆 > 默认 claims。
+// rememberedAtMount 要留一份：下面管理员的「默认切派单」逻辑必须知道
+// 「这次是用户自己记得的选择」，不能把它当成从来没选过而强行改掉。
+const rememberedAtMount = initialQueryTab ? null : readRememberedTab()
+const activeTab = ref(initialQueryTab || rememberedAtMount || 'claims')
 let userTouchedTab = false
 const searchGame = ref(String(route.query.game || ''))
 const searchBossContact = ref(String(route.query.boss || ''))
@@ -43,14 +75,17 @@ function getClaimSettlementDisplayMeta(claim) {
 }
 
 // 管理员默认"我的派单"：整页刷新时用户信息可能晚于挂载到达，用 watch 兜底切换。
-// URL 已指定 tab 或用户手动点过 tab 时，一律以用户选择为准。
+// URL 已指定 tab、用户手动点过 tab、**或上次明确选过 Tab** 时，一律以用户选择为准。
 // - 初始就是管理员（immediate 首次调用，wasAdmin 为 undefined）：只切默认 tab，
 //   首屏数据仍由 onMounted 拉一次，这里再请求会重复。
 // - 身份在挂载前晚到：onMounted 会按最终 published tab 只拉一次。
 // - 身份在挂载后晚到：首屏已按打手身份拉过 claims，这里补拉派单。
 let listMounted = false
 watch(() => authStore.isAdmin, (isAdmin, wasAdmin) => {
-  if (!isAdmin || userTouchedTab || route.query.tab) {
+  // rememberedAtMount 有值 = 用户上次自己选过（含选过 claims），这是明确的
+  // 用户意图，比「管理员默认看派单」优先。否则老板选了「我的接单」，
+  // 下次进来又被强行切回派单——等于记忆功能对管理员失效。
+  if (!isAdmin || userTouchedTab || route.query.tab || rememberedAtMount) {
     return
   }
   if (wasAdmin === undefined) {
@@ -271,6 +306,8 @@ async function fetchClaims(page = 1) {
 function switchTab(tab) {
   activeTab.value = tab
   userTouchedTab = true
+  // 记住用户的选择：下次从导航栏/「返回列表」进（无 tab query）时恢复到这里
+  rememberTab(tab)
   if (tab === 'published') {
     ordersStore.setFilters(publishedCacheFilters.value)
     ordersStore.setPage(1)
@@ -304,6 +341,9 @@ function applyAdminDefaultTab() {
 
 // 把当前 Tab/搜索/筛选/页码写进 URL（replace 不产生历史噪音）
 function syncQuery(page = ordersStore.pagination.page) {
+  // 顺手记住 Tab：所有改 tab 的路径（用户点击、URL 恢复、管理员默认切换）
+  // 最终都会走到这里，记忆点集中在一处，不会漏。
+  rememberTab(activeTab.value)
   router.replace({
     query: {
       tab: activeTab.value,
@@ -335,6 +375,8 @@ watch(() => route.query, (query) => {
   restoringFromQuery = true
   let changed = false
   if (qTab && activeTab.value !== qTab) { activeTab.value = qTab; changed = true }
+  // URL 明确指定了 tab（含前进/后退）也记一次：用户最后停在哪一栏就该记住哪一栏
+  if (qTab) rememberTab(qTab)
   if (searchGame.value !== qGame) { searchGame.value = qGame; changed = true }
   if (searchBossContact.value !== qBoss) { searchBossContact.value = qBoss; changed = true }
   if (selectedStatus.value !== qStatus) { selectedStatus.value = qStatus; changed = true }
@@ -466,6 +508,11 @@ watch(claimStatus, () => {
 
 onMounted(async () => {
   listMounted = true
+  // 首屏落定后补记一次 Tab：走 URL 直达（/orders?tab=published）时，
+  // watch(route.query) 不会在挂载瞬间触发，不补这一步「URL 指定过」的
+  // 选择就不会进记忆，下次回来又回默认值。
+  // 此处 activeTab 已是最终值（含管理员默认切换），记录安全。
+  rememberTab(activeTab.value)
   // 从 URL 恢复页码后再拉首屏，避免返回/刷新时搜索条件在但页码被重置
   if (activeTab.value === 'published') {
     ordersStore.setFilters(publishedCacheFilters.value)
