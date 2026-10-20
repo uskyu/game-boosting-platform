@@ -141,10 +141,27 @@ class Wallet(Base):
         lazy="joined",
     )
 
+    # 流水明细刻意用 lazy="raise"，不用 selectin。
+    #
+    # 原先是 lazy="selectin"：**每次**加载 Wallet 都会顺带把该钱包的全部流水
+    # 查一遍（线上实测 SELECT Wallet 因此要 116ms，而等价的裸 SELECT 只要
+    # 0.9ms；单次 get_or_create_wallet 实测 110ms）。而钱包是全站最热的表
+    # 之一——接单、大厅、我的订单、钱包页、结算调度器全都要读它，这笔额外
+    # 往返被放大了上百倍。项目里已经有两处代码专门改成「只选标量列、不加载
+    # Wallet 实体」来绕开这个 selectin（order_service._booster_wallet_facts、
+    # _cancel_compensation_collectible_batch），说明它早就是公认的负担。
+    #
+    # 现在全项目没有任何地方读取 wallet.transactions（要流水一律直接查
+    # WalletTransaction 表，带分页和筛选）。改成 raise 有两个好处：
+    #   1. 加载 Wallet 不再产生额外查询；
+    #   2. 万一将来有人写出 N+1 式的 wallet.transactions 访问，会在开发期
+    #      立刻抛错，而不是悄悄退化成线上慢查询。
+    # 需要流水时请显式查询：
+    #   select(WalletTransaction).where(WalletTransaction.wallet_id == wallet.id, ...)
     transactions: Mapped[list["WalletTransaction"]] = relationship(
         "WalletTransaction",
         back_populates="wallet",
-        lazy="selectin",
+        lazy="raise",
     )
 
     def __repr__(self) -> str:

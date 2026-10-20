@@ -43,6 +43,12 @@ _STATIC_ROUTES = {
     ("POST", "/api/v1/orders/create"): "/api/v1/orders/create",
     ("GET", "/api/v1/orders"): "/api/v1/orders",
     ("GET", "/api/v1/orders/"): "/api/v1/orders",
+    # 大厅摘要：前端大厅的轮询心跳（默认 10s 一次），线上调用量全站第一
+    # （4 万请求里占 23%）。不埋点就等于对这条最高频链路完全没有耗时视图。
+    ("GET", "/api/v1/orders/hall-digest"): "/api/v1/orders/hall-digest",
+    # 我的订单：曾因 Wallet.transactions 的 selectin 与读路径上的 FOR UPDATE
+    # 出现 500ms+ 的尾延迟，需要长期观测。
+    ("GET", "/api/v1/orders/claims/mine"): "/api/v1/orders/claims/mine",
 }
 _ORDER_ID_ROUTES = (
     (

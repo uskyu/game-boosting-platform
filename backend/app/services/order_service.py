@@ -819,13 +819,21 @@ class OrderService:
         Returns:
             {"pending": 待接单, "active": 进行中, "pending_review": 待审核,
              "completed_today": 今日完成}
+
+        性能约束（2026-10-20）：这是 ``GET /orders/hall-digest`` 的主体，而该
+        接口是前端大厅的**轮询心跳**（默认 10s 一次，线上 4 万请求里占 23%，
+        全站第一）。原先分 4 条查询：订单 count 1 条 + 名额 group by 1 条 +
+        今日完成 1 条（后两条 EXPLAIN 都是 type=ALL 全表扫）。这里合并成
+        **2 条**：订单一条，名额三条口径用一条条件聚合一次算完。跨表无法
+        再合（orders 与 order_claims 是两张表，硬拼成 UNION/子查询反而更慢）。
         """
         now = datetime.now(timezone.utc)
         is_admin = user.role == UserRole.ADMIN
 
-        # 待接单：还能抢的订单（PENDING 且仍有空位、未截止、未归档）。
-        # 这一项两边同义——都是「大厅里我现在能接多少单」，唯一区别是
-        # 打手要按可见范围过滤（管理员本来就看得全）。
+        # ── 第 1 条：待接单（还能抢的订单）────────────────────────────
+        # PENDING 且仍有空位、未截止、未归档。这一项两边同义——都是「大厅里
+        # 我现在能接多少单」，唯一区别是打手要按可见范围过滤（管理员本来就
+        # 看得全）。
         pending_query = select(func.count(Order.id)).where(
             Order.status == OrderStatus.PENDING,
             Order.claim_status == ClaimStatus.OPEN,
@@ -839,42 +847,84 @@ class OrderService:
                 pending_query = pending_query.where(scope)
         pending_count = int((await self._db.execute(pending_query)).scalar() or 0)
 
+        # ── 第 2 条：名额三条口径一次聚合 ──────────────────────────────
         # 名额维度：**一律以「我自己的名额」为准**（booster_id == 当前用户），
         # 管理员才是全平台。不做「可见订单内所有名额」——那会把别人的活
-        # 算成自己的。
-        claim_base = select(OrderClaim.status, func.count(OrderClaim.id)).where(
-            OrderClaim.settled_at.is_(None)
-        )
-        if not is_admin:
-            claim_base = claim_base.where(OrderClaim.booster_id == user.id)
-        claim_rows = await self._db.execute(
-            claim_base.group_by(OrderClaim.status)
-        )
-        claim_map = {row[0]: int(row[1] or 0) for row in claim_rows.all()}
-        active_count = claim_map.get(ClaimLifecycleStatus.CLAIMED, 0)
-        review_count = claim_map.get(ClaimLifecycleStatus.DELIVERED, 0)
-
-        # 今日完成：按北京时间自然日的 [00:00, 次日00:00) 取结算时间。
-        # 打手只算自己今天结算的；管理员算全平台。
+        # 算成自己的（老板原话：「我一天啥也没干，今日完成也是有」）。
+        #
+        # 今日完成按北京时间自然日的 [00:00, 次日00:00) 取结算时间；
+        # 进行中/待审核仍以 settled_at IS NULL 的名额快照为准。
         day_start, day_end = product_day_bounds(datetime.now(timezone.utc))
-        completed_query = select(func.count(OrderClaim.id)).where(
-            OrderClaim.settled_at.is_not(None),
-            OrderClaim.settled_at >= day_start,
-            OrderClaim.settled_at < day_end,
+        claim_query = select(
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            and_(
+                                OrderClaim.settled_at.is_(None),
+                                OrderClaim.status == ClaimLifecycleStatus.CLAIMED,
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            and_(
+                                OrderClaim.settled_at.is_(None),
+                                OrderClaim.status == ClaimLifecycleStatus.DELIVERED,
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            and_(
+                                OrderClaim.settled_at.is_not(None),
+                                OrderClaim.settled_at >= day_start,
+                                OrderClaim.settled_at < day_end,
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+        ).where(
+            # 只扫「有意义的行」：未结算 ∪ 今日内结算的。已结算的历史行
+            # （settled_at 为很早以前）与今日完成无关，用索引区间排除掉，
+            # 避免全表扫。
+            or_(
+                OrderClaim.settled_at.is_(None),
+                and_(
+                    OrderClaim.settled_at >= day_start,
+                    OrderClaim.settled_at < day_end,
+                ),
+            )
         )
         if not is_admin:
-            completed_query = completed_query.where(
-                OrderClaim.booster_id == user.id
-            )
-        completed_today = int(
-            (await self._db.execute(completed_query)).scalar() or 0
-        )
+            claim_query = claim_query.where(OrderClaim.booster_id == user.id)
+        active_count, review_count, completed_today = (
+            await self._db.execute(claim_query)
+        ).one()
 
         return {
             "pending": pending_count,
-            "active": active_count,
-            "pending_review": review_count,
-            "completed_today": completed_today,
+            "active": int(active_count or 0),
+            "pending_review": int(review_count or 0),
+            "completed_today": int(completed_today or 0),
         }
 
     async def accept_window_wait(self, viewer: User) -> tuple[bool, int]:
@@ -1019,21 +1069,30 @@ class OrderService:
         # An enabled switch, or an older caller without fee fields, inherits global.
         return global_rate
 
-    async def _deposit_gate(self, booster_id: int) -> tuple[int, bool]:
+    async def _deposit_gate(
+        self, booster_id: int, *, deposit_on: bool | None = None
+    ) -> tuple[int, bool]:
         """返回打手的 (接单等待秒数, 是否免除炸单赔付金)。
 
         保证金模式未开启时返回 (0, False)，即完全不干预现有接单流程。
+
+        ``deposit_on`` 允许调用方复用已经取到的开关值，避免在一次接单里
+        对同一张单行表重复查询（该查询已在锁内，能省则省）。
         """
         from app.services import deposit_service
 
-        if not await deposit_service.is_deposit_enabled(self._db):
+        if deposit_on is None:
+            deposit_on = await deposit_service.is_deposit_enabled(self._db)
+        if not deposit_on:
             return 0, False
         tier, _balance = await deposit_service.get_user_tier(self._db, booster_id)
         if tier is None:
             return 0, False
         return int(tier.wait_seconds or 0), bool(tier.exempt_compensation)
 
-    async def _daily_accept_gate(self, booster_id: int) -> None:
+    async def _daily_accept_gate(
+        self, booster_id: int, *, deposit_on: bool | None = None
+    ) -> None:
         """每日接单量闸门（fail-fast，加在等待闸门之前）。
 
         口径：按北京时间每天 0:00 刷新；窗口内接单且订单未取消才计数，
@@ -1042,10 +1101,15 @@ class OrderService:
 
         保证金模式未开启时不施加任何限制，保持原有体验；管理端派单路径
         （assign_order）不走本闸门，与等待闸门口径一致。
+
+        ``deposit_on`` 允许调用方复用已经取到的开关值，省掉一次单行查询
+        （接单路径要连续过两道闸门，重复查询没有意义）。
         """
         from app.services import deposit_service
 
-        if not await deposit_service.is_deposit_enabled(self._db):
+        if deposit_on is None:
+            deposit_on = await deposit_service.is_deposit_enabled(self._db)
+        if not deposit_on:
             return
         # 局部变量不能用 status：会遮蔽模块级 from fastapi import status，
         # 下面 raise 处的 status.HTTP_400_BAD_REQUEST 将取到本对象而 500。
@@ -1067,6 +1131,70 @@ class OrderService:
             },
         )
 
+    # 接单被拒的文案：预检与持锁复核共用，避免两条路径判定漂移。
+    _CLAIM_STATUS_REJECTIONS = {
+        ClaimStatus.PAUSED.value: "订单已暂停抢单",
+        ClaimStatus.CLOSED.value: "订单已截止，不能接单",
+        ClaimStatus.FULL.value: "订单接单人数已满",
+    }
+
+    @classmethod
+    def _accept_blocked_reason(
+        cls,
+        *,
+        is_archived: Any,
+        claim_status: Any,
+        order_status: Any,
+        claimed_count: int,
+        max_claims: int,
+        deadline: datetime | None,
+        order_user_id: int,
+        booster_id: int,
+        now: datetime,
+    ) -> tuple[str, ClaimStatus | None] | None:
+        """接单的前置拒绝原因（纯读判定，无任何副作用）；None = 允许接单。
+
+        返回 ``(用户文案, 需要同步的 claim_status)``。第二项只在「时限已过」
+        和「名额已满」两种情形下非空：这两种是订单自身的终态，命中时顺带把
+        ``claim_status`` 落成 CLOSED/FULL，让后续请求能在预检阶段直接拒掉
+        （原实现的行为）。其余分支不写任何状态。
+
+        预检（不加锁）和持锁复核共用这一份判据，保证「先快速拒绝」绝不会
+        放过任何持锁路径本该拒绝的请求，两条路径给用户的文案也完全一致。
+        判定顺序与原实现保持一致（归档 → 抢单状态 → 订单状态 → 时限 →
+        名额 → 自己发的单）。
+        """
+        if is_archived:
+            return "订单已归档，不能接单", None
+
+        claim_value = cls._enum_value(claim_status)
+        if claim_value != ClaimStatus.OPEN.value:
+            return (
+                cls._CLAIM_STATUS_REJECTIONS.get(claim_value, "订单当前不允许接单"),
+                None,
+            )
+
+        order_value = cls._enum_value(order_status)
+        if order_value not in (OrderStatus.PENDING.value, OrderStatus.LOCKED.value):
+            return "订单当前状态不允许接单", None
+        # LOCKED 只有在允许多人接单时还能继续报名。
+        if order_value == OrderStatus.LOCKED.value and max_claims <= 1:
+            return "订单已被其他代练接单", None
+
+        if deadline is not None:
+            # MySQL DATETIME 返回 naive 时间，须补 UTC 再与 aware now 比较
+            deadline_utc = (
+                deadline if deadline.tzinfo else deadline.replace(tzinfo=timezone.utc)
+            )
+            if deadline_utc <= now:
+                return "订单已截止，不能接单", ClaimStatus.CLOSED
+
+        if claimed_count >= max_claims:
+            return "订单接单人数已满", ClaimStatus.FULL
+        if order_user_id == booster_id:
+            return "不能接取自己的订单", None
+        return None
+
     async def accept_order(
         self,
         order_id: int,
@@ -1083,6 +1211,9 @@ class OrderService:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="管理员请通过管理端处理订单，不能作为打手接单",
             )
+
+        # 延迟导入，避免 service -> service 的模块级循环依赖（同其它方法）。
+        from app.services import deposit_service
 
         # Lock booster row first to serialize quota checks.
         # Concurrent accepts without this lock can both pass the count check
@@ -1110,6 +1241,99 @@ class OrderService:
                 detail=f"当前同时接单数已达上限（{active_orders_count}/{limit}），请先完成现有订单",
             )
 
+        now = datetime.now(timezone.utc)
+
+        # ── 无锁预检（不碰订单行锁）──────────────────────────────────────
+        # 抢单是纯竞速场景：热门订单常有一秒内 8–14 个打手同时点「接手」，
+        # 而其中只有一个能成功（线上实测 accept 失败率约 73%）。若把全部
+        # 判定都放在订单行锁里，输家会排队等赢家走完整个事务，实测 p95 拖到
+        # 5.5s、max 5.6s，用户体感就是「点接手会卡」。
+        # 这里先用一次不加锁的读把「已经抢不到」的请求直接拒掉：输家几乎
+        # 立刻拿到和原来一模一样的拒绝文案，行锁只留给真正的赢家。
+        # 预检必须按列查询、不能返回 ORM 实例：一旦 Order 进了 identity map，
+        # 后面 with_for_update() 的复核就可能直接复用这份旧快照，把「预检读到
+        # 的是旧值」变成「持锁复核也读旧值」，权威判定就失效了。只取需要的
+        # 标量列，既避开 identity map，也少传整行宽字段。
+        preflight = (
+            await self._db.execute(
+                select(
+                    Order.id,
+                    Order.user_id,
+                    Order.status,
+                    Order.claim_status,
+                    Order.claimed_count,
+                    Order.max_claims,
+                    Order.deadline,
+                    Order.is_archived,
+                    Order.created_at,
+                ).where(Order.id == order_id)
+            )
+        ).one_or_none()
+        if preflight is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="订单不存在",
+            )
+        blocked = self._accept_blocked_reason(
+            is_archived=preflight.is_archived,
+            claim_status=preflight.claim_status,
+            order_status=preflight.status,
+            claimed_count=int(preflight.claimed_count or 0),
+            max_claims=int(preflight.max_claims or 0),
+            deadline=preflight.deadline,
+            order_user_id=preflight.user_id,
+            booster_id=booster.id,
+            now=now,
+        )
+        if blocked is not None:
+            # 预检只读：不改 claim_status，写状态一律留给持锁路径。
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=blocked[0]
+            )
+        # 重复报名也是纯读判定，唯一约束 uq_order_claim_booster 仍是最终兜底。
+        existing = await self._db.execute(
+            select(OrderClaim.id).where(
+                OrderClaim.order_id == order_id,
+                OrderClaim.booster_id == booster.id,
+            )
+        )
+        if existing.scalar_one_or_none() is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="您已报名过该订单，无需重复报名",
+            )
+
+        # 每日接单量闸门：达到当前档位上限（北京时间每日 0 点刷新）即拒绝，
+        # fail-fast 放在等待闸门之前，避免达限用户还卡在等待期才被拒。
+        # 两道闸门只读打手侧的档位/钱包/全局开关，与订单行锁无关，放在锁外
+        # 执行可进一步缩短锁持有时间。
+        deposit_on = await deposit_service.is_deposit_enabled(self._db)
+        await self._daily_accept_gate(booster.id, deposit_on=deposit_on)
+
+        # 保证金接单闸门：订单发布后需等待 N 秒（按打手保证金档位减免秒数）。
+        # 保证金模式未开启时不施加任何等待，保持原有体验。
+        wait_seconds, exempt_compensation = await self._deposit_gate(
+            booster.id, deposit_on=deposit_on
+        )
+        if wait_seconds > 0:
+            published_at = preflight.created_at
+            if published_at.tzinfo is None:
+                published_at = published_at.replace(tzinfo=timezone.utc)
+            opens_at = published_at + timedelta(seconds=wait_seconds)
+            if now < opens_at:
+                remaining = int(math.ceil((opens_at - now).total_seconds()))
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        f"该订单还需等待 {remaining} 秒才开放接单"
+                        f"（当前保证金档位需等待 {wait_seconds} 秒）"
+                    ),
+                )
+
+        # ── 持锁复核 + 写入 ────────────────────────────────────────────
+        # 预检只是节流手段，不是权威判定：并发窗口内状态可能已被别人改掉，
+        # 所以拿到行锁后必须用同一份判据再判一次。判据复用
+        # _accept_blocked_reason，两条路径不可能给出不同结论。
         result = await self._db.execute(
             select(Order)
             .where(Order.id == order_id)
@@ -1123,62 +1347,27 @@ class OrderService:
                 detail="订单不存在",
             )
 
-        now = datetime.now(timezone.utc)
-        if order.is_archived:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="订单已归档，不能接单")
-        if order.claim_status != ClaimStatus.OPEN:
-            claim_status_messages = {
-                ClaimStatus.PAUSED: "订单已暂停抢单",
-                ClaimStatus.CLOSED: "订单已截止，不能接单",
-                ClaimStatus.FULL: "订单接单人数已满",
-            }
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=claim_status_messages.get(order.claim_status, "订单当前不允许接单"),
-            )
-        if order.status not in (OrderStatus.PENDING, OrderStatus.LOCKED):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="订单当前状态不允许接单")
-        # LOCKED remains claimable only for orders configured for multiple boosters.
-        if order.status == OrderStatus.LOCKED and order.max_claims <= 1:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="订单已被其他代练接单")
-        if order.deadline is not None:
-            # MySQL DATETIME 返回 naive 时间，须补 UTC 再与 aware now 比较
-            deadline = order.deadline if order.deadline.tzinfo else order.deadline.replace(tzinfo=timezone.utc)
-            if deadline <= now:
-                order.claim_status = ClaimStatus.CLOSED
+        blocked = self._accept_blocked_reason(
+            is_archived=order.is_archived,
+            claim_status=order.claim_status,
+            order_status=order.status,
+            claimed_count=int(order.claimed_count or 0),
+            max_claims=int(order.max_claims or 0),
+            deadline=order.deadline,
+            order_user_id=order.user_id,
+            booster_id=booster.id,
+            now=now,
+        )
+        if blocked is not None:
+            reason, sync_status = blocked
+            # 时限已过 / 名额已满时顺带把 claim_status 落成终态（原行为），
+            # 让后续请求在预检阶段就能直接拒掉；其余分支无需写库。
+            if sync_status is not None and order.claim_status != sync_status:
+                order.claim_status = sync_status
                 await self._db.flush()
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="订单已截止，不能接单")
-        if order.claimed_count >= order.max_claims:
-            order.claim_status = ClaimStatus.FULL
-            await self._db.flush()
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="订单接单人数已满")
-        if order.user_id == booster.id:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能接取自己的订单")
-        existing = await self._db.execute(select(OrderClaim).where(OrderClaim.order_id == order.id, OrderClaim.booster_id == booster.id))
-        if existing.scalar_one_or_none() is not None:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="您已报名过该订单，无需重复报名")
-
-        # 每日接单量闸门：达到当前档位上限（北京时间每日 12 点刷新）即拒绝，
-        # fail-fast 放在等待闸门之前，避免达限用户还卡在等待期才被拒。
-        await self._daily_accept_gate(booster.id)
-
-        # 保证金接单闸门：订单发布后需等待 N 秒（按打手保证金档位减免秒数）。
-        # 保证金模式未开启时不施加任何等待，保持原有体验。
-        wait_seconds, exempt_compensation = await self._deposit_gate(booster.id)
-        if wait_seconds > 0:
-            published_at = order.created_at
-            if published_at.tzinfo is None:
-                published_at = published_at.replace(tzinfo=timezone.utc)
-            opens_at = published_at + timedelta(seconds=wait_seconds)
-            if now < opens_at:
-                remaining = int(math.ceil((opens_at - now).total_seconds()))
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=(
-                        f"该订单还需等待 {remaining} 秒才开放接单"
-                        f"（当前保证金档位需等待 {wait_seconds} 秒）"
-                    ),
-                )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=reason
+            )
 
         self._db.add(OrderClaim(order_id=order.id, booster_id=booster.id))
         # 行锁串行化配额检查，唯一约束兜底并发重复报名转409
