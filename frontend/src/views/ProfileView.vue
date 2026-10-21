@@ -105,7 +105,7 @@ async function changePassword() {
   changingPassword.value = true
   const result = await authStore.changePassword(passwordForm.value.currentPassword, passwordForm.value.newPassword)
   if (result.success) {
-    passwordMessage.value = { type: 'success', text: '密码已更新' }
+    passwordMessage.value = { type: 'success', text: '密码已更新，其他设备的登录状态已失效' }
     passwordForm.value = { currentPassword: '', newPassword: '', confirmPassword: '' }
   } else {
     passwordMessage.value = { type: 'error', text: result.error }

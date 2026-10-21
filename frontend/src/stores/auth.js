@@ -6,6 +6,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import api, { refreshAccessToken } from '@/utils/api'
+import { beginSessionRotation, resetSessionRotation } from '@/utils/sessionRotation'
 
 export const useAuthStore = defineStore('auth', () => {
   // State
@@ -17,6 +18,10 @@ export const useAuthStore = defineStore('auth', () => {
   // Monotonic session generation invalidates in-flight requests when the
   // authenticated account changes or the current session is logged out.
   const sessionGeneration = ref(0)
+  // 最近一次退出的原因（null = 用户主动登出）。被服务端踢下线时置
+  // 'session-expired'，让登录页能解释"为什么突然回到这里"，而不是让用户
+  // 一脸茫然地重新输入密码。
+  const lastLogoutReason = ref(null)
 
   // Getters
   const isAuthenticated = computed(() => !!accessToken.value && !!user.value)
@@ -180,30 +185,50 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  // 改密码会作废旧令牌并返回新令牌。在这段"令牌正在轮换"的窗口里，其他
+  // 在飞请求可能带着旧令牌拿到 401 —— 此时绝不能走刷新（旧 refresh 已被
+  // 服务端版本号作废，刷新必失败 → 把操作者自己当成被盗号踢下线）。闸门
+  // 让拦截器先等轮换完成，再用新令牌重放。
   async function changePassword(currentPassword, newPassword) {
     loading.value = true
     error.value = null
-    
+    const endRotation = beginSessionRotation()
+
     try {
-      await api.post('/auth/change-password', {
-        current_password: currentPassword,
-        new_password: newPassword,
-      })
+      const response = await api.post(
+        '/auth/change-password',
+        {
+          current_password: currentPassword,
+          new_password: newPassword,
+        },
+        // 本请求自己不能等闸门，否则会等自己形成死锁
+        { skipSessionRotationWait: true },
+      )
+      const { access_token, refresh_token, user: userData } = response.data
+      if (access_token && refresh_token) {
+        setTokens(access_token, refresh_token)
+      }
+      if (userData) {
+        setUser(userData)
+      }
       return { success: true }
     } catch (err) {
       error.value = err.message
       return { success: false, error: err.message }
     } finally {
+      endRotation()
       loading.value = false
     }
   }
 
-  function logout() {
+  function logout(reason = null) {
     authRequestSeq += 1
     meInFlight = null
     meInFlightToken = null
     meInFlightGeneration = null
     sessionGeneration.value += 1
+    resetSessionRotation()
+    lastLogoutReason.value = reason
     clearTokens()
     user.value = null
     error.value = null
@@ -211,6 +236,10 @@ export const useAuthStore = defineStore('auth', () => {
     // 这里必须兜底清掉 loading，否则登录页的按钮会被永久禁用（"一直点没反应"），
     // 只有整页刷新才能恢复。
     loading.value = false
+  }
+
+  function clearLogoutReason() {
+    lastLogoutReason.value = null
   }
 
   function getSessionContext() {
@@ -253,6 +282,7 @@ export const useAuthStore = defineStore('auth', () => {
     loading,
     error,
     sessionGeneration,
+    lastLogoutReason,
     // Getters
     isAuthenticated,
     isBooster,
@@ -269,6 +299,7 @@ export const useAuthStore = defineStore('auth', () => {
     updateProfile,
     changePassword,
     logout,
+    clearLogoutReason,
     getSessionContext,
     isCurrentSession,
     initialize,

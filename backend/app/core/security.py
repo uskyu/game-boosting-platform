@@ -103,6 +103,7 @@ def create_access_token(
     subject: str | int,
     expires_delta: timedelta | None = None,
     additional_claims: dict[str, Any] | None = None,
+    session_version: int = 0,
 ) -> str:
     """
     Create a JWT access token.
@@ -111,6 +112,7 @@ def create_access_token(
         subject: Token subject (usually user ID).
         expires_delta: Custom expiration time. Defaults to settings value.
         additional_claims: Additional data to include in token.
+        session_version: 签发时账号的 ``User.token_version``。
 
     Returns:
         Encoded JWT token string.
@@ -127,6 +129,9 @@ def create_access_token(
         "exp": expire,
         "iat": datetime.now(timezone.utc),
         "type": "access",
+        # 会话版本号：与数据库 User.token_version 不一致即视为失效。
+        # 老令牌没有这个声明，按 0 处理，因此上线本身不会踢掉任何人。
+        "ver": int(session_version or 0),
     }
 
     if additional_claims:
@@ -142,6 +147,7 @@ def create_access_token(
 def create_refresh_token(
     subject: str | int,
     expires_delta: timedelta | None = None,
+    session_version: int = 0,
 ) -> str:
     """
     Create a JWT refresh token.
@@ -149,6 +155,7 @@ def create_refresh_token(
     Args:
         subject: Token subject (usually user ID).
         expires_delta: Custom expiration time. Defaults to settings value.
+        session_version: 签发时账号的 ``User.token_version``。
 
     Returns:
         Encoded JWT refresh token string.
@@ -165,6 +172,9 @@ def create_refresh_token(
         "exp": expire,
         "iat": datetime.now(timezone.utc),
         "type": "refresh",
+        # 刷新令牌同样绑定版本号：否则改密码后旧 refresh 还能换出新的
+        # access，密码改了等于没改。
+        "ver": int(session_version or 0),
     }
 
     return jwt.encode(
@@ -215,6 +225,20 @@ def verify_token(token: str, token_type: str = "access") -> dict[str, Any] | Non
         return None
 
     return payload
+
+
+def token_session_version(payload: dict[str, Any]) -> int:
+    """取令牌里的会话版本号。
+
+    老令牌（本次改动之前签发）没有 ``ver`` 声明，一律按 0 处理：现有用户
+    的 ``token_version`` 默认也是 0，所以**上线本身不会把任何已登录用户
+    踢下线**，只有改密码/被重置密码才会让旧令牌失效。
+    """
+    try:
+        return int(payload.get("ver") or 0)
+    except (TypeError, ValueError):
+        # 声明被篡改成非数字：当作最低版本，等同失效（签名校验之外再兜一层）
+        return -1
 
 
 # =============================================================================

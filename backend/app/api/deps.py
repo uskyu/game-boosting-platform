@@ -10,7 +10,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import verify_token
+from app.core.security import token_session_version, verify_token
 from app.db.session import get_async_session
 from app.models.user import User, UserRole
 
@@ -96,6 +96,16 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # 会话版本比对：改密码/被管理员重置后，此前签发的令牌全部作废。
+    # 密码哈希变化对已发出的 JWT 没有任何影响（refresh 还能无限续期），
+    # 只有版本号能真正让旧登录下线。
+    if token_session_version(payload) != user.token_version:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="登录状态已失效，请重新登录",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -103,6 +113,20 @@ async def get_current_user(
         )
 
     return user
+
+
+async def get_current_access_token(
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None,
+        Depends(security),
+    ],
+) -> str | None:
+    """返回当前请求携带的原始 access 令牌（未携带时为 None）。
+
+    用于「只让其他设备下线」这类需要区分会话的场景：改密码时要把该用户名下
+    其他设备的 WebSocket 关掉，但不能连发起人自己那条一起关。
+    """
+    return credentials.credentials if credentials is not None else None
 
 
 async def get_current_active_user(
@@ -227,6 +251,7 @@ async def get_optional_current_user(
 
 # Type aliases for cleaner dependency injection
 CurrentUser = Annotated[User, Depends(get_current_user)]
+CurrentAccessToken = Annotated[str | None, Depends(get_current_access_token)]
 CurrentActiveUser = Annotated[User, Depends(get_current_active_user)]
 CurrentVerifiedUser = Annotated[User, Depends(get_current_verified_user)]
 OptionalCurrentUser = Annotated[User | None, Depends(get_optional_current_user)]

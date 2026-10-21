@@ -26,9 +26,18 @@ class ConnectionManager:
 
     def __init__(self) -> None:
         self.connections: dict[int, list[WebSocket]] = {}
+        # 记录每条连接是用哪个 access 令牌建立认证的。改密码时要踢掉"其他
+        # 设备"，而发起改密码的那个浏览器自己也在连接列表里——不区分就会
+        # 把操作者本人一起踢下线（用户明确要求：改完自己不掉线）。
+        self._socket_tokens: dict[WebSocket, str] = {}
         self._lock = asyncio.Lock()
 
-    async def connect(self, user_id: int, websocket: WebSocket) -> None:
+    async def connect(
+        self,
+        user_id: int,
+        websocket: WebSocket,
+        auth_token: str | None = None,
+    ) -> None:
         """注册一条用户连接。
 
         调用方须已完成 ``websocket.accept()``；对已接受的套接字二次
@@ -36,12 +45,15 @@ class ConnectionManager:
         """
         async with self._lock:
             self.connections.setdefault(user_id, []).append(websocket)
+            if auth_token:
+                self._socket_tokens[websocket] = auth_token
 
     async def disconnect(self, user_id: int, websocket: WebSocket | None = None) -> None:
         """移除一条连接；websocket 为 None 时移除该用户全部连接。"""
         async with self._lock:
             if websocket is None:
-                self.connections.pop(user_id, None)
+                for stale in self.connections.pop(user_id, ()):
+                    self._socket_tokens.pop(stale, None)
                 return
             sockets = self.connections.get(user_id)
             if not sockets:
@@ -50,6 +62,7 @@ class ConnectionManager:
                 sockets.remove(websocket)
             if not sockets:
                 self.connections.pop(user_id, None)
+            self._socket_tokens.pop(websocket, None)
 
     async def _send_and_prune(self, user_id: int, websocket: WebSocket, data: dict) -> bool:
         """向单条连接发送；超时/失败即关闭并摘除该连接。"""
@@ -63,6 +76,51 @@ class ConnectionManager:
                 await websocket.close(code=1011, reason="send failed or timed out")
             await self.disconnect(user_id, websocket)
             return False
+
+    async def close_user_connections(
+        self,
+        user_id: int,
+        code: int = 4001,
+        reason: str = "session invalidated",
+        keep_token: str | None = None,
+    ) -> int:
+        """主动关闭某用户的全部连接（会话失效时用）。
+
+        返回被关闭的连接数。会话版本变更后 HTTP 请求会立刻 401，但**已经
+        建立的 WebSocket 不会自己断**——那端的页面恰好靠 WS 推送活着、
+        可能长时间不发 HTTP 请求，会一直挂着收通知和聊天消息。所以必须
+        由服务端主动关：客户端随后重连 → 鉴权失败 → 自动登出跳登录页。
+
+        ``keep_token``：保留用该令牌认证的那条连接不关。改密码时传入发起
+        请求的令牌，这样操作者当前这台设备保持在线，只有其他设备被踢。
+        """
+        async with self._lock:
+            sockets = list(self.connections.get(user_id, ()))
+            kept = [
+                socket for socket in sockets
+                if keep_token is not None
+                and self._socket_tokens.get(socket) == keep_token
+            ]
+            closing = [socket for socket in sockets if socket not in kept]
+            remaining = self.connections.get(user_id)
+            if remaining is not None:
+                for socket in closing:
+                    if socket in remaining:
+                        remaining.remove(socket)
+                    self._socket_tokens.pop(socket, None)
+                if not remaining:
+                    self.connections.pop(user_id, None)
+        if not closing:
+            return 0
+        results = await asyncio.gather(
+            *(
+                websocket.close(code=code, reason=reason)
+                for websocket in closing
+            ),
+            return_exceptions=True,
+        )
+        # 关闭时对端已断开会抛异常，属正常情况，不计入失败
+        return sum(1 for item in results if not isinstance(item, BaseException))
 
     async def send_to_user(self, user_id: int, data: dict) -> None:
         """向用户的全部在线连接并发发送。"""

@@ -90,6 +90,16 @@ class User(Base):
         index=True,
     )
 
+    # 会话版本号：签发的每个 access/refresh 令牌都带当前值，校验时与之比对。
+    # 改密码或管理员重置密码时自增，此前的令牌立即全部作废——只改
+    # hashed_password 不会影响已发出的 JWT（refresh 还能无限续期 7 天，
+    # 等于旧登录永不过期），必须靠这个版本号才能真正踢下线。
+    token_version: Mapped[int] = mapped_column(
+        default=0,
+        server_default="0",
+        nullable=False,
+    )
+
     # Account status
     is_active: Mapped[bool] = mapped_column(
         default=True,

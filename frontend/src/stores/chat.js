@@ -11,6 +11,7 @@ import {
   WS_STALE_TIMEOUT_MS,
   WS_WATCHDOG_INTERVAL_MS,
   WS_CONNECTING_TIMEOUT_MS,
+  WS_CLOSE_SESSION_INVALIDATED,
 } from '@/utils/websocketRecovery'
 
 const DEFAULT_MESSAGE_LIMIT = 30
@@ -66,6 +67,9 @@ export const useChatStore = defineStore('chat', () => {
   const error = ref(null)
   const orderStateChangeVersion = ref(0)
   const lastOrderStateChange = ref(null)
+  // 服务端主动告知"这个账号的登录状态已作废"（WS 4001）时置位，
+  // App.vue 监听它统一跳登录页并给出说明。
+  const sessionInvalidatedAt = ref(0)
 
   let reconnectTimer = null
   let heartbeatTimer = null
@@ -980,7 +984,7 @@ export const useChatStore = defineStore('chat', () => {
     }
     socket.value = nextSocket
     clearConnectTimeout()
-    const handleSocketClosed = () => {
+    const handleSocketClosed = (event) => {
       const isCurrentSocket = socket.value === nextSocket
       if (isCurrentSocket) socket.value = null
       if (!isCurrentSocket) return
@@ -988,6 +992,17 @@ export const useChatStore = defineStore('chat', () => {
       clearSocketTimers()
       recoveryInFlight = false
       socketStatus.value = 'disconnected'
+
+      // 4001 = 服务端因会话失效主动关闭（改密码/被重置密码后，其他设备
+      // 的登录状态已作废）。这里不再重连——旧令牌重连必然 auth_fail，
+      // 多绕一圈 HTTP 刷新还会撞上已作废的 refresh。直接按会话失效处理，
+      // 让用户看到明确的"已退出登录"提示。
+      if (event?.code === WS_CLOSE_SESSION_INVALIDATED) {
+        shouldReconnect = false
+        handleSessionInvalidated()
+        return
+      }
+
       if (shouldReconnect && useAuthStore().accessToken && isCurrentAuthContext(authContext)) {
         scheduleReconnect()
       }
@@ -1091,6 +1106,15 @@ export const useChatStore = defineStore('chat', () => {
     if (options.clearState) {
       resetState()
     }
+  }
+
+  // 会话被服务端作废（改密码/被重置密码后，其他设备的登录状态失效）。
+  // 这里只做"让上层知道"的标记：真正的登出与跳转由 App.vue 统一处理，
+  // 避免 store 里再手搓一遍 router 依赖。
+  function handleSessionInvalidated() {
+    const authStore = useAuthStore()
+    sessionInvalidatedAt.value = Date.now()
+    authStore.logout('session-expired')
   }
 
   async function handleWsMessage(event, authContext = captureAuthContext()) {
@@ -1265,6 +1289,7 @@ export const useChatStore = defineStore('chat', () => {
     error,
     orderStateChangeVersion,
     lastOrderStateChange,
+    sessionInvalidatedAt,
     activeConversation,
     currentMessages,
     fetchConversations,

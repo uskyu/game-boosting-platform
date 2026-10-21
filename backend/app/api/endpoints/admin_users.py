@@ -155,9 +155,18 @@ async def reset_admin_user_password(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="管理员密码不能在用户管理中重置，请本人到设置页验证当前密码后修改",
         )
+    from app.core.post_commit import run_after_commit
+    from app.services.connection_manager import get_connection_manager
+
     user.hashed_password = await ahash_password(payload.password)
+    # 会话版本自增：被盗号场景下，重置密码必须同时让攻击者手里的令牌失效，
+    # 否则改完密码盗号者照样能用。管理员自己不受影响（不重置自己的密码）。
+    user.token_version += 1
     await db.flush()
-    return AdminUserMessageResponse(message="密码已重置")
+    await run_after_commit(
+        lambda: get_connection_manager().close_user_connections(user_id)
+    )
+    return AdminUserMessageResponse(message="密码已重置，该用户已退出登录")
 
 
 @router.post("/{user_id}/status", response_model=AdminUserDetailResponse)

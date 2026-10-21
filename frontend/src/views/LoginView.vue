@@ -47,6 +47,16 @@ const spotlightMeta = ref(copy.currentZoneMeta)
 const isLoading = computed(() => authStore.loading)
 const isFormValid = computed(() => email.value.trim() !== '' && password.value.trim() !== '')
 
+// 被服务端踢下线（改密码或账号密码被重置后，其他设备的登录状态作废）时
+// 解释一下为什么突然回到登录页，否则用户会以为是自己误触了退出。
+const SESSION_EXPIRED_NOTICE = '登录状态已失效（密码已修改或被重置），请重新登录。'
+const sessionNotice = computed(() => {
+  if (route.query.reason === 'session-expired' || authStore.lastLogoutReason === 'session-expired') {
+    return SESSION_EXPIRED_NOTICE
+  }
+  return ''
+})
+
 async function handleLogin() {
   if (!isFormValid.value) {
     errorMessage.value = copy.pleaseEnterBoth
@@ -57,6 +67,8 @@ async function handleLogin() {
 
   const result = await authStore.login(email.value, password.value)
   if (result.success) {
+    // 重新登录成功后清掉失效提示，避免下次再进登录页时重复显示
+    authStore.clearLogoutReason()
     const redirect = route.query.redirect || '/'
     router.push(redirect)
     return
@@ -92,6 +104,10 @@ onMounted(async () => {
         <p class="eyebrow">{{ copy.accountAccess }}</p>
         <h2 class="mt-2 text-2xl font-semibold text-ink-1">{{ copy.signIn }}</h2>
         <p class="text-sm text-ink-2">登录后继续你的需求、订单和对话。</p>
+      </div>
+
+      <div v-if="sessionNotice" class="message-info">
+        {{ sessionNotice }}
       </div>
 
       <div v-if="errorMessage" class="message-error">

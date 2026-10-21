@@ -380,6 +380,21 @@ async function handleLogout() {
   router.push({ name: 'login' })
 }
 
+// 服务端主动作废会话（改密码/被管理员重置密码后，其他设备收到 WS 4001，
+// 或旧令牌在 HTTP 侧 401）：统一跳登录页并说明原因，避免用户莫名其妙
+// 被弹回登录界面、以为是自己点错了什么。
+watch(
+  () => chatStore.sessionInvalidatedAt,
+  (value, previous) => {
+    if (!value || value === previous) return
+    if (router.currentRoute.value.name === 'login') return
+    router.push({
+      name: 'login',
+      query: { reason: 'session-expired' },
+    })
+  }
+)
+
 watch(
   [isAuthenticated, () => authStore.sessionGeneration],
   async ([isLoggedIn]) => {

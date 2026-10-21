@@ -276,4 +276,39 @@ describe('chat WebSocket recovery', () => {
     expect(FakeWebSocket.instances).toHaveLength(1)
     expect(chat.socketStatus).toBe('disconnected')
   })
+
+  // 改密码/被重置密码后，服务端会把该用户其他设备的长连接以 4001 主动关闭。
+  // 客户端收到它不能"照常重连"——旧令牌重连必然 auth_fail，多绕一圈 HTTP
+  // 刷新还会撞上已作废的 refresh，用户会看到反复闪烁却始终恢复不了。
+  // 正确行为：按会话失效处理（标记 + 登出），由 App.vue 跳登录页说明原因。
+  it('treats close code 4001 as session invalidated: logs out, never reconnects', async () => {
+    const chat = useChatStore()
+    const auth = useAuthStore()
+    const ws = connectAndAuthenticate(chat)
+
+    // 服务端因会话版本变化主动关闭
+    ws.readyState = FakeWebSocket.CLOSED
+    ws.onclose?.({ code: 4001, reason: 'session invalidated' })
+    expect(chat.socketStatus).toBe('disconnected')
+
+    expect(chat.sessionInvalidatedAt).toBeGreaterThan(0)
+    expect(auth.lastLogoutReason).toBe('session-expired')
+    expect(auth.accessToken).toBeNull()
+
+    // 关键：不能再重连
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+  })
+
+  it('still reconnects on a normal close code (4001 must not affect other codes)', async () => {
+    const chat = useChatStore()
+    const ws = connectAndAuthenticate(chat)
+
+    ws.readyState = FakeWebSocket.CLOSED
+    ws.onclose?.({ code: 1006 })
+
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(FakeWebSocket.instances.length).toBeGreaterThanOrEqual(2)
+    expect(chat.sessionInvalidatedAt).toBe(0)
+  })
 })

@@ -156,7 +156,9 @@ async function confirmResetPassword() {
   if (result.success) {
     const password = state.password
     resetModal.value = null
-    flash('success', `密码已重置为：${password}`)
+    // 提示里说明"已强制该用户下线"：管理员重置密码的场景通常是账号被盗，
+    // 知道旧登录已被踢掉才算真正放心。
+    flash('success', `密码已重置为：${password}（该用户已退出登录）`)
   } else {
     state.error = result.error
   }

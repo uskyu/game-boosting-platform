@@ -8,6 +8,7 @@ import { useAuthStore } from '@/stores/auth'
 import router from '@/router'
 import { syncServerTime } from '@/utils/display'
 import { getNextRetryDelayMs, shouldRetryRequest } from '@/utils/apiRetry'
+import { pendingSessionRotation } from '@/utils/sessionRotation'
 
 const rawApiBaseURL = import.meta.env.VITE_API_BASE_URL || '/api/v1'
 const apiBaseURL = rawApiBaseURL.endsWith('/')
@@ -143,19 +144,36 @@ api.interceptors.response.use(
     if (error.response?.status === 401 && !originalRequest._retry) {
       originalRequest._retry = true
 
+      // 改密码正在进行令牌轮换：此时带旧令牌回来的 401 属正常现象，不能
+      // 走刷新（旧 refresh 已被服务端作废，刷新必失败会把自己踢下线）。
+      // 等轮换完成，用新令牌重放原请求。改密码请求自身带 skipSessionRotationWait，
+      // 否则它会等自己。
+      if (!originalRequest.skipSessionRotationWait) {
+        const rotation = pendingSessionRotation()
+        if (rotation) {
+          await rotation
+          const rotatedToken = authStore.accessToken
+          if (rotatedToken) {
+            originalRequest.headers = originalRequest.headers || {}
+            originalRequest.headers.Authorization = `Bearer ${rotatedToken}`
+            return api(originalRequest)
+          }
+        }
+      }
+
       if (authStore.refreshToken) {
         try {
           const newToken = await refreshAccessToken(authStore)
           originalRequest.headers.Authorization = `Bearer ${newToken}`
           return api(originalRequest)
         } catch {
-          authStore.logout()
-          router.push({ name: 'login', query: { redirect: router.currentRoute.value.fullPath } })
+          authStore.logout('session-expired')
+          router.push({ name: 'login', query: { redirect: router.currentRoute.value.fullPath, reason: 'session-expired' } })
           return Promise.reject(error)
         }
       } else {
-        authStore.logout()
-        router.push({ name: 'login', query: { redirect: router.currentRoute.value.fullPath } })
+        authStore.logout('session-expired')
+        router.push({ name: 'login', query: { redirect: router.currentRoute.value.fullPath, reason: 'session-expired' } })
       }
     }
 

@@ -18,6 +18,7 @@ from app.core.security import (
     averify_password,
     create_access_token,
     create_refresh_token,
+    token_session_version,
     verify_token,
 )
 from app.models.user import BoosterApplicationStatus, User, UserRole
@@ -258,9 +259,13 @@ class UserService:
                 "email": user.email,
                 "role": user.role.value,
             },
+            session_version=user.token_version,
         )
 
-        refresh_token = create_refresh_token(subject=user.id)
+        refresh_token = create_refresh_token(
+            subject=user.id,
+            session_version=user.token_version,
+        )
 
         return {
             "access_token": access_token,
@@ -314,6 +319,14 @@ class UserService:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="用户不存在",
+            )
+
+        # 会话版本比对：改密码后旧 refresh 令牌不能再换出新 access，
+        # 否则密码改了但旧登录可以一直续期下去。
+        if token_session_version(payload) != user.token_version:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="登录状态已失效，请重新登录",
             )
 
         if not user.is_active:
@@ -425,6 +438,10 @@ class UserService:
             )
 
         user.hashed_password = await ahash_password(new_password)
+        # 会话版本自增：此前签发的全部 access/refresh 令牌立即失效。
+        # 改密码**只换哈希**对已发出的 JWT 没有任何约束力，旧登录可以靠
+        # refresh 无限续期，必须靠版本号把其他设备踢下线。
+        user.token_version += 1
 
         await self._db.flush()
         await self._db.refresh(user)

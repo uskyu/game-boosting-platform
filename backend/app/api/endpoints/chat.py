@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from app.api.deps import CurrentUser, DatabaseSession
-from app.core.security import verify_token
+from app.core.security import token_session_version, verify_token
 from app.db.session import async_session_factory
 from app.models.chat import Conversation, ConversationParticipant, Message
 from app.models.user import User, UserRole
@@ -197,7 +197,13 @@ async def _get_websocket_user(token: str | None) -> User | None:
                 User.is_active.is_(True),
             )
         )
-        return result.scalar_one_or_none()
+        user = result.scalar_one_or_none()
+
+    # 会话版本比对：改密码后已建立的 WS 也必须拒绝再连（连接中的那条由
+    # 改密码接口主动关闭，这里兜住「断开后立刻用旧令牌重连」的路径）。
+    if user is None or token_session_version(payload) != user.token_version:
+        return None
+    return user
 
 
 async def _check_conversation_access(user_id: int, conversation_id: int) -> bool:
@@ -268,7 +274,9 @@ async def chat_websocket(websocket: WebSocket) -> None:
 
     # ── Phase 2: normal message loop ──
     connection_manager = get_connection_manager()
-    await connection_manager.connect(current_user.id, websocket)
+    # 保存原始令牌：改密码时需要按令牌区分「操作者本人」和「其他设备」，
+    # 只关闭其他设备的长连接。
+    await connection_manager.connect(current_user.id, websocket, auth_token=token)
     connected_at = time.monotonic()
     close_code: int | None = None
     disconnect_kind = "client_disconnect"

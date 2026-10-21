@@ -8,7 +8,7 @@ from fastapi import APIRouter, Request, status
 from fastapi.exceptions import HTTPException
 from pydantic import BaseModel, Field
 
-from app.api.deps import CurrentUser, DatabaseSession
+from app.api.deps import CurrentAccessToken, CurrentUser, DatabaseSession
 from app.schemas.user import (
     MessageResponse,
     PasswordChange,
@@ -213,30 +213,56 @@ async def update_current_user(
 
 @router.post(
     "/change-password",
-    response_model=MessageResponse,
+    response_model=TokenResponse,
     summary="修改密码",
-    description="修改当前用户的密码",
+    description="修改当前用户的密码；本设备保持登录，其他设备登录状态立即失效",
 )
 async def change_password(
     password_data: PasswordChange,
     current_user: CurrentUser,
     db: DatabaseSession,
-) -> MessageResponse:
+    current_token: CurrentAccessToken,
+) -> TokenResponse:
     """
     Change current user's password.
 
     - **current_password**: Current password for verification
     - **new_password**: New password (minimum 6 characters)
+
+    改密码会自增账号的会话版本号，使此前签发的全部令牌作废（其他设备与
+    已建立的 WebSocket 一起失效）。为了让操作者本人不掉线，这里用新版本号
+    重新签发一对令牌返回，客户端替换保存即可。
     """
+    from app.core.post_commit import run_after_commit
+    from app.services.connection_manager import get_connection_manager
+
     user_service = get_user_service(db)
 
-    await user_service.change_password(
+    user = await user_service.change_password(
         user=current_user,
         current_password=password_data.current_password,
         new_password=password_data.new_password,
     )
 
-    return MessageResponse(message="密码修改成功", success=True)
+    # 踢掉该用户**其他设备**已建立的 WebSocket：HTTP 侧旧令牌已经 401，但
+    # 长连接不会自己断，不关的话那端会继续收到通知和聊天消息。按当前请求的
+    # 令牌排除，发起人自己这台设备保持在线。登记在 commit 之后执行，事务
+    # 回滚时不会误关连接。
+    await run_after_commit(
+        lambda: get_connection_manager().close_user_connections(
+            user.id, keep_token=current_token
+        )
+    )
+
+    tokens = user_service.create_tokens(user)
+
+    return TokenResponse(
+        access_token=tokens["access_token"],
+        refresh_token=tokens["refresh_token"],
+        token_type=tokens["token_type"],
+        expires_in=tokens["expires_in"],
+        user=UserResponse.model_validate(user),
+    )
 
 
 @router.post(
