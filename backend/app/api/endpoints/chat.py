@@ -274,9 +274,7 @@ async def chat_websocket(websocket: WebSocket) -> None:
 
     # ── Phase 2: normal message loop ──
     connection_manager = get_connection_manager()
-    # 保存原始令牌：改密码时需要按令牌区分「操作者本人」和「其他设备」，
-    # 只关闭其他设备的长连接。
-    await connection_manager.connect(current_user.id, websocket, auth_token=token)
+    await connection_manager.connect(current_user.id, websocket)
     connected_at = time.monotonic()
     close_code: int | None = None
     disconnect_kind = "client_disconnect"

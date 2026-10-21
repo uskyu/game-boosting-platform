@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 import api from '@/utils/api'
 import { useAuthStore } from '@/stores/auth'
 import { useToastsStore } from '@/stores/toasts'
+import { pendingSessionRotation } from '@/utils/sessionRotation'
 import { playChatMessage } from '@/utils/sound'
 import {
   getWebSocketHealthAction,
@@ -999,7 +1000,7 @@ export const useChatStore = defineStore('chat', () => {
       // 让用户看到明确的"已退出登录"提示。
       if (event?.code === WS_CLOSE_SESSION_INVALIDATED) {
         shouldReconnect = false
-        handleSessionInvalidated()
+        handleSessionInvalidated(authContext).catch(() => {})
         return
       }
 
@@ -1108,13 +1109,35 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  // 会话被服务端作废（改密码/被重置密码后，其他设备的登录状态失效）。
-  // 这里只做"让上层知道"的标记：真正的登出与跳转由 App.vue 统一处理，
-  // 避免 store 里再手搓一遍 router 依赖。
-  function handleSessionInvalidated() {
-    const authStore = useAuthStore()
-    sessionInvalidatedAt.value = Date.now()
-    authStore.logout('session-expired')
+  // 会话可能被服务端作废（改密码/被重置密码后，连接会被以 4001 关闭）。
+  // 不能一收到 4001 就登出：改密码的那台设备自己也会被关（WebSocket 认证用
+  // 的令牌是建连时捕获的，页面积累几轮刷新后它早于当前令牌，服务端无法靠
+  // 令牌把它和"其他设备"精确区分）。所以先用当前令牌验证会话：
+  //   - 验证通过 -> 本设备就是操作者，用新令牌直接重连，不掉线；
+  //   - 验证失败（拦截器已刷新失败并登出）-> 确实被踢，标记出来让 App.vue
+  //     跳登录页并说明原因。
+  async function handleSessionInvalidated(authContext) {
+    // 改密码的令牌轮换可能还在进行：此刻手上还是旧令牌，直接验证必然 401，
+    // 会把自己误判成被踢下线。先等轮换落地再用新令牌验证。
+    const rotation = pendingSessionRotation()
+    if (rotation) {
+      await rotation.catch(() => {})
+    }
+
+    try {
+      await api.get('/auth/me')
+    } catch {
+      // 会话确实失效：拦截器已按 401 处理（若刷新也失败则登出并跳登录页）
+      sessionInvalidatedAt.value = Date.now()
+      useAuthStore().logout('session-expired')
+      return
+    }
+
+    // 会话仍然有效：本设备用新令牌恢复连接
+    if (isCurrentAuthContext(authContext)) {
+      shouldReconnect = true
+      scheduleReconnect()
+    }
   }
 
   async function handleWsMessage(event, authContext = captureAuthContext()) {

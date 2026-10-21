@@ -115,20 +115,6 @@ async def get_current_user(
     return user
 
 
-async def get_current_access_token(
-    credentials: Annotated[
-        HTTPAuthorizationCredentials | None,
-        Depends(security),
-    ],
-) -> str | None:
-    """返回当前请求携带的原始 access 令牌（未携带时为 None）。
-
-    用于「只让其他设备下线」这类需要区分会话的场景：改密码时要把该用户名下
-    其他设备的 WebSocket 关掉，但不能连发起人自己那条一起关。
-    """
-    return credentials.credentials if credentials is not None else None
-
-
 async def get_current_active_user(
     current_user: Annotated[User, Depends(get_current_user)],
 ) -> User:
@@ -251,7 +237,6 @@ async def get_optional_current_user(
 
 # Type aliases for cleaner dependency injection
 CurrentUser = Annotated[User, Depends(get_current_user)]
-CurrentAccessToken = Annotated[str | None, Depends(get_current_access_token)]
 CurrentActiveUser = Annotated[User, Depends(get_current_active_user)]
 CurrentVerifiedUser = Annotated[User, Depends(get_current_verified_user)]
 OptionalCurrentUser = Annotated[User | None, Depends(get_optional_current_user)]

@@ -8,7 +8,7 @@ from fastapi import APIRouter, Request, status
 from fastapi.exceptions import HTTPException
 from pydantic import BaseModel, Field
 
-from app.api.deps import CurrentAccessToken, CurrentUser, DatabaseSession
+from app.api.deps import CurrentUser, DatabaseSession
 from app.schemas.user import (
     MessageResponse,
     PasswordChange,
@@ -221,7 +221,6 @@ async def change_password(
     password_data: PasswordChange,
     current_user: CurrentUser,
     db: DatabaseSession,
-    current_token: CurrentAccessToken,
 ) -> TokenResponse:
     """
     Change current user's password.
@@ -244,14 +243,14 @@ async def change_password(
         new_password=password_data.new_password,
     )
 
-    # 踢掉该用户**其他设备**已建立的 WebSocket：HTTP 侧旧令牌已经 401，但
-    # 长连接不会自己断，不关的话那端会继续收到通知和聊天消息。按当前请求的
-    # 令牌排除，发起人自己这台设备保持在线。登记在 commit 之后执行，事务
-    # 回滚时不会误关连接。
+    # 关闭该用户已建立的 WebSocket：HTTP 侧旧令牌已经 401，但长连接不会
+    # 自己断，不关的话那端会继续收到通知和聊天消息。登记在 commit 之后执行，
+    # 事务回滚时不会误关连接。
+    #
+    # 这里连发起人自己那台也一起关：客户端收到 4001 会先验证自己的会话，
+    # 仍有效就用新令牌重连（本人不掉线），已失效才登出（其他设备）。
     await run_after_commit(
-        lambda: get_connection_manager().close_user_connections(
-            user.id, keep_token=current_token
-        )
+        lambda: get_connection_manager().close_user_connections(user.id)
     )
 
     tokens = user_service.create_tokens(user)

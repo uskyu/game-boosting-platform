@@ -277,27 +277,48 @@ describe('chat WebSocket recovery', () => {
     expect(chat.socketStatus).toBe('disconnected')
   })
 
-  // 改密码/被重置密码后，服务端会把该用户其他设备的长连接以 4001 主动关闭。
-  // 客户端收到它不能"照常重连"——旧令牌重连必然 auth_fail，多绕一圈 HTTP
-  // 刷新还会撞上已作废的 refresh，用户会看到反复闪烁却始终恢复不了。
-  // 正确行为：按会话失效处理（标记 + 登出），由 App.vue 跳登录页说明原因。
-  it('treats close code 4001 as session invalidated: logs out, never reconnects', async () => {
+  // 改密码/被重置密码后，服务端会把该用户的连接以 4001 主动关闭（包括发起
+  // 改密码那台，因为 WS 认证令牌早于当前令牌，服务端无法精确区分）。
+  // 客户端收到 4001 的正确行为是"先验证自己的会话，再决定"：
+  //   - 会话仍有效 -> 用新令牌重连（操作者本人不掉线）
+  //   - 会话已失效 -> 登出并标记，由 App.vue 跳登录页说明原因
+  it('close code 4001 with a still-valid session: reconnects, stays logged in', async () => {
     const chat = useChatStore()
     const auth = useAuthStore()
     const ws = connectAndAuthenticate(chat)
 
-    // 服务端因会话版本变化主动关闭
+    // 会话验证通过（apiGet 默认 resolve）-> 本设备是操作者，应该重连
+    apiGet.mockResolvedValue({ data: { id: 1, role: 'BOOSTER' } })
     ws.readyState = FakeWebSocket.CLOSED
     ws.onclose?.({ code: 4001, reason: 'session invalidated' })
+    await flushMicrotasks()
+    await flushMicrotasks()
+
     expect(chat.socketStatus).toBe('disconnected')
+    // 本人没被踢
+    expect(auth.accessToken).toBe('test-access-token')
+    expect(chat.sessionInvalidatedAt).toBe(0)
+
+    // 并且确实重连了
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(FakeWebSocket.instances.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('close code 4001 with a dead session: logs out as session-expired', async () => {
+    const chat = useChatStore()
+    const auth = useAuthStore()
+    const ws = connectAndAuthenticate(chat)
+
+    // 会话验证失败 -> 确实被踢下线
+    apiGet.mockRejectedValue({ status: 401, message: '登录状态已失效，请重新登录' })
+    ws.readyState = FakeWebSocket.CLOSED
+    ws.onclose?.({ code: 4001, reason: 'session invalidated' })
+    await flushMicrotasks()
+    await flushMicrotasks()
 
     expect(chat.sessionInvalidatedAt).toBeGreaterThan(0)
     expect(auth.lastLogoutReason).toBe('session-expired')
     expect(auth.accessToken).toBeNull()
-
-    // 关键：不能再重连
-    await vi.advanceTimersByTimeAsync(120_000)
-    expect(FakeWebSocket.instances).toHaveLength(1)
   })
 
   it('still reconnects on a normal close code (4001 must not affect other codes)', async () => {
