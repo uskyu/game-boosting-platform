@@ -32,7 +32,7 @@ describe('售后入口按钮（OrderDetail 右侧「操作」卡，2026-10-18 �
     const buttonIndex = detailSource.indexOf('goToAfterSaleApply(order.id)')
     expect(buttonIndex).toBeGreaterThan(-1)
     const button = detailSource.slice(buttonIndex - 600, buttonIndex + 400)
-    expect(button).toMatch(/v-if="isOwner && order\.status === 'COMPLETED'"/)
+    expect(button).toMatch(/v-if="isOwner && \(order\.status === 'COMPLETED' \|\| order\.status === 'CANCELLED'\)"/)
     // 与「申请取消」同款通栏红胶囊：老板要求「红框跟申请取消一样」
     expect(button).toMatch(/class="od-ops__chip btn-danger w-full py-3"/)
     // pending 时改开状态弹窗（可查看案情并撤回）

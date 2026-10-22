@@ -30,6 +30,7 @@ from app.schemas.chat import (
 from app.schemas.user import MessageResponse
 from app.services.chat_service import get_chat_service
 from app.services.connection_manager import get_connection_manager
+from app.services.user_session_service import get_valid_session
 
 router = APIRouter(prefix="/chat", tags=["聊天"])
 logger = logging.getLogger(__name__)
@@ -172,8 +173,8 @@ async def _broadcast_new_message(
     )
 
 
-async def _get_websocket_user(token: str | None) -> User | None:
-    """通过 JWT 获取 WebSocket 当前用户。"""
+async def _get_websocket_user(token: str | None) -> tuple[User, str] | None:
+    """通过 JWT 获取 WebSocket 当前用户与设备会话 ID。"""
     if token is None:
         return None
 
@@ -190,6 +191,10 @@ async def _get_websocket_user(token: str | None) -> User | None:
     except (TypeError, ValueError):
         return None
 
+    sid = payload.get("sid")
+    if not sid:
+        return None
+
     async with async_session_factory() as session:
         result = await session.execute(
             select(User).where(
@@ -198,12 +203,18 @@ async def _get_websocket_user(token: str | None) -> User | None:
             )
         )
         user = result.scalar_one_or_none()
+        # 设备会话校验：被踢下线的设备不能用旧令牌把 WebSocket 连回来。
+        device_session = await get_valid_session(session, sid, user_id)
 
     # 会话版本比对：改密码后已建立的 WS 也必须拒绝再连（连接中的那条由
     # 改密码接口主动关闭，这里兜住「断开后立刻用旧令牌重连」的路径）。
-    if user is None or token_session_version(payload) != user.token_version:
+    if (
+        user is None
+        or device_session is None
+        or token_session_version(payload) != user.token_version
+    ):
         return None
-    return user
+    return user, sid
 
 
 async def _check_conversation_access(user_id: int, conversation_id: int) -> bool:
@@ -256,9 +267,9 @@ async def chat_websocket(websocket: WebSocket) -> None:
         return
 
     token = (auth_payload.get("data") or {}).get("token")
-    current_user = await _get_websocket_user(token)
+    auth_result = await _get_websocket_user(token)
 
-    if current_user is None:
+    if auth_result is None:
         await websocket.send_json(
             _build_ws_event("auth_fail", {"message": "认证失败"})
         )
@@ -268,13 +279,15 @@ async def chat_websocket(websocket: WebSocket) -> None:
         )
         return
 
+    current_user, session_id = auth_result
+
     await websocket.send_json(
         _build_ws_event("auth_ok", {"user_id": current_user.id})
     )
 
     # ── Phase 2: normal message loop ──
     connection_manager = get_connection_manager()
-    await connection_manager.connect(current_user.id, websocket)
+    await connection_manager.connect(current_user.id, websocket, session_id)
     connected_at = time.monotonic()
     close_code: int | None = None
     disconnect_kind = "client_disconnect"

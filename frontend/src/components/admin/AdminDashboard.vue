@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 
 import EChart from '@/components/charts/EChart.vue'
 import api from '@/utils/api'
+import { formatMoneyFixed } from '@/utils/display'
 
 const router = useRouter()
 
@@ -53,6 +54,14 @@ const overviewCards = computed(() => {
     { label: '打手', value: o.total_boosters, color: 'text-info' },
     { label: '总派单', value: o.total_orders, color: 'text-ink-1' },
     { label: '成交额', value: `¥${o.total_revenue.toFixed(2)}`, color: 'text-price' },
+    // 平台服务费收入（仅后台可见）：累计与本月同卡展示。后端金额可能以
+    // 字符串下发（Decimal 序列化），统一交给 formatMoneyFixed 做数值归一。
+    {
+      label: '服务费收入',
+      value: formatMoneyFixed(o.service_fee_total),
+      hint: `本月收入 ${formatMoneyFixed(o.service_fee_month)}`,
+      color: 'text-success',
+    },
     { label: '待接单', value: o.pending_orders, color: 'text-warning' },
     { label: '进行中', value: o.active_orders, color: 'text-info' },
     { label: '待审核', value: o.delivered_orders, color: 'text-warning' },
@@ -271,6 +280,7 @@ onBeforeUnmount(() => {
         <article v-for="card in overviewCards" :key="card.label" class="stat-card">
           <p class="text-[13px] text-ink-2">{{ card.label }}</p>
           <p class="stat-value mt-1.5" :class="card.color">{{ card.value }}</p>
+          <p v-if="card.hint" class="mt-1 text-xs text-ink-3">{{ card.hint }}</p>
         </article>
       </div>
 

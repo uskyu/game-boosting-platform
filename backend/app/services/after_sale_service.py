@@ -366,20 +366,20 @@ async def create_after_sale(
     amount: Decimal,
     images: list[str] | None,
 ) -> OrderAfterSale:
-    """老板对已完成订单发起售后申请。
+    """老板对已完成/已取消订单发起售后申请。
 
-    校验：仅发布者、订单已 COMPLETED、金额 ≤ 订单派单价、凭证归属本人目录、
-    同一订单没有 PENDING 售后（行锁 + 先查后插防并发重复发起）。
+    校验：仅发布者、订单已 COMPLETED 或 CANCELLED、金额 ≤ 订单派单价、
+    凭证归属本人目录、同一订单没有 PENDING 售后（行锁 + 先查后插防并发重复发起）。
     """
     if requester.id != order.user_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="只有订单发布者可以申请售后",
         )
-    if order.status != OrderStatus.COMPLETED:
+    if order.status not in (OrderStatus.COMPLETED, OrderStatus.CANCELLED):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="仅已完成的订单可以申请售后",
+            detail="仅已完成或已取消的订单可以申请售后",
         )
     if order.booster_id is None:
         raise HTTPException(

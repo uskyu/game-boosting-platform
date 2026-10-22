@@ -50,7 +50,12 @@ const isFormValid = computed(() => email.value.trim() !== '' && password.value.t
 // 被服务端踢下线（改密码或账号密码被重置后，其他设备的登录状态作废）时
 // 解释一下为什么突然回到登录页，否则用户会以为是自己误触了退出。
 const SESSION_EXPIRED_NOTICE = '登录状态已失效（密码已修改或被重置），请重新登录。'
+// 同时在线设备超限：本设备被后登录的设备挤下线（WS close 4002）。
+const DEVICE_LIMIT_NOTICE = '账号已在其他设备登录，当前设备已下线。'
 const sessionNotice = computed(() => {
+  if (route.query.reason === 'device-limit' || authStore.lastLogoutReason === 'device-limit') {
+    return DEVICE_LIMIT_NOTICE
+  }
   if (route.query.reason === 'session-expired' || authStore.lastLogoutReason === 'session-expired') {
     return SESSION_EXPIRED_NOTICE
   }

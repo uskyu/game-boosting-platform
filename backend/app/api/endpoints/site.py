@@ -1,24 +1,15 @@
 """Public site settings endpoints."""
 
 from fastapi import APIRouter
-from sqlalchemy import select
 
 from app.api.deps import DatabaseSession
 from app.models.site_setting import SiteSetting
 from app.schemas.site_setting import SiteSettingResponse
+from app.services.site_setting_service import get_or_create_site_setting
 
 router = APIRouter(prefix="/site", tags=["site"])
 
-
-async def get_or_create_site_setting(db) -> SiteSetting:
-    result = await db.execute(select(SiteSetting).where(SiteSetting.id == 1))
-    setting = result.scalar_one_or_none()
-    if setting is None:
-        setting = SiteSetting(id=1, site_name="游戏服务平台")
-        db.add(setting)
-        await db.flush()
-        await db.refresh(setting)
-    return setting
+__all__ = ["router", "get_or_create_site_setting"]
 
 
 @router.get("/settings", response_model=SiteSettingResponse, summary="获取站点设置")

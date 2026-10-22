@@ -144,6 +144,14 @@ api.interceptors.response.use(
     if (error.response?.status === 401 && !originalRequest._retry) {
       originalRequest._retry = true
 
+      // 设备被挤下线：直接按 device-limit 登出，不再尝试 refresh
+      //（refresh 也必然失败，且会多一次无意义请求）。
+      if (error.response?.data?.detail?.code === 'device_limit') {
+        authStore.logout('device-limit')
+        router.push({ name: 'login', query: { redirect: router.currentRoute.value.fullPath, reason: 'device-limit' } })
+        return Promise.reject(error)
+      }
+
       // 改密码正在进行令牌轮换：此时带旧令牌回来的 401 属正常现象，不能
       // 走刷新（旧 refresh 已被服务端作废，刷新必失败会把自己踢下线）。
       // 等轮换完成，用新令牌重放原请求。改密码请求自身带 skipSessionRotationWait，
@@ -166,14 +174,21 @@ api.interceptors.response.use(
           const newToken = await refreshAccessToken(authStore)
           originalRequest.headers.Authorization = `Bearer ${newToken}`
           return api(originalRequest)
-        } catch {
-          authStore.logout('session-expired')
-          router.push({ name: 'login', query: { redirect: router.currentRoute.value.fullPath, reason: 'session-expired' } })
+        } catch (refreshError) {
+          // 若本次下线已由 WS 4002（设备超限）判定，保留该原因：
+          // 并发在飞的 REST 401 不该把"账号在别处登录"改写成"登录过期"。
+          const refreshCode = refreshError?.response?.data?.detail?.code
+          const logoutReason = (refreshCode === 'device_limit' || authStore.lastLogoutReason === 'device-limit')
+            ? 'device-limit'
+            : 'session-expired'
+          authStore.logout(logoutReason)
+          router.push({ name: 'login', query: { redirect: router.currentRoute.value.fullPath, reason: logoutReason } })
           return Promise.reject(error)
         }
       } else {
-        authStore.logout('session-expired')
-        router.push({ name: 'login', query: { redirect: router.currentRoute.value.fullPath, reason: 'session-expired' } })
+        const logoutReason = authStore.lastLogoutReason === 'device-limit' ? 'device-limit' : 'session-expired'
+        authStore.logout(logoutReason)
+        router.push({ name: 'login', query: { redirect: router.currentRoute.value.fullPath, reason: logoutReason } })
       }
     }
 

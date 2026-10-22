@@ -8,9 +8,39 @@ import { ref, computed } from 'vue'
 import api, { refreshAccessToken } from '@/utils/api'
 import { beginSessionRotation, resetSessionRotation } from '@/utils/sessionRotation'
 
+const DEVICE_ID_STORAGE_KEY = 'device_id'
+
+// 同一浏览器的稳定设备标识：后端按它复用会话行、并把超限账号最早登录的
+// 设备踢下线（WS close 4002）。没有 crypto.randomUUID（旧内核/非安全上下文）
+// 时用 Math.random 拼一个 UUID v4 形态的字符串兜底。
+function createDeviceId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (char) => {
+    const random = (Math.random() * 16) | 0
+    const value = char === 'x' ? random : (random & 0x3) | 0x8
+    return value.toString(16)
+  })
+}
+
+function readOrCreateDeviceId() {
+  try {
+    const existing = localStorage.getItem(DEVICE_ID_STORAGE_KEY)
+    if (existing) return existing
+    const created = createDeviceId()
+    localStorage.setItem(DEVICE_ID_STORAGE_KEY, created)
+    return created
+  } catch {
+    // 隐私模式/存储被禁用：本次会话内仍保持同一 id，只是一个不持久的临时值
+    return createDeviceId()
+  }
+}
+
 export const useAuthStore = defineStore('auth', () => {
   // State
   const user = ref(null)
+  const deviceId = ref(readOrCreateDeviceId())
   const accessToken = ref(localStorage.getItem('access_token') || null)
   const refreshToken = ref(localStorage.getItem('refresh_token') || null)
   const loading = ref(false)
@@ -19,9 +49,18 @@ export const useAuthStore = defineStore('auth', () => {
   // authenticated account changes or the current session is logged out.
   const sessionGeneration = ref(0)
   // 最近一次退出的原因（null = 用户主动登出）。被服务端踢下线时置
-  // 'session-expired'，让登录页能解释"为什么突然回到这里"，而不是让用户
-  // 一脸茫然地重新输入密码。
-  const lastLogoutReason = ref(null)
+  // 'session-expired'（密码变更/会话作废）或 'device-limit'（同时在线设备
+  // 超限），让登录页能解释"为什么突然回到这里"，而不是让用户一脸茫然地
+  // 重新输入密码。持久化到 sessionStorage：被踢后整页刷新/重开标签页也能
+  // 保留原因（内存里的 ref 会随刷新丢失）。
+  const readStoredLogoutReason = () => {
+    try {
+      return sessionStorage.getItem('logout_reason') || null
+    } catch {
+      return null
+    }
+  }
+  const lastLogoutReason = ref(readStoredLogoutReason())
 
   // Getters
   const isAuthenticated = computed(() => !!accessToken.value && !!user.value)
@@ -70,13 +109,18 @@ export const useAuthStore = defineStore('auth', () => {
     error.value = null
     
     try {
-      const response = await api.post('/auth/register', {
+      // 注册验证码关闭时后端不要求这两个字段：只在拿到验证码时提交，
+      // 避免把空串当成一次无效的验证码校验。
+      const payload = {
         email,
         username,
         password,
-        captcha_id: captchaId,
-        captcha_code: captchaCode,
-      })
+        device_id: deviceId.value,
+      }
+      if (captchaId) payload.captcha_id = captchaId
+      if (captchaCode) payload.captcha_code = captchaCode
+
+      const response = await api.post('/auth/register', payload)
       
       const { access_token, refresh_token, user: userData } = response.data
       setTokens(access_token, refresh_token)
@@ -99,6 +143,8 @@ export const useAuthStore = defineStore('auth', () => {
       const response = await api.post('/auth/login', {
         email,
         password,
+        // 后端按 device_id 复用同一浏览器的会话，并据此执行同时在线设备上限
+        device_id: deviceId.value,
       })
       
       const { access_token, refresh_token, user: userData } = response.data
@@ -229,6 +275,10 @@ export const useAuthStore = defineStore('auth', () => {
     sessionGeneration.value += 1
     resetSessionRotation()
     lastLogoutReason.value = reason
+    try {
+      if (reason) sessionStorage.setItem('logout_reason', reason)
+      else sessionStorage.removeItem('logout_reason')
+    } catch { /* 隐私模式下不可用，忽略 */ }
     clearTokens()
     user.value = null
     error.value = null
@@ -240,6 +290,9 @@ export const useAuthStore = defineStore('auth', () => {
 
   function clearLogoutReason() {
     lastLogoutReason.value = null
+    try {
+      sessionStorage.removeItem('logout_reason')
+    } catch { /* 隐私模式下不可用，忽略 */ }
   }
 
   function getSessionContext() {
@@ -277,6 +330,7 @@ export const useAuthStore = defineStore('auth', () => {
   return {
     // State
     user,
+    deviceId,
     accessToken,
     refreshToken,
     loading,

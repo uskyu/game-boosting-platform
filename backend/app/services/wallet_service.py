@@ -910,6 +910,88 @@ class WalletService:
             )
             return None
 
+    async def settle_service_fee(
+        self,
+        order: Order,
+        *,
+        booster_id: int,
+        amount: Decimal,
+        note: str | None = None,
+    ) -> WalletTransaction | None:
+        """订单服务费结转（发布人侧）：只扣托管冻结，不动可用余额。
+
+        发单按毛额冻结、结单按净额打款，差额（服务费）必须从发布人的
+        冻结余额里结转出去，否则会永久残留在 ``frozen_balance``。这里
+        与 ``ORDER_PAYMENT`` 分开记一条 ``SERVICE_FEE_SETTLE`` 流水：
+
+        - ``amount = -fee``：服务费支出；
+        - ``available_delta = 0``：不影响可用余额；
+        - ``frozen_delta = -fee``：只减冻结余额。
+
+        幂等键 ``(order_id, booster_id, type)`` 保证重复结算不会重复
+        扣减；冻结余额不足时按 ``min(fee, frozen)`` 扣减并 warning，
+        不阻断打手入账（老板兜底）。
+        """
+        amount = _to_decimal(amount).quantize(_CENT, rounding=ROUND_HALF_UP)
+        if amount <= _ZERO:
+            return None
+
+        existing = await self._db.execute(
+            select(WalletTransaction.id).where(
+                WalletTransaction.order_id == order.id,
+                WalletTransaction.booster_id == booster_id,
+                WalletTransaction.type == WalletTransactionType.SERVICE_FEE_SETTLE,
+            )
+        )
+        if existing.scalar_one_or_none() is not None:
+            return None
+
+        wallet = await self.get_or_create_wallet(order.user_id)
+        locked = await self._lock_wallet(wallet.id)
+        frozen = _to_decimal(locked.frozen_balance)
+        actual = min(amount, frozen)
+        if actual <= _ZERO:
+            logger.warning(
+                "Order %s service fee %s for booster %s not deducted: "
+                "publisher frozen balance is 0",
+                order.id,
+                amount,
+                booster_id,
+            )
+            return None
+        if actual < amount:
+            logger.warning(
+                "Order %s service fee for booster %s capped: expected %s, "
+                "frozen %s",
+                order.id,
+                booster_id,
+                amount,
+                frozen,
+            )
+
+        remark = f"订单 #{order.id} 服务费结转"
+        if note:
+            remark = f"{remark}：{note}"
+        try:
+            async with self._db.begin_nested():
+                return await self._apply(
+                    wallet,
+                    tx_type=WalletTransactionType.SERVICE_FEE_SETTLE,
+                    amount=-actual,
+                    available_delta=_ZERO,
+                    order_id=order.id,
+                    booster_id=booster_id,
+                    remark=remark,
+                    frozen_delta=-actual,
+                )
+        except IntegrityError:
+            logger.info(
+                "Order %s service fee already settled for booster %s",
+                order.id,
+                booster_id,
+            )
+            return None
+
     async def hold_deposit(
         self,
         wallet: Wallet,

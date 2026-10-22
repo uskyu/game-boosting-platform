@@ -395,6 +395,19 @@ class OrderUpdate(BaseModel):
         return self
 
 
+class OrderAcceptRequest(BaseModel):
+    """打手接单时可选携带的图形验证码。
+
+    后台开启「接单需要验证码」时两个字段都必须提供；关闭时请求可以完全不带
+    body（保持旧契约）。``extra="forbid"`` 防止前端误传字段却被静默忽略。
+    """
+
+    captcha_id: str | None = Field(default=None, max_length=64, description="验证码ID")
+    captcha_code: str | None = Field(default=None, max_length=10, description="验证码字符")
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class ClaimControlRequest(BaseModel):
     """Administrator dispatch control command."""
     action: str = Field(pattern="^(pause|resume|close|archive)$")
@@ -620,6 +633,11 @@ class OrderResponse(BaseModel):
     )
     accept_available_at: datetime | None = Field(
         default=None, description="查看者可以接单的时间点（发布后 + 等待秒数）"
+    )
+    # 接单图形验证码：由后台「接单需要验证码」开关决定，仅订单详情接口回填；
+    # 列表接口保持默认 False，避免为每页订单多查一次设置。
+    accept_captcha_required: bool = Field(
+        default=False, description="接当前订单是否需要图形验证码（由服务端后台开关决定）"
     )
 
     payment_status: str = Field(default=PaymentStatus.UNPAID.value, description="支付状态")

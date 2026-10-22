@@ -1,6 +1,6 @@
 """售后申请 API。
 
-老板（订单发布者）对已完成订单发起/查询售后、上传凭证图片、查看「我的售后」、
+老板（订单发布者）对已完成/已取消订单发起/查询售后、上传凭证图片、查看「我的售后」、
 撤回待处理售后；该单打手可一键认栽秒结（同意退款，不等管理员审阅）；
 管理员在后台审阅并通过/驳回/关闭。
 
@@ -63,7 +63,7 @@ async def _get_order_or_404(db: DatabaseSession, order_id: int) -> Order:
     response_model=AfterSaleItem,
     status_code=status.HTTP_201_CREATED,
     summary="发起售后申请",
-    description="仅订单发布者可对已完成订单发起售后（原因 5-500 字 + 最多 9 张凭证 + 金额 ≤ 派单价）",
+    description="仅订单发布者可对已完成或已取消订单发起售后（原因 5-500 字 + 最多 9 张凭证 + 金额 ≤ 派单价）",
 )
 async def create_order_after_sale(
     order_id: int,

@@ -38,6 +38,13 @@ async def update_site_settings(
     # 大厅「今日已接单」区块全站开关：仅当显式传入时才覆盖（None=不改动）
     if payload.hall_recent_claims_enabled is not None:
         setting.hall_recent_claims_enabled = payload.hall_recent_claims_enabled
+    # 安全设置：同样仅在显式传入时覆盖
+    if payload.registration_captcha_enabled is not None:
+        setting.registration_captcha_enabled = payload.registration_captcha_enabled
+    if payload.accept_captcha_enabled is not None:
+        setting.accept_captcha_enabled = payload.accept_captcha_enabled
+    if payload.max_online_devices is not None:
+        setting.max_online_devices = payload.max_online_devices
     setting.updated_by = current_admin.id
     await db.flush()
     await db.refresh(setting)

@@ -5,12 +5,14 @@ import { useRouter } from 'vue-router'
 import AuthShell from '@/components/auth/AuthShell.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useGamesStore } from '@/stores/games'
+import { useSiteStore } from '@/stores/site'
 import { PAGE_BACKGROUNDS } from '@/data/gameImages'
 import { getGamePlatformLabel, getGameServiceTypes, resolveGameVisual } from '@/utils/gameCatalog'
 
 const router = useRouter()
 const authStore = useAuthStore()
 const gamesStore = useGamesStore()
+const siteStore = useSiteStore()
 
 const copy = {
   eyebrow: '\u521b\u5efa\u8d26\u6237',
@@ -57,6 +59,8 @@ const spotlightTitle = ref(copy.defaultSpotlight)
 const spotlightMeta = ref(copy.defaultMeta)
 
 const isLoading = computed(() => authStore.loading)
+// 后台「注册需要验证码」开关；默认开启，未拉到设置时按开启处理。
+const captchaEnabled = computed(() => siteStore.settings.registration_captcha_enabled !== false)
 
 function isPasswordStrong(pw) {
   return pw.length >= 8 && /[A-Z]/.test(pw) && /\d/.test(pw)
@@ -80,11 +84,17 @@ const isFormValid = computed(() => {
     username.value.trim() !== '' &&
     isPasswordStrong(password.value) &&
     password.value === confirmPassword.value &&
-    captchaCode.value.trim() !== ''
+    (!captchaEnabled.value || captchaCode.value.trim() !== '')
   )
 })
 
 async function refreshCaptcha() {
+  if (!captchaEnabled.value) {
+    captchaId.value = ''
+    captchaImage.value = ''
+    captchaCode.value = ''
+    return
+  }
   captchaLoading.value = true
   const result = await authStore.fetchCaptcha()
   if (result.success) {
@@ -98,6 +108,7 @@ async function refreshCaptcha() {
 }
 
 function isCaptchaError(result) {
+  if (!captchaEnabled.value) return false
   if (result.status === 400) return true
   return /验证码/.test(result.error || '')
 }
@@ -128,8 +139,16 @@ function togglePassword() {
 }
 
 onMounted(async () => {
-  refreshCaptcha()
+  // 强制刷新：后台可能刚关掉/打开注册验证码，不能沿用启动时的缓存值。
+  // 设置请求失败时保留默认「开启」，避免网络抖动直接把注册表单判成不可提交。
+  // 与游戏目录并行发出，验证码/主打游戏都不互相等一次跨境往返。
+  const siteReady = siteStore.fetchSettings(true).then(() => {
+    if (captchaEnabled.value) {
+      refreshCaptcha()
+    }
+  })
   await gamesStore.ensureCatalog()
+  await siteReady
 
   // 默认展示三角洲行动（有本地素材的旗舰游戏）；缺图阶段保留 fallback 到 randomGame。
   const featuredGame = gamesStore.catalogGames.find((game) => game.name === '三角洲行动') || gamesStore.randomGame
@@ -222,7 +241,7 @@ onMounted(async () => {
           </p>
         </div>
 
-        <div class="min-w-0">
+        <div v-if="captchaEnabled" class="min-w-0">
           <label for="register-captcha" class="label">验证码</label>
           <div class="flex min-w-0 items-stretch gap-3">
             <input

@@ -59,6 +59,10 @@ class WalletTransactionType(str, PyEnum):
     # 冲正流水不带 recharge_order_id（那列的唯一键只给易支付回调入账用），
     # 商户单号写在 remark 里，靠类型 + 备注追溯。
     RECHARGE_REVERSAL = "RECHARGE_REVERSAL"
+    # 订单服务费结转（发布人侧）：只扣冻结余额、不动可用余额，等额计入
+    # platform_income。修复「发单按毛额冻结、结单只扣打手净额」导致服务费
+    # 永久滞留在发布人冻结余额里的历史 bug。
+    SERVICE_FEE_SETTLE = "SERVICE_FEE_SETTLE"
 
 
 class Wallet(Base):

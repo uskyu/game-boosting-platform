@@ -628,13 +628,17 @@ export const useOrdersStore = defineStore('orders', () => {
     }
   }
 
-  async function acceptOrder(orderId) {
+  async function acceptOrder(orderId, payload = undefined) {
     // 不切换全局 loading：详情页骨架屏会卸载移动端 fixed 操作栏，
     // 接单请求期间整页再白一次（同 deliverOrder 的做法）。
     error.value = null
 
     try {
-      const response = await api.put(`/orders/${orderId}/accept`)
+      // 接单验证码开启时后端要求 {captcha_id, captcha_code}；关闭时保持
+      // 旧契约（无 body 参数），因此 payload 为空时只传 URL。
+      const response = payload
+        ? await api.put(`/orders/${orderId}/accept`, payload)
+        : await api.put(`/orders/${orderId}/accept`)
       
       // Update order in list
       const index = orders.value.findIndex(o => o.id === orderId)

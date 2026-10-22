@@ -4,13 +4,16 @@ Handles order creation, listing, and management operations.
 """
 
 import asyncio
+import base64
 import logging
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated
 
+import anyio
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from app.api.chat_utils import send_order_system_message
 from app.api.order_events import broadcast_order_state_changed
@@ -40,6 +43,7 @@ from app.schemas.order import (
     OrderCancelRequestItem,
     OrderCancelRequestListResponse,
     ClaimReviewRequest,
+    OrderAcceptRequest,
     OrderAttachment,
     OrderDeliveryAttachment,
     OrderDeliveryAttachmentsResponse,
@@ -58,13 +62,30 @@ from app.schemas.order import (
     MyOrderClaimListResponse,
 )
 from app.schemas.user import MessageResponse
+from app.services import captcha_service
 from app.services.ai_service import LLMService, get_llm_service
 from app.services.credit_service import get_credit_service
 from app.services.file_service import save_image_bytes, validate_image_upload
 from app.services.order_service import get_order_service
+from app.services.site_setting_service import get_or_create_site_setting
 
 router = APIRouter(prefix="/orders", tags=["订单"])
 logger = logging.getLogger(__name__)
+
+
+class AcceptCaptchaResponse(BaseModel):
+    """接单验证码响应：结构对齐 /auth/captcha，前端可复用同一弹窗组件。"""
+
+    captcha_id: str = Field(description="验证码ID")
+    image: str = Field(description="base64 data URI 图片")
+
+
+def _accept_captcha_invalid() -> HTTPException:
+    """接单验证码校验失败：结构化 detail，前端按 code 定位输入框。"""
+    return HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail={"code": "captcha_invalid", "message": "验证码错误或已过期"},
+    )
 
 
 async def _cleanup_rejected_delivery_files(urls: list[str]) -> None:
@@ -572,6 +593,55 @@ async def get_hall_digest(
     )
 
 
+@router.get(
+    "/accept-captcha",
+    response_model=AcceptCaptchaResponse,
+    summary="获取接单图形验证码",
+    description=(
+        "后台开启「接单需要验证码」后可用：返回验证码ID与base64图片，"
+        "有效期5分钟、一次性使用；与注册验证码按场景隔离"
+    ),
+)
+async def get_accept_captcha(
+    request: Request,
+    db: DatabaseSession,
+    current_user: Annotated[User, Depends(get_current_booster)],
+) -> AcceptCaptchaResponse:
+    """生成接单场景的图形验证码（仅非管理员打手可获取）。
+
+    路由必须声明在 ``GET /{order_id}`` 之前，否则 ``accept-captcha`` 会被
+    int 路径参数解析成 422。限流同时按「场景+用户」与「场景+IP」分桶：
+    前者防单账号刷图，后者防同 IP 多账号刷图。
+    """
+    setting = await get_or_create_site_setting(db)
+    if not setting.accept_captcha_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="接单验证码已关闭",
+        )
+
+    ip = request.client.host if request.client else "unknown"
+    if not captcha_service.check_rate_limit(
+        captcha_service.user_rate_key("accept", current_user.id)
+    ) or not captcha_service.check_rate_limit(
+        captcha_service.scene_rate_key("accept", ip)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="请求过于频繁，请稍后再试",
+        )
+
+    # PIL 图片生成放线程池，避免多人同时打开接单弹窗时阻塞事件循环
+    captcha_id, png_bytes = await anyio.to_thread.run_sync(
+        captcha_service.create, "accept"
+    )
+    b64 = base64.b64encode(png_bytes).decode("ascii")
+    return AcceptCaptchaResponse(
+        captcha_id=captcha_id,
+        image=f"data:image/png;base64,{b64}",
+    )
+
+
 @router.post(
     "/{order_id}/attachments",
     response_model=OrderAttachment,
@@ -819,7 +889,12 @@ async def get_order(
     order = await order_service.get_order_by_id(order_id, current_user)
 
     response = _serialize_order(order, current_user)
-    return await _enrich_order_response(db, response, order, current_user)
+    response = await _enrich_order_response(db, response, order, current_user)
+    # 接单验证码开关由服务端回填，详情页据此决定点「接手」是否先弹验证码。
+    # 只在详情接口查询设置，列表接口保持默认 False（避免每页多一次单行查询）。
+    setting = await get_or_create_site_setting(db)
+    response.accept_captcha_required = bool(setting.accept_captcha_enabled)
+    return response
 
 
 @router.get(
@@ -953,6 +1028,7 @@ async def accept_order(
     current_user: Annotated[User, Depends(get_current_booster)],
     db: DatabaseSession,
     request: Request,
+    payload: OrderAcceptRequest | None = None,
 ) -> OrderResponse:
     """
     Accept an order as a booster.
@@ -961,8 +1037,23 @@ async def accept_order(
     - Only PENDING orders can be accepted
     - Cannot accept your own order
     - Admin state changes go through /admin/orders/{id}/intervene, not here
+    - 后台开启「接单需要验证码」时必须携带 captcha_id/captcha_code；
+      关闭时保持旧契约（可不带请求体）
     """
     order_service = get_order_service(db)
+
+    # 验证码闸门放在 accept_order 之前：避免校验失败时先改动任何订单/名额数据。
+    setting = await get_or_create_site_setting(db)
+    if setting.accept_captcha_enabled:
+        if (
+            payload is None
+            or not payload.captcha_id
+            or not payload.captcha_code
+            or not captcha_service.verify(
+                payload.captcha_id, payload.captcha_code, "accept"
+            )
+        ):
+            raise _accept_captcha_invalid()
 
     async with measure_stage(request, STAGE_ACCEPT_SERVICE):
         order = await order_service.accept_order(order_id, current_user)

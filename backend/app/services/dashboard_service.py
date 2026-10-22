@@ -23,6 +23,7 @@ from app.schemas.dashboard import (
     UserGrowthPoint,
     UserGrowthResponse,
 )
+from app.services import platform_income_service
 
 
 def _product_date_start_utc(day: date) -> datetime:
@@ -69,11 +70,18 @@ class DashboardService:
         )
         total_revenue = float((await self.db.execute(revenue_q)).scalar_one())
 
+        # 平台服务费：只统计 platform_income（仅后台可见），与成交额分开
+        service_fee_total, service_fee_month = await platform_income_service.totals(
+            self.db
+        )
+
         return OverviewStats(
             total_users=total_users,
             total_boosters=total_boosters,
             total_orders=total_orders,
             total_revenue=total_revenue,
+            service_fee_total=float(service_fee_total),
+            service_fee_month=float(service_fee_month),
             pending_orders=pending,
             active_orders=active,
             delivered_orders=delivered,

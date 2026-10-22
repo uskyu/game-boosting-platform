@@ -79,6 +79,21 @@ async def reset_database() -> AsyncGenerator[None, None]:
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
+    # 默认不限制同时在线设备，避免历史用例多次登录时互相踢下线；
+    # 设备上限相关用例会显式改成需要的值。
+    from app.models.site_setting import SiteSetting
+
+    async with _session_factory() as session:
+        session.add(
+            SiteSetting(
+                id=1,
+                site_name="游戏服务平台",
+                registration_captcha_enabled=True,
+                accept_captcha_enabled=False,
+                max_online_devices=0,
+            )
+        )
+        await session.commit()
     yield
 
 
@@ -165,8 +180,9 @@ def make_captcha():
     """Captcha factory: call _make() for each registration (single-use)."""
     def _make() -> dict:
         from app.services import captcha_service
-        captcha_id, _ = captcha_service.create()
-        code, _ = captcha_service._store[captcha_id]
+        captcha_id, _ = captcha_service.create("register")
+        # 存储元组为 (code, expire_at, scene)；按下标取 code，兼容旧格式
+        code = captcha_service._store[captcha_id][0]
         return {"captcha_id": captcha_id, "captcha_code": code}
     return _make
 

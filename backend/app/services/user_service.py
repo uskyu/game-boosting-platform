@@ -22,7 +22,9 @@ from app.core.security import (
     verify_token,
 )
 from app.models.user import BoosterApplicationStatus, User, UserRole
+from app.models.user_session import UserSession
 from app.schemas.user import UserRegister, UserUpdate
+from app.services import user_session_service
 
 logger = logging.getLogger(__name__)
 
@@ -243,12 +245,14 @@ class UserService:
         )
         return result.scalar_one_or_none()
 
-    def create_tokens(self, user: User) -> dict[str, Any]:
+    def create_tokens(self, user: User, sid: str | None = None) -> dict[str, Any]:
         """
         Create access and refresh tokens for user.
 
         Args:
             user: User to create tokens for.
+            sid: 设备会话 ID（``user_sessions.sid``）。鉴权时校验该会话仍
+                有效，被踢设备立即 401。
 
         Returns:
             Dictionary containing tokens and metadata.
@@ -260,11 +264,13 @@ class UserService:
                 "role": user.role.value,
             },
             session_version=user.token_version,
+            session_id=sid,
         )
 
         refresh_token = create_refresh_token(
             subject=user.id,
             session_version=user.token_version,
+            session_id=sid,
         )
 
         return {
@@ -335,7 +341,32 @@ class UserService:
                 detail="账户已被禁用",
             )
 
-        return self.create_tokens(user)
+        # 设备会话校验：被踢下线/已登出的设备即使 refresh 未过期也不能续期。
+        sid = payload.get("sid")
+        session = await user_session_service.get_valid_session(
+            self._db, sid, user.id
+        )
+        if session is None:
+            reason_row = await self._db.execute(
+                select(UserSession.revoked_reason).where(
+                    UserSession.sid == sid,
+                    UserSession.user_id == user.id,
+                )
+            )
+            if reason_row.scalar_one_or_none() == "device_limit":
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail={
+                        "code": "device_limit",
+                        "message": "账号已在其他设备登录，当前设备已下线",
+                    },
+                )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="登录状态已失效，请重新登录",
+            )
+
+        return self.create_tokens(user, sid)
 
     async def update_user(
         self,

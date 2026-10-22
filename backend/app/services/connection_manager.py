@@ -25,17 +25,23 @@ class ConnectionManager:
     """
 
     def __init__(self) -> None:
-        self.connections: dict[int, list[WebSocket]] = {}
+        # user_id -> [(sid, websocket), ...]
+        self.connections: dict[int, list[tuple[str, WebSocket]]] = {}
         self._lock = asyncio.Lock()
 
-    async def connect(self, user_id: int, websocket: WebSocket) -> None:
+    async def connect(
+        self, user_id: int, websocket: WebSocket, sid: str = ""
+    ) -> None:
         """注册一条用户连接。
 
         调用方须已完成 ``websocket.accept()``；对已接受的套接字二次
         accept 会触发 ASGI 协议错误（Expected ... got 'websocket.accept'）。
+
+        ``sid`` 是设备会话 ID（``user_sessions.sid``），用于按设备精确关闭；
+        默认空串只用于不关心设备维度的调用方（例如连接管理器的单元测试）。
         """
         async with self._lock:
-            self.connections.setdefault(user_id, []).append(websocket)
+            self.connections.setdefault(user_id, []).append((sid, websocket))
 
     async def disconnect(self, user_id: int, websocket: WebSocket | None = None) -> None:
         """移除一条连接；websocket 为 None 时移除该用户全部连接。"""
@@ -46,9 +52,10 @@ class ConnectionManager:
             sockets = self.connections.get(user_id)
             if not sockets:
                 return
-            with contextlib.suppress(ValueError):
-                sockets.remove(websocket)
-            if not sockets:
+            remaining = [item for item in sockets if item[1] is not websocket]
+            if remaining:
+                self.connections[user_id] = remaining
+            else:
                 self.connections.pop(user_id, None)
 
     async def _send_and_prune(self, user_id: int, websocket: WebSocket, data: dict) -> bool:
@@ -84,7 +91,7 @@ class ConnectionManager:
         令牌，按令牌匹配会误关操作者本人。
         """
         async with self._lock:
-            sockets = list(self.connections.pop(user_id, ()))
+            sockets = [ws for _sid, ws in self.connections.pop(user_id, ())]
         if not sockets:
             return 0
         results = await asyncio.gather(
@@ -97,10 +104,35 @@ class ConnectionManager:
         # 关闭时对端已断开会抛异常，属正常情况，不计入失败
         return sum(1 for item in results if not isinstance(item, BaseException))
 
+    async def close_session(
+        self,
+        user_id: int,
+        sid: str,
+        code: int = 4002,
+        reason: str = "device limit",
+    ) -> int:
+        """只关闭某台设备的连接（同时在线设备超限 / 登出 / 改密码被踢）。"""
+        async with self._lock:
+            sockets = self.connections.get(user_id) or []
+            targets = [ws for item_sid, ws in sockets if item_sid == sid]
+            if targets:
+                remaining = [item for item in sockets if item[0] != sid]
+                if remaining:
+                    self.connections[user_id] = remaining
+                else:
+                    self.connections.pop(user_id, None)
+        if not targets:
+            return 0
+        results = await asyncio.gather(
+            *(websocket.close(code=code, reason=reason) for websocket in targets),
+            return_exceptions=True,
+        )
+        return sum(1 for item in results if not isinstance(item, BaseException))
+
     async def send_to_user(self, user_id: int, data: dict) -> None:
         """向用户的全部在线连接并发发送。"""
         async with self._lock:
-            sockets = list(self.connections.get(user_id, ()))
+            sockets = [ws for _sid, ws in self.connections.get(user_id, ())]
         if not sockets:
             return
         await asyncio.gather(
@@ -113,7 +145,7 @@ class ConnectionManager:
             socket_pairs = [
                 (user_id, websocket)
                 for user_id, sockets in self.connections.items()
-                for websocket in list(sockets)
+                for _sid, websocket in list(sockets)
             ]
         if not socket_pairs:
             return
@@ -148,7 +180,7 @@ class ConnectionManager:
             socket_pairs = [
                 (uid, websocket)
                 for uid in targets
-                for websocket in list(self.connections.get(uid, ()))
+                for _sid, websocket in list(self.connections.get(uid, ()))
             ]
         if not socket_pairs:
             return

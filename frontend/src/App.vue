@@ -388,9 +388,12 @@ watch(
   (value, previous) => {
     if (!value || value === previous) return
     if (router.currentRoute.value.name === 'login') return
+    // 设备超限被踢（WS 4002）与普通会话失效（4001/401）要分开说明：
+    // 前者是"账号在别处登录"，后者是"密码变更/登录过期"。
+    const reason = authStore.lastLogoutReason === 'device-limit' ? 'device-limit' : 'session-expired'
     router.push({
       name: 'login',
-      query: { reason: 'session-expired' },
+      query: { reason },
     })
   }
 )

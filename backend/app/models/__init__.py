@@ -28,11 +28,13 @@ from app.models.order import Order, OrderStatus, PaymentStatus
 from app.models.order_after_sale import AfterSaleStatus, OrderAfterSale
 from app.models.order_cancel_request import OrderCancelRequest, OrderCancelRequestStatus
 from app.models.order_template import OrderTemplate
+from app.models.platform_income import PlatformIncome
 from app.models.recharge import RechargeOrder, RechargeStatus
 from app.models.review import Review
 from app.models.service_fee import ServiceFeeSetting
 from app.models.site_setting import SiteSetting
 from app.models.user import BoosterApplicationStatus, User, UserRole
+from app.models.user_session import UserSession
 from app.models.wallet import Wallet, WalletTransaction, WalletTransactionType
 from app.models.withdrawal import WithdrawalChannel, WithdrawalRequest, WithdrawalStatus
 from app.models.withdrawal_channel_settings import WithdrawalChannelSetting
@@ -74,6 +76,7 @@ __all__ = [
     "OrderTemplate",
     "PaymentSetting",
     "PaymentStatus",
+    "PlatformIncome",
     "RechargeOrder",
     "RechargeStatus",
     "Review",
@@ -83,6 +86,7 @@ __all__ = [
     "User",
     "UserPreference",
     "UserRole",
+    "UserSession",
     "PushSubscription",
     "Wallet",
     "WalletTransaction",

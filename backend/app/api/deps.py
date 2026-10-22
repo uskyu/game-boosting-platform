@@ -3,6 +3,7 @@ API dependencies module.
 FastAPI dependency injection functions for authentication and authorization.
 """
 
+from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, status
@@ -13,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import token_session_version, verify_token
 from app.db.session import get_async_session
 from app.models.user import User, UserRole
+from app.models.user_session import UserSession
 
 # HTTP Bearer token security scheme
 security = HTTPBearer(
@@ -83,16 +85,51 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         ) from err
 
-    # Fetch user from database
+    # 设备会话校验：sid 必须对应一条未吊销、未过期的会话。
+    # 老令牌没有 sid（上线前签发的）→ 401，客户端自动重登（老板 2026-10-22 确认）。
+    sid = payload.get("sid")
+    if not sid:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="登录状态已失效，请重新登录",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Fetch user and validate the device session in one round trip
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     result = await db.execute(
-        select(User).where(User.id == user_id)
+        select(User)
+        .join(UserSession, UserSession.user_id == User.id)
+        .where(
+            User.id == user_id,
+            UserSession.sid == sid,
+            UserSession.revoked_at.is_(None),
+            UserSession.expires_at > now,
+        )
     )
     user = result.scalar_one_or_none()
 
     if user is None:
+        # 区分「设备被挤下线」与普通令牌失效：前端据此显示正确文案
+        revoked = await db.execute(
+            select(UserSession.revoked_reason).where(
+                UserSession.sid == sid,
+                UserSession.user_id == user_id,
+            )
+        )
+        reason = revoked.scalar_one_or_none()
+        if reason == "device_limit":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={
+                    "code": "device_limit",
+                    "message": "账号已在其他设备登录，当前设备已下线",
+                },
+                headers={"WWW-Authenticate": "Bearer"},
+            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="用户不存在",
+            detail="登录状态已失效，请重新登录",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -235,9 +272,25 @@ async def get_optional_current_user(
         return None
 
 
+async def get_current_session_id(
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None,
+        Depends(security),
+    ],
+) -> str | None:
+    """只解码令牌取设备会话 ID，不查库（登出/改密码保留当前设备时用）。"""
+    if credentials is None:
+        return None
+    payload = verify_token(credentials.credentials, token_type="access")
+    if payload is None:
+        return None
+    return payload.get("sid")
+
+
 # Type aliases for cleaner dependency injection
 CurrentUser = Annotated[User, Depends(get_current_user)]
 CurrentActiveUser = Annotated[User, Depends(get_current_active_user)]
 CurrentVerifiedUser = Annotated[User, Depends(get_current_verified_user)]
 OptionalCurrentUser = Annotated[User | None, Depends(get_optional_current_user)]
+CurrentSessionId = Annotated[str | None, Depends(get_current_session_id)]
 DatabaseSession = Annotated[AsyncSession, Depends(get_async_session)]

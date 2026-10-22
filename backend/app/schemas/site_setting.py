@@ -14,6 +14,21 @@ class SiteSettingUpdate(BaseModel):
         default=None,
         description="大厅是否显示「今日已接单」区块（全站生效）",
     )
+    # 安全设置：不传保持不变
+    registration_captcha_enabled: bool | None = Field(
+        default=None,
+        description="注册时是否要求图形验证码",
+    )
+    accept_captcha_enabled: bool | None = Field(
+        default=None,
+        description="打手接单时是否要求图形验证码",
+    )
+    max_online_devices: int | None = Field(
+        default=None,
+        ge=0,
+        le=20,
+        description="同一账号最多同时在线设备数，0 表示不限制",
+    )
 
     model_config = ConfigDict(extra="forbid")
 
@@ -39,6 +54,10 @@ class SiteSettingResponse(BaseModel):
     favicon_url: str | None
     # 大厅「今日已接单」区块全站开关（默认开；公开可读，大厅据此渲染）
     hall_recent_claims_enabled: bool = True
+    # 安全设置（公开可读：注册页/接单弹窗据此渲染）
+    registration_captcha_enabled: bool = True
+    accept_captcha_enabled: bool = False
+    max_online_devices: int = 2
     updated_by: int | None
     updated_at: datetime
     logo_recommendation: str = "建议使用 512×512 以上的 PNG、JPEG 或 WebP 图片，文件不超过 10MB。"

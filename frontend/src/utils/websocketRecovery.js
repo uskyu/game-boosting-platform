@@ -10,6 +10,11 @@ export const WS_MAX_RECONNECT_DELAY_MS = 30_000
 // 后其他设备会遇到），客户端不应重连，直接按登录失效处理。
 export const WS_CLOSE_SESSION_INVALIDATED = 4001
 
+// 账号同时在线设备数超过后台上限时，服务端把最早登录的设备踢下线并用
+// 这个关闭码通知它（reason = "device limit"）。与 4001 不同：这是明确的
+// "本设备被新登录挤掉"，无需再验证会话，直接登出并提示。
+export const WS_CLOSE_DEVICE_LIMIT = 4002
+
 export function getWebSocketHealthAction({
   readyState,
   openState,

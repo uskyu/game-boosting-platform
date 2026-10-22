@@ -61,6 +61,57 @@ const claimFailNeedsRecharge = computed(() => (errorMessage.value || '').include
 const showDailyLimitModal = ref(false)
 const dailyLimitInfo = ref(null)
 
+// 接单图形验证码（后台「接单需要验证码」开启时由详情响应
+// accept_captcha_required 告知）。验证码一次性消费：每次失败/重开弹窗都
+// 重新拉取，避免用已作废的 captcha_id 反复提交。
+const claimCaptchaId = ref('')
+const claimCaptchaCode = ref('')
+const claimCaptchaImage = ref('')
+const claimCaptchaLoading = ref(false)
+const claimCaptchaError = ref('')
+let claimCaptchaSeq = 0
+const claimCaptchaRequired = computed(() => Boolean(order.value?.accept_captcha_required))
+const claimCaptchaReady = computed(
+  () => !claimCaptchaRequired.value || (!!claimCaptchaId.value && claimCaptchaCode.value.trim() !== ''),
+)
+
+async function refreshAcceptCaptcha() {
+  if (!claimCaptchaRequired.value) {
+    clearClaimCaptcha()
+    return
+  }
+  const seq = ++claimCaptchaSeq
+  claimCaptchaLoading.value = true
+  claimCaptchaError.value = ''
+  try {
+    const response = await api.get('/orders/accept-captcha')
+    if (seq !== claimCaptchaSeq) return
+    claimCaptchaId.value = response.data?.captcha_id || ''
+    claimCaptchaImage.value = response.data?.image || ''
+    if (!claimCaptchaId.value || !claimCaptchaImage.value) {
+      claimCaptchaError.value = '验证码获取失败，请点击图片重试'
+    }
+  } catch (err) {
+    if (seq !== claimCaptchaSeq) return
+    claimCaptchaId.value = ''
+    claimCaptchaImage.value = ''
+    claimCaptchaError.value = err?.message || '验证码获取失败，请点击图片重试'
+  } finally {
+    if (seq === claimCaptchaSeq) {
+      claimCaptchaLoading.value = false
+    }
+  }
+}
+
+function clearClaimCaptcha() {
+  claimCaptchaSeq += 1
+  claimCaptchaId.value = ''
+  claimCaptchaCode.value = ''
+  claimCaptchaImage.value = ''
+  claimCaptchaError.value = ''
+  claimCaptchaLoading.value = false
+}
+
 function goRechargeFromFail() {
   showClaimFailModal.value = false
   router.push({ name: 'wallet', query: { recharge: '1' } })
@@ -533,6 +584,8 @@ async function openClaimModal() {
   }
   errorMessage.value = ''
   successMessage.value = ''
+  // 上一次弹窗残留的验证码一律作废（一次性、可能已被消费）
+  clearClaimCaptcha()
 
   // 接单前拉一次最新快照：详情页停留期间别人可能刚抢走（后端有行锁会确定性
   // 拒绝，但先校验能立刻告知"手慢了"，不必等一个注定失败的往返）。
@@ -570,6 +623,11 @@ async function openClaimModal() {
     return
   }
   showClaimModal.value = true
+  // 预检拿到的最新快照决定本单是否需要接单验证码；拉取失败时弹窗内
+  // 展示「点击重试」，确认按钮保持禁用，不会带着空验证码提交。
+  if (claimCaptchaRequired.value) {
+    refreshAcceptCaptcha()
+  }
 }
 
 // 关闭"接手失败"强提醒：若失败原因是订单已不可见，顺手重载页面进入"已接走"态，
@@ -621,20 +679,30 @@ function closeDailyLimitModal() {
 
 async function handleConfirmClaim() {
   if (actionLoading.value) return
+  // 按钮在缺验证码时是禁用态，这里再兜一层，避免键盘回车/程序化触发提交
+  if (!claimCaptchaReady.value) {
+    errorMessage.value = '请先输入验证码'
+    return
+  }
   actionLoading.value = true
   errorMessage.value = ''
   successMessage.value = ''
   let acceptSucceeded = false
   try {
     const orderId = order.value.id
+    // 接单验证码开启时按后端契约带上 body；关闭时保持旧的无 body 请求
+    const acceptPayload = claimCaptchaRequired.value
+      ? { captcha_id: claimCaptchaId.value, captcha_code: claimCaptchaCode.value.trim() }
+      : undefined
     const result = await measureOrderFlowStage(
       'order_accept',
       'accept_api',
-      () => ordersStore.acceptOrder(orderId),
+      () => ordersStore.acceptOrder(orderId, acceptPayload),
     )
     if (result.success) {
       acceptSucceeded = true
       showClaimModal.value = false
+      clearClaimCaptcha()
       successMessage.value = '已接手订单，开始进行吧'
       // 必须再取详情补齐当前用户的 my_claim 等个性化字段，但不能切整页骨架屏。
       const detailRefresh = await measureOrderFlowStage(
@@ -650,6 +718,12 @@ async function handleConfirmClaim() {
     } else {
       // 失败（含 409 重复确认）：保留页面顶部错误提示，同时中央强提醒。
       showClaimModal.value = false
+      // 验证码无论因何失败都已被服务端消费（校验成功后才可能落到其他
+      // 业务错误），必须换一张；错误码/业务提示仍按原分支展示。
+      if (claimCaptchaRequired.value) {
+        claimCaptchaCode.value = ''
+        refreshAcceptCaptcha()
+      }
       errorMessage.value = result.error || '接单失败，请稍后重试'
       const dailyLimit = parseDailyLimitInfo(result.detail)
       if (dailyLimit) {
@@ -683,6 +757,10 @@ async function handleConfirmClaim() {
       return
     }
     showClaimModal.value = false
+    if (claimCaptchaRequired.value) {
+      claimCaptchaCode.value = ''
+      refreshAcceptCaptcha()
+    }
     errorMessage.value = '接单失败，请稍后重试'
     showClaimFailModal.value = true
   } finally {
@@ -1139,14 +1217,17 @@ const afterSaleApproved = ref(false)
 // 售后处理中弹窗（老板侧）：查看案情 / 撤回售后
 const showAfterSaleStatusModal = ref(false)
 
-// 售后申请：仅已完成单可发起（路由见 router/index.js afterSaleApply）
+// 售后申请：已完成或已取消单可发起（路由见 router/index.js afterSaleApply）。
+// 已取消但从未被接单的订单不在此处额外拦截：是否能申请由后端判定并以
+// 400 提示为准，避免前端规则与后端分成/责任口径不一致。
 function goToAfterSaleApply(orderId) {
   router.push({ name: 'afterSaleApply', params: { id: orderId } })
 }
 
 async function refreshAfterSaleGate(orderId = order.value?.id) {
-  // 非老板、非已完成没有售后入口；PENDING 与 APPROVED 互斥，进行中时无需再拉
-  if (!isOwner.value || orderId == null || order.value?.status !== 'COMPLETED') {
+  // 非老板、非已完成/已取消没有售后入口；PENDING 与 APPROVED 互斥，进行中时无需再拉
+  const status = order.value?.status
+  if (!isOwner.value || orderId == null || (status !== 'COMPLETED' && status !== 'CANCELLED')) {
     afterSaleApproved.value = false
     return
   }
@@ -1827,11 +1908,11 @@ onUnmounted(() => {
             </button>
 
             <!-- 售后（原「我的派单」列表卡片迁入，老板 2026-10-18 要求放到「重建订单」
-                 上方）：仅老板对已完成单可发起；进行中售后改开状态弹窗（可查看案情
+                 上方）：老板对已完成或已取消单可发起；进行中售后改开状态弹窗（可查看案情
                  并撤回），此时保持可点、只降不透明度——禁用就没法撤诉了；
                  已裁定通过（一单一裁）时禁用，避免填完表单才被后端 400 拒。 -->
             <button
-              v-if="isOwner && order.status === 'COMPLETED'"
+              v-if="isOwner && (order.status === 'COMPLETED' || order.status === 'CANCELLED')"
               type="button"
               class="od-ops__chip btn-danger w-full py-3"
               :class="order.after_sale_pending ? 'opacity-60' : ''"
@@ -1990,9 +2071,44 @@ onUnmounted(() => {
               <span class="font-semibold tabular-nums text-price">{{ formatOrderPrice(order) }}</span>
               ，接手后开始进行，完成后点击「提交结单」提交汇报。
             </p>
+            <!-- 接单验证码（样式与注册页一致）：点击图片刷新；拉取失败时
+                 显示重试文案，确认按钮因缺少 captcha_id 保持禁用。 -->
+            <div v-if="claimCaptchaRequired" class="mt-4 min-w-0">
+              <label for="claim-captcha" class="label">验证码</label>
+              <div class="flex min-w-0 items-stretch gap-3">
+                <input
+                  id="claim-captcha"
+                  v-model="claimCaptchaCode"
+                  type="text"
+                  class="input min-w-0 flex-1"
+                  placeholder="输入图中字符"
+                  maxlength="6"
+                  autocomplete="one-time-code"
+                />
+                <button
+                  type="button"
+                  title="点击刷新"
+                  :disabled="claimCaptchaLoading"
+                  class="flex h-11 w-28 shrink-0 items-center justify-center overflow-hidden rounded-field border border-line-1 bg-surface-2 text-xs text-ink-2 transition-opacity hover:opacity-80 disabled:opacity-60"
+                  @click="refreshAcceptCaptcha"
+                >
+                  <img
+                    v-if="claimCaptchaImage"
+                    :src="claimCaptchaImage"
+                    alt="验证码"
+                    title="点击刷新"
+                    class="h-full w-full object-cover"
+                  />
+                  <span v-else>{{ claimCaptchaLoading ? '加载中…' : '点击重试' }}</span>
+                </button>
+              </div>
+              <p v-if="claimCaptchaError" class="helper-text !text-danger">
+                {{ claimCaptchaError }}
+              </p>
+            </div>
             <div class="mt-6 flex gap-3">
               <button type="button" class="btn-secondary flex-1" :disabled="actionLoading" @click="closeClaimModal">取消</button>
-              <button type="button" class="btn-primary flex-1" :disabled="actionLoading || acceptWaitSeconds > 0" @click="handleConfirmClaim">
+              <button type="button" class="btn-primary flex-1" :disabled="actionLoading || acceptWaitSeconds > 0 || !claimCaptchaReady" @click="handleConfirmClaim">
                 {{ claimConfirmLabel }}
               </button>
             </div>

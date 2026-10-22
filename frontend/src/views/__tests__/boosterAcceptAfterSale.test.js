@@ -122,7 +122,7 @@ describe('订单详情老板侧售后入口（2026-10-18 从我的派单列表�
     expect(gate).toMatch(/afterSalesStore\.fetchOrderAfterSales\(orderId\)/)
     expect(gate).toMatch(/item\.status === 'APPROVED'/)
     expect(gate).toMatch(/isOwner\.value/)
-    expect(gate).toMatch(/order\.value\?\.status !== 'COMPLETED'/)
+    expect(gate).toMatch(/status !== 'COMPLETED' && status !== 'CANCELLED'/)
     // 详情加载完成后异步补算，不阻塞首屏骨架屏
     expect(detailSource).toMatch(/refreshAfterSaleGate\(orderId\)\.catch\(\(\) => \{\}\)/)
     // 禁用态沿用 operator 顺序：pending 可点（撤回），已裁定才禁用

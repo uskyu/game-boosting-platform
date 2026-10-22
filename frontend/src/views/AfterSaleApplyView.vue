@@ -170,7 +170,7 @@ onMounted(loadOrder)
     <section class="hero-panel p-5 sm:p-6 lg:p-8">
       <p class="eyebrow">售后服务</p>
       <h1 class="section-title">申请售后</h1>
-      <p class="mt-2 text-sm text-ink-2">对已完成的订单发起售后，客服核实后会按平台规则处理。</p>
+      <p class="mt-2 text-sm text-ink-2">对已完成或已取消的订单发起售后，客服核实后会按平台规则处理。</p>
     </section>
 
     <!-- 订单摘要 -->

@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, joinedload, selectinload
 
+from app.core.money import resolve_service_fee_rate
 from app.core.product_time import product_day_bounds
 from app.core.security import encrypt_text, escape_like
 from app.models.booster_service import BoosterService
@@ -41,6 +42,7 @@ from app.models.wallet import Wallet, WalletTransaction, WalletTransactionType
 from app.schemas.booster_service import BoosterServiceOrderCreate
 from app.schemas.order import OrderCreate, OrderUpdate
 from app.services.ai_service import LLMService
+from app.services import platform_income_service
 from app.services.wallet_service import calculate_order_income, get_wallet_service
 
 logger = logging.getLogger(__name__)
@@ -2359,8 +2361,10 @@ class OrderService:
         1) 打手入账 ORDER_INCOME +P（幂等键 (order_id, booster_id, type)）；
         2) 炸单赔偿金：扣除 C 走 COMPENSATION_DEDUCT 不返还，剩余
            compensation_amount - C 走 DEPOSIT_RELEASE 回补打手可用余额；
-        3) 非管理员发布人：ORDER_PAYMENT -P 从其托管冻结支出（幂等，
-           冻结不足时尽力扣减并 warning，不阻断打手入账——老板兜底）。
+        3) 非管理员发布人：从该单托管冻结里扣出一个整单价格额度——
+           打手净额走 ORDER_PAYMENT，服务费差额走 SERVICE_FEE_SETTLE
+           （只减冻结、不动可用）并写入 platform_income（幂等）；
+           冻结不足时尽力扣减并 warning，不阻断打手入账——老板兜底。
 
         Returns:
             实际入账金额 P；该打手已结算过（幂等命中）时返回 None。
@@ -2403,11 +2407,59 @@ class OrderService:
                     note=note,
                 )
 
-        # 发布人侧：从托管冻结打款（仅非管理员发布人）
+        # 发布人侧：从托管冻结打款（仅非管理员发布人）。
+        #
+        # 发单按毛额 price × max_claims 冻结，结单该名额应从托管里扣出一
+        # 个「整单价格」的额度：打手净额走 ORDER_PAYMENT，差额走
+        # SERVICE_FEE_SETTLE 结转平台收入。两条流水合计才等于整单价格，
+        # 不会重复扣减，也不会让服务费永久残留冻结余额。
         if await self._publisher_requires_escrow(order):
-            await wallet_service.pay_order_from_escrow(
-                order, booster_id=booster_id, amount=payout, note=note
+            escrow_held = await self._publisher_escrow_held(order)
+            # 本次可动用的本单托管额度（历史残留/部分到账时可能小于 price；
+            # 账务异常时 held 可能为负，统一收敛到 0）
+            escrow_slice = max(
+                min(_to_decimal(order.price), escrow_held), _ZERO
             )
+            payout_actual = min(payout, escrow_slice)
+            payment_tx = await wallet_service.pay_order_from_escrow(
+                order, booster_id=booster_id, amount=payout_actual, note=note
+            )
+            if payment_tx is not None:
+                actual = abs(_to_decimal(payment_tx.amount))
+                # 本次整单额度里，扣掉实际付给打手的净额，剩余即服务费
+                fee = max(escrow_slice - actual, _ZERO)
+                if fee > _ZERO:
+                    fee_tx = await wallet_service.settle_service_fee(
+                        order,
+                        booster_id=booster_id,
+                        amount=fee,
+                        note=note,
+                    )
+                    if fee_tx is not None:
+                        settled_fee = abs(_to_decimal(fee_tx.amount))
+                        # 费率按订单烙盘的百分数留痕（8.00 = 8%）
+                        rate = (
+                            resolve_service_fee_rate(order.service_fee_rate)
+                            * Decimal("100")
+                        ).quantize(Decimal("0.01"))
+                        await platform_income_service.record_order_service_fee(
+                            self._db,
+                            order_id=order.id,
+                            booster_id=booster_id,
+                            amount=settled_fee,
+                            rate=rate,
+                        )
+            else:
+                # 返回 None = 该名额已打款过，或发布人冻结为 0：本次不记
+                # 服务费。打手入账已在上方完成，冻结不足不阻断结算。
+                logger.warning(
+                    "Order %s has no servable escrow for booster %s "
+                    "(held %s, payout %s); service fee skipped",
+                    order.id,
+                    booster_id,
+                    escrow_held,
+                    payout,
+                )
 
         return payout
 
@@ -2554,8 +2606,11 @@ class OrderService:
         """发布人在本订单当前持有的托管金额（按钱包流水动态聚合）。
 
         持有 = Σ托管（-Σ ESCROW_HOLD）- Σ已退回（Σ ESCROW_RELEASE）
-        - Σ已打款（-Σ ORDER_PAYMENT）；管理员发布的平台单没有托管
-        流水，自然为 0。
+        - Σ已打款（-Σ ORDER_PAYMENT）- Σ服务费结转（-Σ SERVICE_FEE_SETTLE）
+        ；管理员发布的平台单没有托管流水，自然为 0。
+
+        服务费结转必须计入，否则结单后会把已经结转给平台的钱仍算作
+        「本单还持有」，导致多名额订单后续名额多扣/退款时多释。
         """
         result = await self._db.execute(
             select(
@@ -2568,6 +2623,7 @@ class OrderService:
                     WalletTransactionType.ESCROW_HOLD,
                     WalletTransactionType.ESCROW_RELEASE,
                     WalletTransactionType.ORDER_PAYMENT,
+                    WalletTransactionType.SERVICE_FEE_SETTLE,
                 )),
             )
             .group_by(WalletTransaction.type)
@@ -2579,8 +2635,8 @@ class OrderService:
                 held -= total          # HOLD 为负数 → 增加持有
             elif tx_type == WalletTransactionType.ESCROW_RELEASE:
                 held -= total          # RELEASE 为正数 → 减少持有
-            else:                      # ORDER_PAYMENT 为负数 → 减少持有
-                held += total
+            else:                      # ORDER_PAYMENT / SERVICE_FEE_SETTLE
+                held += total          # 均为负数 → 减少持有
         return held
 
     async def release_escrow(

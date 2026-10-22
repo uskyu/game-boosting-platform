@@ -27,6 +27,19 @@ class SiteSetting(Base):
     hall_recent_claims_enabled: Mapped[bool] = mapped_column(
         Boolean(), nullable=False, default=True, server_default="1"
     )
+    # 安全设置（2026-10-22）：两个验证码开关 + 同时在线设备上限。
+    # 放在站点设置里是为了复用现有单行配置与后台页面；公开可读，前端据此
+    # 决定注册页是否渲染验证码、接单弹窗是否提示设备上限。
+    registration_captcha_enabled: Mapped[bool] = mapped_column(
+        Boolean(), nullable=False, default=True, server_default="1"
+    )
+    accept_captcha_enabled: Mapped[bool] = mapped_column(
+        Boolean(), nullable=False, default=False, server_default="0"
+    )
+    # 0 = 不限制；正数 = 同一账号最多同时登录的设备数，超限挤掉最早登录的
+    max_online_devices: Mapped[int] = mapped_column(
+        Integer(), nullable=False, default=2, server_default="2"
+    )
     updated_by: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

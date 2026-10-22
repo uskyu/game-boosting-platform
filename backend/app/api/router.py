@@ -14,6 +14,7 @@ from app.api.endpoints import (
     admin_deposit_router,
     admin_announcements_router,
     admin_payment_router,
+    admin_platform_income_router,
     admin_router,
     admin_site_router,
     admin_users_router,
@@ -66,6 +67,7 @@ api_router.include_router(admin_site_router)
 api_router.include_router(admin_payment_router)
 api_router.include_router(admin_deposit_router)
 api_router.include_router(admin_service_fee_router)
+api_router.include_router(admin_platform_income_router)
 # 发单页只读全局服务费设置（任何登录用户）；写操作走 admin_service_fee_router
 api_router.include_router(service_fee_public_router)
 api_router.include_router(admin_withdrawal_rule_router)

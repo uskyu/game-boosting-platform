@@ -156,12 +156,14 @@ async def reset_admin_user_password(
             detail="管理员密码不能在用户管理中重置，请本人到设置页验证当前密码后修改",
         )
     from app.core.post_commit import run_after_commit
+    from app.services import user_session_service
     from app.services.connection_manager import get_connection_manager
 
     user.hashed_password = await ahash_password(payload.password)
     # 会话版本自增：被盗号场景下，重置密码必须同时让攻击者手里的令牌失效，
     # 否则改完密码盗号者照样能用。管理员自己不受影响（不重置自己的密码）。
     user.token_version += 1
+    await user_session_service.revoke_all(db, user_id, "admin_reset")
     await db.flush()
     await run_after_commit(
         lambda: get_connection_manager().close_user_connections(user_id)
@@ -180,6 +182,19 @@ async def set_admin_user_status(
     if user.id == current_admin.id and not payload.is_active:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能禁用自己的账户")
     user.is_active = payload.is_active
+    if not payload.is_active:
+        # 禁用账号：吊销全部设备会话，并断开已建立的 WebSocket
+        # （旧实现只挡住新请求，已有长连接会继续收消息）。
+        from app.core.post_commit import run_after_commit
+        from app.services import user_session_service
+        from app.services.connection_manager import get_connection_manager
+
+        await user_session_service.revoke_all(db, user_id, "disabled")
+        await run_after_commit(
+            lambda: get_connection_manager().close_user_connections(
+                user_id, reason="account disabled"
+            )
+        )
     await db.flush()
     wallet = (await db.execute(select(Wallet).where(Wallet.user_id == user_id))).scalar_one_or_none()
     return AdminUserDetailResponse(**_user_response(user, wallet).model_dump(), phone=user.phone, bio=user.bio)

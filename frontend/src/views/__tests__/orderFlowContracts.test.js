@@ -204,7 +204,8 @@ describe('daily accept limit popup contracts', () => {
 
   it('passes the structured detail through the accept store action', () => {
     const ordersStore = readFileSync(new URL('../../stores/orders.js', import.meta.url), 'utf8')
-    const acceptStart = ordersStore.indexOf('async function acceptOrder(orderId)')
+    // 接单动作新增可选 payload（接单验证码），签名后面可能跟参数
+    const acceptStart = ordersStore.indexOf('async function acceptOrder(orderId,')
     const acceptEnd = ordersStore.indexOf('\n  },', acceptStart)
     const accept = ordersStore.slice(acceptStart, acceptEnd)
     expect(accept).toMatch(/detail: err\.original\?\.response\?\.data\?\.detail/)
@@ -516,7 +517,7 @@ describe('claim wait-gate contracts', () => {
     // 入口按钮：等待期禁用（acceptWaitSeconds > 0），标签带剩余秒数
     expect(detailSource).toMatch(/:disabled="actionLoading \|\| claimPreflightLoading \|\| hasClaimed \|\| acceptWaitSeconds > 0"/)
     // 确认按钮：同样在等待期禁用并显示倒计时标签
-    expect(detailSource).toMatch(/class="btn-primary flex-1" :disabled="actionLoading \|\| acceptWaitSeconds > 0"/)
+    expect(detailSource).toMatch(/class="btn-primary flex-1" :disabled="actionLoading \|\| acceptWaitSeconds > 0 \|\| !claimCaptchaReady"/)
     expect(detailSource).toContain('{{ claimConfirmLabel }}')
     expect(detailSource).toMatch(/const claimConfirmLabel = computed\(/)
     // 本地补时与服务端等待取较大值：任一未归零都保持禁用（归零自动恢复）

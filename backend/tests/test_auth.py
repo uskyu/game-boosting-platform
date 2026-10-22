@@ -38,13 +38,14 @@ async def test_register_duplicate_email(client: AsyncClient, make_captcha):
 
 
 async def test_register_missing_captcha_rejected(client: AsyncClient):
-    """Register without captcha fields -> 422 (pydantic required fields)."""
+    """注册验证码开启时，缺少验证码字段 -> 400（字段可选，由业务层拒绝）。"""
     resp = await client.post("/auth/register", json={
         "email": "nocaptcha@example.com",
         "username": "NoCaptcha",
         "password": "StrongPass1",
     })
-    assert resp.status_code == 422
+    assert resp.status_code == 400
+    assert "验证码" in resp.json()["detail"]
 
 
 async def test_register_validation_error_returns_specific_reason(client: AsyncClient):

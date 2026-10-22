@@ -13,6 +13,7 @@ import {
   WS_WATCHDOG_INTERVAL_MS,
   WS_CONNECTING_TIMEOUT_MS,
   WS_CLOSE_SESSION_INVALIDATED,
+  WS_CLOSE_DEVICE_LIMIT,
 } from '@/utils/websocketRecovery'
 
 const DEFAULT_MESSAGE_LIMIT = 30
@@ -993,6 +994,16 @@ export const useChatStore = defineStore('chat', () => {
       clearSocketTimers()
       recoveryInFlight = false
       socketStatus.value = 'disconnected'
+
+      // 4002 = 同时在线设备数超限，本设备被服务端踢下线（reason
+      // "device limit"）。这是确定性的"账号在别处登录"，不需要再花一次
+      // /auth/me 验证：直接终止重连并登出，由 App.vue 跳到登录页说明原因。
+      if (event?.code === WS_CLOSE_DEVICE_LIMIT) {
+        shouldReconnect = false
+        sessionInvalidatedAt.value = Date.now()
+        useAuthStore().logout('device-limit')
+        return
+      }
 
       // 4001 = 服务端因会话失效主动关闭（改密码/被重置密码后，其他设备
       // 的登录状态已作废）。这里不再重连——旧令牌重连必然 auth_fail，

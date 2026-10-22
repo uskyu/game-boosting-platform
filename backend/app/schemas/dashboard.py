@@ -11,6 +11,12 @@ class OverviewStats(BaseModel):
     total_boosters: int = Field(description="打手数（非管理员用户）")
     total_orders: int = Field(description="订单总数")
     total_revenue: float = Field(description="总收入(已完成)")
+    service_fee_total: float = Field(
+        default=0.0, description="平台服务费累计收入（仅后台可见）"
+    )
+    service_fee_month: float = Field(
+        default=0.0, description="平台服务费本月收入（北京时间自然月）"
+    )
     pending_orders: int = Field(description="待接单数")
     active_orders: int = Field(description="进行中订单")
     delivered_orders: int = Field(description="待审核订单（打手已交单）")

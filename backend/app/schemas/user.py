@@ -44,16 +44,22 @@ class UserRegister(BaseModel):
         description="用户角色",
     )
 
-    captcha_id: str = Field(
-        ...,
-        description="图形验证码ID",
+    captcha_id: str | None = Field(
+        default=None,
+        description="图形验证码ID（后台关闭注册验证码时可不传）",
     )
 
-    captcha_code: str = Field(
-        ...,
+    captcha_code: str | None = Field(
+        default=None,
         min_length=1,
         max_length=10,
-        description="图形验证码",
+        description="图形验证码（后台关闭注册验证码时可不传）",
+    )
+
+    device_id: str | None = Field(
+        default=None,
+        max_length=64,
+        description="客户端设备标识（同一浏览器复用，用于同时在线设备上限）",
     )
 
     @field_validator("username")
@@ -91,6 +97,12 @@ class UserLogin(BaseModel):
         ...,
         min_length=1,
         description="密码",
+    )
+
+    device_id: str | None = Field(
+        default=None,
+        max_length=64,
+        description="客户端设备标识（同一浏览器复用，用于同时在线设备上限）",
     )
 
 

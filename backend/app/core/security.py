@@ -104,6 +104,7 @@ def create_access_token(
     expires_delta: timedelta | None = None,
     additional_claims: dict[str, Any] | None = None,
     session_version: int = 0,
+    session_id: str | None = None,
 ) -> str:
     """
     Create a JWT access token.
@@ -133,6 +134,10 @@ def create_access_token(
         # 老令牌没有这个声明，按 0 处理，因此上线本身不会踢掉任何人。
         "ver": int(session_version or 0),
     }
+    # 设备会话 ID：与 user_sessions.sid 对应。被踢设备即使 access 未过期，
+    # 鉴权时也会因为会话已吊销而立即 401。
+    if session_id:
+        to_encode["sid"] = session_id
 
     if additional_claims:
         to_encode.update(additional_claims)
@@ -148,6 +153,7 @@ def create_refresh_token(
     subject: str | int,
     expires_delta: timedelta | None = None,
     session_version: int = 0,
+    session_id: str | None = None,
 ) -> str:
     """
     Create a JWT refresh token.
@@ -176,6 +182,8 @@ def create_refresh_token(
         # access，密码改了等于没改。
         "ver": int(session_version or 0),
     }
+    if session_id:
+        to_encode["sid"] = session_id
 
     return jwt.encode(
         to_encode,
