@@ -244,7 +244,12 @@ async def test_kicked_device_refresh_rejected(
 
     resp = await _refresh(client, a)
     assert resp.status_code == 401
-    assert "登录状态已失效" in resp.json()["detail"]
+    # 被挤下线的设备拿到的不是「登录状态已失效」这种普通文案，而是带
+    # code 的结构化 detail（前端据此提示「账号已在其他设备登录」并跳重登）。
+    detail = resp.json()["detail"]
+    assert isinstance(detail, dict), detail
+    assert detail["code"] == "device_limit"
+    assert "其他设备登录" in detail["message"]
 
 
 # ---------------------------------------------------------------------------

@@ -232,7 +232,9 @@ async def test_after_sale_requires_completed_order(
 
     rejected = await _create_after_sale(client, publisher, order["id"])
     assert rejected.status_code == 400, rejected.text
-    assert rejected.json()["detail"] == "仅已完成的订单可以申请售后"
+    # 取消单也能售后之后（063 批次），非终态订单的统一拒绝文案变成
+    # 「已完成或已取消」；这里验的是 PENDING 订单仍被挡在门外。
+    assert rejected.json()["detail"] == "仅已完成或已取消的订单可以申请售后"
 
 
 async def test_after_sale_amount_above_order_price_rejected(
