@@ -96,8 +96,8 @@ async function refreshAcceptCaptcha({ autoRetry = true } = {}) {
     if (seq !== claimCaptchaSeq) return
     claimCaptchaId.value = ''
     claimCaptchaImage.value = ''
-    // 429 = 抢单高峰期被限流：这类失败是暂时的，自动退避重试一次，
-    // 让用户不必自己点刷新（旧实现只显示一行小字，看起来像"加载不出来"）。
+    // 429 = 自己短时间开弹窗/刷新太多次被限流（每账号独立额度，与他人无关），
+    // 稍等即可恢复，自动退避重试一次，用户不必自己点刷新。
     if (err?.status === 429) {
       const retryAfter = Math.max(
         1,
@@ -105,7 +105,7 @@ async function refreshAcceptCaptcha({ autoRetry = true } = {}) {
       )
       if (autoRetry) {
         retryScheduled = true
-        claimCaptchaError.value = '当前抢单人数较多，正在重新加载…'
+        claimCaptchaError.value = '操作过于频繁，正在重新加载…'
         setTimeout(() => {
           if (seq === claimCaptchaSeq && claimCaptchaRequired.value) {
             refreshAcceptCaptcha({ autoRetry: false })
@@ -113,7 +113,7 @@ async function refreshAcceptCaptcha({ autoRetry = true } = {}) {
         }, retryAfter * 1000)
         return
       }
-      claimCaptchaError.value = '当前抢单人数较多，请点图片重试'
+      claimCaptchaError.value = '操作过于频繁，请点图片重试'
       return
     }
     claimCaptchaError.value = err?.message || '验证码获取失败，请点击图片重试'

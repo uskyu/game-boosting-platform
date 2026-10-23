@@ -101,7 +101,37 @@ def test_rate_limit_scene_defaults():
 
 
 # --------------------------------------------------------------------------
-# 接口级回归：不同真实 IP 的限流桶互不影响
+# 注册场景：没有用户身份，只能按来源 IP 分桶（client_ip 的唯一用武之地）
+# --------------------------------------------------------------------------
+
+
+async def test_register_captcha_splits_bucket_by_forwarded_ip(client):
+    """注册验证码按真实客户端 IP 分桶：不同 IP 不互相挤占。
+
+    注册时还没有账号，无法按用户限流；旧实现取 request.client.host 恒为
+    容器 IP，会让全站注册者共用一个 20 次/分钟的桶。
+
+    测试客户端的直连对端是 ``testclient``（非 IP），解析器会保守地不采信
+    XFF，因此这里直接对 ``resolve_client_ip`` 的可信代理路径做断言，并用
+    ``scene_rate_key`` 验证键形态。
+    """
+    # 可信代理链下解析出真实 IP
+    assert resolve_client_ip("10.211.0.4", "124.128.43.76") == "124.128.43.76"
+
+    # 落在不同真实 IP 上的请求进入不同桶
+    key_a = captcha_service.scene_rate_key("register", "124.128.43.76")
+    key_b = captcha_service.scene_rate_key("register", "58.144.196.191")
+    assert key_a != key_b
+    assert "124.128.43.76" in key_a and "58.144.196.191" in key_b
+
+    # 接口本身可正常发码
+    resp = await client.get("/auth/captcha?scene=register")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["image"].startswith("data:image/png;base64,")
+
+
+# --------------------------------------------------------------------------
+# 接单场景：只按用户分桶（不碰 IP）
 # --------------------------------------------------------------------------
 
 
@@ -121,40 +151,33 @@ def _clear_rate_buckets():
     captcha_service._rate.clear()
 
 
-async def test_accept_captcha_uses_forwarded_client_ip(
-    client, booster_user, db_session
-):
-    """命中来自不同 XFF 的请求不能共用同一个限流桶。
+async def test_accept_captcha_ignores_client_ip(client, booster_user, db_session):
+    """接单验证码只按用户分桶，完全不同 IP 也不互相影响、也不产生 IP 桶。
 
-    旧实现下两个请求的 ``request.client.host`` 都是测试客户端的地址，
-    第二个就会因为共享桶被挡；修复后按 XFF 分桶，两者都应成功。
+    接单接口强制登录，按用户限流已足够；再按 IP 会在同网吧/NAT 场景下
+    互相挤占（2026-10-23 事故的直接诱因），因此接单链路不应碰 IP。
     """
     await _enable_accept_captcha(db_session)
 
-    first = await client.get(
-        "/orders/accept-captcha",
-        headers={**auth_header(booster_user), "X-Forwarded-For": "124.128.43.76"},
-    )
-    assert first.status_code == 200, first.text
+    for ip in ("124.128.43.76", "58.144.196.191", "203.0.113.9"):
+        resp = await client.get(
+            "/orders/accept-captcha",
+            headers={**auth_header(booster_user), "X-Forwarded-For": ip},
+        )
+        assert resp.status_code == 200, resp.text
 
-    second = await client.get(
-        "/orders/accept-captcha",
-        headers={**auth_header(booster_user), "X-Forwarded-For": "58.144.196.191"},
-    )
-    assert second.status_code == 200, second.text
-
-    # 两个请求落在不同的桶里（按真实 IP 分桶的直接证据）
-    assert any("124.128.43.76" in key for key in captcha_service._rate)
-    assert any("58.144.196.191" in key for key in captcha_service._rate)
+    # 只有 user 桶，没有任何 ip 桶
+    assert any(":user:" in key for key in captcha_service._rate)
+    assert not any(":accept:ip:" in key for key in captcha_service._rate)
 
 
-async def test_accept_captcha_rate_limited_returns_structured_detail(
+async def test_accept_captcha_rate_limited_per_user(
     client, booster_user, db_session
 ):
-    """超限时返回结构化 detail，前端据此显示「抢单人多」并自动重试。"""
+    """同一账号超限返回结构化 detail，前端据此提示并自动重试。"""
     await _enable_accept_captcha(db_session)
     limit = captcha_service.rate_limit_for("accept")
-    headers = {**auth_header(booster_user), "X-Forwarded-For": "124.128.43.76"}
+    headers = auth_header(booster_user)
 
     for _ in range(limit):
         resp = await client.get("/orders/accept-captcha", headers=headers)
@@ -164,44 +187,27 @@ async def test_accept_captcha_rate_limited_returns_structured_detail(
     assert blocked.status_code == 429
     detail = blocked.json()["detail"]
     assert detail["code"] == "captcha_rate_limited"
-    assert "抢单" in detail["message"]
     assert detail["retry_after"] > 0
 
 
-async def test_public_peer_cannot_spoof_xff_to_evade_limit(
+async def test_accept_captcha_spoofed_xff_does_not_reset_quota(
     client, booster_user, db_session
 ):
-    """对端若非可信代理，伪造 XFF 不会切换分桶。
-
-    测试客户端 127.0.0.1 属私网，因此这里显式把可信代理限定成一个
-    不包含它的网段来模拟「公网直连」。
-    """
+    """伪造 XFF 不能绕过接单限流（桶键与 IP 无关，轮换 IP 也没用）。"""
     await _enable_accept_captcha(db_session)
-    from app.core import config
-
-    original = config.settings.TRUSTED_PROXY_IPS
-    config.settings.TRUSTED_PROXY_IPS = "192.0.2.0/24"
-    try:
-        captcha_service._rate.clear()
-        limit = captcha_service.rate_limit_for("accept")
-        for index in range(limit):
-            resp = await client.get(
-                "/orders/accept-captcha",
-                headers={
-                    **auth_header(booster_user),
-                    # 每次都换一个伪造 IP：若被采信就永远不会超限
-                    "X-Forwarded-For": f"203.0.113.{index + 1}",
-                },
-            )
-            assert resp.status_code == 200
-
-        blocked = await client.get(
+    limit = captcha_service.rate_limit_for("accept")
+    for index in range(limit):
+        resp = await client.get(
             "/orders/accept-captcha",
-            headers={**auth_header(booster_user), "X-Forwarded-For": "203.0.113.250"},
+            headers={
+                **auth_header(booster_user),
+                "X-Forwarded-For": f"203.0.113.{index + 1}",
+            },
         )
-        assert blocked.status_code == 429
-        # 桶键用的是直连对端（127.0.0.1），不是伪造值
-        assert not any("203.0.113" in key for key in captcha_service._rate)
-    finally:
-        config.settings.TRUSTED_PROXY_IPS = original
-        captcha_service._rate.clear()
+        assert resp.status_code == 200
+
+    blocked = await client.get(
+        "/orders/accept-captcha",
+        headers={**auth_header(booster_user), "X-Forwarded-For": "203.0.113.250"},
+    )
+    assert blocked.status_code == 429

@@ -23,7 +23,6 @@ from app.api.deps import (
     get_current_booster,
 )
 from app.api.notification_utils import notify_boosters_new_order, notify_user
-from app.core.client_ip import client_ip_from_request
 from app.core.config import settings
 from app.core.post_commit import run_after_commit
 from app.core.request_timing import (
@@ -621,18 +620,21 @@ async def get_accept_captcha(
             detail="接单验证码已关闭",
         )
 
-    ip = client_ip_from_request(request)
+    # 接单验证码**只按用户限流**，不按 IP。
+    #
+    # 接单接口由 get_current_booster 强制登录，每个账号一个独立桶，已经足够
+    # 防刷；再加 IP 桶没有任何收益，反而会误伤——同网吧/同公司/同运营商 NAT
+    # 下的正常打手会互相挤占额度。2026-10-23 的事故就是 IP 桶取错地址导致
+    # 全站共用一个桶（20 次/分钟），晚高峰 31 人抢单时集体 429。
     accept_limit = captcha_service.rate_limit_for("accept")
     if not captcha_service.check_rate_limit(
         captcha_service.user_rate_key("accept", current_user.id), accept_limit
-    ) or not captcha_service.check_rate_limit(
-        captcha_service.scene_rate_key("accept", ip), accept_limit
     ):
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail={
                 "code": "captcha_rate_limited",
-                "message": "当前抢单人数较多，请稍候再试",
+                "message": "操作过于频繁，请稍候再试",
                 "retry_after": 3,
             },
         )
