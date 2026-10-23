@@ -75,6 +75,17 @@ class Settings(BaseSettings):
     # Wallet: platform commission rate charged on order settlement.
     # Booster income = order_price * (1 - COMMISSION_RATE), rounded to cents.
     COMMISSION_RATE: float = 0.0
+
+    # 可信反向代理（CIDR 或 IP，逗号分隔）。用于从 X-Forwarded-For 回溯真实
+    # 客户端 IP：只有直连对端落在这些网段时才采信该头部，否则忽略以防伪造。
+    # 留空表示信任全部私网段（容器/宿主机互连的默认情形）。
+    TRUSTED_PROXY_IPS: str = ""
+
+    # 限流：验证码按「场景+来源」分桶；接单抢单场景明显高于注册，
+    # 因此分开配置。60 秒滑动窗口内的允许次数。
+    CAPTCHA_RATE_LIMIT_REGISTER: int = 20
+    CAPTCHA_RATE_LIMIT_ACCEPT: int = 60
+
     PUSH_VAPID_PUBLIC_KEY: str = ""
     PUSH_VAPID_PRIVATE_KEY: str = ""
     PUSH_VAPID_SUBJECT: str = "mailto:admin@example.com"
@@ -100,6 +111,14 @@ class Settings(BaseSettings):
             except json.JSONDecodeError:
                 pass
 
+        return [item.strip() for item in raw.split(",") if item.strip()]
+
+    @property
+    def trusted_proxy_ips(self) -> list[str]:
+        """可信反向代理列表；空列表表示使用「全部私网段」默认值。"""
+        raw = (self.TRUSTED_PROXY_IPS or "").strip()
+        if not raw:
+            return []
         return [item.strip() for item in raw.split(",") if item.strip()]
 
 

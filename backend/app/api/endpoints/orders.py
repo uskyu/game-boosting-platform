@@ -23,6 +23,7 @@ from app.api.deps import (
     get_current_booster,
 )
 from app.api.notification_utils import notify_boosters_new_order, notify_user
+from app.core.client_ip import client_ip_from_request
 from app.core.config import settings
 from app.core.post_commit import run_after_commit
 from app.core.request_timing import (
@@ -620,15 +621,20 @@ async def get_accept_captcha(
             detail="接单验证码已关闭",
         )
 
-    ip = request.client.host if request.client else "unknown"
+    ip = client_ip_from_request(request)
+    accept_limit = captcha_service.rate_limit_for("accept")
     if not captcha_service.check_rate_limit(
-        captcha_service.user_rate_key("accept", current_user.id)
+        captcha_service.user_rate_key("accept", current_user.id), accept_limit
     ) or not captcha_service.check_rate_limit(
-        captcha_service.scene_rate_key("accept", ip)
+        captcha_service.scene_rate_key("accept", ip), accept_limit
     ):
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="请求过于频繁，请稍后再试",
+            detail={
+                "code": "captcha_rate_limited",
+                "message": "当前抢单人数较多，请稍候再试",
+                "retry_after": 3,
+            },
         )
 
     # PIL 图片生成放线程池，避免多人同时打开接单弹窗时阻塞事件循环

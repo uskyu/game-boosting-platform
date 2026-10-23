@@ -9,6 +9,7 @@ from fastapi.exceptions import HTTPException
 from pydantic import BaseModel, Field
 
 from app.api.deps import CurrentSessionId, CurrentUser, DatabaseSession
+from app.core.client_ip import client_ip_from_request
 from app.core.post_commit import run_after_commit
 from app.schemas.user import (
     MessageResponse,
@@ -82,11 +83,18 @@ async def get_captcha(
             detail="接单验证码已关闭",
         )
 
-    ip = request.client.host if request.client else "unknown"
-    if not captcha_service.check_rate_limit(captcha_service.scene_rate_key(scene, ip)):
+    ip = client_ip_from_request(request)
+    register_limit = captcha_service.rate_limit_for(scene)
+    if not captcha_service.check_rate_limit(
+        captcha_service.scene_rate_key(scene, ip), register_limit
+    ):
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="请求过于频繁，请稍后再试",
+            detail={
+                "code": "captcha_rate_limited",
+                "message": "请求过于频繁，请稍后再试",
+                "retry_after": 3,
+            },
         )
     # PIL 图片生成放线程池，避免注册页高频刷新时阻塞事件循环
     captcha_id, png_bytes = await anyio.to_thread.run_sync(
@@ -141,7 +149,7 @@ async def register(
         user,
         device_id=user_data.device_id,
         user_agent=request.headers.get("user-agent"),
-        ip_address=request.client.host if request.client else None,
+        ip_address=client_ip_from_request(request),
     )
     await _close_revoked_sessions(user.id, revoked_sids)
 
@@ -188,7 +196,7 @@ async def login(
         user,
         device_id=credentials.device_id,
         user_agent=request.headers.get("user-agent"),
-        ip_address=request.client.host if request.client else None,
+        ip_address=client_ip_from_request(request),
     )
     await _close_revoked_sessions(user.id, revoked_sids)
 

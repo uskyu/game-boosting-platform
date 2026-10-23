@@ -75,7 +75,7 @@ const claimCaptchaReady = computed(
   () => !claimCaptchaRequired.value || (!!claimCaptchaId.value && claimCaptchaCode.value.trim() !== ''),
 )
 
-async function refreshAcceptCaptcha() {
+async function refreshAcceptCaptcha({ autoRetry = true } = {}) {
   if (!claimCaptchaRequired.value) {
     clearClaimCaptcha()
     return
@@ -83,6 +83,7 @@ async function refreshAcceptCaptcha() {
   const seq = ++claimCaptchaSeq
   claimCaptchaLoading.value = true
   claimCaptchaError.value = ''
+  let retryScheduled = false
   try {
     const response = await api.get('/orders/accept-captcha')
     if (seq !== claimCaptchaSeq) return
@@ -95,9 +96,31 @@ async function refreshAcceptCaptcha() {
     if (seq !== claimCaptchaSeq) return
     claimCaptchaId.value = ''
     claimCaptchaImage.value = ''
+    // 429 = 抢单高峰期被限流：这类失败是暂时的，自动退避重试一次，
+    // 让用户不必自己点刷新（旧实现只显示一行小字，看起来像"加载不出来"）。
+    if (err?.status === 429) {
+      const retryAfter = Math.max(
+        1,
+        Number(err?.original?.response?.data?.detail?.retry_after) || 2,
+      )
+      if (autoRetry) {
+        retryScheduled = true
+        claimCaptchaError.value = '当前抢单人数较多，正在重新加载…'
+        setTimeout(() => {
+          if (seq === claimCaptchaSeq && claimCaptchaRequired.value) {
+            refreshAcceptCaptcha({ autoRetry: false })
+          }
+        }, retryAfter * 1000)
+        return
+      }
+      claimCaptchaError.value = '当前抢单人数较多，请点图片重试'
+      return
+    }
     claimCaptchaError.value = err?.message || '验证码获取失败，请点击图片重试'
   } finally {
-    if (seq === claimCaptchaSeq) {
+    // 已安排自动重试时保持 loading（文案显示"正在重新加载…"），
+    // 由重试请求自己收尾；其余情况收掉 loading。
+    if (seq === claimCaptchaSeq && !retryScheduled) {
       claimCaptchaLoading.value = false
     }
   }
@@ -110,6 +133,13 @@ function clearClaimCaptcha() {
   claimCaptchaImage.value = ''
   claimCaptchaError.value = ''
   claimCaptchaLoading.value = false
+}
+
+// 模板里 @click 会把 MouseEvent 作为第一个实参传进来，而
+// refreshAcceptCaptcha 的参数是选项对象；这里做一层薄封装避免误当作
+// { autoRetry } 解构（否则用户点图刷新时 autoRetry 退化为 undefined）。
+function handleRefreshCaptchaClick() {
+  refreshAcceptCaptcha()
 }
 
 function goRechargeFromFail() {
@@ -2090,7 +2120,7 @@ onUnmounted(() => {
                   title="点击刷新"
                   :disabled="claimCaptchaLoading"
                   class="flex h-11 w-28 shrink-0 items-center justify-center overflow-hidden rounded-field border border-line-1 bg-surface-2 text-xs text-ink-2 transition-opacity hover:opacity-80 disabled:opacity-60"
-                  @click="refreshAcceptCaptcha"
+                  @click="handleRefreshCaptchaClick"
                 >
                   <img
                     v-if="claimCaptchaImage"
