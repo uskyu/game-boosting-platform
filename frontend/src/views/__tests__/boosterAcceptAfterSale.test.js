@@ -29,12 +29,14 @@ describe('售后弹窗双角色（viewerRole）', () => {
   })
 
   it('renders 撤回售后 for the boss view (default) and 同意退款 for the booster view', () => {
-    // 打手主按钮：仅 booster + 有 PENDING 时出现，两步文案带申请金额
+    // 打手主按钮：仅 booster + 有 PENDING 时出现，两步文案带实际最多扣款净额
     const acceptButton = slice(modalSource, 'v-if="pending && isBoosterView"', '@click="handleAccept"')
     expect(acceptButton).toMatch(/class="btn-danger flex-1"/)
     expect(acceptButton).toMatch(/:disabled="accepting \|\| assistLoading"/)
-    expect(modalSource).toMatch(/再点一次确认退款/)
-    expect(modalSource).toMatch(/同意退款 \$\{formatPrice\(pending\.amount\)\}/)
+    expect(modalSource).toMatch(/再点一次确认退款 \$\{formatPrice\(boosterPayableAmount\)\}/)
+    expect(modalSource).toMatch(/同意退款 \$\{formatPrice\(boosterPayableAmount\)\}/)
+    // 净额来自后端 booster_payable_amount，不能再用售后申请毛额
+    expect(modalSource).toMatch(/pending\.value\?\.booster_payable_amount/)
     // 老板主按钮仍是撤回，且与同意退款互斥（v-else-if）
     const withdrawButton = slice(modalSource, 'v-else-if="pending"', '{{ withdrawing ?')
     expect(withdrawButton).toMatch(/@click="handleWithdraw"/)
@@ -42,8 +44,8 @@ describe('售后弹窗双角色（viewerRole）', () => {
     // 角色说明文案分流：打手侧讲扣划，老板侧讲提现限制
     expect(modalSource).toMatch(/<template v-if="isBoosterView">\s*老板发起了售后/)
     expect(modalSource).toMatch(/<template v-else>\s*订单 #\{\{ display\.order_id \}\} 的售后申请/)
-    // 扣划说明：按实际到账金额扣给老板，平台承担已收服务费
-    expect(modalSource).toMatch(/同意退款将按你实际到账金额扣划给老板并结案（平台已收服务费由平台承担，不会多扣）/)
+    // 扣划说明：按实际到账净额扣给老板，平台承担已收服务费
+    expect(modalSource).toMatch(/同意退款将按你实际到账金额 \{\{ formatPrice\(boosterPayableAmount\) \}\} 扣划给老板并结案（平台已收服务费由平台承担，不会多扣）/)
   })
 
   it('confirms acceptance in two steps before calling acceptAfterSale', async () => {

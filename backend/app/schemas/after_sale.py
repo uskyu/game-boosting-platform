@@ -83,6 +83,13 @@ class AfterSaleItem(BaseModel):
         description="凭证图片 URL 列表（/uploads/aftersales/{发布者id}/ 下，最多 9 张）",
     )
     amount: Decimal
+    booster_payable_amount: Decimal | None = Field(
+        default=None,
+        description=(
+            "待处理售后下，打手同意退款时实际最多扣款额（已扣除平台承担的"
+            "服务费）；非待处理状态为 null"
+        ),
+    )
     status: AfterSaleStatus
     decision_reason: str | None = None
     reviewed_by: int | None = None

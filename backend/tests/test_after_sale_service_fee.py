@@ -206,6 +206,9 @@ async def test_full_after_sale_platform_bears_collected_service_fee(
 
     created = await _create_after_sale(client, publisher, order["id"], "100.00")
     assert created.status_code == 201, created.text
+    # 打手侧按钮展示的是扣除平台承担服务费后的实际最多扣款额（92），
+    # 不能显示老板申请的毛额 100。
+    assert Decimal(str(created.json()["booster_payable_amount"])) == Decimal("92.00")
     approved = await _review(
         client, admin_user, created.json()["id"], {"action": "approve"}
     )

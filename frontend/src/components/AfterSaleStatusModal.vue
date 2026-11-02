@@ -51,6 +51,12 @@ const assistLoading = ref(false)
 const pending = computed(() => items.value.find((item) => item.status === 'PENDING') || null)
 const latest = computed(() => (items.value.length ? items.value[0] : null))
 const display = computed(() => pending.value || latest.value)
+// 打手同意退款时实际最多扣款额：后端按平台承担服务费后的净额计算；
+// 旧接口没有该字段时回落到申请金额，避免按钮空白。
+const boosterPayableAmount = computed(() => {
+  const value = pending.value?.booster_payable_amount
+  return value == null ? (pending.value?.amount ?? 0) : value
+})
 
 function imageList(item) {
   const images = item?.images
@@ -199,6 +205,10 @@ function close() {
               <dt class="text-ink-2">售后金额</dt>
               <dd class="font-semibold tabular-nums text-price">{{ formatPrice(display.amount) }}</dd>
             </div>
+            <div v-if="isBoosterView && pending" class="flex items-center justify-between gap-3">
+              <dt class="text-ink-2">实际最多扣款</dt>
+              <dd class="font-semibold tabular-nums text-price">{{ formatPrice(boosterPayableAmount) }}</dd>
+            </div>
             <div class="flex items-center justify-between gap-3">
               <dt class="text-ink-2">状态</dt>
               <dd>
@@ -264,8 +274,8 @@ function close() {
                 accepting
                   ? '同意中...'
                   : confirmAccept
-                    ? '再点一次确认退款'
-                    : `同意退款 ${formatPrice(pending.amount)}`
+                    ? `再点一次确认退款 ${formatPrice(boosterPayableAmount)}`
+                    : `同意退款 ${formatPrice(boosterPayableAmount)}`
               }}
             </button>
             <button
@@ -280,7 +290,7 @@ function close() {
           </div>
           <p v-if="pending" class="mt-2 text-xs text-ink-3">
             <template v-if="isBoosterView">
-              同意退款将按你实际到账金额扣划给老板并结案（平台已收服务费由平台承担，不会多扣）；有异议可先联系平台协助裁定。
+              同意退款将按你实际到账金额 {{ formatPrice(boosterPayableAmount) }} 扣划给老板并结案（平台已收服务费由平台承担，不会多扣）；有异议可先联系平台协助裁定。
             </template>
             <template v-else>
               撤回后打手提现限制立即解除，该订单可重新发起售后。

@@ -166,6 +166,7 @@ def _row_to_item(
         "reason": after_sale.reason,
         "images": list(after_sale.images or []),
         "amount": after_sale.amount,
+        "booster_payable_amount": None,
         "status": after_sale.status,
         "decision_reason": after_sale.decision_reason,
         "reviewed_by": after_sale.reviewed_by,
@@ -175,6 +176,31 @@ def _row_to_item(
     if username is not None:
         item["username"] = username
     return item
+
+
+async def _attach_booster_payable_amount(
+    db: AsyncSession,
+    items: list[dict[str, Any]],
+    after_sales: dict[int, OrderAfterSale],
+) -> None:
+    """给待处理售后补上“打手实际最多扣款额”。
+
+    打手侧「同意退款」按钮必须显示扣除平台承担服务费后的净额，而不是
+    老板申请的毛额；实际扣款逻辑仍由 settle_approved_funds 统一计算。
+    """
+    for item in items:
+        if item.get("status") != AfterSaleStatus.PENDING:
+            continue
+        after_sale = after_sales.get(item["id"])
+        if after_sale is None:
+            continue
+        required = _to_decimal(item["amount"]).quantize(_CENT, rounding=ROUND_HALF_UP)
+        platform_share, _rate = await _platform_fee_share(
+            db, after_sale=after_sale, required=required
+        )
+        item["booster_payable_amount"] = (
+            required - platform_share
+        ).quantize(_CENT, rounding=ROUND_HALF_UP)
 
 
 def _after_sale_query():
@@ -508,13 +534,18 @@ async def list_order_after_sales(db: AsyncSession, order_id: int) -> list[dict[s
         .where(OrderAfterSale.order_id == order_id)
         .order_by(OrderAfterSale.created_at.desc(), OrderAfterSale.id.desc())
     )
-    return [
+    rows = result.all()
+    items = [
         _row_to_item(
             after_sale, order_title, order_game_name, requester_name, booster_name
         )
         for after_sale, order_title, order_game_name, requester_name, booster_name
-        in result.all()
+        in rows
     ]
+    await _attach_booster_payable_amount(
+        db, items, {row[0].id: row[0] for row in rows}
+    )
+    return items
 
 
 async def get_after_sale_item(db: AsyncSession, after_sale_id: int) -> dict[str, Any] | None:
@@ -524,7 +555,9 @@ async def get_after_sale_item(db: AsyncSession, after_sale_id: int) -> dict[str,
     row = result.first()
     if row is None:
         return None
-    return _row_to_item(*row)
+    item = _row_to_item(*row)
+    await _attach_booster_payable_amount(db, [item], {row[0].id: row[0]})
+    return item
 
 
 async def list_my_after_sales(
@@ -551,13 +584,18 @@ async def list_my_after_sales(
     result = await db.execute(
         query.order_by(OrderAfterSale.created_at.desc(), OrderAfterSale.id.desc())
     )
-    return [
+    rows = result.all()
+    items = [
         _row_to_item(
             after_sale, order_title, order_game_name, requester_name, booster_name
         )
         for after_sale, order_title, order_game_name, requester_name, booster_name
-        in result.all()
+        in rows
     ]
+    await _attach_booster_payable_amount(
+        db, items, {row[0].id: row[0] for row in rows}
+    )
+    return items
 
 
 async def admin_list_after_sales(
