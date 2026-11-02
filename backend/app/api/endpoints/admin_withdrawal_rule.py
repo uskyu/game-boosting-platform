@@ -43,6 +43,7 @@ async def get_withdrawal_rule_settings(
     return WithdrawalRuleSettingsResponse(
         mode=setting.mode,
         interval_hours=setting.interval_hours,
+        withdrawal_fee_rate=setting.withdrawal_fee_rate,
         updated_at=setting.updated_at,
     )
 
@@ -64,11 +65,13 @@ async def update_withdrawal_rule_settings(
     setting = await get_or_create_withdrawal_rule_setting(db)
     setting.mode = payload.mode
     setting.interval_hours = payload.interval_hours
+    setting.withdrawal_fee_rate = payload.withdrawal_fee_rate
     setting.updated_by = current_admin.id
     await db.flush()
     await db.refresh(setting)
     return WithdrawalRuleSettingsResponse(
         mode=setting.mode,
         interval_hours=setting.interval_hours,
+        withdrawal_fee_rate=setting.withdrawal_fee_rate,
         updated_at=setting.updated_at,
     )

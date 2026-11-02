@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.product_time import PRODUCT_TIMEZONE, product_day_bounds, product_local_date
 
-from app.models.order import Order, OrderStatus, PaymentStatus
+from app.models.order import ClaimLifecycleStatus, Order, OrderClaim, OrderStatus, PaymentStatus
 from app.models.user import User, UserRole
 from app.schemas.dashboard import (
     BoosterRankingResponse,
@@ -152,16 +152,50 @@ class DashboardService:
         return GameDistributionResponse(items=items)
 
     async def get_booster_ranking(self, limit: int = 20) -> BoosterRankingResponse:
-        """Top boosters by completed orders and revenue."""
-        # Subquery for per-booster revenue
-        revenue_sub = (
+        """Top boosters by completed revenue.
+
+        「完成」不能再读 User.total_completed：该字段只有信用分重算时才会刷新，
+        线上大量打手长期为 0（2026-11-02 老板反馈）。这里直接按名额结算口径
+        实时聚合，遗留订单再用 Order.status=COMPLETED 的计数兜底。
+        """
+        # 现行名额制：已结算名额数 / 已结算金额
+        claim_stats = (
             select(
-                Order.booster_id,
-                func.coalesce(func.sum(Order.price), 0).label("total_revenue"),
+                OrderClaim.booster_id.label("booster_id"),
+                func.count(OrderClaim.id).label("completed_count"),
+                func.coalesce(func.sum(Order.price), 0).label("settled_revenue"),
             )
-            .where(Order.status == OrderStatus.COMPLETED)
+            .join(Order, Order.id == OrderClaim.order_id)
+            .where(
+                OrderClaim.status == ClaimLifecycleStatus.SETTLED,
+                Order.status != OrderStatus.CANCELLED,
+            )
+            .group_by(OrderClaim.booster_id)
+            .subquery()
+        )
+
+        # 迁移前/单名额历史单可能没有结算名额记录，按订单完成数兜底
+        legacy_completed = (
+            select(
+                Order.booster_id.label("booster_id"),
+                func.count(Order.id).label("legacy_completed_count"),
+                func.coalesce(func.sum(Order.price), 0).label("legacy_revenue"),
+            )
+            .where(
+                Order.status == OrderStatus.COMPLETED,
+                Order.booster_id.is_not(None),
+            )
             .group_by(Order.booster_id)
             .subquery()
+        )
+
+        completed_count_expr = func.greatest(
+            func.coalesce(claim_stats.c.completed_count, 0),
+            func.coalesce(legacy_completed.c.legacy_completed_count, 0),
+        )
+        revenue_expr = func.greatest(
+            func.coalesce(claim_stats.c.settled_revenue, 0),
+            func.coalesce(legacy_completed.c.legacy_revenue, 0),
         )
 
         query = (
@@ -171,15 +205,16 @@ class DashboardService:
                 User.avatar_url,
                 User.credit_score,
                 User.credit_level,
-                User.total_completed,
+                completed_count_expr.label("total_completed"),
                 User.avg_rating,
-                func.coalesce(revenue_sub.c.total_revenue, 0).label("total_revenue"),
+                revenue_expr.label("total_revenue"),
             )
-            .outerjoin(revenue_sub, User.id == revenue_sub.c.booster_id)
+            .outerjoin(claim_stats, User.id == claim_stats.c.booster_id)
+            .outerjoin(legacy_completed, User.id == legacy_completed.c.booster_id)
             .where(User.role != UserRole.ADMIN)
             .order_by(
-                func.coalesce(revenue_sub.c.total_revenue, 0).desc(),
-                User.total_completed.desc(),
+                revenue_expr.desc(),
+                completed_count_expr.desc(),
                 User.credit_score.desc(),
             )
             .limit(limit)
@@ -193,7 +228,7 @@ class DashboardService:
                 avatar_url=row.avatar_url,
                 credit_score=row.credit_score,
                 credit_level=row.credit_level,
-                total_completed=row.total_completed,
+                total_completed=int(row.total_completed or 0),
                 avg_rating=float(row.avg_rating),
                 total_revenue=float(row.total_revenue),
             )

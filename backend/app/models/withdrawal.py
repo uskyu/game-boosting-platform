@@ -74,6 +74,27 @@ class WithdrawalRequest(Base):
         nullable=False,
     )
 
+    # 提现手续费快照（2026-11-02）：申请时按后台费率计算并固化为百分比，
+    # amount 是申请金额（同时也是冻结金额），net_amount 是渠道实际打款金额。
+    fee_rate: Mapped[Decimal] = mapped_column(
+        Numeric(precision=5, scale=2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default="0",
+    )
+    fee_amount: Mapped[Decimal] = mapped_column(
+        Numeric(precision=12, scale=2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default="0",
+    )
+    net_amount: Mapped[Decimal] = mapped_column(
+        Numeric(precision=12, scale=2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default="0",
+    )
+
     channel: Mapped[WithdrawalChannel] = mapped_column(
         Enum(
             WithdrawalChannel,

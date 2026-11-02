@@ -15,6 +15,12 @@ reviewed_by 留空、后台靠 decision_reason 识别）。
 ``AFTERSALE_DEPOSIT_DEDUCTION`` 流水（只动 deposit_balance），可用余额那条沿用
 ``AFTERSALE_DEDUCTION``，两条流水各自与 ``balance_before/after`` 对得上。
 
+平台承担服务费（2026-11-02）：结单时平台已按费率收取服务费，打手实际入账
+只有净额。售后结案时，退款中对应服务费的部分由平台承担（``platform_income``
+记负向 ``AFTERSALE_FEE_REFUND``），老板仍收到完整售后金额，打手只退实际
+拿到的净额；余额校验与扣款也只针对打手应承担的净额部分。没有订单结算
+入账（取消单/未结算）时平台不承担，保持原有全额从打手扣的口径。
+
 与 ``deposit_service`` 同为模块级函数风格：本模块只做规则判定与编排，
 资金划转调用 ``wallet_service`` 的行锁 + 流水原语（``_lock_wallet`` /
 ``_apply`` / ``credit``）。
@@ -37,6 +43,7 @@ from app.models.order import Order, OrderStatus
 from app.models.order_after_sale import AfterSaleStatus, OrderAfterSale
 from app.models.user import User, UserRole
 from app.models.wallet import WalletTransaction, WalletTransactionType
+from app.services import platform_income_service
 
 logger = logging.getLogger(__name__)
 
@@ -64,19 +71,30 @@ def _to_decimal(value: Decimal | int | str | None) -> Decimal:
 
 @dataclass(frozen=True)
 class AfterSaleSettlement:
-    """一次售后结案的实扣拆分（金额均已量化到分）。
+    """一次售后结案的金额拆分（金额均已量化到分）。
 
-    约定：``from_available + from_deposit == actual == 应扣额``。
-    新口径下不存在「少扣」的结案，所以没有短款字段；可扣款不足时会直接
-    抛 400，售后保持 PENDING、资金零变动。
+    约定：``from_available + from_deposit == booster_actual``（打手实扣），
+    ``from_platform`` 为平台承担的订单服务费，``actual`` 为老板实收的完整
+    退款 = 打手实扣 + 平台承担。新口径下不存在「少扣」的结案，所以没有
+    短款字段；打手应承担部分不足时会直接抛 400，售后保持 PENDING、
+    资金零变动。
     """
 
     from_available: Decimal
     from_deposit: Decimal
+    from_platform: Decimal = _ZERO
+
+    @property
+    def booster_actual(self) -> Decimal:
+        """打手实际承担（扣款）的金额。"""
+        return (self.from_available + self.from_deposit).quantize(
+            _CENT, rounding=ROUND_HALF_UP
+        )
 
     @property
     def actual(self) -> Decimal:
-        return (self.from_available + self.from_deposit).quantize(
+        """老板实际收到的完整售后金额 = 打手实扣 + 平台承担。"""
+        return (self.booster_actual + self.from_platform).quantize(
             _CENT, rounding=ROUND_HALF_UP
         )
 
@@ -234,9 +252,10 @@ async def _notify_after_sale_resolved(
 ) -> None:
     """售后结案通知：双边（老板 + 打手）都收到结论。
 
-    approve：按视角区分文案，打手侧告知扣划结果、老板侧告知收款结果，
-    金额取**实扣额**（``settlement.actual``；缺省回落到 ``settled_amount``，
-    两者在新口径下恒等，仅防御旧调用方）；动用保证金抵扣时补一句分项构成，
+    approve：按视角区分文案，打手侧告知**实扣额**（``settlement.booster_actual``）、
+    老板侧告知**完整收款额**（``settlement.actual`` = 打手实扣 + 平台承担）；
+    平台承担订单服务费时，在文案中注明「（平台承担手续费 ¥X）」，让双方
+    清楚退款金额与打手扣款额为何不同。动用保证金抵扣时补一句分项构成，
     让打手清楚钱从可用余额扣了多少、从保证金扣了多少。
     ``accepted_by_booster`` 为真时走打手认栽秒结路径，双边改用「打手同意退款」
     口径（无管理员参与，reviewed_by 留空）。
@@ -250,14 +269,31 @@ async def _notify_after_sale_resolved(
     label = _order_label(order) if order is not None else f"订单 #{after_sale.order_id}"
     link = f"/orders/{after_sale.order_id}"
     if action == "approve":
-        # 实扣额优先取结算返回的分项合计：通知金额必须等于真实划转额，
+        # 金额优先取结算返回的分项合计：通知金额必须等于真实划转额，
         # 不能再按申请额/裁定额猜（历史 bug：短款结案时双方都被告知全额）。
         actual = (
             settlement.actual
             if settlement is not None
             else _to_decimal(settled_amount).quantize(_CENT, rounding=ROUND_HALF_UP)
         )
+        booster_actual = (
+            settlement.booster_actual if settlement is not None else actual
+        )
+        platform_share = (
+            settlement.from_platform if settlement is not None else _ZERO
+        )
+        platform_note = (
+            f"（平台承担手续费 ¥{platform_share}）"
+            if platform_share > _ZERO
+            else ""
+        )
         suffix = f"：{after_sale.decision_reason}" if after_sale.decision_reason else ""
+        # 管理员路径的 suffix 已带 decision_reason（含平台承担说明），
+        # 不再重复拼一遍括号备注，避免文案自相重复。
+        suffix_has_platform_note = bool(
+            platform_note
+            and f"平台承担手续费 ¥{platform_share}" in suffix
+        )
         if accepted_by_booster:
             # 打手认栽口径是固定文案、不带 decision_reason，所以分项构成在这里补；
             # 只动可用余额时保留原话术（「从你的余额扣划」仍成立）。
@@ -271,26 +307,30 @@ async def _notify_after_sale_resolved(
             messages = {
                 after_sale.booster_id: (
                     "售后申请已通过",
-                    f"你已同意退款，¥{actual} 已从你的{booster_source}扣划给老板{offset_note}",
+                    f"你已同意退款，¥{booster_actual} 已从你的{booster_source}"
+                    f"扣划给老板{offset_note}{platform_note}",
                 ),
                 after_sale.requester_id: (
                     "售后申请已通过",
                     f"订单「{label}」的售后申请已通过（打手同意退款），"
-                    f"已收款 ¥{actual}",
+                    f"已收款 ¥{actual}{platform_note}",
                 ),
             }
         else:
-            # 管理员路径：suffix 已带上 decision_reason（含保证金抵扣分项），
-            # 不再重复拼一遍构成，避免文案自相重复。
+            # 管理员路径：suffix 已带上 decision_reason（含保证金抵扣分项与
+            # 平台承担说明），不再重复拼一遍构成，避免文案自相重复。
+            booster_note = "" if suffix_has_platform_note else platform_note
+            requester_note = "" if suffix_has_platform_note else platform_note
             messages = {
                 after_sale.booster_id: (
                     "售后申请已通过",
                     f"订单「{label}」的售后申请已通过，"
-                    f"已扣划 ¥{actual} 给老板{suffix}",
+                    f"已扣划 ¥{booster_actual} 给老板{booster_note}{suffix}",
                 ),
                 after_sale.requester_id: (
                     "售后申请已通过",
-                    f"订单「{label}」的售后申请已通过，已收款 ¥{actual}{suffix}",
+                    f"订单「{label}」的售后申请已通过，"
+                    f"已收款 ¥{actual}{requester_note}{suffix}",
                 ),
             }
     elif action == "close":
@@ -720,6 +760,79 @@ def _append_deposit_offset_note(
     after_sale.decision_reason = combined[:500]
 
 
+def _append_platform_share_note(
+    after_sale: OrderAfterSale, *, platform_share: Decimal
+) -> None:
+    """平台承担服务费时，把金额追加进 decision_reason（后台/售后详情可查）。
+
+    形如「平台承担手续费 ¥8.00」；decision_reason 已有内容（管理员审阅意见 /
+    打手同意退款 / 保证金抵扣分项）时以分号拼接，截断到 500 字。
+    平台承担额为 0 时不追加，保持既有文案完全不变。
+    """
+    if platform_share <= _ZERO:
+        return
+    note = f"平台承担手续费 ¥{platform_share}"
+    existing = (after_sale.decision_reason or "").strip()
+    combined = f"{existing}；{note}" if existing else note
+    after_sale.decision_reason = combined[:500]
+
+
+async def _platform_fee_share(
+    db: AsyncSession, *, after_sale: OrderAfterSale, required: Decimal
+) -> tuple[Decimal, Decimal | None]:
+    """计算本次售后中平台应承担的订单服务费及费率。
+
+    以该订单+打手实际入账的 ``ORDER_INCOME`` 为基准：
+    ``fee_withheld = max(order.price - ORDER_INCOME, 0)``，再按售后金额
+    占订单价格的比例分摊并收敛到已收取的服务费：
+    ``platform_share = min(required * fee_withheld / price, fee_withheld, required)``。
+
+    没有 ``ORDER_INCOME``（取消单/未结算/管理员平台单未结算）时返回
+    ``(0, None)``，保持「全额从打手扣」的既有行为。
+
+    Returns:
+        (平台承担额, 服务费费率百分数)；无承担额时费率为 None。
+    """
+    order = await db.get(Order, after_sale.order_id)
+    if order is None:
+        return _ZERO, None
+    price = _to_decimal(order.price).quantize(_CENT, rounding=ROUND_HALF_UP)
+    if price <= _ZERO:
+        return _ZERO, None
+
+    income_result = await db.execute(
+        select(WalletTransaction.amount)
+        .where(
+            WalletTransaction.order_id == after_sale.order_id,
+            WalletTransaction.booster_id == after_sale.booster_id,
+            WalletTransaction.type == WalletTransactionType.ORDER_INCOME,
+        )
+        .limit(1)
+    )
+    income = income_result.scalar_one_or_none()
+    if income is None:
+        return _ZERO, None
+
+    fee_withheld = max(price - _to_decimal(income), _ZERO).quantize(
+        _CENT, rounding=ROUND_HALF_UP
+    )
+    if fee_withheld <= _ZERO:
+        return _ZERO, None
+
+    platform_share = (required * fee_withheld / price).quantize(
+        _CENT, rounding=ROUND_HALF_UP
+    )
+    platform_share = min(platform_share, fee_withheld, required).quantize(
+        _CENT, rounding=ROUND_HALF_UP
+    )
+    if platform_share <= _ZERO:
+        return _ZERO, None
+    rate = (fee_withheld / price * Decimal("100")).quantize(
+        _CENT, rounding=ROUND_HALF_UP
+    )
+    return platform_share, rate
+
+
 async def settle_approved_funds(
     db: AsyncSession,
     *,
@@ -729,15 +842,20 @@ async def settle_approved_funds(
 ) -> AfterSaleSettlement:
     """售后通过的扣款划转：打手「可用余额 → 保证金」→ 老板可用余额 + 双边流水。
 
-    口径（老板 2026-10-18 拍板）：
+    口径（老板 2026-10-18 拍板，2026-11-02 补充平台承担服务费）：
     - 应扣额 = ``amount``（未传则取售后申请金额），金额 ≤ 0 时直接返回零拆分；
+    - 退款中对应平台已收服务费的部分由平台承担（记负向平台收入），
+      打手只承担其实际拿到的净额 ``booster_required = required - platform_share``；
     - 先扣打手可用余额，不足的部分从打手保证金补扣；
-    - 两处合计仍不足 → 抛 ``HTTPException 400``：不扣任何钱、不落状态
+    - 打手两处合计仍不足 → 抛 ``HTTPException 400``：不扣任何钱、不落状态
       （调用方的状态写入随请求事务整体回滚），并在 detail 里写明缺口金额；
-    - 足额时等额划进老板（requester）可用余额，平台不抽成；
-    - 双边各记流水：可用余额腿 ``AFTERSALE_DEDUCTION``（``available_delta`` 为负）、
+      平台不替打手垫付本金（不足额时平台承担额也不入账）；
+    - 足额时老板（requester）收到完整售后金额 ``required``（= 打手实扣 +
+      平台承担），平台此前已收的服务费相应冲减；
+    - 打手侧各记流水：可用余额腿 ``AFTERSALE_DEDUCTION``（``available_delta`` 为负）、
       保证金腿 ``AFTERSALE_DEPOSIT_DEDUCTION``（只动 ``deposit_balance``，
-      ``balance_before == balance_after``，钱包页不会出现「金额与余额对不上」）。
+      ``balance_before == balance_after``，钱包页不会出现「金额与余额对不上」），
+      金额均为打手实扣，不包含平台承担部分。
 
     锁顺序固定「先打手后老板」（与 decide_cancel_request 的划转一致）；
     保证金与可用余额在同一行 ``wallets`` 上，加保证金腿不新增任何行锁，
@@ -758,7 +876,18 @@ async def settle_approved_funds(
         else _to_decimal(after_sale.amount).quantize(_CENT, rounding=ROUND_HALF_UP)
     )
     if required <= _ZERO:
-        return AfterSaleSettlement(from_available=_ZERO, from_deposit=_ZERO)
+        return AfterSaleSettlement(
+            from_available=_ZERO, from_deposit=_ZERO, from_platform=_ZERO
+        )
+
+    # 平台承担额以该订单+打手的实际 ORDER_INCOME 为基准；没有结算入账
+    # （取消单/未结算）时返回 0，保持原有全额从打手扣的行为。
+    platform_share, platform_rate = await _platform_fee_share(
+        db, after_sale=after_sale, required=required
+    )
+    booster_required = (required - platform_share).quantize(
+        _CENT, rounding=ROUND_HALF_UP
+    )
 
     wallet_service = get_wallet_service(db)
     booster_wallet = await wallet_service.get_or_create_wallet(after_sale.booster_id)
@@ -766,18 +895,23 @@ async def settle_approved_funds(
 
     available = _to_decimal(booster_wallet.available_balance)
     deposit = _to_decimal(booster_wallet.deposit_balance)
-    from_available = min(required, available).quantize(_CENT, rounding=ROUND_HALF_UP)
-    remainder = required - from_available
+    from_available = min(booster_required, available).quantize(
+        _CENT, rounding=ROUND_HALF_UP
+    )
+    remainder = booster_required - from_available
     from_deposit = min(remainder, deposit).quantize(_CENT, rounding=ROUND_HALF_UP)
-    shortfall = (required - from_available - from_deposit).quantize(
+    shortfall = (booster_required - from_available - from_deposit).quantize(
         _CENT, rounding=ROUND_HALF_UP
     )
     if shortfall > _ZERO:
         # 资金与状态都不动：异常让整个请求事务回滚（app/db/session.py）。
         logger.warning(
-            "After-sale %s settlement rejected: required %s, booster %s available %s, deposit %s, shortfall %s",
+            "After-sale %s settlement rejected: required %s (booster %s, platform %s), "
+            "booster %s available %s, deposit %s, shortfall %s",
             after_sale.id,
             required,
+            booster_required,
+            platform_share,
             after_sale.booster_id,
             available,
             deposit,
@@ -789,9 +923,11 @@ async def settle_approved_funds(
                 "code": "after_sale_insufficient_funds",
                 "message": (
                     f"可用余额 ¥{available} + 保证金 ¥{deposit} 不足以覆盖本次扣款 "
-                    f"¥{required}，尚缺 ¥{shortfall}；{insufficient_hint}"
+                    f"¥{booster_required}，尚缺 ¥{shortfall}；{insufficient_hint}"
                 ),
                 "required": str(required),
+                "booster_required": str(booster_required),
+                "platform_share": str(platform_share),
                 "available": str(available),
                 "deposit": str(deposit),
                 "shortfall": str(shortfall),
@@ -852,16 +988,33 @@ async def settle_approved_funds(
         )
 
     settlement = AfterSaleSettlement(
-        from_available=from_available, from_deposit=from_deposit
+        from_available=from_available,
+        from_deposit=from_deposit,
+        from_platform=platform_share,
     )
     actual = settlement.actual
     if from_deposit > _ZERO:
         _append_deposit_offset_note(
             after_sale, from_available=from_available, from_deposit=from_deposit
         )
+    # 平台承担部分：写一条负向平台收入冲减此前收取的服务费。幂等键
+    # (order_id, booster_id, source) 保证重复结案不会重复冲减。
+    if platform_share > _ZERO:
+        await platform_income_service.record_aftersale_fee_borne(
+            db,
+            order_id=after_sale.order_id,
+            booster_id=after_sale.booster_id,
+            amount=platform_share,
+            rate=platform_rate,
+        )
+        _append_platform_share_note(after_sale, platform_share=platform_share)
     # 老板收款：与取消赔偿入账同一原语（credit 只对 ORDER_INCOME 累计收入，
-    # 售后收款不计入累计收入）。
+    # 售后收款不计入累计收入）。平台承担时老板仍收到完整售后金额。
     requester_wallet = await wallet_service.get_or_create_wallet(after_sale.requester_id)
+    refund_remark = f"订单 #{after_sale.order_id} 售后收款（打手 #{after_sale.booster_id}"
+    if platform_share > _ZERO:
+        refund_remark += f"，平台承担手续费 ¥{platform_share}"
+    refund_remark += "）"
     await wallet_service.credit(
         requester_wallet,
         amount=actual,
@@ -869,18 +1022,21 @@ async def settle_approved_funds(
         order_id=after_sale.order_id,
         booster_id=after_sale.booster_id,
         operator_id=after_sale.reviewed_by,
-        remark=f"订单 #{after_sale.order_id} 售后收款（打手 #{after_sale.booster_id}）",
+        remark=refund_remark,
     )
     await db.flush()
     logger.info(
-        "After-sale %s settled: booster %s available -%s deposit -%s, requester %s +%s (required %s)",
+        "After-sale %s settled: booster %s available -%s deposit -%s (platform %s), "
+        "requester %s +%s (required %s, booster_required %s)",
         after_sale.id,
         after_sale.booster_id,
         from_available,
         from_deposit,
+        platform_share,
         after_sale.requester_id,
         actual,
         required,
+        booster_required,
     )
     return settlement
 

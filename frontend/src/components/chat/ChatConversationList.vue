@@ -1,10 +1,14 @@
 <script setup>
 import { computed } from 'vue'
 import { formatShortDate } from '@/utils/display'
+import { resolveConversationTitle } from '@/utils/chat'
+import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import ChatUnreadBadge from './ChatUnreadBadge.vue'
 
+const authStore = useAuthStore()
 const chatStore = useChatStore()
+const currentUserId = computed(() => authStore.user?.id || null)
 
 const props = defineProps({
   conversations: {
@@ -38,31 +42,8 @@ const sortedItems = computed(() => [...(props.conversations || [])].sort((left, 
     - new Date(left.last_message_at || left.updated_at || left.created_at || 0).getTime()
 }))
 
-function getDisplayUsers(conversation) {
-  const names = (conversation.other_participants || [])
-    .map((item) => item.username)
-    .filter(Boolean)
-
-  if (names.length) {
-    return names
-  }
-
-  return (conversation.participants || [])
-    .map((item) => item.user?.username)
-    .filter(Boolean)
-}
-
 function getTitle(conversation) {
-  const names = getDisplayUsers(conversation)
-  if (names.length) {
-    return names.join(' / ')
-  }
-
-  if (conversation.order?.id) {
-    return `订单 #${conversation.order.id}`
-  }
-
-  return `会话 #${conversation.id}`
+  return resolveConversationTitle(conversation, currentUserId.value)
 }
 
 function getSubtitle(conversation) {

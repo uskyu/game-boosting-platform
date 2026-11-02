@@ -15,6 +15,7 @@ from sqlalchemy.orm import joinedload, selectinload
 
 from app.core.config import settings
 from app.core.security import escape_like
+from app.core.title_rules import apply_title_replacements
 from app.models.chat import (
     Conversation,
     ConversationParticipant,
@@ -25,6 +26,7 @@ from app.models.chat import (
 )
 from app.models.order import ClaimStatus, Order, OrderClaim, OrderStatus
 from app.models.user import User, UserRole
+from app.services.site_setting_service import get_order_title_replacements
 
 
 class ChatService:
@@ -195,8 +197,11 @@ class ChatService:
                 # 重新解析订单以确保卡片数据可用，避免上方分支变量作用域
                 # 带来的 possibly-undefined 风险，同时拿到最新快照。
                 card_order = await self._get_order_for_conversation(order_id)
-                card_meta = self._build_order_card_meta(card_order)
-                card_content = self._build_order_card_content(card_order)
+                title_rules = await get_order_title_replacements(self._db)
+                card_meta = self._build_order_card_meta(card_order, title_rules)
+                card_content = self._build_order_card_content(
+                    card_order, title_rules
+                )
                 now = datetime.now(timezone.utc)
                 first_msg = Message(
                     conversation_id=conversation.id,
@@ -834,18 +839,21 @@ class ChatService:
             return True
         return False
 
-    def _build_order_card_meta(self, order: Order) -> dict:
+    def _build_order_card_meta(
+        self, order: Order, title_rules: list[dict] | None = None
+    ) -> dict:
         """构造订单上下文卡片 JSON，供前端渲染及列表透出。"""
         price_val: str
         try:
             price_val = str(order.price) if order.price is not None else ""
         except Exception:
             price_val = ""
+        raw_title = order.title or order.game_name or f"订单 #{order.id}"
         return {
             "type": "order_card",
             "event": "order_context",
             "order_id": int(order.id),
-            "title": (order.title or order.game_name or f"订单 #{order.id}"),
+            "title": apply_title_replacements(raw_title, title_rules),
             "game_name": order.game_name,
             "current_rank": order.current_rank,
             "target_rank": order.target_rank,
@@ -857,11 +865,13 @@ class ChatService:
             "anchor": f"#order-{order.id}",
         }
 
-    def _build_order_card_content(self, order: Order) -> str:
+    def _build_order_card_content(
+        self, order: Order, title_rules: list[dict] | None = None
+    ) -> str:
         """系统消息正文：人类可读的订单上下文，便于 preview 与搜索命中。"""
-        title = order.title or order.game_name or f"订单 #{order.id}"
+        meta = self._build_order_card_meta(order, title_rules)
+        title = meta["title"]
         rank = f"{order.current_rank} → {order.target_rank}" if order.current_rank and order.target_rank else ""
-        meta = self._build_order_card_meta(order)
         link = meta["link"]
         # 标题 / 价格 / 段位 / #id 链接均出现在正文，确保列表 preview 可见
         parts = [f"[订单 #{order.id}] {title}"]

@@ -133,6 +133,10 @@ class WithdrawalQuotaResponse(BaseModel):
         default=None,
         description="下次恢复机会的时间（UTC）；模式 A 且当前有机会时为 null（取决于何时提现）",
     )
+    withdrawal_fee_rate: Decimal = Field(
+        default=Decimal("0.00"),
+        description="当前提现手续费率（百分比，如 5.00 表示 5%）",
+    )
 
     @field_serializer("next_refresh_at")
     def serialize_dt(self, value: datetime | None) -> str | None:
@@ -145,6 +149,15 @@ class WithdrawalResponse(BaseModel):
     id: int = Field(description="提现ID")
     user_id: int = Field(description="申请用户ID")
     amount: Decimal = Field(description="提现金额")
+    fee_rate: Decimal = Field(
+        default=Decimal("0.00"), description="提现手续费率（百分比快照）"
+    )
+    fee_amount: Decimal = Field(
+        default=Decimal("0.00"), description="提现手续费金额"
+    )
+    net_amount: Decimal = Field(
+        default=Decimal("0.00"), description="实际到账金额（申请金额 - 手续费）"
+    )
     channel: WithdrawalChannel = Field(description="收款渠道")
     account_name: str = Field(description="收款人姓名")
     account_no: str = Field(description="收款账号")

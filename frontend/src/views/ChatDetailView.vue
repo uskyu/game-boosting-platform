@@ -1,7 +1,9 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
+import { resolveConversationTitle } from '@/utils/chat'
 import ChatConversationList from '@/components/chat/ChatConversationList.vue'
 import ChatPanel from '@/components/chat/ChatPanel.vue'
 
@@ -13,6 +15,7 @@ const props = defineProps({
 })
 
 const router = useRouter()
+const authStore = useAuthStore()
 const chatStore = useChatStore()
 
 // 按设备真实视口适配：实测顶部导航、底部固定标签栏、页壳自身留白，
@@ -40,6 +43,12 @@ const normalizedConversationId = computed(() => Number(props.id))
 const conversations = computed(() => chatStore.conversations)
 const activeConversation = computed(() => (
   chatStore.conversations.find((item) => item.id === normalizedConversationId.value) || null
+))
+// 移动端页头也要能看出“在和谁聊”，订单号只作为副标题。
+const mobileConversationTitle = computed(() => (
+  activeConversation.value
+    ? resolveConversationTitle(activeConversation.value, authStore.user?.id)
+    : `会话 #${normalizedConversationId.value}`
 ))
 
 function openConversation(conversation) {
@@ -93,8 +102,11 @@ onBeforeUnmount(() => {
 
       <div class="text-right">
         <p class="text-xs uppercase tracking-[0.12em] text-primary">会话</p>
-        <p class="mt-2 text-sm text-ink-2">
-          {{ activeConversation?.order ? `订单 #${activeConversation.order.id}` : `会话 #${normalizedConversationId}` }}
+        <p class="mt-2 text-sm font-semibold text-ink-1">
+          {{ mobileConversationTitle }}
+        </p>
+        <p v-if="activeConversation?.order?.id" class="mt-0.5 text-xs text-ink-3">
+          订单 #{{ activeConversation.order.id }}
         </p>
       </div>
     </div>

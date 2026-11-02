@@ -57,6 +57,7 @@ class WithdrawalQuota:
     mode: WithdrawalRefreshMode
     interval_hours: int
     next_refresh_at: datetime | None
+    withdrawal_fee_rate: Decimal = _ZERO
 
 
 def _to_decimal(value: Decimal | int | str) -> Decimal:
@@ -191,6 +192,7 @@ class WalletService:
             mode=rule.mode,
             interval_hours=rule.interval_hours,
             next_refresh_at=next_refresh,
+            withdrawal_fee_rate=_to_decimal(rule.withdrawal_fee_rate or 0),
         )
 
     async def _ensure_withdrawal_quota(self, user: User) -> WithdrawalQuota:
@@ -1453,6 +1455,22 @@ class WalletService:
         await self._lock_wallet(wallet.id)
         await self._ensure_withdrawal_quota(user)
 
+        # 提现手续费：申请时按后台费率快照计算，实际打款 = 申请金额 - 手续费。
+        # 冻结的仍是申请金额；驳回时原路退回，平台不截留。
+        rule = await get_or_create_withdrawal_rule_setting(self._db)
+        fee_rate = _to_decimal(rule.withdrawal_fee_rate or 0).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        fee_amount = (amount * fee_rate / Decimal("100")).quantize(
+            _CENT, rounding=ROUND_HALF_UP
+        )
+        net_amount = (amount - fee_amount).quantize(_CENT, rounding=ROUND_HALF_UP)
+        if net_amount < Decimal("0.01"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="扣除手续费后到账金额过低，请调整提现金额",
+            )
+
         # 渠道开关校验：被后台关闭的支付宝/微信渠道不允许新增提现（BANK 不受限）。
         await ensure_channel_enabled(self._db, channel)
 
@@ -1470,6 +1488,9 @@ class WalletService:
         withdrawal = WithdrawalRequest(
             user_id=user.id,
             amount=amount,
+            fee_rate=fee_rate,
+            fee_amount=fee_amount,
+            net_amount=net_amount,
             channel=channel,
             account_name=account_name,
             account_no=account_no,

@@ -248,7 +248,12 @@ onMounted(() => {
                     <td class="text-ink-1">{{ item.username || `用户 #${item.user_id}` }}</td>
                     <td class="break-words text-ink-2">{{ item.account_no || '-' }}</td>
                     <td class="text-ink-2">{{ item.account_name || '-' }}</td>
-                    <td class="font-semibold tabular-nums text-price">{{ formatPrice(item.amount) }}</td>
+                    <td class="font-semibold tabular-nums text-price">
+                      {{ formatPrice(item.net_amount ?? item.amount) }}
+                      <p v-if="Number(item.fee_amount) > 0" class="mt-0.5 text-[11px] font-normal text-ink-3">
+                        申请 {{ formatPrice(item.amount) }} · 手续费 {{ formatPrice(item.fee_amount) }}
+                      </p>
+                    </td>
                     <td>
                       <span class="tag !px-2.5 !py-0.5 !text-[11px]" :class="withdrawalStatusMeta(item.status).tagClass">
                         {{ withdrawalStatusMeta(item.status).label }}

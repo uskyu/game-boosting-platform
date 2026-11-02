@@ -13,6 +13,7 @@ const store = useWithdrawalRuleStore()
 const form = reactive({
   mode: 'INTERVAL',
   interval_hours: '24',
+  withdrawal_fee_rate: '0',
 })
 const notice = ref({ type: '', text: '' })
 const saving = ref(false)
@@ -23,6 +24,7 @@ const MODE_OPTIONS = [
   { value: 'DAILY_NOON', label: REFRESH_MODE_META.DAILY_NOON.label },
 ]
 const HOUR_SHORTCUTS = ['6', '12', '24']
+const FEE_SHORTCUTS = ['0', '1', '2', '5']
 
 const currentRuleText = computed(() => describeRefreshRule(store.settings || form))
 
@@ -30,11 +32,13 @@ function sync(data) {
   const settings = data || store.settings || {}
   form.mode = settings.mode === 'DAILY_NOON' ? 'DAILY_NOON' : 'INTERVAL'
   form.interval_hours = String(settings.interval_hours ?? 24)
+  form.withdrawal_fee_rate = String(settings.withdrawal_fee_rate ?? 0)
 }
 
 async function save() {
   notice.value = { type: '', text: '' }
   const hours = Number(form.interval_hours)
+  const feeRate = Number(form.withdrawal_fee_rate)
   // 两种模式都把小时间隔一并发给后端：切回 INTERVAL 时值还在，服务端校验也按同一区间
   if (!Number.isInteger(hours) || hours < WITHDRAWAL_INTERVAL_MIN_HOURS || hours > WITHDRAWAL_INTERVAL_MAX_HOURS) {
     notice.value = {
@@ -43,8 +47,19 @@ async function save() {
     }
     return
   }
+  if (!Number.isFinite(feeRate) || feeRate < 0 || feeRate > 100) {
+    notice.value = {
+      type: 'error',
+      text: '提现费率需为 0-100 之间的百分比（可填 2 位小数）',
+    }
+    return
+  }
   saving.value = true
-  const result = await store.updateSettings({ mode: form.mode, interval_hours: hours })
+  const result = await store.updateSettings({
+    mode: form.mode,
+    interval_hours: hours,
+    withdrawal_fee_rate: Math.round(feeRate * 100) / 100,
+  })
   saving.value = false
   if (result.success) {
     notice.value = { type: 'success', text: '提现规则已保存，立即生效' }
@@ -93,6 +108,34 @@ onMounted(async () => {
         </p>
         <p class="mt-1 text-xs text-ink-3">
           模式 B「每天 12:00 刷新」：全站统一在每天 12:00 刷新，窗口为今天 12:00 到明天 12:00。
+        </p>
+      </div>
+
+      <div>
+        <label class="label" for="withdrawal-rule-fee-rate">提现手续费率（%）</label>
+        <div class="flex flex-wrap items-center gap-2">
+          <input
+            id="withdrawal-rule-fee-rate"
+            v-model="form.withdrawal_fee_rate"
+            type="number"
+            min="0"
+            max="100"
+            step="0.01"
+            class="input max-w-[160px] min-h-[44px]"
+            placeholder="例如：2"
+          />
+          <button
+            v-for="shortcut in FEE_SHORTCUTS"
+            :key="shortcut"
+            type="button"
+            class="filter-pill"
+            @click="form.withdrawal_fee_rate = shortcut"
+          >
+            {{ shortcut }}%
+          </button>
+        </div>
+        <p class="mt-1.5 text-xs text-ink-3">
+          申请提现时按此费率从提现金额中扣除手续费，用户提交前会看到「申请金额 / 手续费 / 实际到账」。填 0 表示不收费；修改后仅影响之后提交的申请。
         </p>
       </div>
 

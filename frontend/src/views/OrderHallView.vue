@@ -7,6 +7,7 @@ import { useChatStore } from '@/stores/chat'
 import { useNotificationsStore } from '@/stores/notifications'
 import { useOrdersStore } from '@/stores/orders'
 import { useSiteStore } from '@/stores/site'
+import LeaderboardWidget from '@/components/leaderboard/LeaderboardWidget.vue'
 import { formatCount, formatPayoutDelay, formatPrice, formatShortDate, getAcceptWaitMeta, serverNow } from '@/utils/display'
 import { getHallOrderDisplayBadgeClass, getHallOrderDisplayStatus } from '@/utils/order'
 import api from '@/utils/api'
@@ -702,5 +703,8 @@ onUnmounted(() => {
       </div>
       <p v-else-if="recentClaimsExpanded && !recentClaimsLoading" class="mt-4 text-[13px] text-ink-3">今天暂无接单记录</p>
     </section>
+
+    <!-- 每日排行榜：可拖动悬浮球，点开看前 30 名与自己的名次/差额 -->
+    <LeaderboardWidget v-if="isAuthenticated" />
   </div>
 </template>

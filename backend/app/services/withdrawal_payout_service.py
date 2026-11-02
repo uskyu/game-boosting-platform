@@ -78,6 +78,26 @@ _RECEIPT_STATUS_TEXT = {
 _CENT = Decimal("0.01")
 
 
+def _payout_amount(withdrawal: WithdrawalRequest) -> Decimal:
+    """渠道实际打款金额：优先用申请时固化 net_amount，历史单回退 amount。
+
+    新单 net_amount = 申请金额 - 手续费；迁移前的老单没有 net_amount，
+    回退到 amount 保持原打款口径不变。
+    """
+    net = _to_decimal(getattr(withdrawal, "net_amount", 0) or 0)
+    if net > 0:
+        return net
+    return _to_decimal(withdrawal.amount)
+
+
+def _payout_amount_sql():
+    """SQL 口径的实际打款金额：net_amount>0 用它，否则回退 amount。"""
+    return func.coalesce(
+        func.nullif(WithdrawalRequest.net_amount, 0),
+        WithdrawalRequest.amount,
+    )
+
+
 def _payout_result_of(
     withdrawal: WithdrawalRequest,
     batch_status: WithdrawalPayoutBatchStatus | None,
@@ -199,7 +219,7 @@ class WithdrawalPayoutService:
         remark_final = remark_final[:120]
 
         total_amount = sum(
-            (_to_decimal(row.amount) for row in selected), Decimal("0.00")
+            (_payout_amount(row) for row in selected), Decimal("0.00")
         ).quantize(_CENT, rounding=ROUND_HALF_UP)
 
         # j. 建批次 + 关联提现
@@ -290,7 +310,7 @@ class WithdrawalPayoutService:
         # 便宜的 SQL 聚合，提示文案里要给得出总额
         if total_count > MAX_BATCH_ITEMS:
             sum_result = await self._db.execute(
-                select(func.coalesce(func.sum(WithdrawalRequest.amount), 0)).where(
+                select(func.coalesce(func.sum(_payout_amount_sql()), 0)).where(
                     criteria
                 )
             )
@@ -305,13 +325,22 @@ class WithdrawalPayoutService:
             }
 
         result = await self._db.execute(
-            select(WithdrawalRequest.id, WithdrawalRequest.amount)
+            select(
+                WithdrawalRequest.id,
+                WithdrawalRequest.amount,
+                WithdrawalRequest.net_amount,
+            )
             .where(criteria)
             .order_by(WithdrawalRequest.id.asc())
         )
         items = [
-            {"id": row_id, "amount": _to_decimal(amount)}
-            for row_id, amount in result.all()
+            {
+                "id": row_id,
+                "amount": _to_decimal(net_amount)
+                if _to_decimal(net_amount or 0) > 0
+                else _to_decimal(amount),
+            }
+            for row_id, amount, net_amount in result.all()
         ]
         total_amount = sum(
             (item["amount"] for item in items), Decimal("0.00")
@@ -369,7 +398,10 @@ class WithdrawalPayoutService:
             "user_id": withdrawal.user_id,
             "username": user.username if user is not None else None,
             "user_email": user.email if user is not None else None,
-            "amount": _to_decimal(withdrawal.amount),  # 保持 Decimal，交给 schema 序列化
+            "amount": _to_decimal(withdrawal.amount),  # 申请金额（冻结额）
+            "fee_rate": _to_decimal(withdrawal.fee_rate or 0),
+            "fee_amount": _to_decimal(withdrawal.fee_amount or 0),
+            "net_amount": _payout_amount(withdrawal),  # 实际打款额
             "channel": withdrawal.channel.value,
             "account_name": withdrawal.account_name,
             "account_no": withdrawal.account_no,
@@ -463,7 +495,7 @@ class WithdrawalPayoutService:
             sheet.write(row_index, 0, item.id)  # 序号 = 提现 id（整数）
             sheet.write(row_index, 1, item.account_no)  # 收款方账号
             sheet.write(row_index, 2, item.account_name)  # 姓名
-            sheet.write(row_index, 3, f"{_to_decimal(item.amount):.2f}")  # 金额（字符串）
+            sheet.write(row_index, 3, f"{_payout_amount(item):.2f}")  # 实际打款金额（已扣手续费）
             sheet.write(row_index, 4, f"GW提现单W{item.id}")  # 备注（回执据此回填提现 id）
 
         stream = io.BytesIO()
@@ -594,7 +626,7 @@ class WithdrawalPayoutService:
                     item.id, admin, payment_reference=reference
                 )
                 success_count += 1
-                success_amount += _to_decimal(item.amount)
+                success_amount += _payout_amount(item)
                 result_items.append(
                     {
                         **base,
@@ -620,7 +652,7 @@ class WithdrawalPayoutService:
                     remark=f"批量打款驳回 #{item.id}",
                 )
                 fail_count += 1
-                fail_amount += _to_decimal(item.amount)
+                fail_amount += _payout_amount(item)
                 await notify_user(
                     self._db,
                     user_id=item.user_id,
@@ -931,7 +963,7 @@ class WithdrawalPayoutService:
                 if item.id not in consumed
                 and (item.account_no or "").strip() == row["account_no"]
                 and (item.account_name or "").strip() == row["account_name"]
-                and abs(_to_decimal(item.amount) - row["amount"]) <= Decimal("0.005")
+                and abs(_payout_amount(item) - row["amount"]) <= Decimal("0.005")
             ]
             if len(candidates) == 1:
                 return candidates[0]

@@ -1,6 +1,7 @@
 """后台「提现机会刷新规则」设置。"""
 
 from datetime import datetime
+from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
@@ -15,6 +16,9 @@ class WithdrawalRuleSettingsResponse(BaseModel):
         description="刷新模式：INTERVAL=每隔 N 小时（按用户上次提现起算）；DAILY_NOON=自然日 12:00 刷新",
     )
     interval_hours: int = Field(description="每隔多少小时刷新一次（模式 A 生效）")
+    withdrawal_fee_rate: Decimal = Field(
+        description="提现手续费率（百分比，如 5.00 表示 5%）"
+    )
     updated_at: datetime
 
     @field_serializer("updated_at")
@@ -31,6 +35,14 @@ class WithdrawalRuleSettingsUpdate(BaseModel):
     )
     interval_hours: int = Field(
         default=24, ge=1, le=168, description="每隔多少小时刷新一次（模式 A 生效）"
+    )
+    withdrawal_fee_rate: Decimal = Field(
+        default=Decimal("0.00"),
+        ge=0,
+        le=100,
+        max_digits=5,
+        decimal_places=2,
+        description="提现手续费率（百分比，0-100，如 5.00 表示 5%）",
     )
 
     model_config = ConfigDict(extra="forbid")

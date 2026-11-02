@@ -10,6 +10,7 @@ const form = reactive({
   registration_captcha_enabled: true,
   accept_captcha_enabled: false,
   max_online_devices: 2,
+  order_title_replacements: [],
 })
 const file = ref(null)
 const notice = ref({ type: '', text: '' })
@@ -22,6 +23,10 @@ function sync() {
   form.registration_captcha_enabled = store.settings.registration_captcha_enabled !== false
   form.accept_captcha_enabled = store.settings.accept_captcha_enabled === true
   form.max_online_devices = Number(store.settings.max_online_devices ?? 2)
+  form.order_title_replacements = (store.settings.order_title_replacements || []).map((rule) => ({
+    original: rule.original || '',
+    replacement: rule.replacement || '',
+  }))
 }
 
 // 后端约束 ge=0 le=20：输入框之外再夹一次，避免浏览器校验被绕过时提交 400
@@ -33,6 +38,20 @@ function normalizedMaxDevices() {
 }
 
 async function save() {
+  const replacements = form.order_title_replacements
+    .map((rule) => ({
+      original: (rule.original || '').trim(),
+      replacement: rule.replacement || '',
+    }))
+    .filter((rule) => rule.original)
+  const seen = new Set()
+  for (const rule of replacements) {
+    if (seen.has(rule.original)) {
+      notice.value = { type: 'error', text: `关键词重复：${rule.original}` }
+      return
+    }
+    seen.add(rule.original)
+  }
   const r = await store.updateSettings({
     site_name: form.site_name.trim(),
     site_description: form.site_description.trim() || null,
@@ -40,9 +59,22 @@ async function save() {
     registration_captcha_enabled: form.registration_captcha_enabled,
     accept_captcha_enabled: form.accept_captcha_enabled,
     max_online_devices: normalizedMaxDevices(),
+    order_title_replacements: replacements,
   })
   notice.value = r.success ? { type: 'success', text: '站点设置已保存' } : { type: 'error', text: r.error }
   if (r.success) sync()
+}
+
+function addReplacement() {
+  if (form.order_title_replacements.length >= 50) {
+    notice.value = { type: 'error', text: '最多配置 50 条替换规则' }
+    return
+  }
+  form.order_title_replacements.push({ original: '', replacement: '' })
+}
+
+function removeReplacement(index) {
+  form.order_title_replacements.splice(index, 1)
 }
 
 async function upload() {
@@ -154,6 +186,45 @@ onMounted(async () => {
             <p class="mt-1 text-xs leading-5 text-ink-3">0 表示不限制（最大 20）。超出时最早登录的设备会被下线并收到提示。</p>
           </div>
         </div>
+      </div>
+
+      <div class="rounded-tile border border-line-1 p-4">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p class="text-sm font-semibold text-ink-1">订单标题关键词替换</p>
+            <p class="mt-1 text-xs leading-5 text-ink-3">发单/改单时自动把标题里的原文替换为右侧文本，聊天里的订单卡片同步生效；默认把「名牌」「明牌」替换为「【MP】」。留空替换文本表示删除该关键词。</p>
+          </div>
+          <button type="button" class="btn-secondary min-h-[40px] !px-4 !py-2" @click="addReplacement">添加规则</button>
+        </div>
+
+        <div v-if="!form.order_title_replacements.length" class="mt-3 rounded-tile border border-dashed border-line-1 px-3 py-4 text-xs text-ink-3">
+          当前不替换任何关键词。点击「添加规则」新增一条。
+        </div>
+        <div
+          v-for="(rule, index) in form.order_title_replacements"
+          :key="`title-rule-${index}`"
+          class="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center"
+        >
+          <input
+            v-model="rule.original"
+            type="text"
+            maxlength="50"
+            class="input min-h-[40px] sm:flex-1"
+            placeholder="原文，如：名牌"
+            :aria-label="`第 ${index + 1} 条规则原文`"
+          />
+          <span class="hidden text-ink-3 sm:inline" aria-hidden="true">→</span>
+          <input
+            v-model="rule.replacement"
+            type="text"
+            maxlength="100"
+            class="input min-h-[40px] sm:flex-1"
+            placeholder="替换为，如：【MP】"
+            :aria-label="`第 ${index + 1} 条规则替换文本`"
+          />
+          <button type="button" class="btn-ghost !min-h-[40px] !px-3 !py-1.5 text-danger" @click="removeReplacement(index)">删除</button>
+        </div>
+        <p class="mt-3 text-xs leading-5 text-ink-3">最多 50 条；同一原文不能重复。保存后仅影响新发/编辑的订单和之后生成的聊天订单卡片。</p>
       </div>
 
       <div class="flex flex-wrap items-center gap-3">

@@ -6,6 +6,7 @@
 
 from sqlalchemy import select
 
+from app.core.title_rules import normalize_rules
 from app.models.site_setting import SiteSetting
 
 
@@ -19,3 +20,9 @@ async def get_or_create_site_setting(db) -> SiteSetting:
         await db.flush()
         await db.refresh(setting)
     return setting
+
+
+async def get_order_title_replacements(db) -> list[dict[str, str]]:
+    """读取后台配置的订单标题替换规则（NULL → 默认规则）。"""
+    setting = await get_or_create_site_setting(db)
+    return normalize_rules(setting.order_title_replacements)

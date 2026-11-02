@@ -25,8 +25,12 @@ logger = logging.getLogger(__name__)
 _ZERO = Decimal("0.00")
 _CENT = Decimal("0.01")
 
-# 收入来源：目前只有订单服务费；预留枚举位给后续收入类型。
+# 收入来源：订单服务费（正向）与售后退款时平台承担的服务费（负向）。
 SOURCE_SERVICE_FEE = "SERVICE_FEE"
+SOURCE_AFTERSALE_FEE_REFUND = "AFTERSALE_FEE_REFUND"
+
+# 计入净收入的来源：售后结案时平台承担的手续费以负数冲减服务费收入。
+_INCOME_SOURCES = (SOURCE_SERVICE_FEE, SOURCE_AFTERSALE_FEE_REFUND)
 
 
 def month_bounds(month: str | None = None) -> tuple[datetime, datetime]:
@@ -130,17 +134,82 @@ async def record_order_service_fee(
         return None
 
 
+async def record_aftersale_fee_borne(
+    db: AsyncSession,
+    order_id: int,
+    booster_id: int | None,
+    amount: Decimal,
+    rate: Decimal | None,
+) -> PlatformIncome | None:
+    """记录平台在售后中承担的订单服务费（负向收入，幂等）。
+
+    售后结案时，老板应收到完整售后金额，但打手只承担其实际拿到的净额；
+    平台此前已收取的服务费部分由平台负担，以负向金额冲减收入。
+
+    唯一键 ``(order_id, booster_id, source)`` 保证同一订单的同一打手名额
+    只冲减一次：先查后写，并发下再捕获唯一键冲突安全跳过。金额 <= 0 或
+    重复记录时返回 None。
+
+    Args:
+        amount: 平台承担的服务费（元，正数；落库时取负）。
+        rate: 服务费费率（百分数，8.00 表示 8%），仅用于审计留痕。
+    """
+    amount = _to_decimal(amount).quantize(_CENT, rounding=ROUND_HALF_UP)
+    if amount <= _ZERO:
+        return None
+
+    existing = await db.execute(
+        select(PlatformIncome.id).where(
+            PlatformIncome.order_id == order_id,
+            PlatformIncome.booster_id == booster_id,
+            PlatformIncome.source == SOURCE_AFTERSALE_FEE_REFUND,
+        )
+    )
+    if existing.scalar_one_or_none() is not None:
+        return None
+
+    normalized_rate = (
+        _to_decimal(rate).quantize(_CENT, rounding=ROUND_HALF_UP)
+        if rate is not None
+        else None
+    )
+    try:
+        async with db.begin_nested():
+            record = PlatformIncome(
+                order_id=order_id,
+                booster_id=booster_id,
+                amount=-amount,
+                service_fee_rate=normalized_rate,
+                source=SOURCE_AFTERSALE_FEE_REFUND,
+            )
+            db.add(record)
+            await db.flush()
+        return record
+    except IntegrityError:
+        # 并发结案先写成功：保持幂等，不重复冲减。
+        logger.info(
+            "Order %s after-sale fee refund already recorded for booster %s",
+            order_id,
+            booster_id,
+        )
+        return None
+
+
 async def totals(db: AsyncSession) -> tuple[Decimal, Decimal]:
-    """返回 (累计服务费, 本月服务费)，金额四舍五入到分。"""
+    """返回 (累计净收入, 本月净收入)，金额四舍五入到分。
+
+    统计同时包含订单服务费（正向）与售后平台承担服务费（负向），
+    从而得到平台的净收入。
+    """
     total_result = await db.execute(
         select(func.coalesce(func.sum(PlatformIncome.amount), 0)).where(
-            PlatformIncome.source == SOURCE_SERVICE_FEE
+            PlatformIncome.source.in_(_INCOME_SOURCES)
         )
     )
     month_start, month_end = month_bounds()
     month_result = await db.execute(
         select(func.coalesce(func.sum(PlatformIncome.amount), 0)).where(
-            PlatformIncome.source == SOURCE_SERVICE_FEE,
+            PlatformIncome.source.in_(_INCOME_SOURCES),
             PlatformIncome.created_at >= month_start,
             PlatformIncome.created_at < month_end,
         )
@@ -161,13 +230,15 @@ async def list_income(
     page_size: int = 20,
     month: str | None = None,
 ) -> tuple[list[tuple[PlatformIncome, str | None, str | None, str | None]], int]:
-    """后台分页查询服务费流水（创建时间倒序）。
+    """后台分页查询净收入流水（创建时间倒序）。
+
+    包含订单服务费与售后平台承担服务费（负向）两类流水。
 
     Returns:
         (记录行列表, 总数)。每行为
         ``(PlatformIncome, order_title, game_name, booster_name)``。
     """
-    conditions: list[Any] = [PlatformIncome.source == SOURCE_SERVICE_FEE]
+    conditions: list[Any] = [PlatformIncome.source.in_(_INCOME_SOURCES)]
     if month:
         month_start, month_end = month_bounds(month)
         conditions.append(PlatformIncome.created_at >= month_start)

@@ -80,6 +80,8 @@ class ConversationOrderBrief(BaseModel):
     id: int = Field(description="订单ID")
     user_id: int = Field(description="下单用户ID")
     booster_id: int | None = Field(default=None, description="接单代练ID")
+    user_username: str | None = Field(default=None, description="下单用户名")
+    booster_username: str | None = Field(default=None, description="接单代练用户名")
     game_name: str = Field(description="游戏名称")
     current_rank: str = Field(description="当前段位")
     target_rank: str = Field(description="目标段位")
@@ -104,6 +106,10 @@ class ConversationResponse(BaseModel):
     pinned_at: datetime | None = Field(default=None, description="当前用户置顶时间")
     participants: list[ConversationParticipantResponse] = Field(description="参与者列表")
     other_participants: list[ChatUserBrief] = Field(description="除当前用户之外的参与者")
+    counterpart: ChatUserBrief | None = Field(
+        default=None,
+        description="当前视角下的对话对方（订单会话按订单角色选中，不含客服）",
+    )
     order: ConversationOrderBrief | None = Field(default=None, description="关联订单摘要")
 
     @field_serializer("created_at", "updated_at", "last_message_at", "pinned_at")

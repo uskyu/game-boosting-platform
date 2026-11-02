@@ -45,6 +45,11 @@ async def update_site_settings(
         setting.accept_captcha_enabled = payload.accept_captcha_enabled
     if payload.max_online_devices is not None:
         setting.max_online_devices = payload.max_online_devices
+    # 标题关键词替换规则：None=不改动；[]=关闭全部替换
+    if payload.order_title_replacements is not None:
+        setting.order_title_replacements = [
+            rule.model_dump() for rule in payload.order_title_replacements
+        ]
     setting.updated_by = current_admin.id
     await db.flush()
     await db.refresh(setting)

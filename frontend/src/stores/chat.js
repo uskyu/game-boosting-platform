@@ -131,14 +131,21 @@ export const useChatStore = defineStore('chat', () => {
 
   function replaceConversation(nextConversation) {
     const index = conversations.value.findIndex((item) => item.id === nextConversation.id)
+    const previousConversation = index === -1 ? null : conversations.value[index]
+    // other_participants 空数组是 truthy：直接 || 合并会用 [] 盖掉已有名字，
+    // 列表/标题随之退化成“订单 #id”。只有拿到非空新数组时才覆盖。
+    const nextOtherParticipants = Array.isArray(nextConversation.other_participants)
+      && nextConversation.other_participants.length
+      ? nextConversation.other_participants
+      : previousConversation?.other_participants || []
     const mergedConversation = index === -1
       ? nextConversation
       : {
-          ...conversations.value[index],
+          ...previousConversation,
           ...nextConversation,
-          participants: nextConversation.participants || conversations.value[index].participants || [],
-          other_participants: nextConversation.other_participants || conversations.value[index].other_participants || [],
-          order: nextConversation.order || conversations.value[index].order || null,
+          participants: nextConversation.participants || previousConversation.participants || [],
+          other_participants: nextOtherParticipants,
+          order: nextConversation.order || previousConversation.order || null,
         }
 
     if (index === -1) {
@@ -307,10 +314,17 @@ export const useChatStore = defineStore('chat', () => {
       ]
     }
 
+    const currentUserId = authStore.user?.id
+    // 管理员本人也可能收到 admin_joined 广播；不能把自己当成“对方”写进
+    // other_participants，否则标题会出现自己的名字。
+    const isCurrentUser = currentUserId !== null
+      && currentUserId !== undefined
+      && Number(adminUser.id) === Number(currentUserId)
+
     const otherParticipantExists = (conversation.other_participants || [])
       .some((participant) => participant.id === adminUser.id)
 
-    if (!otherParticipantExists) {
+    if (!isCurrentUser && !otherParticipantExists) {
       conversation.other_participants = [
         ...(conversation.other_participants || []),
         adminUser,

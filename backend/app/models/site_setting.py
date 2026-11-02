@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -39,6 +39,12 @@ class SiteSetting(Base):
     # 0 = 不限制；正数 = 同一账号最多同时登录的设备数，超限挤掉最早登录的
     max_online_devices: Mapped[int] = mapped_column(
         Integer(), nullable=False, default=2, server_default="2"
+    )
+    # 订单标题关键词替换规则（2026-11-02）：JSON 数组，元素
+    # {"original": "名牌", "replacement": "【MP】"}；NULL=默认规则。
+    # 发单/改单时由 order_service 按此规则替换标题，聊天订单卡片同步。
+    order_title_replacements: Mapped[list[dict] | None] = mapped_column(
+        JSON, nullable=True
     )
     updated_by: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True

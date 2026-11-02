@@ -256,9 +256,16 @@ describe('管理后台售后管理 tab（AdminView）', () => {
     expect(guard).toMatch(/state\.error = '请填写驳回原因'/)
   })
 
-  it('states the deduction transfer in the approve confirmation', () => {
-    expect(adminSource).toMatch(/v-if="modal\.type === 'after-sale-approve'" class="message-warning">\s*通过将从打手账户扣划 \{\{ formatPrice\(modal\.amount\) \}\} 划转给老板/)
+  it('states the platform bears the service fee in the approve confirmation', () => {
+    expect(adminSource).toMatch(/v-if="modal\.type === 'after-sale-approve'" class="message-warning">\s*通过后老板将收到 \{\{ formatPrice\(modal\.amount\) \}\}；平台已收取的订单服务费由平台承担，打手只按实际到账金额扣划。/)
     expect(adminSource).toMatch(/if \(modal\.value\?\.type === 'after-sale-approve'\) return '通过售后申请'/)
     expect(adminSource).toMatch(/if \(modal\.value\?\.type === 'after-sale-reject'\) return '驳回售后申请'/)
+  })
+
+  it('totals selected withdrawals by net payout amount, not the requested amount', () => {
+    // 单笔勾选和全选本页都必须按 net_amount（扣手续费后的实际打款额）汇总，
+    // 否则批量创建弹窗会显示 ¥100，而真正导出/打款是 ¥97.5。
+    expect(adminSource).toMatch(/\[item\.id\]: Number\(item\.net_amount \?\? item\.amount\)/)
+    expect(adminSource).toMatch(/amounts\[item\.id\] = Number\(item\.net_amount \?\? item\.amount\)/)
   })
 })

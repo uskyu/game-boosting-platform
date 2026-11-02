@@ -85,6 +85,57 @@ def _fallback_order_preview(conversation: Conversation) -> str | None:
         return None
 
 
+def _serialize_order_brief(order: Any) -> ConversationOrderBrief:
+    """序列化会话内嵌订单摘要，附带双方用户名供前端兜底展示。"""
+    return ConversationOrderBrief(
+        id=order.id,
+        user_id=order.user_id,
+        booster_id=order.booster_id,
+        user_username=getattr(getattr(order, "user", None), "username", None),
+        booster_username=getattr(getattr(order, "booster", None), "username", None),
+        game_name=order.game_name,
+        current_rank=order.current_rank,
+        target_rank=order.target_rank,
+        price=order.price,
+        status=order.status,
+    )
+
+
+def _resolve_counterpart(
+    conversation: Conversation,
+    current_user_id: int,
+    other_participants: list[ChatUserBrief],
+) -> ChatUserBrief | None:
+    """按当前视角解析“对话对方”。
+
+    订单会话优先按订单角色选人：下单方看到的对方是打手，打手看到的是下单方，
+    管理员/客服视角看到的是下单方。订单角色不可用时退回参与者列表，并且
+    优先非 ADMIN，避免把客服拼进会话标题。
+    """
+    order = conversation.order
+    if order is not None:
+        if current_user_id == order.user_id:
+            preferred_id = order.booster_id
+        elif order.booster_id is not None and current_user_id == order.booster_id:
+            preferred_id = order.user_id
+        else:
+            # 管理员/客服或其他视角：优先展示下单方
+            preferred_id = order.user_id
+
+        if preferred_id is not None:
+            if order.user_id == preferred_id and order.user is not None:
+                return ChatUserBrief.model_validate(order.user)
+            if order.booster_id == preferred_id and order.booster is not None:
+                return ChatUserBrief.model_validate(order.booster)
+
+    for participant in other_participants:
+        if participant.role != UserRole.ADMIN:
+            return participant
+    if other_participants:
+        return other_participants[0]
+    return None
+
+
 def _serialize_conversation(
     conversation: Conversation,
     current_user_id: int,
@@ -125,7 +176,12 @@ def _serialize_conversation(
             for participant in participants
         ],
         other_participants=other_participants,
-        order=ConversationOrderBrief.model_validate(conversation.order)
+        counterpart=_resolve_counterpart(
+            conversation=conversation,
+            current_user_id=current_user_id,
+            other_participants=other_participants,
+        ),
+        order=_serialize_order_brief(conversation.order)
         if conversation.order is not None
         else None,
     )

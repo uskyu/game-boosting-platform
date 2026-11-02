@@ -244,7 +244,8 @@ function toggleWithdrawalSelection(item) {
     selectedWithdrawalIds.value = [...selectedWithdrawalIds.value, item.id]
     selectedWithdrawalAmounts.value = {
       ...selectedWithdrawalAmounts.value,
-      [item.id]: Number(item.amount),
+      // 批量打款按实际到账额汇总（已扣手续费），与后端批次 total_amount 一致
+      [item.id]: Number(item.net_amount ?? item.amount),
     }
   }
 }
@@ -299,7 +300,7 @@ function togglePageSelection() {
   pageSelectableWithdrawals.value.forEach((item) => {
     if (!isWithdrawalSelected(item.id)) {
       added.push(item.id)
-      amounts[item.id] = Number(item.amount)
+      amounts[item.id] = Number(item.net_amount ?? item.amount)
     }
   })
   selectedWithdrawalAmounts.value = amounts
@@ -442,7 +443,8 @@ function openMarkPaidModal(item) {
   modal.value = {
     type: 'mark-paid',
     withdrawalId: item.id,
-    amount: item.amount,
+    // 展示渠道实际打款额（已扣手续费），避免管理员按申请金额多打
+    amount: item.net_amount ?? item.amount,
     payment_reference: '',
     error: '',
     submitting: false,
@@ -1490,6 +1492,9 @@ onMounted(async () => {
 
             <div class="flex shrink-0 flex-col items-end gap-3">
               <p class="text-2xl font-semibold tabular-nums text-price">{{ formatPrice(item.amount) }}</p>
+              <p v-if="Number(item.fee_amount) > 0" class="text-xs tabular-nums text-ink-2">
+                手续费 {{ formatPrice(item.fee_amount) }}（{{ Number(item.fee_rate) }}%）· 实际打款 {{ formatPrice(item.net_amount) }}
+              </p>
               <!-- 收款二维码缩略图（点击在弹窗内放大） -->
               <img
                 v-if="item.qrcode_url"
@@ -1850,7 +1855,7 @@ onMounted(async () => {
             </div>
 
             <div v-if="modal.type === 'after-sale-approve'" class="message-warning">
-              通过将从打手账户扣划 {{ formatPrice(modal.amount) }} 划转给老板，请确认售后核实无误。
+              通过后老板将收到 {{ formatPrice(modal.amount) }}；平台已收取的订单服务费由平台承担，打手只按实际到账金额扣划。
             </div>
 
             <!-- 裁定额：默认=申请金额（不改即全额扣划），不得超过申请金额 -->
@@ -1918,6 +1923,9 @@ onMounted(async () => {
               <p class="mt-2 text-sm text-ink-2">
                 #{{ withdrawalDetail.id }} · {{ withdrawalApplicant(withdrawalDetail) }} ·
                 <span class="font-semibold tabular-nums text-price">{{ formatPrice(withdrawalDetail.amount) }}</span>
+                <span v-if="Number(withdrawalDetail.fee_amount) > 0" class="ml-1 text-xs tabular-nums text-ink-3">
+                  （手续费 {{ formatPrice(withdrawalDetail.fee_amount) }} · 实际打款 {{ formatPrice(withdrawalDetail.net_amount) }}）
+                </span>
               </p>
             </div>
             <button type="button" class="btn-ghost shrink-0 !px-4 !py-2" @click="closeWithdrawalDetail">关闭</button>

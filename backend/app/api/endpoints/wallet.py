@@ -202,6 +202,7 @@ async def get_my_withdrawal_quota(
         mode=quota.mode,
         interval_hours=quota.interval_hours,
         next_refresh_at=quota.next_refresh_at,
+        withdrawal_fee_rate=quota.withdrawal_fee_rate,
     )
 
 

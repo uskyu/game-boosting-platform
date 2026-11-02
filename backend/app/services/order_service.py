@@ -18,6 +18,7 @@ from sqlalchemy.orm import aliased, joinedload, selectinload
 from app.core.money import resolve_service_fee_rate
 from app.core.product_time import product_day_bounds
 from app.core.security import encrypt_text, escape_like
+from app.core.title_rules import apply_title_replacements
 from app.models.booster_service import BoosterService
 from app.models.deposit import (
     SETTLEMENT_MODE_AFTER_APPROVAL,
@@ -43,6 +44,7 @@ from app.schemas.booster_service import BoosterServiceOrderCreate
 from app.schemas.order import OrderCreate, OrderUpdate
 from app.services.ai_service import LLMService
 from app.services import platform_income_service
+from app.services.site_setting_service import get_order_title_replacements
 from app.services.wallet_service import calculate_order_income, get_wallet_service
 
 logger = logging.getLogger(__name__)
@@ -244,6 +246,7 @@ class OrderService:
                     detail=f"余额不足以托管该订单（需 ¥{escrow_required}）",
                 )
 
+        title_rules = await get_order_title_replacements(self._db)
         order = Order(
             user_id=user.id,
             game_id=game.id if game is not None else order_data.game_id,
@@ -253,7 +256,7 @@ class OrderService:
             price=order_data.price,
             price_min=order_data.price_min or order_data.price,
             price_max=order_data.price_max or order_data.price,
-            title=order_data.title,
+            title=apply_title_replacements(order_data.title, title_rules),
             intro=(
                 (order_data.intro or order_data.description or "").strip() or None
             ),
@@ -380,6 +383,12 @@ class OrderService:
             estimated_hours = payload.estimated_hours or Decimal("1")
             price = (service.price_per_hour * estimated_hours).quantize(Decimal("0.01"))
 
+        title_rules = await get_order_title_replacements(self._db)
+        generated_title = (
+            f"{service.game.name} {service.service_type}单".strip()
+            if service.service_type
+            else f"{service.game.name} 服务单"
+        )
         order = Order(
             user_id=current_user.id,
             booster_id=service.booster_id,
@@ -392,11 +401,7 @@ class OrderService:
             status=OrderStatus.LOCKED,
             # 服务卡订单没有标题输入框，按「游戏 + 服务类型」自动生成：
             # 标题自 2026-10-19 起必填，不生成会留下永远没有标题的订单。
-            title=(
-                f"{service.game.name} {service.service_type}单".strip()
-                if service.service_type
-                else f"{service.game.name} 服务单"
-            ),
+            title=apply_title_replacements(generated_title, title_rules),
             description_raw=payload.description_raw,
             description_ai=payload.description_ai,
             ai_tags=ai_tags,
@@ -4099,6 +4104,11 @@ class OrderService:
             update_data["game_password"] = encrypt_text(update_data["game_password"])
         if "description" in update_data and "intro" not in update_data:
             update_data["intro"] = update_data["description"]
+        if update_data.get("title"):
+            title_rules = await get_order_title_replacements(self._db)
+            update_data["title"] = apply_title_replacements(
+                update_data["title"], title_rules
+            )
 
         game: Game | None = None
         if "game_id" in update_data or "game_name" in update_data:

@@ -332,6 +332,24 @@ const walletInfo = computed(() =>
 // 提现机会提示：now 每秒推进，跨过刷新点（如下午 12:00 / 间隔到期）时自动解除禁用
 const withdrawQuotaNotice = computed(() => quotaNotice(walletStore.quota, now.value))
 
+// 提现手续费：后台按百分比配置，申请时从提现金额中扣除，实际到账 = 申请金额 - 手续费。
+const withdrawalFeeRate = computed(() => {
+  const rate = Number(walletStore.quota?.withdrawal_fee_rate ?? 0)
+  return Number.isFinite(rate) && rate > 0 ? rate : 0
+})
+const withdrawalAmountValue = computed(() => {
+  const value = Number(withdrawForm.value.amount)
+  return Number.isFinite(value) && value > 0 ? value : 0
+})
+const withdrawalFeeAmount = computed(() => {
+  if (!withdrawalFeeRate.value || !withdrawalAmountValue.value) return 0
+  // 费率是百分数：100 × 5% = 5.00；四舍五入到分
+  return Math.round(withdrawalAmountValue.value * withdrawalFeeRate.value) / 100
+})
+const withdrawalNetAmount = computed(() =>
+  Math.max(withdrawalAmountValue.value - withdrawalFeeAmount.value, 0)
+)
+
 // 售后进行中冻结提现：打手有 PENDING 售后时禁用提交。
 // 双保险：列表拉到的进行中售后 + 提交时后端返回同样文案（列表竞态未刷新到）。
 const afterSaleBlockedByServer = ref(false)
@@ -457,7 +475,13 @@ async function submitWithdrawal() {
   const result = await walletStore.createWithdrawal(payload)
 
   if (result.success) {
-    withdrawMessage.value = { type: 'success', text: '提现申请已提交，请等待管理员审核打款' }
+    const feeText = withdrawalFeeAmount.value > 0
+      ? `，扣除手续费 ${formatPrice(withdrawalFeeAmount.value)} 后预计到账 ${formatPrice(withdrawalNetAmount.value)}`
+      : ''
+    withdrawMessage.value = {
+      type: 'success',
+      text: `提现申请已提交${feeText}，请等待管理员审核打款`,
+    }
     withdrawForm.value = {
       amount: '',
       channel: withdrawForm.value.channel,
@@ -793,6 +817,25 @@ onUnmounted(() => {
           <p v-if="formErrors.amount" class="mt-2 text-xs text-danger">{{ formErrors.amount }}</p>
         </div>
 
+        <!-- 手续费明细：仅后台配置了费率时显示，提交前让用户看清楚实际到账 -->
+        <div
+          v-if="withdrawalFeeRate > 0 && withdrawalAmountValue > 0"
+          class="rounded-tile border border-line-1 bg-surface-2 p-4 text-sm lg:col-span-2"
+        >
+          <div class="flex items-center justify-between gap-3">
+            <span class="text-ink-2">提现金额</span>
+            <span class="tabular-nums text-ink-1">{{ formatPrice(withdrawalAmountValue) }}</span>
+          </div>
+          <div class="mt-2 flex items-center justify-between gap-3">
+            <span class="text-ink-2">手续费（{{ withdrawalFeeRate }}%）</span>
+            <span class="tabular-nums text-warning">-{{ formatPrice(withdrawalFeeAmount) }}</span>
+          </div>
+          <div class="mt-2 flex items-center justify-between gap-3 border-t border-line-1 pt-2">
+            <span class="font-semibold text-ink-1">实际到账</span>
+            <span class="font-semibold tabular-nums text-price">{{ formatPrice(withdrawalNetAmount) }}</span>
+          </div>
+        </div>
+
         <div>
           <label class="label" for="withdraw-channel">收款渠道</label>
           <select id="withdraw-channel" v-model="withdrawForm.channel" class="input">
@@ -861,7 +904,7 @@ onUnmounted(() => {
             {{ submittingWithdrawal ? '提交中...' : '提交申请' }}
           </button>
           <p class="helper-text">
-            <template v-if="walletStore.quota && !withdrawQuotaNotice.blocked">当前有 1 次提现机会，{{ describeRefreshRule(walletStore.quota) }}；</template>提交后金额将进入冻结状态，管理员审核通过并打款后完成提现。
+            <template v-if="walletStore.quota && !withdrawQuotaNotice.blocked">当前有 1 次提现机会，{{ describeRefreshRule(walletStore.quota) }}；</template>提交后申请金额将进入冻结状态，管理员审核通过后按实际到账金额打款。
           </p>
         </div>
       </form>
@@ -948,6 +991,9 @@ onUnmounted(() => {
           <div class="flex flex-wrap items-start justify-between gap-4">
             <div class="space-y-2">
               <p class="text-xl font-semibold tabular-nums text-price">{{ formatPrice(item.amount) }}</p>
+              <p v-if="Number(item.fee_amount) > 0" class="text-xs tabular-nums text-ink-2">
+                手续费 {{ formatPrice(item.fee_amount) }}（{{ Number(item.fee_rate) }}%）· 实际到账 {{ formatPrice(item.net_amount) }}
+              </p>
               <p class="text-sm text-ink-2">
                 {{ getChannelLabel(item.channel) }} · {{ item.account_name || '-' }} · {{ item.account_no || '-' }}
               </p>

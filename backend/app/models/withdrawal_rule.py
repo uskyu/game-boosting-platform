@@ -17,9 +17,10 @@
 """
 
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum as PyEnum
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, Numeric
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -58,6 +59,15 @@ class WithdrawalRuleSetting(Base):
         nullable=False,
         default=24,
         server_default="24",
+    )
+
+    # 提现手续费率（百分比，如 5.00 表示 5%）：申请时从提现金额中扣除，
+    # 实际打款 = amount - amount × rate / 100。0 表示不收费。
+    withdrawal_fee_rate: Mapped[Decimal] = mapped_column(
+        Numeric(precision=5, scale=2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default="0",
     )
 
     updated_by: Mapped[int | None] = mapped_column(

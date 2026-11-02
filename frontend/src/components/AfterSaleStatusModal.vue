@@ -5,7 +5,8 @@
  * 进行中售后的摘要（金额/原因全文/凭证/状态/时间），并提供「撤回售后」
  *（仅 PENDING 可撤，撤回后打手提现限制解除、该单可重新发起售后）。
  * 打手侧（viewerRole='booster'）：订单详情「售后处理中」入口打开，案情摘要
- * 不变；主按钮变「同意退款」（两步确认，同意后立即从余额扣划给老板并结案），
+ * 不变；主按钮变「同意退款」（两步确认，同意后按打手实际到账金额扣划给老板
+ * 并结案，平台已收服务费由平台承担），
  * 次级按钮「联系平台协助」直达管理员会话并预填案情（与订单详情兜底入口同链路）。
  */
 import { computed, ref, watch } from 'vue'
@@ -187,8 +188,7 @@ function close() {
         <template v-else-if="display">
           <p class="mt-3 text-sm text-ink-2">
             <template v-if="isBoosterView">
-              老板发起了售后，平台核实处理期间该单暂不能提现；同意后将立即从你的余额扣划
-              {{ formatPrice(display.amount) }} 给老板，结案后提现限制解除。
+              老板发起了售后，平台核实处理期间该单暂不能提现；同意后将按你实际到账金额扣划给老板，平台已收取的服务费由平台承担，结案后提现限制解除。
             </template>
             <template v-else>
               订单 #{{ display.order_id }} 的售后申请，平台核实处理期间该单打手暂不能提现。
@@ -264,7 +264,7 @@ function close() {
                 accepting
                   ? '同意中...'
                   : confirmAccept
-                    ? `再点一次确认扣款 ${formatPrice(pending.amount)}`
+                    ? '再点一次确认退款'
                     : `同意退款 ${formatPrice(pending.amount)}`
               }}
             </button>
@@ -280,7 +280,7 @@ function close() {
           </div>
           <p v-if="pending" class="mt-2 text-xs text-ink-3">
             <template v-if="isBoosterView">
-              同意退款将立即从你的余额扣划 {{ formatPrice(pending.amount) }} 给老板并结案；有异议可先联系平台协助裁定。
+              同意退款将按你实际到账金额扣划给老板并结案（平台已收服务费由平台承担，不会多扣）；有异议可先联系平台协助裁定。
             </template>
             <template v-else>
               撤回后打手提现限制立即解除，该订单可重新发起售后。

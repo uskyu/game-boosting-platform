@@ -54,12 +54,13 @@ const overviewCards = computed(() => {
     { label: '打手', value: o.total_boosters, color: 'text-info' },
     { label: '总派单', value: o.total_orders, color: 'text-ink-1' },
     { label: '成交额', value: `¥${o.total_revenue.toFixed(2)}`, color: 'text-price' },
-    // 平台服务费收入（仅后台可见）：累计与本月同卡展示。后端金额可能以
-    // 字符串下发（Decimal 序列化），统一交给 formatMoneyFixed 做数值归一。
+    // 平台服务费净收入（仅后台可见）：订单服务费收入减去售后退款时平台
+    // 承担的服务费，累计与本月同卡展示。后端金额可能以字符串下发（Decimal
+    // 序列化），统一交给 formatMoneyFixed 做数值归一。
     {
-      label: '服务费收入',
+      label: '服务费净收入',
       value: formatMoneyFixed(o.service_fee_total),
-      hint: `本月收入 ${formatMoneyFixed(o.service_fee_month)}`,
+      hint: `本月净收入 ${formatMoneyFixed(o.service_fee_month)}`,
       color: 'text-success',
     },
     { label: '待接单', value: o.pending_orders, color: 'text-warning' },

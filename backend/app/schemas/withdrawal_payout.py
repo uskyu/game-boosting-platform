@@ -62,7 +62,16 @@ class PayoutBatchItemResponse(BaseModel):
     user_id: int = Field(description="申请用户ID")
     username: str | None = Field(default=None, description="申请人用户名")
     user_email: str | None = Field(default=None, description="申请人邮箱")
-    amount: Decimal = Field(description="提现金额")
+    amount: Decimal = Field(description="申请提现金额")
+    fee_rate: Decimal = Field(
+        default=Decimal("0.00"), description="提现手续费率（百分比快照）"
+    )
+    fee_amount: Decimal = Field(
+        default=Decimal("0.00"), description="提现手续费金额"
+    )
+    net_amount: Decimal = Field(
+        default=Decimal("0.00"), description="实际打款金额（申请金额 - 手续费）"
+    )
     channel: str = Field(description="收款渠道")
     account_name: str = Field(description="收款人姓名")
     account_no: str = Field(description="收款账号")
@@ -126,10 +135,10 @@ class PayoutBatchListResponse(BaseModel):
 
 
 class SelectableWithdrawalItem(BaseModel):
-    """可加入批次的单条提现（只要 id + 金额，够前端全选用）。"""
+    """可加入批次的单条提现（id + 实际打款金额，够前端全选用）。"""
 
     id: int = Field(description="提现ID")
-    amount: Decimal = Field(description="提现金额")
+    amount: Decimal = Field(description="实际打款金额（已扣手续费）")
 
 
 class SelectableWithdrawalsResponse(BaseModel):

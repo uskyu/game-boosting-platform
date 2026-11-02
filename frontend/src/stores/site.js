@@ -13,6 +13,10 @@ export const useSiteStore = defineStore('site', () => {
     registration_captcha_enabled: true,
     accept_captcha_enabled: false,
     max_online_devices: 2,
+    order_title_replacements: [
+      { original: '名牌', replacement: '【MP】' },
+      { original: '明牌', replacement: '【MP】' },
+    ],
   })
   const loading = ref(false)
   const fetched = ref(false)

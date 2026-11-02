@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
+import { resolveConversationTitle } from '@/utils/chat'
 import ChatComposer from './ChatComposer.vue'
 import ChatMessageList from './ChatMessageList.vue'
 import ChatSearchBar from './ChatSearchBar.vue'
@@ -51,21 +52,9 @@ const hasAdmin = computed(() => (
   ) || false
 ))
 
-const conversationTitle = computed(() => {
-  const names = conversation.value?.other_participants
-    ?.map((item) => item.username)
-    .filter(Boolean)
-
-  if (names?.length) {
-    return names.join(' / ')
-  }
-
-  if (conversation.value?.order?.id) {
-    return `订单 #${conversation.value.order.id}`
-  }
-
-  return '聊天会话'
-})
+const conversationTitle = computed(() => (
+  resolveConversationTitle(conversation.value, currentUserId.value)
+))
 
 const conversationSubtitle = computed(() => {
   if (conversation.value?.order) {

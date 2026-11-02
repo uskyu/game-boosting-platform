@@ -33,7 +33,7 @@ describe('售后弹窗双角色（viewerRole）', () => {
     const acceptButton = slice(modalSource, 'v-if="pending && isBoosterView"', '@click="handleAccept"')
     expect(acceptButton).toMatch(/class="btn-danger flex-1"/)
     expect(acceptButton).toMatch(/:disabled="accepting \|\| assistLoading"/)
-    expect(modalSource).toMatch(/再点一次确认扣款 \$\{formatPrice\(pending\.amount\)\}/)
+    expect(modalSource).toMatch(/再点一次确认退款/)
     expect(modalSource).toMatch(/同意退款 \$\{formatPrice\(pending\.amount\)\}/)
     // 老板主按钮仍是撤回，且与同意退款互斥（v-else-if）
     const withdrawButton = slice(modalSource, 'v-else-if="pending"', '{{ withdrawing ?')
@@ -42,8 +42,8 @@ describe('售后弹窗双角色（viewerRole）', () => {
     // 角色说明文案分流：打手侧讲扣划，老板侧讲提现限制
     expect(modalSource).toMatch(/<template v-if="isBoosterView">\s*老板发起了售后/)
     expect(modalSource).toMatch(/<template v-else>\s*订单 #\{\{ display\.order_id \}\} 的售后申请/)
-    // 扣划说明：同意后退款即时从余额扣给老板并结案
-    expect(modalSource).toMatch(/同意退款将立即从你的余额扣划 \{\{ formatPrice\(pending\.amount\) \}\} 给老板并结案/)
+    // 扣划说明：按实际到账金额扣给老板，平台承担已收服务费
+    expect(modalSource).toMatch(/同意退款将按你实际到账金额扣划给老板并结案（平台已收服务费由平台承担，不会多扣）/)
   })
 
   it('confirms acceptance in two steps before calling acceptAfterSale', async () => {

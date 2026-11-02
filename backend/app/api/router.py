@@ -27,6 +27,7 @@ from app.api.endpoints import (
     chat_router,
     deposit_router,
     games_router,
+    leaderboard_router,
     notifications_router,
     order_hall_router,
     push_router,
@@ -77,6 +78,7 @@ api_router.include_router(admin_users_router)
 api_router.include_router(chat_router)
 api_router.include_router(deposit_router)
 api_router.include_router(games_router)
+api_router.include_router(leaderboard_router)
 api_router.include_router(notifications_router)
 api_router.include_router(push_router)
 api_router.include_router(services_router)

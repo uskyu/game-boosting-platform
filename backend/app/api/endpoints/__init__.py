@@ -31,6 +31,7 @@ from app.api.endpoints.announcements import router as announcements_router
 from app.api.endpoints.chat import router as chat_router
 from app.api.endpoints.deposit import router as deposit_router
 from app.api.endpoints.games import router as games_router
+from app.api.endpoints.leaderboard import router as leaderboard_router
 from app.api.endpoints.notifications import router as notifications_router
 from app.api.endpoints.order_hall import router as order_hall_router
 from app.api.endpoints.push import router as push_router
@@ -63,6 +64,7 @@ __all__ = [
     "chat_router",
     "deposit_router",
     "games_router",
+    "leaderboard_router",
     "notifications_router",
     "order_hall_router",
     "push_router",
