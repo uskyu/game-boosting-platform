@@ -54,6 +54,11 @@ const podiumEntries = computed(() => {
 })
 const listEntries = computed(() => items.value.slice(3))
 const hasAnyEntry = computed(() => items.value.length > 0)
+const listRangeText = computed(() => {
+  const list = listEntries.value
+  if (!list.length) return ''
+  return `第 ${list[0].rank} - ${list[list.length - 1].rank} 名`
+})
 
 const myRankText = computed(() => {
   if (!my.value.rank) return '暂未上榜'
@@ -338,22 +343,25 @@ onBeforeUnmount(() => {
               </div>
             </div>
 
-            <!-- 第 4 名起 -->
-            <div v-if="listEntries.length" class="leaderboard-list">
-              <div
-                v-for="entry in listEntries"
-                :key="entry.user_id"
-                class="leaderboard-row"
-              >
-                <span class="leaderboard-row__rank">{{ entry.rank }}</span>
-                <span class="leaderboard-row__avatar">
-                  <img v-if="entry.avatar_url" :src="entry.avatar_url" :alt="entry.username" loading="lazy" />
-                  <span v-else>{{ avatarText(entry) }}</span>
-                </span>
-                <span class="leaderboard-row__name">{{ entry.username }}</span>
-                <span class="leaderboard-row__amount">{{ formatPrice(entry.amount) }}</span>
+            <!-- 第 4 名起：桌面端独立成右栏并单独滚动 -->
+            <section v-if="listEntries.length" class="leaderboard-ranklist">
+              <p class="leaderboard-ranklist__title">{{ listRangeText }}</p>
+              <div class="leaderboard-list">
+                <div
+                  v-for="entry in listEntries"
+                  :key="entry.user_id"
+                  class="leaderboard-row"
+                >
+                  <span class="leaderboard-row__rank">{{ entry.rank }}</span>
+                  <span class="leaderboard-row__avatar">
+                    <img v-if="entry.avatar_url" :src="entry.avatar_url" :alt="entry.username" loading="lazy" />
+                    <span v-else>{{ avatarText(entry) }}</span>
+                  </span>
+                  <span class="leaderboard-row__name">{{ entry.username }}</span>
+                  <span class="leaderboard-row__amount">{{ formatPrice(entry.amount) }}</span>
+                </div>
               </div>
-            </div>
+            </section>
           </template>
         </div>
 
@@ -638,6 +646,13 @@ onBeforeUnmount(() => {
   color: var(--ink-3);
 }
 
+.leaderboard-ranklist {
+  min-width: 0;
+}
+.leaderboard-ranklist__title {
+  display: none;
+}
+
 .leaderboard-list {
   margin-top: 2px;
   border-top: 1px solid var(--line-1);
@@ -796,6 +811,98 @@ onBeforeUnmount(() => {
 .leaderboard-retry:hover {
   background: var(--surface-2);
   color: var(--ink-1);
+}
+
+@media (min-width: 900px) {
+  .leaderboard-panel {
+    width: min(100%, 960px);
+    max-height: min(86dvh, 760px);
+  }
+  .leaderboard-header {
+    padding: 22px 24px 8px;
+  }
+  .leaderboard-title {
+    font-size: 22px;
+  }
+  .leaderboard-subtitle {
+    font-size: 13px;
+  }
+  .leaderboard-tabs {
+    padding: 4px 24px 14px;
+  }
+  .leaderboard-body {
+    display: grid;
+    grid-template-columns: minmax(300px, 0.92fr) minmax(0, 1.08fr);
+    gap: 24px;
+    overflow: hidden;
+    padding: 0 24px 14px;
+  }
+  .leaderboard-podium {
+    align-self: stretch;
+    align-content: center;
+    margin: 0;
+    padding: 24px 16px 20px;
+  }
+  .leaderboard-podium__avatar {
+    height: 60px;
+    width: 60px;
+    font-size: 21px;
+  }
+  .leaderboard-podium__avatar--first {
+    height: 78px;
+    width: 78px;
+    font-size: 25px;
+  }
+  .leaderboard-podium__name {
+    font-size: 13px;
+  }
+  .leaderboard-podium__amount {
+    font-size: 14px;
+  }
+  .leaderboard-ranklist {
+    display: flex;
+    min-height: 0;
+    flex-direction: column;
+  }
+  .leaderboard-ranklist__title {
+    display: block;
+    flex: none;
+    margin: 0;
+    padding: 4px 8px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--ink-3);
+  }
+  .leaderboard-list {
+    min-height: 0;
+    flex: 1;
+    overflow-y: auto;
+    margin-top: 0;
+    border-top: 0;
+    scrollbar-width: thin;
+    scrollbar-color: var(--line-2) transparent;
+  }
+  .leaderboard-list::-webkit-scrollbar {
+    width: 5px;
+  }
+  .leaderboard-list::-webkit-scrollbar-thumb {
+    border-radius: 9999px;
+    background: var(--line-2);
+  }
+  .leaderboard-row {
+    padding: 12px 8px;
+    border-radius: 10px;
+  }
+  .leaderboard-row:hover {
+    background: var(--surface-2);
+  }
+  .leaderboard-me {
+    margin: 0 24px 18px;
+  }
+  .leaderboard-empty,
+  .leaderboard-loading {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (max-width: 380px) {
