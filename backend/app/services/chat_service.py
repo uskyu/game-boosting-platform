@@ -1031,7 +1031,11 @@ class ChatService:
                 ),
             )
             .where(Message.conversation_id.in_(conversation_ids))
-            .where(or_(Message.sender_id.is_(None), Message.sender_id != current_user.id))
+            # 订单卡片/取消协商等系统消息只作为聊天记录展示，不计未读、
+            # 不触发红点和提醒；只有真实用户消息才占用未读数。
+            .where(Message.message_type != MessageType.SYSTEM)
+            .where(Message.sender_id.is_not(None))
+            .where(Message.sender_id != current_user.id)
             .where(Message.recalled_at.is_(None))
             .where(
                 or_(

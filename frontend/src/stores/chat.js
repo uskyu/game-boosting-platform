@@ -1202,7 +1202,9 @@ export const useChatStore = defineStore('chat', () => {
 
         appendMessage(conversationId, message)
 
-        if (message.sender_id !== currentUserId) {
+        // 订单卡片、取消协商等系统消息只更新聊天记录/预览，不计未读、不弹提醒。
+        const isSystemMessage = message.message_type === 'SYSTEM' || message.sender_id == null
+        if (!isSystemMessage && message.sender_id !== currentUserId) {
           if (activeConversationId.value === conversationId) {
             await markRead(conversationId, message.id)
           } else {
