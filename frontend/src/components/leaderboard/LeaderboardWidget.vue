@@ -3,6 +3,10 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import api from '@/utils/api'
 import { formatPrice } from '@/utils/display'
+import {
+  clampLeaderboardFloatY,
+  resolveLeaderboardFloatBounds,
+} from '@/utils/leaderboardFloat'
 
 /**
  * 订单大厅「每日排行榜」悬浮入口。
@@ -38,6 +42,8 @@ const dragState = {
   moved: false,
 }
 let suppressClick = false
+let chromeObserver = null
+let chromeSyncTimer = 0
 
 const currentCaption = computed(
   () => PERIODS.find((item) => item.value === period.value)?.caption || '',
@@ -82,11 +88,24 @@ function avatarText(entry) {
   return (entry?.username || '?').slice(0, 1)
 }
 
+function visibleChromeBounds() {
+  const viewportHeight = window.visualViewport?.height || window.innerHeight
+  const header = document.querySelector('.app-header')
+  const tabbar = document.querySelector('.app-tabbar')
+
+  // 移动端底部 Tab 固定显示；桌面端 display:none 时高度为 0，自动跳过。
+  const headerRect = header?.getBoundingClientRect()
+  const tabbarRect = tabbar?.getBoundingClientRect()
+
+  return resolveLeaderboardFloatBounds({
+    viewportHeight,
+    headerBottom: headerRect?.height > 0 ? headerRect.bottom : null,
+    tabbarTop: tabbarRect?.height > 0 ? tabbarRect.top : null,
+  })
+}
+
 function clampY(y) {
-  const margin = 8
-  const height = 78
-  const maxY = Math.max(margin, window.innerHeight - height - margin)
-  return Math.min(Math.max(Number(y) || 0, margin), maxY)
+  return clampLeaderboardFloatY(y, visibleChromeBounds())
 }
 
 function defaultY() {
@@ -100,6 +119,8 @@ function restorePosition() {
     // 兼容旧版保存的 {x,y}：横向位置不再使用，始终贴右侧；只恢复纵向位置。
     if (saved && Number.isFinite(saved.y)) {
       floatY.value = clampY(saved.y)
+      // 旧版本可能存进导航栏下方，修正后回写，避免反复恢复成不可点击的位置
+      if (Number(saved.y) !== floatY.value) savePosition()
       return
     }
   } catch {
@@ -165,7 +186,29 @@ function onFloatClick() {
 }
 
 function onResize() {
-  floatY.value = clampY(floatY.value ?? 0)
+  if (floatY.value == null) return
+  floatY.value = clampY(floatY.value)
+}
+
+function observeChrome() {
+  if (typeof ResizeObserver === 'undefined') return
+  const targets = [document.querySelector('.app-header'), document.querySelector('.app-tabbar')]
+    .filter(Boolean)
+  if (!targets.length) return
+  chromeObserver?.disconnect()
+  chromeObserver = new ResizeObserver(onResize)
+  targets.forEach((target) => chromeObserver.observe(target))
+}
+
+// 悬浮球在路由视图内挂载，底部 Tab 栏此时可能尚未出现在 DOM 中；
+// 因此首次恢复后补一次同步，确保拿到顶部与底部导航栏的真实高度。
+function syncChromePosition() {
+  if (floatY.value == null) {
+    restorePosition()
+  } else {
+    floatY.value = clampY(floatY.value)
+  }
+  observeChrome()
 }
 
 async function fetchLeaderboard() {
@@ -212,13 +255,20 @@ watch(open, (value) => {
 })
 
 onMounted(() => {
-  restorePosition()
+  // 同步恢复：后台标签页会暂停 requestAnimationFrame，不能把首次定位挂在帧回调上
+  syncChromePosition()
+  chromeSyncTimer = window.setTimeout(syncChromePosition, 0)
   window.addEventListener('resize', onResize)
+  window.visualViewport?.addEventListener('resize', onResize)
   window.addEventListener('keydown', onKeydown)
 })
 
 onBeforeUnmount(() => {
+  window.clearTimeout(chromeSyncTimer)
+  chromeObserver?.disconnect()
+  chromeObserver = null
   window.removeEventListener('resize', onResize)
+  window.visualViewport?.removeEventListener('resize', onResize)
   window.removeEventListener('keydown', onKeydown)
   if (typeof document !== 'undefined') document.body.style.overflow = ''
 })
@@ -233,7 +283,7 @@ onBeforeUnmount(() => {
       :class="{ 'leaderboard-float--dragging': dragging }"
       :style="{ top: `${floatY ?? 0}px` }"
       v-show="floatY !== null"
-      aria-label="打开每日排行榜，可上下拖动调整位置"
+      aria-label="打开每日排行榜，可在顶部与底部导航栏之间上下拖动"
       @pointerdown="onPointerDown"
       @pointermove="onPointerMove"
       @pointerup="finishDrag"
