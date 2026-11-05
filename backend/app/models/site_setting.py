@@ -46,6 +46,9 @@ class SiteSetting(Base):
     order_title_replacements: Mapped[list[dict] | None] = mapped_column(
         JSON, nullable=True
     )
+    # 页脚底部自定义 HTML（2026-11-06）：主要用于展示 ICP 备案号与备案链接。
+    # 由管理员在站点设置里填写，前台渲染在整页最底部；NULL/空串 = 不显示。
+    footer_html: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_by: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

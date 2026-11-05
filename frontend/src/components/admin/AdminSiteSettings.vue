@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useSiteStore } from '@/stores/site'
 
 const store = useSiteStore()
@@ -11,6 +11,7 @@ const form = reactive({
   accept_captcha_enabled: false,
   max_online_devices: 2,
   order_title_replacements: [],
+  footer_html: '',
 })
 const file = ref(null)
 const notice = ref({ type: '', text: '' })
@@ -27,7 +28,22 @@ function sync() {
     original: rule.original || '',
     replacement: rule.replacement || '',
   }))
+  form.footer_html = store.settings.footer_html || ''
 }
+
+// 预览只渲染「确定能保存成功」的内容：含脚本类片段时直接不渲染，
+// 避免管理员在保存前就把危险 HTML 注入自己的后台页面
+const footerPreview = computed(() => {
+  const raw = form.footer_html.trim()
+  if (!raw) return ''
+  if (/<script|<iframe|<object|<embed|javascript:|\son[a-z]+\s*=/i.test(raw)) return ''
+  return raw
+})
+
+const footerPreviewBlocked = computed(() => {
+  const raw = form.footer_html.trim()
+  return Boolean(raw) && !footerPreview.value
+})
 
 // 后端约束 ge=0 le=20：输入框之外再夹一次，避免浏览器校验被绕过时提交 400
 function normalizedMaxDevices() {
@@ -60,6 +76,7 @@ async function save() {
     accept_captcha_enabled: form.accept_captcha_enabled,
     max_online_devices: normalizedMaxDevices(),
     order_title_replacements: replacements,
+    footer_html: form.footer_html.trim(),
   })
   notice.value = r.success ? { type: 'success', text: '站点设置已保存' } : { type: 'error', text: r.error }
   if (r.success) sync()
@@ -225,6 +242,30 @@ onMounted(async () => {
           <button type="button" class="btn-ghost !min-h-[40px] !px-3 !py-1.5 text-danger" @click="removeReplacement(index)">删除</button>
         </div>
         <p class="mt-3 text-xs leading-5 text-ink-3">最多 50 条；同一原文不能重复。保存后仅影响新发/编辑的订单和之后生成的聊天订单卡片。</p>
+      </div>
+
+      <div class="rounded-tile border border-line-1 p-4">
+        <p class="text-sm font-semibold text-ink-1">页脚备案信息（HTML）</p>
+        <p class="mt-1 text-xs leading-5 text-ink-3">
+          显示在所有页面最底部，通常填 ICP 备案号并链接到工信部备案系统。支持 HTML，留空则不显示。
+        </p>
+        <textarea
+          id="footer-html"
+          v-model="form.footer_html"
+          rows="3"
+          maxlength="2000"
+          class="input mt-3 resize-y font-mono text-xs leading-6"
+          placeholder='示例：<a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">粤ICP备2026000000号</a>'
+        ></textarea>
+        <p class="mt-2 text-xs leading-5 text-ink-3">
+          不能包含 &lt;script&gt;、&lt;iframe&gt;、onclick 等脚本内容；保存后立即全站生效。
+        </p>
+        <div v-if="footerPreview" class="mt-3 rounded-tile border border-dashed border-line-1 px-3 py-2 text-center text-xs leading-6 text-ink-3">
+          <span class="mr-2 opacity-70">预览</span><span v-html="footerPreview"></span>
+        </div>
+        <p v-else-if="footerPreviewBlocked" class="mt-3 text-xs leading-5 text-danger">
+          内容包含脚本类片段，保存会被拒绝，请先删除相关代码。
+        </p>
       </div>
 
       <div class="flex flex-wrap items-center gap-3">

@@ -17,6 +17,8 @@ export const useSiteStore = defineStore('site', () => {
       { original: '名牌', replacement: '【MP】' },
       { original: '明牌', replacement: '【MP】' },
     ],
+    // 页脚最底部自定义 HTML（备案号）；空串表示不显示
+    footer_html: '',
   })
   const loading = ref(false)
   const fetched = ref(false)

@@ -1,10 +1,32 @@
 """Schemas for public and administrator site settings APIs."""
 
+import re
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, field_serializer
 from app.core.title_rules import normalize_rules
 from app.schemas.serializers import serialize_datetime_utc
+
+# 页脚 HTML 里绝不能出现的片段：脚本、内嵌框架、伪协议。
+# 这段 HTML 会被 v-html 渲染给所有访客，管理员账号一旦被盗就是全站 XSS，
+# 所以在保存处做一次最小拦截（不做完整清洗，避免把正常标签也吃掉）。
+_FOOTER_HTML_FORBIDDEN = ("<script", "<iframe", "<object", "<embed", "javascript:")
+_FOOTER_HTML_EVENT_ATTR = re.compile(r"\son[a-z]+\s*=", re.IGNORECASE)
+
+
+def validate_footer_html(value: str | None) -> str | None:
+    """校验页脚 HTML：去首尾空白，拒绝脚本类内容；空串表示不显示。"""
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    if any(fragment in lowered for fragment in _FOOTER_HTML_FORBIDDEN):
+        raise ValueError("页脚 HTML 不能包含脚本、内嵌框架或 javascript: 链接")
+    if _FOOTER_HTML_EVENT_ATTR.search(text):
+        raise ValueError("页脚 HTML 不能包含 onclick 等事件属性")
+    return text
 
 
 class OrderTitleReplacementRule(BaseModel):
@@ -47,6 +69,13 @@ class SiteSettingUpdate(BaseModel):
             "订单标题关键词替换规则；不传保持不变，空数组表示关闭全部替换"
         ),
     )
+    footer_html: str | None = Field(
+        default=None,
+        max_length=2000,
+        description=(
+            "页脚最底部自定义 HTML（备案号等）；不传保持不变，空串表示清空不显示"
+        ),
+    )
 
     model_config = ConfigDict(extra="forbid")
 
@@ -79,6 +108,11 @@ class SiteSettingUpdate(BaseModel):
     def normalize_description(cls, value: str | None) -> str | None:
         return value.strip() if value is not None else None
 
+    @field_validator("footer_html")
+    @classmethod
+    def validate_footer(cls, value: str | None) -> str | None:
+        return validate_footer_html(value)
+
 
 class SiteSettingResponse(BaseModel):
     id: int
@@ -95,6 +129,10 @@ class SiteSettingResponse(BaseModel):
     order_title_replacements: list[OrderTitleReplacementRule] = Field(
         default_factory=list,
         description="订单标题关键词替换规则（NULL 时返回默认规则）",
+    )
+    footer_html: str | None = Field(
+        default=None,
+        description="页脚最底部自定义 HTML（备案号等）；NULL 表示不显示",
     )
     updated_by: int | None
     updated_at: datetime

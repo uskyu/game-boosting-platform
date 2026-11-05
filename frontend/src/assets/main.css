@@ -723,6 +723,23 @@
     @apply text-[10px] font-medium leading-none;
   }
 
+  /* 页脚最底部自定义 HTML（备案号）：统一链接样式，避免默认蓝色长链把页脚撑乱 */
+  .footer-html a {
+    color: var(--text-2);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    transition: color 0.2s var(--ease-smooth);
+  }
+
+  .footer-html a:hover {
+    color: var(--primary);
+  }
+
+  .footer-html p + p,
+  .footer-html div + div {
+    @apply mt-1;
+  }
+
   .tabbar-badge {
     @apply absolute -right-2.5 -top-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-bold leading-none text-on-primary;
     background: var(--primary);

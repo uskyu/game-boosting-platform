@@ -50,6 +50,9 @@ async def update_site_settings(
         setting.order_title_replacements = [
             rule.model_dump() for rule in payload.order_title_replacements
         ]
+    # 页脚 HTML：字段出现即覆盖（空串=清空不显示），未传字段则保持不变
+    if "footer_html" in payload.model_fields_set:
+        setting.footer_html = (payload.footer_html or "").strip() or None
     setting.updated_by = current_admin.id
     await db.flush()
     await db.refresh(setting)

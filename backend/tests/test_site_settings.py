@@ -2,6 +2,7 @@
 
 from io import BytesIO
 
+import pytest
 from httpx import AsyncClient
 from PIL import Image
 
@@ -73,3 +74,64 @@ async def test_site_logo_normalizes_mismatched_and_rejects_oversized_files(
         headers=headers,
     )
     assert response.status_code == 400
+
+
+FOOTER_HTML = (
+    '<a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">'
+    "粤ICP备2026000001号</a>"
+)
+
+
+async def test_footer_html_can_be_set_cleared_and_is_public(
+    client: AsyncClient, admin_user: dict
+):
+    """页脚备案 HTML：保存后公开可读；不传保持不变；空串清空。"""
+    headers = auth_header(admin_user)
+
+    response = await client.put(
+        "/admin/site/settings",
+        json={"site_name": "平台", "footer_html": FOOTER_HTML},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert response.json()["footer_html"] == FOOTER_HTML
+    # 前台读公开接口就能拿到（页脚据此渲染）
+    assert (await client.get("/site/settings")).json()["footer_html"] == FOOTER_HTML
+
+    # 未传该字段：保持原值，不能被别的设置保存操作清空
+    response = await client.put(
+        "/admin/site/settings",
+        json={"site_name": "平台改名"},
+        headers=headers,
+    )
+    assert response.json()["footer_html"] == FOOTER_HTML
+
+    # 空串表示清空（页脚不显示）
+    response = await client.put(
+        "/admin/site/settings",
+        json={"site_name": "平台改名", "footer_html": ""},
+        headers=headers,
+    )
+    assert response.json()["footer_html"] is None
+    assert (await client.get("/site/settings")).json()["footer_html"] is None
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        "<script>alert(1)</script>",
+        '<div onclick="steal()">x</div>',
+        '<a href="javascript:alert(1)">x</a>',
+        '<iframe src="https://evil.example"></iframe>',
+    ],
+)
+async def test_footer_html_rejects_script_content(
+    client: AsyncClient, admin_user: dict, html: str
+):
+    """页脚 HTML 会渲染给所有访客，脚本类内容必须在保存处拒绝。"""
+    response = await client.put(
+        "/admin/site/settings",
+        json={"site_name": "平台", "footer_html": html},
+        headers=auth_header(admin_user),
+    )
+    assert response.status_code == 422

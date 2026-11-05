@@ -177,6 +177,8 @@ const messageBadge = computed(() => unreadTotal.value)
 const avatarText = computed(() => user.value?.username?.slice(0, 1)?.toUpperCase() || '我')
 const siteName = computed(() => siteStore.settings.site_name || '游戏服务平台')
 const siteLogo = computed(() => siteStore.settings.site_logo_url || '')
+// 页脚最底部自定义 HTML（备案号）：仅管理员可编辑，后端保存时已拦截脚本类内容
+const siteFooterHtml = computed(() => (siteStore.settings.footer_html || '').trim())
 watch([siteName, () => siteStore.settings.favicon_url], ([name, favicon]) => {
   document.title = name
   const link = document.querySelector('link[rel="icon"]')
@@ -652,6 +654,10 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </div>
+      </div>
+      <!-- 页脚最底部自定义 HTML：默认显示 ICP 备案号（后台「站点管理」可编辑） -->
+      <div v-if="siteFooterHtml" class="shell-container">
+        <div class="footer-html border-t border-line-1 py-5 text-center text-xs leading-6 text-ink-3" v-html="siteFooterHtml"></div>
       </div>
     </footer>
 
