@@ -390,6 +390,7 @@ async def sync_pending_recharges(
     db: AsyncSession,
     *,
     older_than_minutes: int = 10,
+    max_age_hours: int = 72,
     limit: int = 100,
 ) -> dict:
     """扫描超时未支付的充值订单并尝试补单。
@@ -397,9 +398,15 @@ async def sync_pending_recharges(
     只挑 ``created_at`` 早于 ``older_than_minutes`` 的 ``PENDING`` 订单：
     刚下单的订单用户很可能正在付款，查了也只会得到「未支付」，白白打上游。
 
+    同时只查最近 ``max_age_hours`` 小时内的订单，并按**新单优先**排序：
+    历史积压里绝大多数是用户压根没付款的废弃单，若按 id 升序取前 N 条，
+    这些订单会永远占住队头，新产生的漏单反而排不进来。超过窗口的旧单
+    留给后台手动「同步状态」处理。
+
     Args:
         db: 数据库会话；成功入账的改动由调用方统一 commit。
         older_than_minutes: 只处理创建时间早于「现在 - N 分钟」的订单。
+        max_age_hours: 只处理创建时间在「现在 - N 小时」之内的订单。
         limit: 单轮最多处理多少条（控制对上游的压力）。
 
     Returns:
@@ -417,20 +424,22 @@ async def sync_pending_recharges(
     """
     minutes = max(0, int(older_than_minutes))
     max_rows = max(1, min(int(limit), 500))
+    max_age = max(1, int(max_age_hours))
 
     # created_at 由数据库写入（UTC），这里同样用 naive UTC 计算边界，
     # 与 dashboard_service 等处的口径一致。
-    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
-        minutes=minutes
-    )
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    cutoff = now - timedelta(minutes=minutes)
+    oldest = now - timedelta(hours=max_age)
 
     result = await db.execute(
         select(RechargeOrder)
         .where(
             RechargeOrder.status == RechargeStatus.PENDING,
             RechargeOrder.created_at <= cutoff,
+            RechargeOrder.created_at >= oldest,
         )
-        .order_by(RechargeOrder.id.asc())
+        .order_by(RechargeOrder.created_at.desc())
         .limit(max_rows)
     )
     orders = list(result.scalars().all())
