@@ -12,10 +12,12 @@
 商户密钥只在此模块与管理员配置接口之间流转，绝不下发到用户侧接口。
 """
 
+import hashlib
+import hmac
 import json
 import logging
 from datetime import datetime, timezone
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from urllib.parse import urlparse
 
 from fastapi import HTTPException, status
@@ -24,17 +26,30 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings as app_settings
 from app.models.notification import NotificationType
+from app.models.payment_gateway import PaymentGateway
 from app.models.payment_setting import PAY_METHOD_NAMES, PaymentSetting
 from app.models.recharge import RechargeOrder, RechargeStatus
 from app.models.user import User
 from app.models.wallet import WalletTransactionType
-from app.services import epay_service
+from app.services import epay_service, payment_gateway_service
 from app.services.notification_service import get_notification_service
 from app.services.wallet_service import get_wallet_service
 
 logger = logging.getLogger(__name__)
 
 _CENT = Decimal("0.01")
+
+# 立收通「易支付兼容」接口只对这几个字段签名，多传的字段不参与。
+# 回调验签时把它们单独挑出来算一次，兼容对方按自己口径回调的情况。
+_LSPAY_SIGN_FIELDS = (
+    "pid",
+    "type",
+    "out_trade_no",
+    "money",
+    "name",
+    "notify_url",
+    "return_url",
+)
 
 
 def _pages(total: int, page_size: int) -> int:
@@ -58,17 +73,19 @@ async def get_or_create_payment_setting(db: AsyncSession) -> PaymentSetting:
     return setting
 
 
-def enabled_pay_methods(setting: PaymentSetting) -> list[dict[str, str]]:
-    """已勾选的支付方式，供前端展示。"""
+def enabled_pay_methods(gateway: PaymentGateway | None) -> list[dict[str, str]]:
+    """当前网关已勾选的支付方式，供前端展示。"""
+    if gateway is None:
+        return []
     return [
         {"name": PAY_METHOD_NAMES[method_type], "type": method_type}
-        for method_type in setting.enabled_method_types
+        for method_type in gateway.enabled_method_types
     ]
 
 
-def is_recharge_enabled(setting: PaymentSetting) -> bool:
-    """凭据齐备、总开关打开、且至少勾选一种支付方式时，用户侧才开放充值。"""
-    return setting.is_configured
+def is_recharge_enabled(setting: PaymentSetting, gateway: PaymentGateway | None) -> bool:
+    """总开关打开、存在可用的当前网关、且该网关至少启用一种支付方式时才能充值。"""
+    return bool(setting.enabled and gateway is not None and gateway.is_configured)
 
 
 def _origin_from_request(request) -> str:
@@ -112,15 +129,21 @@ async def create_recharge_order(
     payment_method: str,
     request,
 ) -> tuple[RechargeOrder, str, dict[str, str]]:
-    """创建充值订单并返回 (订单, 支付地址, 支付表单参数)。"""
+    """创建充值订单并返回 (订单, 支付地址, 支付表单参数)。
+
+    使用「当前启用」的网关下单；订单上记录 ``gateway_id`` 与网关名快照，
+    之后切换网关不会影响这笔订单的回调验签。
+    """
     setting = await get_or_create_payment_setting(db)
-    if not is_recharge_enabled(setting):
+    gateway = await payment_gateway_service.get_active_gateway(db)
+    if not is_recharge_enabled(setting, gateway):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="管理员暂未开启充值功能",
         )
+    assert gateway is not None  # is_recharge_enabled 已保证
 
-    if payment_method not in setting.enabled_method_types:
+    if payment_method not in gateway.enabled_method_types:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="支付方式不存在",
@@ -141,12 +164,21 @@ async def create_recharge_order(
 
     notify_url, return_url = build_notify_urls(request)
     trade_no = epay_service.generate_trade_no(user.id)
+    try:
+        submit_url = payment_gateway_service.resolve_submit_url(gateway)
+    except payment_gateway_service.GatewayAddressError as err:
+        # 地址填错是配置问题，不能让用户看到 500
+        logger.error("Active payment gateway %s has invalid url: %s", gateway.id, err)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="支付网关配置有误，请联系管理员",
+        ) from err
 
     # 先构造支付参数：配置有问题时立刻失败，不留下无法支付的僵尸订单
     pay_url, params = epay_service.build_purchase(
-        base_url=setting.pay_address,
-        partner_id=setting.epay_id,
-        key=setting.epay_key,
+        submit_url=submit_url,
+        partner_id=gateway.merchant_id,
+        key=gateway.secret_key,
         pay_type=payment_method,
         out_trade_no=trade_no,
         name=f"账户充值 {epay_service.format_money(amount)}元",
@@ -161,20 +193,138 @@ async def create_recharge_order(
         amount=amount,
         payment_method=payment_method,
         status=RechargeStatus.PENDING,
+        gateway_id=gateway.id,
+        gateway_name=gateway.name,
     )
     db.add(order)
     await db.flush()
     await db.refresh(order)
 
     logger.info(
-        "Recharge order %s created: user=%s amount=%s method=%s notify=%s",
+        "Recharge order %s created: user=%s amount=%s method=%s gateway=%s notify=%s",
         trade_no,
         user.id,
         amount,
         payment_method,
+        gateway.id,
         notify_url,
     )
     return order, pay_url, params
+
+
+def _sign_candidates(params: dict[str, str], key: str) -> set[str]:
+    """算出所有可能的期望签名（统一转大写后比较）。
+
+    上游实现的口径并不统一，历史代码只认「全字段 + 直接接 key + 小写」这一种。
+    现在同时兼容：
+
+    1. 全字段（剔除 sign / sign_type / 空值）直接接 key —— 老易支付；
+    2. 同上但把 sign_type 也算进去；
+    3. 只签立收通兼容接口的七个字段；
+    4. 立收通原生：全字段 + ``&key=`` + 大写。
+
+    每一种都是用商户密钥做的真实校验，多试几种只是兼容不同实现，
+    不会降低安全性。比较时两边都转大写，避免大小写差异误判。
+    """
+    values = {k: v for k, v in params.items() if k != "sign" and v not in (None, "")}
+    candidates: set[str] = set()
+
+    without_sign_type = {k: v for k, v in values.items() if k != "sign_type"}
+    raw = "&".join(f"{k}={without_sign_type[k]}" for k in sorted(without_sign_type))
+    candidates.add(hashlib.md5(f"{raw}{key}".encode("utf-8")).hexdigest().upper())
+
+    raw_with_type = "&".join(f"{k}={values[k]}" for k in sorted(values))
+    candidates.add(hashlib.md5(f"{raw_with_type}{key}".encode("utf-8")).hexdigest().upper())
+    candidates.add(
+        hashlib.md5(f"{raw_with_type}&key={key}".encode("utf-8")).hexdigest().upper()
+    )
+
+    whitelist = {k: values[k] for k in _LSPAY_SIGN_FIELDS if k in values}
+    if len(whitelist) == len(_LSPAY_SIGN_FIELDS):
+        raw_white = "&".join(f"{k}={whitelist[k]}" for k in sorted(whitelist))
+        candidates.add(
+            hashlib.md5(f"{raw_white}{key}".encode("utf-8")).hexdigest().upper()
+        )
+        candidates.add(
+            hashlib.md5(f"{raw_white}&key={key}".encode("utf-8")).hexdigest().upper()
+        )
+    return candidates
+
+
+def _notify_signature_ok(params: dict[str, str], gateway: PaymentGateway) -> bool:
+    received = str(params.get("sign") or "").strip().upper()
+    if not received:
+        return False
+    candidates = _sign_candidates(params, (gateway.secret_key or "").strip())
+    # 逐个常量时间比较，避免签名校验被计时侧信道利用
+    return any(hmac.compare_digest(received, candidate) for candidate in candidates)
+
+
+def _notify_is_paid(params: dict[str, str]) -> bool:
+    """支付成功判定：兼容易支付 ``trade_status`` 与立收通 ``state=2``。"""
+    trade_status = (params.get("trade_status") or "").strip().upper()
+    if trade_status:
+        return trade_status == epay_service.TRADE_SUCCESS
+    state = str(params.get("state") or "").strip()
+    return state == "2"
+
+
+def _notify_amount(params: dict[str, str]) -> Decimal | None:
+    """回调金额，统一换算成「元」。
+
+    易支付回 ``money``（元字符串）；立收通原生回 ``amount``（整数分）。
+    """
+    money = params.get("money")
+    if money not in (None, ""):
+        return epay_service.parse_money(money)
+    amount = params.get("amount")
+    if amount in (None, ""):
+        return None
+    try:
+        return (Decimal(str(amount)) / Decimal(100)).quantize(
+            _CENT, rounding=ROUND_HALF_UP
+        )
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _notify_trade_no(params: dict[str, str]) -> str:
+    """回调里的商户单号：易支付用 out_trade_no，立收通原生用 mch_order_no。"""
+    return (
+        str(params.get("out_trade_no") or params.get("mch_order_no") or "").strip()
+    )
+
+
+def _notify_upstream_trade_no(params: dict[str, str]) -> str | None:
+    """上游订单号：易支付 ``trade_no``，立收通原生 ``pay_order_id``。"""
+    value = str(params.get("trade_no") or params.get("pay_order_id") or "").strip()
+    return value or None
+
+
+async def _gateway_candidates_for_notify(
+    db: AsyncSession, order: RechargeOrder | None
+) -> list[PaymentGateway]:
+    """回调验签用的候选网关，按优先级返回。
+
+    订单上有 ``gateway_id`` 就用那一家的密钥——切换网关后，旧订单的回调
+    仍然要用旧密钥才能验过；订单没关联网关（异常数据）时退回当前启用的
+    网关，再退回全部启用中的网关，最后尝试迁移前遗留的配置。
+    """
+    candidates: list[PaymentGateway] = []
+    if order is not None and order.gateway_id is not None:
+        gateway = await db.get(PaymentGateway, order.gateway_id)
+        if gateway is not None:
+            return [gateway]
+
+    active = await payment_gateway_service.get_active_gateway(db)
+    if active is not None:
+        candidates.append(active)
+
+    result = await db.execute(select(PaymentGateway).where(PaymentGateway.enabled.is_(True)))
+    for gateway in result.scalars().all():
+        if all(gateway.id != item.id for item in candidates):
+            candidates.append(gateway)
+    return candidates
 
 
 async def handle_notify(
@@ -184,36 +334,15 @@ async def handle_notify(
 ) -> bool:
     """处理易支付异步/同步回调。
 
+    先按单号找订单，再用这笔订单当时使用的网关验签：切换网关不会让旧订单
+    的回调失效。找不到订单直接拒绝（不给未知单号做签名探测）。
+
     Returns:
-        True 表示已确认（可回 ``success``），False 表示应回 ``fail``。
+        True 表示已确认（可回 ``ok``），False 表示应回 ``fail``。
     """
-    setting = await get_or_create_payment_setting(db)
-    if not setting.epay_key:
-        logger.warning("Recharge notify received but epay_key is not configured")
-        return False
-
-    verified = epay_service.verify_params(params, setting.epay_key)
-    if not verified["verify_status"]:
-        logger.warning("Recharge notify signature mismatch: %s", verified["out_trade_no"])
-        return False
-
-    if verified["trade_status"] != epay_service.TRADE_SUCCESS:
-        # 非成功状态（如等待付款）不算失败，但也不入账
-        logger.info(
-            "Recharge notify non-success status: %s (%s)",
-            verified["trade_status"],
-            verified["out_trade_no"],
-        )
-        return False
-
-    trade_no = verified["out_trade_no"]
+    trade_no = _notify_trade_no(params)
     if not trade_no:
-        return False
-
-    # 金额校验：上游回传金额必须与订单金额一致，防止金额被篡改
-    notified_money = epay_service.parse_money(verified["money"])
-    if notified_money is None:
-        logger.warning("Recharge notify has invalid money: %s", verified["money"])
+        logger.warning("Recharge notify without order number")
         return False
 
     order_result = await db.execute(
@@ -223,6 +352,44 @@ async def handle_notify(
     if existing is None:
         logger.warning("Recharge notify for unknown order: %s", trade_no)
         return False
+
+    gateways = await _gateway_candidates_for_notify(db, existing)
+    if not gateways:
+        # 迁移前遗留配置：老库里只有 payment_settings 一套凭据
+        setting = await get_or_create_payment_setting(db)
+        if not setting.epay_key:
+            logger.warning("Recharge notify received but no gateway key is configured")
+            return False
+        legacy_key = setting.epay_key
+        received = str(params.get("sign") or "").strip().upper()
+        legacy_ok = bool(received) and any(
+            hmac.compare_digest(received, candidate)
+            for candidate in _sign_candidates(params, legacy_key)
+        )
+        if not legacy_ok:
+            logger.warning("Recharge notify signature mismatch: %s", trade_no)
+            return False
+    else:
+        if not any(_notify_signature_ok(params, gateway) for gateway in gateways):
+            logger.warning("Recharge notify signature mismatch: %s", trade_no)
+            return False
+
+    if not _notify_is_paid(params):
+        logger.info(
+            "Recharge notify non-success status: %s (%s)",
+            params.get("trade_status") or params.get("state"),
+            trade_no,
+        )
+        return False
+
+    # 金额校验：上游回传金额必须与订单金额一致，防止金额被篡改
+    notified_money = _notify_amount(params)
+    if notified_money is None:
+        logger.warning(
+            "Recharge notify has invalid money: %s", params.get("money") or params.get("amount")
+        )
+        return False
+
     if notified_money != Decimal(str(existing.amount)).quantize(
         _CENT, rounding=ROUND_HALF_UP
     ):
@@ -237,7 +404,7 @@ async def handle_notify(
     wallet_service = get_wallet_service(db)
     completed = await wallet_service.complete_recharge(
         trade_no,
-        epay_trade_no=verified["trade_no"] or None,
+        epay_trade_no=_notify_upstream_trade_no(params),
         notify_payload=json.dumps(params, ensure_ascii=False),
     )
     return completed is not None

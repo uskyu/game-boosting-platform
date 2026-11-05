@@ -118,6 +118,8 @@ class AdminRechargeResponse(BaseModel):
     trade_no: str = Field(description="商户订单号")
     amount: Decimal = Field(description="充值金额（元）")
     payment_method: str = Field(description="支付方式")
+    gateway_id: int | None = Field(default=None, description="下单时使用的支付网关 ID")
+    gateway_name: str | None = Field(default=None, description="下单时使用的网关名称快照")
     status: RechargeStatus = Field(description="状态：PENDING/SUCCESS/CLOSED/FAILED")
     user: AdminRechargeUser | None = Field(default=None, description="发起充值的用户")
     created_at: datetime = Field(description="发起时间")
@@ -195,19 +197,21 @@ class AdminRechargeStatusUpdate(BaseModel):
 # =============================================================================
 
 class PaymentSettingUpdate(BaseModel):
-    """管理员保存易支付配置。
+    """管理员保存全局支付设置（总开关与最低金额）。
 
-    ``epay_key`` 传空（None 或空串）表示保留现有密钥不变。
-    回调地址不需要配置：按充值请求来源自动推导。
+    ``pay_address`` / ``epay_id`` / ``epay_key`` / 支付方式开关是旧版前端的
+    字段：仍然接受，有值就写到「当前启用」的网关，保证滚动发布期间旧后台
+    保存不会把配置清空。新版后台只用 ``enabled`` 与 ``min_amount``。
     """
 
     enabled: bool = Field(default=True, description="是否开启充值")
-    pay_address: str | None = Field(default=None, max_length=500, description="支付接口地址")
-    epay_id: str | None = Field(default=None, max_length=64, description="易支付商户ID")
-    epay_key: str | None = Field(default=None, max_length=255, description="易支付商户密钥，留空表示不修改")
-    alipay_enabled: bool = Field(default=True, description="启用支付宝")
-    wxpay_enabled: bool = Field(default=True, description="启用微信")
-    min_amount: Decimal = Field(default=Decimal("0.01"), gt=0, description="单笔最低充值金额（元），默认 1 分钱")
+    min_amount: Decimal = Field(default=Decimal("0.01"), gt=0, description="单笔最低充值金额（元）")
+
+    pay_address: str | None = Field(default=None, max_length=500, description="（旧字段）提交地址")
+    epay_id: str | None = Field(default=None, max_length=64, description="（旧字段）商户号")
+    epay_key: str | None = Field(default=None, max_length=255, description="（旧字段）商户密钥，留空表示不修改")
+    alipay_enabled: bool | None = Field(default=None, description="（旧字段）启用支付宝")
+    wxpay_enabled: bool | None = Field(default=None, description="（旧字段）启用微信")
 
     model_config = ConfigDict(extra="forbid")
 
@@ -220,18 +224,108 @@ class PaymentSettingUpdate(BaseModel):
         return text or None
 
 
+class PaymentGatewayCreate(BaseModel):
+    """新增一个支付网关。"""
+
+    name: str = Field(..., max_length=50, description="显示名称，例如「马支付」")
+    submit_url: str = Field(
+        ...,
+        max_length=500,
+        description="提交地址；勾选自动补 .php 时填基地址，否则填完整入口",
+    )
+    append_submit_php: bool = Field(
+        default=False,
+        description="是否自动在地址末尾补 /submit.php（老网关勾选，立收通这类完整入口不勾）",
+    )
+    merchant_id: str = Field(..., max_length=64, description="商户号（易支付的 pid）")
+    secret_key: str = Field(..., max_length=255, description="商户密钥")
+    query_url: str | None = Field(
+        default=None,
+        max_length=500,
+        description="订单查询地址；留空时只有需要补 .php 的网关会自动推导 {基地址}/api.php",
+    )
+    alipay_enabled: bool = Field(default=True, description="启用支付宝")
+    wxpay_enabled: bool = Field(default=True, description="启用微信")
+    enabled: bool = Field(default=True, description="是否启用该网关")
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("name", "submit_url", "merchant_id", "secret_key", "query_url", mode="before")
+    @classmethod
+    def normalize_text(cls, value):
+        if value is None:
+            return None
+        return str(value).strip()
+
+
+class PaymentGatewayUpdate(BaseModel):
+    """修改支付网关；``secret_key`` 留空表示保持原密钥不变。"""
+
+    name: str = Field(..., max_length=50)
+    submit_url: str = Field(..., max_length=500)
+    append_submit_php: bool = Field(default=False)
+    merchant_id: str = Field(..., max_length=64)
+    secret_key: str | None = Field(default=None, max_length=255, description="留空表示不修改")
+    query_url: str | None = Field(default=None, max_length=500)
+    alipay_enabled: bool = Field(default=True)
+    wxpay_enabled: bool = Field(default=True)
+    enabled: bool = Field(default=True)
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("name", "submit_url", "merchant_id", "secret_key", "query_url", mode="before")
+    @classmethod
+    def normalize_text(cls, value):
+        if value is None:
+            return None
+        return str(value).strip()
+
+
+class PaymentGatewayResponse(BaseModel):
+    """后台看到的网关配置。密钥只以 ``has_key`` 表示是否存在。"""
+
+    id: int
+    name: str
+    submit_url: str
+    append_submit_php: bool
+    merchant_id: str
+    has_key: bool = Field(description="是否已配置商户密钥")
+    query_url: str | None = None
+    alipay_enabled: bool
+    wxpay_enabled: bool
+    enabled: bool
+    is_active: bool
+    resolved_submit_url: str = Field(description="实际提交地址（已按规则补全）")
+    supports_query: bool = Field(description="是否支持主动查询/补单")
+
+
 class PaymentSettingResponse(BaseModel):
-    """管理员读取的易支付配置。密钥只以 ``has_key`` 表示是否存在。"""
+    """后台支付设置：全局开关 + 全部网关。
+
+    顶层 ``pay_address`` / ``epay_id`` / ``has_key`` / 支付方式开关是「当前
+    启用网关」的镜像，供旧版前端读取；新版前端只读 ``gateways``。
+    """
 
     enabled: bool
-    pay_address: str | None
-    epay_id: str | None
-    has_key: bool = Field(description="是否已配置商户密钥")
-    alipay_enabled: bool = Field(description="是否启用支付宝")
-    wxpay_enabled: bool = Field(description="是否启用微信")
     min_amount: Decimal
+    active_gateway_id: int | None = None
+    gateways: list[PaymentGatewayResponse] = Field(default_factory=list)
     updated_at: datetime
+
+    pay_address: str | None = None
+    epay_id: str | None = None
+    has_key: bool = False
+    alipay_enabled: bool = True
+    wxpay_enabled: bool = True
 
     @field_serializer("updated_at")
     def serialize_dt(self, value: datetime | None) -> str | None:
         return serialize_datetime_utc(value)
+
+
+class AdminRechargeSyncResponse(BaseModel):
+    """手动同步一条支付记录的结果。"""
+
+    order: AdminRechargeResponse
+    result: str = Field(description="PAID / UNPAID / NOT_FOUND / AMOUNT_MISMATCH / UNSUPPORTED / ERROR")
+    message: str = Field(description="面向管理员的中文说明")

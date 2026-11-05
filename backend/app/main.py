@@ -41,6 +41,10 @@ _payout_scan_task: asyncio.Task | None = None
 # 过期通知清理任务（保留期由 settings.NOTIFICATION_RETENTION_DAYS 控制）
 _notification_cleanup_task: asyncio.Task | None = None
 
+# 充值订单主动查询补单（回调丢失时兜底）
+RECHARGE_SYNC_INTERVAL_SECONDS = 600  # 每 10 分钟扫描一次待支付订单
+_recharge_sync_task: asyncio.Task | None = None
+
 
 async def _payout_scan_loop() -> None:
     """周期扫描到账时效到期的交付名额并自动结算。
@@ -88,13 +92,41 @@ async def _notification_cleanup_loop() -> None:
             logger.exception("Notification cleanup scan failed")
 
 
+async def _recharge_sync_loop() -> None:
+    """周期查询上游支付状态，给「用户已付款但回调没到」的充值单补单。
+
+    单轮失败只 log，等待下一轮；取消时立即退出。补单入账由
+    ``sync_pending_recharges`` 内部按金额核对后调用 ``complete_recharge``
+    完成，本身就幂等，因此这里每轮全量扫一遍是安全的。
+    """
+    from app.services.recharge_query_service import sync_pending_recharges
+
+    while True:
+        await asyncio.sleep(RECHARGE_SYNC_INTERVAL_SECONDS)
+        try:
+            async with async_session_factory() as session:
+                summary = await sync_pending_recharges(session)
+                await session.commit()
+            if summary.get("paid"):
+                logger.info(
+                    "Recharge sync recovered %s of %s pending orders: %s",
+                    summary["paid"],
+                    summary["scanned"],
+                    summary,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Recharge sync scan failed")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """
     Application lifespan manager.
     Handles startup and shutdown events.
     """
-    global _payout_scan_task, _notification_cleanup_task
+    global _payout_scan_task, _notification_cleanup_task, _recharge_sync_task
     # Startup
     logger.info("Starting Game Boosting Platform API...")
     try:
@@ -129,6 +161,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         settings.NOTIFICATION_RETENTION_DAYS,
     )
 
+    # 充值订单主动查询补单后台任务
+    _recharge_sync_task = asyncio.create_task(_recharge_sync_loop())
+    logger.info(
+        "Recharge sync started (interval=%ss)", RECHARGE_SYNC_INTERVAL_SECONDS
+    )
+
     yield
 
     # Shutdown
@@ -149,6 +187,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             pass
         _notification_cleanup_task = None
         logger.info("Notification cleanup stopped")
+    if _recharge_sync_task is not None:
+        _recharge_sync_task.cancel()
+        try:
+            await _recharge_sync_task
+        except asyncio.CancelledError:
+            pass
+        _recharge_sync_task = None
+        logger.info("Recharge sync stopped")
     await close_db()
     logger.info("Database connection closed")
 

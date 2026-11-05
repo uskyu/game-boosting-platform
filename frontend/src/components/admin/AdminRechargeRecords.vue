@@ -23,6 +23,8 @@ const statusFilter = ref('')
 const search = ref('')
 const notice = ref({ type: '', text: '' })
 const submittingKey = ref('')
+// 同步状态的请求 key（`recharge-${id}`），用于单行按钮的 loading 禁用态
+const syncingKey = ref('')
 
 // 改判弹窗：target=SUCCESS / FAILED
 const decision = ref(null)
@@ -43,6 +45,7 @@ const statCards = computed(() => [
 function noticeClass(type) {
   if (type === 'success') return 'message-success'
   if (type === 'error') return 'message-error'
+  if (type === 'warning') return 'message-warning'
   return 'message-info'
 }
 
@@ -178,6 +181,42 @@ async function submitDecision() {
   await load(pagination.value.page)
 }
 
+// ── 向上游同步订单状态 ──
+
+// 只有待支付的单才需要查单：已到账/已关闭再查没有意义。
+function canSync(item) {
+  return item.status === 'PENDING'
+}
+
+async function syncStatus(item) {
+  if (!canSync(item) || syncingKey.value) return
+
+  syncingKey.value = `recharge-${item.id}`
+  const result = await store.syncAdminRecharge(item.id)
+  syncingKey.value = ''
+
+  if (!result.success) {
+    notice.value = { type: 'error', text: result.error || '同步失败' }
+    return
+  }
+
+  const payload = result.data || {}
+  // PAID 才是真的到账，其余（未支付 / 未找到 / 金额不符 / 不支持）都属于需要人工确认的提示
+  notice.value = {
+    type: payload.result === 'PAID' ? 'success' : 'warning',
+    text:
+      payload.message ||
+      (payload.result === 'PAID' ? '上游已确认支付成功' : `上游返回 ${payload.result || '未知结果'}`),
+  }
+
+  // 用接口返回的最新订单原地替换该行，不整页刷新，避免丢失当前筛选与滚动位置
+  const order = payload.order
+  if (order?.id != null) {
+    const index = store.adminRecharges.findIndex((row) => row.id === order.id)
+    if (index >= 0) store.adminRecharges[index] = order
+  }
+}
+
 onMounted(() => {
   load(1)
 })
@@ -188,7 +227,7 @@ onMounted(() => {
     <header class="flex flex-col gap-1">
       <h2 class="text-2xl font-semibold text-ink-1">支付记录</h2>
       <p class="text-sm text-ink-2">
-        平台所有用户的充值（支付）记录。可查看每笔支付是否回调成功，并人工改判为成功或失败。
+        平台所有用户的充值（支付）记录。可查看每笔支付是否回调成功，并人工改判为成功或失败；待支付的记录还能向上游同步最新状态。
       </p>
     </header>
 
@@ -244,13 +283,14 @@ onMounted(() => {
     <template v-else>
       <!-- 桌面端：表格 -->
       <div class="mt-5 hidden overflow-x-auto sm:block">
-        <table class="data-table !min-w-[1040px]">
+        <table class="data-table !min-w-[1120px]">
           <thead>
             <tr>
               <th>商户单号</th>
               <th>用户</th>
               <th class="text-right">金额</th>
               <th>支付方式</th>
+              <th>支付通道</th>
               <th>状态</th>
               <th>回调</th>
               <th>发起时间</th>
@@ -272,6 +312,7 @@ onMounted(() => {
               </td>
               <td class="text-right font-semibold tabular-nums text-price">{{ formatPrice(item.amount) }}</td>
               <td class="text-sm text-ink-2">{{ methodLabel(item.payment_method) }}</td>
+              <td class="text-sm text-ink-2">{{ item.gateway_name || '—' }}</td>
               <td>
                 <span :class="['tag', statusMeta(item.status).tagClass]">{{ statusMeta(item.status).label }}</span>
               </td>
@@ -293,6 +334,14 @@ onMounted(() => {
               </td>
               <td>
                 <div class="flex flex-wrap justify-end gap-1.5">
+                  <button
+                    v-if="canSync(item)"
+                    type="button"
+                    class="btn-secondary !px-3 !py-1.5 text-xs"
+                    :disabled="Boolean(syncingKey) || Boolean(submittingKey)"
+                    title="向上游查询这笔订单的最新状态"
+                    @click="syncStatus(item)"
+                  >{{ syncingKey === `recharge-${item.id}` ? '同步中...' : '同步状态' }}</button>
                   <button
                     type="button"
                     class="btn-secondary !px-3 !py-1.5 text-xs"
@@ -336,6 +385,7 @@ onMounted(() => {
             <span :class="['tag', callbackClass(item)]">{{ callbackLabel(item) }}</span>
             <span class="tag !bg-surface-3 !text-ink-2">{{ methodLabel(item.payment_method) }}</span>
           </div>
+          <p class="mt-1 text-xs text-ink-3">支付通道：{{ item.gateway_name || '—' }}</p>
           <p class="mt-2 text-xs tabular-nums text-ink-3">
             发起 {{ formatDateTime(item.created_at) }}
             <template v-if="item.marked_at"> · 人工改判 {{ formatDateTime(item.marked_at) }}</template>
@@ -343,6 +393,13 @@ onMounted(() => {
           </p>
           <p v-if="item.admin_note" class="mt-1 text-xs text-ink-2">原因：{{ item.admin_note }}</p>
           <div class="mt-3 flex flex-wrap gap-2">
+            <button
+              v-if="canSync(item)"
+              type="button"
+              class="btn-secondary min-h-[44px] !px-4 !py-2"
+              :disabled="Boolean(syncingKey) || Boolean(submittingKey)"
+              @click="syncStatus(item)"
+            >{{ syncingKey === `recharge-${item.id}` ? '同步中...' : '同步状态' }}</button>
             <button
               type="button"
               class="btn-secondary min-h-[44px] !px-4 !py-2"

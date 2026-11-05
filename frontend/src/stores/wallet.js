@@ -530,6 +530,7 @@ export const useWalletStore = defineStore('wallet', () => {
     }
   }
 
+  // 只提交全局开关与最低金额；网关字段各走 /admin/payment/gateways
   async function updatePaymentSettings(payload) {
     paymentSettingsLoading.value = true
     error.value = null
@@ -543,6 +544,58 @@ export const useWalletStore = defineStore('wallet', () => {
       return { success: false, error: err.message }
     } finally {
       paymentSettingsLoading.value = false
+    }
+  }
+
+  // POST /admin/payment/gateways：新建网关（不会自动成为当前使用）
+  async function createPaymentGateway(payload) {
+    error.value = null
+
+    try {
+      const response = await api.post('/admin/payment/gateways', payload)
+      return { success: true, data: response.data }
+    } catch (err) {
+      error.value = err.message
+      return { success: false, error: err.message }
+    }
+  }
+
+  // PUT /admin/payment/gateways/{id}：secret_key 留空 = 保持原密钥
+  async function updatePaymentGateway(id, payload) {
+    error.value = null
+
+    try {
+      const response = await api.put(`/admin/payment/gateways/${id}`, payload)
+      return { success: true, data: response.data }
+    } catch (err) {
+      error.value = err.message
+      return { success: false, error: err.message }
+    }
+  }
+
+  // DELETE /admin/payment/gateways/{id} → 204；当前使用 / 被订单引用时后端返回 400
+  async function deletePaymentGateway(id) {
+    error.value = null
+
+    try {
+      const response = await api.delete(`/admin/payment/gateways/${id}`)
+      return { success: true, data: response.data }
+    } catch (err) {
+      error.value = err.message
+      return { success: false, error: err.message }
+    }
+  }
+
+  // POST /admin/payment/gateways/{id}/activate：切换当前使用的网关
+  async function activatePaymentGateway(id) {
+    error.value = null
+
+    try {
+      const response = await api.post(`/admin/payment/gateways/${id}/activate`)
+      return { success: true, data: response.data }
+    } catch (err) {
+      error.value = err.message
+      return { success: false, error: err.message }
     }
   }
 
@@ -601,6 +654,20 @@ export const useWalletStore = defineStore('wallet', () => {
       return { success: false, error: err.message }
     } finally {
       submitting.value = false
+    }
+  }
+
+  // POST /admin/payment/recharges/{id}/sync：向上游查单并同步状态
+  // 返回 { order, result, message }；result 为 PAID/UNPAID/NOT_FOUND/...
+  async function syncAdminRecharge(id) {
+    error.value = null
+
+    try {
+      const response = await api.post(`/admin/payment/recharges/${id}/sync`)
+      return { success: true, data: response.data }
+    } catch (err) {
+      error.value = err.message
+      return { success: false, error: err.message }
     }
   }
 
@@ -753,8 +820,13 @@ export const useWalletStore = defineStore('wallet', () => {
     fetchMyRecharges,
     fetchPaymentSettings,
     updatePaymentSettings,
+    createPaymentGateway,
+    updatePaymentGateway,
+    deletePaymentGateway,
+    activatePaymentGateway,
     fetchAdminRecharges,
     setAdminRechargeStatus,
+    syncAdminRecharge,
     fetchDepositOverview,
     transferToDeposit,
     transferFromDeposit,

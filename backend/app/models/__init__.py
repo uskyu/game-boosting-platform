@@ -22,6 +22,7 @@ from app.models.deposit import (
 )
 from app.models.game import Game, GameCategory, GamePlatform
 from app.models.notification import Notification, NotificationType, UserPreference
+from app.models.payment_gateway import PaymentGateway
 from app.models.payment_setting import PaymentSetting
 from app.models.push_subscription import PushSubscription
 from app.models.order import Order, OrderStatus, PaymentStatus
@@ -74,6 +75,7 @@ __all__ = [
     "OrderCancelRequestStatus",
     "OrderStatus",
     "OrderTemplate",
+    "PaymentGateway",
     "PaymentSetting",
     "PaymentStatus",
     "PlatformIncome",

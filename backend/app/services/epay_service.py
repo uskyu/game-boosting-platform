@@ -7,6 +7,11 @@
 2. 剩余参数按 key 升序排列，拼成 ``k1=v1&k2=v2``；
 3. 末尾追加商户密钥，做 MD5 得到签名。
 
+下单只发送 pid/type/out_trade_no/money/name/notify_url/return_url 七个业务
+字段（外加 sign_type 与 sign），这是两家上游都能接受的交集：老网关对
+「收到的全部字段」签名，立收通的兼容接口只对固定七字段签名，只发这七个
+就同时满足两边。**不要加回 device**——前端设备类型会让两边算法产生分歧。
+
 本模块只做纯计算（无 IO、无数据库），便于直接单测。
 """
 
@@ -21,10 +26,6 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 TRADE_SUCCESS = "TRADE_SUCCESS"
 
 SIGN_TYPE = "MD5"
-PURCHASE_PATH = "/submit.php"
-
-# 拉起支付时使用的设备类型
-DEVICE_PC = "pc"
 
 _ORDER_ALPHABET = string.ascii_uppercase + string.digits
 
@@ -75,7 +76,7 @@ def generate_params(params: dict[str, str], key: str) -> dict[str, str]:
 
 def build_purchase(
     *,
-    base_url: str,
+    submit_url: str,
     partner_id: str,
     key: str,
     pay_type: str,
@@ -84,20 +85,20 @@ def build_purchase(
     money: Decimal | str,
     notify_url: str,
     return_url: str,
-    device: str = DEVICE_PC,
 ) -> tuple[str, dict[str, str]]:
     """构造支付地址与表单参数（前端以 POST 表单提交）。
 
+    ``submit_url`` 是**已经解析好的完整提交地址**（是否补 ``/submit.php``
+    由 ``payment_gateway_service.resolve_submit_url`` 决定），这里不再拼接。
+
     Returns:
-        (pay_url, params)：pay_url 指向 ``{base_url}/submit.php``；
-        params 已包含签名，直接作为隐藏表单字段提交。
+        (pay_url, params)：params 已包含签名，直接作为隐藏表单字段提交。
     """
-    if not base_url:
+    if not submit_url:
         raise EpayError("支付接口地址未配置")
     if not partner_id or not key:
         raise EpayError("易支付商户信息未配置")
 
-    pay_url = base_url.rstrip("/") + PURCHASE_PATH
     params = {
         "pid": partner_id,
         "type": pay_type,
@@ -105,12 +106,11 @@ def build_purchase(
         "notify_url": notify_url,
         "name": name,
         "money": format_money(money),
-        "device": device,
         "sign_type": SIGN_TYPE,
         "return_url": return_url,
         "sign": "",
     }
-    return pay_url, generate_params(params, key)
+    return submit_url, generate_params(params, key)
 
 
 def verify_params(params: dict[str, str], key: str) -> dict:

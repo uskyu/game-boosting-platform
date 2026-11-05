@@ -117,9 +117,9 @@ def test_verify_params_without_sign_is_false():
     assert epay_service.verify_params({"out_trade_no": "T1"}, "k")["verify_status"] is False
 
 
-def test_build_purchase_returns_submit_php_url_and_signed_params():
+def test_build_purchase_uses_given_submit_url_and_signed_params():
     url, params = epay_service.build_purchase(
-        base_url="https://pay.example.com",
+        submit_url="https://pay.example.com/submit.php",
         partner_id="1001",
         key="k",
         pay_type="alipay",
@@ -133,39 +133,41 @@ def test_build_purchase_returns_submit_php_url_and_signed_params():
     assert params["money"] == "100.00"
     assert params["pid"] == "1001"
     assert params["type"] == "alipay"
-    assert params["device"] == "pc"
     assert params["sign_type"] == "MD5"
+    # 不能带 device：立收通兼容接口只对七个字段签名，带上会让两边口径分歧
+    assert "device" not in params
     # 签名必须与独立实现一致
     assert params["sign"] == _independent_sign(params, "k")
 
 
-def test_build_purchase_tolerates_trailing_slash():
+def test_build_purchase_passes_full_endpoint_through():
+    """不补 .php 的网关（立收通）地址原样作为提交地址。"""
     url, _ = epay_service.build_purchase(
-        base_url="https://pay.example.com/",
+        submit_url="https://api.lspay.tech/gateway/submit",
         partner_id="1",
         key="k",
-        pay_type="alipay",
+        pay_type="wxpay",
         out_trade_no="T1",
         name="n",
         money=Decimal("1.00"),
         notify_url="https://x/n",
         return_url="https://x/r",
     )
-    assert url == "https://pay.example.com/submit.php"
+    assert url == "https://api.lspay.tech/gateway/submit"
 
 
 @pytest.mark.parametrize(
-    "base_url,partner_id,key",
+    "submit_url,partner_id,key",
     [
         ("", "1", "k"),
         ("https://pay.example.com", "", "k"),
         ("https://pay.example.com", "1", ""),
     ],
 )
-def test_build_purchase_requires_full_credentials(base_url, partner_id, key):
+def test_build_purchase_requires_full_credentials(submit_url, partner_id, key):
     with pytest.raises(epay_service.EpayError):
         epay_service.build_purchase(
-            base_url=base_url,
+            submit_url=submit_url,
             partner_id=partner_id,
             key=key,
             pay_type="alipay",

@@ -21,7 +21,7 @@ from app.schemas.recharge import (
     RechargeListResponse,
     RechargeResponse,
 )
-from app.services import recharge_service
+from app.services import payment_gateway_service, recharge_service
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +39,9 @@ async def get_recharge_config(
     db: DatabaseSession,
 ) -> RechargeConfigResponse:
     setting = await recharge_service.get_or_create_payment_setting(db)
-    enabled = recharge_service.is_recharge_enabled(setting)
-    methods = recharge_service.enabled_pay_methods(setting) if enabled else []
+    gateway = await payment_gateway_service.get_active_gateway(db)
+    enabled = recharge_service.is_recharge_enabled(setting, gateway)
+    methods = recharge_service.enabled_pay_methods(gateway) if enabled else []
     return RechargeConfigResponse(
         enabled=enabled,
         pay_methods=[PayMethodOption(**m) for m in methods],

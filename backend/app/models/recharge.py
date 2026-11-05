@@ -17,6 +17,7 @@ from sqlalchemy.sql import func
 from app.models.base import Base
 
 if TYPE_CHECKING:
+    from app.models.payment_gateway import PaymentGateway
     from app.models.user import User
 
 
@@ -83,6 +84,19 @@ class RechargeOrder(Base):
         nullable=False,
     )
 
+    # 下单时使用的支付网关。迁移前的历史订单为 NULL，按迁移前的老网关处理。
+    gateway_id: Mapped[int | None] = mapped_column(
+        ForeignKey("payment_gateways.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    # 网关名称快照：网关被改名、停用或删除后，后台仍能看出当时走的是哪一家
+    gateway_name: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+    )
+
     status: Mapped[RechargeStatus] = mapped_column(
         Enum(
             RechargeStatus,
@@ -146,6 +160,14 @@ class RechargeOrder(Base):
     marker: Mapped["User | None"] = relationship(
         "User",
         foreign_keys=[marked_by],
+        lazy="joined",
+    )
+
+    # 下单时使用的网关；网关行被删除后置 NULL，靠 gateway_name 快照仍可辨认
+    gateway: Mapped["PaymentGateway | None"] = relationship(
+        "PaymentGateway",
+        back_populates="recharge_orders",
+        foreign_keys=[gateway_id],
         lazy="joined",
     )
 

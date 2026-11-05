@@ -21,7 +21,7 @@ from app.models.wallet import Wallet, WalletTransaction, WalletTransactionType
 from app.services import epay_service
 from tests.conftest import auth_header
 
-PAY_ADDRESS = "https://pay.example.com"
+PAY_ADDRESS = "https://pay.example.com/epay"
 EPAY_ID = "1001"
 EPAY_KEY = "unit-test-secret"
 NOTIFY_PATH = "/wallet/recharge/notify"
@@ -233,7 +233,8 @@ async def test_create_recharge_returns_signed_form(
     assert params["type"] == "alipay"
     assert params["out_trade_no"] == data["trade_no"]
     assert params["money"] == "100.00"
-    assert params["device"] == "pc"
+    # 只发两家网关都能接受的最小字段集：带 device 会让立收通的签名口径失配
+    assert "device" not in params
     assert params["sign_type"] == "MD5"
     # 签名可被独立校验
     assert epay_service.verify_params(params, EPAY_KEY)["verify_status"] is True
