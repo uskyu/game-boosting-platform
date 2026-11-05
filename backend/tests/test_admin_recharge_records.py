@@ -26,7 +26,7 @@ from app.models.wallet import Wallet, WalletTransaction, WalletTransactionType
 from app.services import epay_service
 from tests.conftest import auth_header
 
-PAY_ADDRESS = "https://pay.example.com"
+PAY_ADDRESS = "https://pay.example.com/epay"
 EPAY_ID = "1001"
 EPAY_KEY = "unit-test-secret"
 RECORDS = "/admin/payment/recharges"
