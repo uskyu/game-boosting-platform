@@ -12,6 +12,11 @@ export const useSiteStore = defineStore('site', () => {
     favicon_url: null,
     registration_captcha_enabled: true,
     accept_captcha_enabled: false,
+    // 注册权限默认值（与后端 SiteSettingResponse 一致）：生产站默认可发单，
+    // 新站可由管理员关闭注册默认发单并开启自助申请。
+    registration_default_can_publish: true,
+    registration_default_can_accept: true,
+    publish_permission_apply_enabled: true,
     max_online_devices: 2,
     order_title_replacements: [
       { original: '名牌', replacement: '【MP】' },

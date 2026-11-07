@@ -49,6 +49,19 @@ class SiteSetting(Base):
     # 页脚底部自定义 HTML（2026-11-06）：主要用于展示 ICP 备案号与备案链接。
     # 由管理员在站点设置里填写，前台渲染在整页最底部；NULL/空串 = 不显示。
     footer_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 单账号权限默认值（2026-11-07）：一套代码服务多站。生产站保持默认允许
+    # 发单/接单；新站首次部署可通过 env 把发单默认关掉，再让用户自助申请、
+    # 管理员审核。后台修改只影响之后注册的新用户，不回溯老用户。
+    registration_default_can_publish: Mapped[bool] = mapped_column(
+        Boolean(), nullable=False, default=True, server_default="1"
+    )
+    registration_default_can_accept: Mapped[bool] = mapped_column(
+        Boolean(), nullable=False, default=True, server_default="1"
+    )
+    # 是否允许无发单权限的用户自助提交申请；关闭后只能由管理员直接开通。
+    publish_permission_apply_enabled: Mapped[bool] = mapped_column(
+        Boolean(), nullable=False, default=True, server_default="1"
+    )
     updated_by: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

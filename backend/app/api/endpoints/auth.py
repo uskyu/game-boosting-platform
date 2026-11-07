@@ -140,8 +140,12 @@ async def register(
                 detail="验证码错误或已过期",
             )
 
-    # Register user
-    user = await user_service.register_user(user_data)
+    # Register user. 发单/接单默认权限由站点设置决定，客户端不能自选。
+    user = await user_service.register_user(
+        user_data,
+        can_publish=setting.registration_default_can_publish,
+        can_accept=setting.registration_default_can_accept,
+    )
 
     # 建立设备会话；超过同时在线设备上限时淘汰最早登录的设备
     session, revoked_sids = await user_session_service.start_session(

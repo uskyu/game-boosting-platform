@@ -79,10 +79,17 @@ const routes = [
     meta: { title: '搜索结果' },
   },
   {
+    // 发单权限自助申请 / 查询（无发单权限的用户也可访问）
+    path: '/publish-permission',
+    name: 'publish-permission',
+    component: () => import('@/views/PublishPermissionView.vue'),
+    meta: { title: '发单权限', requiresAuth: true },
+  },
+  {
     path: '/orders/create',
     name: 'order-create',
     component: () => import('@/views/OrderCreate.vue'),
-    meta: { title: '发布订单', requiresAuth: true },
+    meta: { title: '发布订单', requiresAuth: true, requiresPublishPermission: true },
   },
   {
     path: '/orders/:id',
@@ -205,8 +212,8 @@ router.beforeEach(async (to, from, next) => {
     // 否则带着有效凭证访问受保护页会被误踹到登录页（"不自动登录"）。
     await authStore.initialize()
   } else if (authStore.accessToken && !authStore.user) {
-    if (to.meta.adminOnly || to.meta.guest) {
-      // admin 判定 / 已登录访问登录页需要准确身份，保持阻塞等待
+    if (to.meta.adminOnly || to.meta.guest || to.meta.requiresPublishPermission) {
+      // admin 判定 / 已登录访问登录页 / 发单权限判定需要准确身份，保持阻塞等待
       await authStore.fetchCurrentUser()
     } else {
       // 普通页面不阻塞渲染：后台补全用户信息；会话失效由 401 拦截器兜底（刷新令牌或跳登录）
@@ -223,6 +230,17 @@ router.beforeEach(async (to, from, next) => {
   if (to.meta.adminOnly && !authStore.isAdmin) {
     next({ name: 'home' })
     return
+  }
+
+  if (to.meta.requiresPublishPermission) {
+    // 冷加载时 user 可能尚未就绪：再阻塞等一次，避免 user 为空导致误判。
+    if (!authStore.user) {
+      await authStore.fetchCurrentUser()
+    }
+    if (!authStore.canPublish) {
+      next({ name: 'publish-permission', query: { redirect: to.fullPath } })
+      return
+    }
   }
 
   if (to.meta.guest && authStore.isAuthenticated) {

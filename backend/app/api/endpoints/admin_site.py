@@ -53,6 +53,13 @@ async def update_site_settings(
     # 页脚 HTML：字段出现即覆盖（空串=清空不显示），未传字段则保持不变
     if "footer_html" in payload.model_fields_set:
         setting.footer_html = (payload.footer_html or "").strip() or None
+    # 新注册默认权限：None=不改动；必须用 is not None 判断，显式 False 要生效
+    if payload.registration_default_can_publish is not None:
+        setting.registration_default_can_publish = payload.registration_default_can_publish
+    if payload.registration_default_can_accept is not None:
+        setting.registration_default_can_accept = payload.registration_default_can_accept
+    if payload.publish_permission_apply_enabled is not None:
+        setting.publish_permission_apply_enabled = payload.publish_permission_apply_enabled
     setting.updated_by = current_admin.id
     await db.flush()
     await db.refresh(setting)

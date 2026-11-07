@@ -2,8 +2,16 @@
 
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, field_serializer
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from app.models.user import UserRole
 from app.schemas.serializers import serialize_datetime_utc
@@ -111,6 +119,37 @@ class AdminUserRestrictionRequest(BaseModel):
     can_publish: bool | None = None
     can_accept: bool | None = None
     reason: str | None = Field(default=None, max_length=500)
+
+
+class BulkPublishPermissionRequest(BaseModel):
+    """批量调整发单权限：勾选用户或全部非管理员（不含已禁用账号）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scope: Literal["selected", "all_non_admin"]
+    user_ids: list[int] | None = None
+    can_publish: bool
+
+    @model_validator(mode="after")
+    def validate_selected_scope(self):
+        if self.scope == "selected":
+            if not self.user_ids:
+                raise ValueError("请选择至少一个用户")
+            if len(self.user_ids) > 200:
+                raise ValueError("一次最多调整 200 个用户")
+        return self
+
+
+class BulkPublishPermissionResponse(BaseModel):
+    updated: int
+    skipped: int
+
+
+class BulkPublishPermissionPreviewResponse(BaseModel):
+    """全量批量调整发单权限的影响人数。"""
+
+    eligible: int
+    pending: int
 
 
 class AdminAdjustBalanceRequest(BaseModel):

@@ -55,12 +55,31 @@ const captchaCode = ref('')
 const captchaImage = ref('')
 const captchaLoading = ref(false)
 const backgroundUrl = ref(PAGE_BACKGROUNDS.register)
-const spotlightTitle = ref(copy.defaultSpotlight)
-const spotlightMeta = ref(copy.defaultMeta)
 
 const isLoading = computed(() => authStore.loading)
 // 后台「注册需要验证码」开关；默认开启，未拉到设置时按开启处理。
 const captchaEnabled = computed(() => siteStore.settings.registration_captcha_enabled !== false)
+// 注册默认权限文案：同时考虑发单/接单两个新用户默认开关，
+// 关闭发单时再按自助申请开关引导自助申请或联系管理员。
+const defaultMeta = computed(() => {
+  const canPublishByDefault = siteStore.settings.registration_default_can_publish !== false
+  const canAcceptByDefault = siteStore.settings.registration_default_can_accept !== false
+  if (canPublishByDefault && canAcceptByDefault) {
+    return '注册后就能发布需求、管理订单和进入聊天。'
+  }
+  if (canPublishByDefault) {
+    return '注册后即可发布需求；接单权限需联系管理员开通。'
+  }
+  const applyEnabled = siteStore.settings.publish_permission_apply_enabled !== false
+  if (canAcceptByDefault) {
+    return `注册后即可接单；发单权限可${applyEnabled ? '在个人中心自助申请' : '联系管理员开通'}。`
+  }
+  return `发单与接单默认都未开通；发单可${applyEnabled ? '在个人中心自助申请' : '联系管理员开通'}，接单请联系管理员。`
+})
+
+const spotlightTitle = ref(copy.defaultSpotlight)
+// 初始 fallback 与可见段落同源；拉到站点设置后自动跟随
+const spotlightMeta = ref(defaultMeta.value)
 
 function isPasswordStrong(pw) {
   return pw.length >= 8 && /[A-Z]/.test(pw) && /\d/.test(pw)
@@ -159,7 +178,7 @@ onMounted(async () => {
   spotlightTitle.value = featuredGame?.name || copy.defaultSpotlight
   spotlightMeta.value = featuredGame
     ? `${getGamePlatformLabel(featuredGame.platform)} / ${modes || copy.featuredEntry}`
-    : copy.defaultMeta
+    : defaultMeta.value
 })
 </script>
 
@@ -169,7 +188,7 @@ onMounted(async () => {
       <div class="space-y-1.5">
         <p class="eyebrow">{{ copy.eyebrow }}</p>
         <h2 class="mt-2 text-2xl font-semibold text-ink-1">{{ copy.signUp }}</h2>
-        <p class="text-sm text-ink-2">注册后就能发布需求、管理订单和进入聊天。</p>
+        <p class="text-sm text-ink-2">{{ defaultMeta }}</p>
       </div>
 
       <div v-if="errorMessage" class="message-error">

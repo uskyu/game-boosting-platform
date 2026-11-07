@@ -37,6 +37,10 @@ from app.api.endpoints.order_hall import router as order_hall_router
 from app.api.endpoints.push import router as push_router
 from app.api.endpoints.orders import router as orders_router
 from app.api.endpoints.order_templates import router as order_templates_router
+from app.api.endpoints.publish_permission import (
+    admin_router as admin_publish_permission_router,
+    user_router as publish_permission_router,
+)
 from app.api.endpoints.recharge import router as recharge_router
 from app.api.endpoints.reviews import router as reviews_router
 from app.api.endpoints.search import router as search_router
@@ -50,6 +54,7 @@ __all__ = [
     "admin_deposit_router",
     "admin_payment_router",
     "admin_platform_income_router",
+    "admin_publish_permission_router",
     "admin_service_fee_router",
     "admin_router",
     "admin_announcements_router",
@@ -70,6 +75,7 @@ __all__ = [
     "push_router",
     "orders_router",
     "order_templates_router",
+    "publish_permission_router",
     "recharge_router",
     "reviews_router",
     "search_router",

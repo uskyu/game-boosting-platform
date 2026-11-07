@@ -76,6 +76,19 @@ class SiteSettingUpdate(BaseModel):
             "页脚最底部自定义 HTML（备案号等）；不传保持不变，空串表示清空不显示"
         ),
     )
+    # 新注册用户权限默认值：不传保持不变（显式 false 必须生效）
+    registration_default_can_publish: bool | None = Field(
+        default=None,
+        description="新注册用户默认是否有发单权限（仅影响之后注册的账号）",
+    )
+    registration_default_can_accept: bool | None = Field(
+        default=None,
+        description="新注册用户默认是否有接单权限（仅影响之后注册的账号）",
+    )
+    publish_permission_apply_enabled: bool | None = Field(
+        default=None,
+        description="是否允许无发单权限的用户自助提交申请",
+    )
 
     model_config = ConfigDict(extra="forbid")
 
@@ -134,6 +147,10 @@ class SiteSettingResponse(BaseModel):
         default=None,
         description="页脚最底部自定义 HTML（备案号等）；NULL 表示不显示",
     )
+    # 新注册用户权限默认值（公开可读：注册页据此提示，申请页据此展示入口）
+    registration_default_can_publish: bool = True
+    registration_default_can_accept: bool = True
+    publish_permission_apply_enabled: bool = True
     updated_by: int | None
     updated_at: datetime
     logo_recommendation: str = "建议使用 512×512 以上的 PNG、JPEG 或 WebP 图片，文件不超过 10MB。"

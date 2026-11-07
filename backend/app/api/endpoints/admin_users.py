@@ -5,12 +5,16 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, field_validator
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import DatabaseSession, get_current_admin
 from app.core.security import ahash_password
 from app.models.order import ClaimLifecycleStatus
+from app.models.publish_permission_request import (
+    PublishPermissionRequest,
+    PublishPermissionStatus,
+)
 from app.models.user import User, UserRole
 from app.models.wallet import Wallet, WalletTransactionType
 from app.schemas.admin_users import (
@@ -25,10 +29,17 @@ from app.schemas.admin_users import (
     AdminUserRestrictionRequest,
     AdminUserStatusRequest,
     AdminUserUpdate,
+    BulkPublishPermissionPreviewResponse,
+    BulkPublishPermissionRequest,
+    BulkPublishPermissionResponse,
 )
 from app.schemas.order import MyOrderClaimItem, MyOrderClaimListResponse
 from app.schemas.wallet import WalletTransactionListResponse, WalletTransactionResponse
 from app.services.order_service import get_order_service
+from app.services.publish_permission_service import (
+    auto_approve_pending_for_all_non_admin,
+    auto_approve_pending_for_users,
+)
 from app.services.user_service import get_user_service
 from app.services.wallet_service import get_wallet_service
 
@@ -78,6 +89,8 @@ async def list_admin_users(
     query: str | None = Query(None, max_length=100),
     role: UserRole | None = None,
     is_active: bool | None = None,
+    can_publish: bool | None = Query(None),
+    can_accept: bool | None = Query(None),
 ) -> AdminUserListResponse:
     filters = []
     if query and query.strip():
@@ -87,6 +100,11 @@ async def list_admin_users(
         filters.append(User.role == role)
     if is_active is not None:
         filters.append(User.is_active.is_(is_active))
+    # 权限筛选必须在 SQL 里做：前端过滤只能覆盖当前页，分页总数会算错
+    if can_publish is not None:
+        filters.append(User.can_publish.is_(can_publish))
+    if can_accept is not None:
+        filters.append(User.can_accept.is_(can_accept))
 
     total = int((await db.execute(select(func.count(User.id)).where(*filters))).scalar_one())
     result = await db.execute(
@@ -97,6 +115,94 @@ async def list_admin_users(
     items = [_user_response(user, wallet) for user, wallet in result.all()]
     pages = (total + page_size - 1) // page_size if total else 0
     return AdminUserListResponse(items=items, total=total, page=page, page_size=page_size, pages=pages)
+
+
+@router.post(
+    "/bulk-publish-permission",
+    response_model=BulkPublishPermissionResponse,
+    summary="批量调整发单权限",
+)
+async def bulk_update_publish_permission(
+    payload: BulkPublishPermissionRequest,
+    db: DatabaseSession,
+    current_admin: Annotated[User, Depends(get_current_admin)],
+) -> BulkPublishPermissionResponse:
+    """批量解禁/禁止发单：勾选用户或全部未禁用非管理员账号。
+
+    开通发单权限时顺带把这些用户待审核的自助申请置为已通过
+    （decision_reason=管理员直接开通）；批量场景不逐人发通知。
+    """
+    if payload.scope == "selected":
+        # 去重，避免重复 id 把 skipped 算重；ADMIN 与不存在的 id 计入 skipped
+        unique_ids = sorted(set(payload.user_ids or []))
+        result = await db.execute(
+            select(User.id).where(
+                User.id.in_(unique_ids),
+                User.role != UserRole.ADMIN,
+            )
+        )
+        target_ids = [int(uid) for uid in result.scalars().all()]
+        skipped = len(unique_ids) - len(target_ids)
+        if target_ids:
+            await db.execute(
+                update(User)
+                .where(User.id.in_(target_ids))
+                .values(can_publish=payload.can_publish)
+            )
+            if payload.can_publish:
+                await auto_approve_pending_for_users(db, current_admin.id, target_ids)
+        return BulkPublishPermissionResponse(updated=len(target_ids), skipped=skipped)
+
+    # 全量分支：一条 UPDATE 直接改库，不把全部非管理员 ID 物化进内存
+    result = await db.execute(
+        update(User)
+        .where(
+            User.role != UserRole.ADMIN,
+            User.is_active.is_(True),
+        )
+        .values(can_publish=payload.can_publish)
+    )
+    updated = int(result.rowcount or 0)
+    if payload.can_publish:
+        await auto_approve_pending_for_all_non_admin(db, current_admin.id)
+    return BulkPublishPermissionResponse(updated=updated, skipped=0)
+
+
+@router.get(
+    "/bulk-publish-permission/preview",
+    response_model=BulkPublishPermissionPreviewResponse,
+    summary="全量批量调整发单权限影响预览",
+)
+async def preview_bulk_update_publish_permission(
+    db: DatabaseSession,
+    current_admin: Annotated[User, Depends(get_current_admin)],
+) -> BulkPublishPermissionPreviewResponse:
+    """全量操作会影响多少启用中的非管理员，其中多少人当前有待审核申请。"""
+    eligible = int(
+        (
+            await db.execute(
+                select(func.count(User.id)).where(
+                    User.role != UserRole.ADMIN,
+                    User.is_active.is_(True),
+                )
+            )
+        ).scalar_one()
+    )
+    pending = int(
+        (
+            await db.execute(
+                select(func.count(PublishPermissionRequest.user_id.distinct()))
+                .select_from(PublishPermissionRequest)
+                .join(User, User.id == PublishPermissionRequest.user_id)
+                .where(
+                    PublishPermissionRequest.status == PublishPermissionStatus.PENDING,
+                    User.role != UserRole.ADMIN,
+                    User.is_active.is_(True),
+                )
+            )
+        ).scalar_one()
+    )
+    return BulkPublishPermissionPreviewResponse(eligible=eligible, pending=pending)
 
 
 @router.get("/{user_id}", response_model=AdminUserDetailResponse)
@@ -138,6 +244,9 @@ async def update_admin_user(
         user = await get_user_service(db).update_user(user, payload, bypass_username_cooldown=True)
     except IntegrityError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="用户名已被占用") from exc
+    # 管理员直接开通发单权限时，顺带把该用户待审核的自助申请置为通过
+    if data.get("can_publish") is True:
+        await auto_approve_pending_for_users(db, current_admin.id, [user.id])
     wallet = (await db.execute(select(Wallet).where(Wallet.user_id == user_id))).scalar_one_or_none()
     return AdminUserDetailResponse(**_user_response(user, wallet).model_dump(), phone=user.phone, bio=user.bio)
 
@@ -217,6 +326,9 @@ async def set_admin_user_restrictions(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="没有可更新的限制字段")
     for field, value in updates.items():
         setattr(user, field, value)
+    # 管理员直接解禁发单时，顺带把待审核申请置为通过；禁发单不影响申请
+    if updates.get("can_publish") is True:
+        await auto_approve_pending_for_users(db, current_admin.id, [user.id])
     await db.flush()
     wallet = (await db.execute(select(Wallet).where(Wallet.user_id == user_id))).scalar_one_or_none()
     return AdminUserDetailResponse(**_user_response(user, wallet).model_dump(), phone=user.phone, bio=user.bio)

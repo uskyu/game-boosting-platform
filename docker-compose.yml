@@ -76,6 +76,11 @@ services:
       DEFAULT_ADMIN_EMAIL: ${DEFAULT_ADMIN_EMAIL:-admin@gameboost.com}
       DEFAULT_ADMIN_USERNAME: ${DEFAULT_ADMIN_USERNAME:-SystemAdmin}
       DEFAULT_ADMIN_PASSWORD: ${DEFAULT_ADMIN_PASSWORD:-}
+      # 首次部署初始化站点设置时的注册默认权限（只创建缺失的单行设置；
+      # 生产站保持 true，新站可设 REGISTRATION_DEFAULT_CAN_PUBLISH=false）
+      REGISTRATION_DEFAULT_CAN_PUBLISH: ${REGISTRATION_DEFAULT_CAN_PUBLISH:-true}
+      REGISTRATION_DEFAULT_CAN_ACCEPT: ${REGISTRATION_DEFAULT_CAN_ACCEPT:-true}
+      PUBLISH_PERMISSION_APPLY_ENABLED: ${PUBLISH_PERMISSION_APPLY_ENABLED:-true}
     # 内网服务：不发布宿主机端口，API 仅经前端 nginx /api 反代访问
     networks:
       - game-boosting-network

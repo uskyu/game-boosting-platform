@@ -6,6 +6,7 @@ import { useChatStore } from '@/stores/chat'
 import { useAuthStore } from '@/stores/auth'
 import { useAfterSalesStore, isPendingAfterSale } from '@/stores/afterSales'
 import { useOrdersStore } from '@/stores/orders'
+import { useSiteStore } from '@/stores/site'
 import { formatCount, formatDateTime, formatOrderPrice, formatPayoutDelay, formatPrice, formatShortDate } from '@/utils/display'
 import { ORDER_STATUS_OPTIONS, CANCEL_PENDING_CLAIM_META, getClaimSettlementMeta, getOrderDisplayStatus, getOrderStatusBadgeClass, getOrderStatusLabel, isClaimCancelPending } from '@/utils/order'
 import { buildAfterSaleAssistMessage } from '@/utils/afterSaleAssist'
@@ -16,6 +17,11 @@ const chatStore = useChatStore()
 const authStore = useAuthStore()
 const ordersStore = useOrdersStore()
 const afterSalesStore = useAfterSalesStore()
+const siteStore = useSiteStore()
+const isAuthenticated = computed(() => authStore.isAuthenticated)
+// 发单门禁：没有权限时隐藏所有跳转 /orders/create 的入口，改为申请/联系管理员引导。
+const canPublish = computed(() => authStore.canPublish)
+const publishApplyEnabled = computed(() => siteStore.settings.publish_permission_apply_enabled !== false)
 
 // 双栏：我的接单（claims/mine）/ 我的派单（自己发布的订单）
 // 搜索与 Tab 状态同步进 URL query：从详情页/其他页面返回、刷新、前进后退都能恢复，
@@ -181,6 +187,10 @@ const claimsEmptyCopy = computed(() => {
       ? '暂无售后中的订单；有订单被发起售后时会出现在这里。'
       : '换个关键词或状态试试。'
   }
+  // 无筛选且接单权限未开通：不要引导去大厅白跑一趟
+  if (authStore.canAccept === false) {
+    return '接单权限未开通，请联系管理员开通后再来接单。'
+  }
   return '去大厅看看，有合适的单子直接接。'
 })
 
@@ -195,6 +205,11 @@ const publishedEmptyCopy = computed(() => {
     return selectedStatus.value === 'AFTER_SALE'
       ? '暂无售后中的订单；有订单被发起售后时会出现在这里。'
       : '换个关键词或状态试试。'
+  }
+  if (!authStore.canPublish) {
+    return publishApplyEnabled.value
+      ? '你还没有发单权限，可在上方「申请发单权限」提交申请。'
+      : '你还没有发单权限，请联系管理员开通。'
   }
   return '点右上角「发布订单」，把需求挂到大厅让打手接。'
 })
@@ -561,7 +576,20 @@ onUnmounted(() => {
             <span v-if="pendingReviewTotal" class="ml-1 rounded-full bg-warning/15 px-1.5 text-xs font-bold text-warning tabular-nums">{{ pendingReviewTotal }} 待审核</span>
           </button>
         </div>
-        <router-link to="/orders/create" class="btn-primary shrink-0 !px-4 !py-2">发布订单</router-link>
+        <router-link
+          v-if="isAuthenticated && canPublish"
+          to="/orders/create"
+          class="btn-primary shrink-0 !px-4 !py-2"
+        >发布订单</router-link>
+        <router-link
+          v-else-if="isAuthenticated && publishApplyEnabled"
+          :to="{ name: 'publish-permission' }"
+          class="btn-secondary shrink-0 !px-4 !py-2 text-center text-xs leading-5 sm:text-sm"
+        >申请发单权限</router-link>
+        <span
+          v-else-if="isAuthenticated"
+          class="max-w-[45%] shrink-0 rounded-tile border border-line-1 bg-surface-2 px-2 py-1 text-center text-[11px] leading-4 text-ink-2 sm:text-xs"
+        >发单权限未开通，请联系管理员</span>
       </div>
     </section>
 
@@ -733,6 +761,14 @@ onUnmounted(() => {
         </div>
       </section>
 
+      <!-- 无发单权限：引导自助申请或联系管理员；重建/续单入口同时隐藏，避免绕开门禁 -->
+      <div v-if="!canPublish" class="message-info flex flex-wrap items-center gap-x-3 gap-y-2">
+        <span class="min-w-0 flex-1">发单权限未开通。{{ publishApplyEnabled ? '可提交自助申请，' : '' }}管理员也可以为你单独或批量开通。</span>
+        <router-link v-if="publishApplyEnabled" :to="{ name: 'publish-permission' }" class="filter-pill shrink-0">
+          申请发单权限
+        </router-link>
+      </div>
+
       <section v-if="loading && !hasPublishedOrders" class="grid gap-4 xl:grid-cols-2" aria-busy="true">
         <div v-for="n in 4" :key="`skeleton-${n}`" class="skeleton-row">
           <div class="flex-1 space-y-3">
@@ -788,6 +824,7 @@ onUnmounted(() => {
                  列表只保留上方徽标行的「售后处理中」只读标记。 -->
             <div class="mt-3 flex flex-wrap justify-end gap-2">
               <button
+                v-if="canPublish"
                 type="button"
                 class="btn-secondary !px-4 !py-2"
                 @click.stop="rebuildOrder(order.id)"
@@ -795,6 +832,7 @@ onUnmounted(() => {
                 重建订单
               </button>
               <button
+                v-if="canPublish"
                 type="button"
                 class="btn-secondary !px-4 !py-2"
                 @click.stop="repeatOrder(order.id)"

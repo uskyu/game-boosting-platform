@@ -10,6 +10,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useSettingsStore } from '@/stores/settings'
 import { useToastsStore } from '@/stores/toasts'
 import { useOrdersStore } from '@/stores/orders'
+import { usePublishPermissionStore } from '@/stores/publishPermission'
 
 export const useNotificationsStore = defineStore('notifications', () => {
   const notifications = ref([])
@@ -203,6 +204,16 @@ export const useNotificationsStore = defineStore('notifications', () => {
     return true
   }
 
+  // 发单申请结果推送到达时，主动同步用户权限与申请状态；只匹配这两个类型
+  // 且 link 精确为 /publish-permission，避免每条通知都多打两次接口。
+  // 两处刷新都是异步失败静默，不阻塞通知入列与未读数更新。
+  function refreshPublishPermissionAfterReview(payload) {
+    if (payload?.type !== 'APPLICATION_APPROVED' && payload?.type !== 'APPLICATION_REJECTED') return
+    if (payload?.link !== '/publish-permission') return
+    authStore.fetchCurrentUser().catch(() => {})
+    usePublishPermissionStore().fetchMine().catch(() => {})
+  }
+
   function handleRealtimeNotification(payload) {
     if (payload?.id == null || !authStore.isAuthenticated) return false
     signalNewOrderNotification(payload)
@@ -215,6 +226,7 @@ export const useNotificationsStore = defineStore('notifications', () => {
     notifications.value.unshift(payload)
     if (!payload.is_read) unreadCount.value += 1
     total.value += 1
+    refreshPublishPermissionAfterReview(payload)
     return true
   }
 

@@ -51,12 +51,18 @@ class UserService:
     async def register_user(
         self,
         user_data: UserRegister,
+        *,
+        can_publish: bool | None = None,
+        can_accept: bool | None = None,
     ) -> User:
         """
         Register a new user.
 
         Args:
             user_data: Validated registration data.
+            can_publish: 新用户默认发单权限；None 时保持历史行为（允许）。
+                由注册接口按站点设置传入，客户端不能自选权限。
+            can_accept: 新用户默认接单权限；None 时保持历史行为（允许）。
 
         Returns:
             Created User instance.
@@ -98,6 +104,8 @@ class UserService:
             role=role,
             is_active=True,
             is_verified=False,
+            can_publish=True if can_publish is None else can_publish,
+            can_accept=True if can_accept is None else can_accept,
         )
 
         self._db.add(user)

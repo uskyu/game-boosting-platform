@@ -9,12 +9,17 @@ const form = reactive({
   hall_recent_claims_enabled: true,
   registration_captcha_enabled: true,
   accept_captcha_enabled: false,
+  registration_default_can_publish: true,
+  registration_default_can_accept: true,
+  publish_permission_apply_enabled: true,
   max_online_devices: 2,
   order_title_replacements: [],
   footer_html: '',
 })
 const file = ref(null)
 const notice = ref({ type: '', text: '' })
+// 只有成功拉到后端设置后才允许保存，避免用默认 true 覆盖真实配置
+const settingsLoaded = ref(false)
 
 function sync() {
   form.site_name = store.settings.site_name
@@ -23,6 +28,10 @@ function sync() {
   // 注册验证码默认开、接单验证码默认关（与后端 SiteSettingResponse 一致）
   form.registration_captcha_enabled = store.settings.registration_captcha_enabled !== false
   form.accept_captcha_enabled = store.settings.accept_captcha_enabled === true
+  // 注册权限默认开（生产站现状），申请入口默认开；只有后端明确 false 才关闭
+  form.registration_default_can_publish = store.settings.registration_default_can_publish !== false
+  form.registration_default_can_accept = store.settings.registration_default_can_accept !== false
+  form.publish_permission_apply_enabled = store.settings.publish_permission_apply_enabled !== false
   form.max_online_devices = Number(store.settings.max_online_devices ?? 2)
   form.order_title_replacements = (store.settings.order_title_replacements || []).map((rule) => ({
     original: rule.original || '',
@@ -54,6 +63,10 @@ function normalizedMaxDevices() {
 }
 
 async function save() {
+  if (!settingsLoaded.value) {
+    notice.value = { type: 'error', text: '站点设置尚未加载成功，请刷新后重试' }
+    return
+  }
   const replacements = form.order_title_replacements
     .map((rule) => ({
       original: (rule.original || '').trim(),
@@ -74,12 +87,19 @@ async function save() {
     hall_recent_claims_enabled: form.hall_recent_claims_enabled,
     registration_captcha_enabled: form.registration_captcha_enabled,
     accept_captcha_enabled: form.accept_captcha_enabled,
+    // 布尔值必须显式发送（包括 false），后端按全量表单保存
+    registration_default_can_publish: form.registration_default_can_publish,
+    registration_default_can_accept: form.registration_default_can_accept,
+    publish_permission_apply_enabled: form.publish_permission_apply_enabled,
     max_online_devices: normalizedMaxDevices(),
     order_title_replacements: replacements,
     footer_html: form.footer_html.trim(),
   })
   notice.value = r.success ? { type: 'success', text: '站点设置已保存' } : { type: 'error', text: r.error }
-  if (r.success) sync()
+  if (r.success) {
+    settingsLoaded.value = true
+    sync()
+  }
 }
 
 function addReplacement() {
@@ -112,7 +132,13 @@ async function remove() {
 
 onMounted(async () => {
   // 管理员进入设置页时拉一次最新值：其它标签页可能刚改过安全开关
-  await store.fetchSettings(true)
+  const result = await store.fetchSettings(true)
+  if (!result.success) {
+    // 拉取失败不 sync：默认 true 可能覆盖后端真实配置
+    notice.value = { type: 'error', text: result.error || '加载站点设置失败，请刷新后重试' }
+    return
+  }
+  settingsLoaded.value = true
   sync()
 })
 </script>
@@ -201,6 +227,68 @@ onMounted(async () => {
               class="input min-h-[44px] max-w-[160px]"
             />
             <p class="mt-1 text-xs leading-5 text-ink-3">0 表示不限制（最大 20）。超出时最早登录的设备会被下线并收到提示。</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="rounded-tile border border-line-1 p-4">
+        <p class="text-sm font-semibold text-ink-1">注册权限</p>
+        <p class="mt-1 text-xs leading-5 text-ink-3">管理新用户注册时的默认权限，以及无发单权限用户的自助申请入口。</p>
+
+        <div class="mt-4 space-y-4">
+          <!-- 前两个默认开关只作用于注册后的新用户 -->
+          <div class="rounded-tile border border-dashed border-line-1 p-3">
+            <p class="text-xs leading-5 text-ink-3">
+              只影响注册后的新用户，老用户权限保持不变；管理员发单不受这里限制。关闭发单后，可在「用户管理」单独或批量开通。
+            </p>
+
+            <div class="mt-3 space-y-4">
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p class="text-sm font-medium text-ink-1">新注册用户默认允许发单</p>
+                  <p class="mt-1 text-xs leading-5 text-ink-3">关闭后新用户注册即可接单，发单需管理员在「用户管理」单独或批量开通。</p>
+                </div>
+                <button
+                  type="button"
+                  :class="form.registration_default_can_publish ? 'filter-pill-active' : 'filter-pill'"
+                  :aria-pressed="form.registration_default_can_publish"
+                  @click="form.registration_default_can_publish = !form.registration_default_can_publish"
+                >
+                  {{ form.registration_default_can_publish ? '开启' : '已关闭' }}
+                </button>
+              </div>
+
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p class="text-sm font-medium text-ink-1">新注册用户默认允许接单</p>
+                  <p class="mt-1 text-xs leading-5 text-ink-3">关闭后新用户注册后不能接单，需要管理员在「用户管理」单独开通。</p>
+                </div>
+                <button
+                  type="button"
+                  :class="form.registration_default_can_accept ? 'filter-pill-active' : 'filter-pill'"
+                  :aria-pressed="form.registration_default_can_accept"
+                  @click="form.registration_default_can_accept = !form.registration_default_can_accept"
+                >
+                  {{ form.registration_default_can_accept ? '开启' : '已关闭' }}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 自助申请开关：立即影响现有无发单权限用户，与注册默认值无关 -->
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p class="text-sm font-medium text-ink-1">开启发单权限自助申请</p>
+              <p class="mt-1 text-xs leading-5 text-ink-3">开启后无发单权限的用户可在「发单权限」页提交申请，立即对所有无发单权限的现有用户生效；关闭后用户只能联系管理员开通。</p>
+            </div>
+            <button
+              type="button"
+              :class="form.publish_permission_apply_enabled ? 'filter-pill-active' : 'filter-pill'"
+              :aria-pressed="form.publish_permission_apply_enabled"
+              @click="form.publish_permission_apply_enabled = !form.publish_permission_apply_enabled"
+            >
+              {{ form.publish_permission_apply_enabled ? '开启' : '已关闭' }}
+            </button>
           </div>
         </div>
       </div>

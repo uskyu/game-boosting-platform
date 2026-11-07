@@ -24,6 +24,10 @@ from app.models.game import Game, GameCategory, GamePlatform
 from app.models.notification import Notification, NotificationType, UserPreference
 from app.models.payment_gateway import PaymentGateway
 from app.models.payment_setting import PaymentSetting
+from app.models.publish_permission_request import (
+    PublishPermissionRequest,
+    PublishPermissionStatus,
+)
 from app.models.push_subscription import PushSubscription
 from app.models.order import Order, OrderStatus, PaymentStatus
 from app.models.order_after_sale import AfterSaleStatus, OrderAfterSale
@@ -89,6 +93,8 @@ __all__ = [
     "UserPreference",
     "UserRole",
     "UserSession",
+    "PublishPermissionRequest",
+    "PublishPermissionStatus",
     "PushSubscription",
     "Wallet",
     "WalletTransaction",

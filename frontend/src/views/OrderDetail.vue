@@ -10,6 +10,7 @@ import { useAfterSalesStore } from '@/stores/afterSales'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import { useOrdersStore } from '@/stores/orders'
+import { useSiteStore } from '@/stores/site'
 import { getGameImage } from '@/data/gameImages'
 import api from '@/utils/api'
 import { formatDateTime, formatDueCountdown, formatFeeRate, formatMoneyFixed, formatOrderPrice, formatPayoutDelay, formatPrice, formatSettlementDelay, formatShortDate, getAcceptWaitMeta, payoutDelayInfo, serverNow } from '@/utils/display'
@@ -28,6 +29,11 @@ const authStore = useAuthStore()
 const chatStore = useChatStore()
 const ordersStore = useOrdersStore()
 const afterSalesStore = useAfterSalesStore()
+const siteStore = useSiteStore()
+// 发单/接单权限：管理员不受限；未返回字段时默认放行（兼容旧响应）。
+const canPublish = computed(() => authStore.canPublish)
+const canAccept = computed(() => authStore.canAccept)
+const publishApplyEnabled = computed(() => siteStore.settings.publish_permission_apply_enabled !== false)
 
 const errorMessage = ref('')
 const successMessage = ref('')
@@ -1820,7 +1826,7 @@ onUnmounted(() => {
           <div class="od-ops__body mt-6 flex flex-col gap-3">
             <!-- 抢单等待状态仅影响展示，按钮禁用条件仍由剩余秒数和服务端共同决定。 -->
             <div
-              v-if="isBooster && canAcceptOrder"
+              v-if="isBooster && canAccept && canAcceptOrder"
               :class="[acceptWaitState === 'waiting' ? 'message-warning' : 'message-info', 'od-ops__notice', 'text-xs leading-6']"
             >
               <template v-if="acceptWaitState === 'waiting'">
@@ -1834,8 +1840,16 @@ onUnmounted(() => {
               </template>
             </div>
 
+            <!-- 接单权限未开通：不展示可点的接单按钮，后端 403 仍是最终兜底 -->
+            <p
+              v-if="isBooster && !canAccept && (canAcceptOrder || (order.status === 'PENDING' && !isOwner && hasClaimed))"
+              class="message-warning od-ops__notice text-xs leading-6"
+            >
+              接单权限未开通，请联系管理员开通后刷新页面。
+            </p>
+
             <button
-              v-if="isBooster && (canAcceptOrder || (order.status === 'PENDING' && !isOwner && hasClaimed))"
+              v-if="isBooster && canAccept && (canAcceptOrder || (order.status === 'PENDING' && !isOwner && hasClaimed))"
               class="od-ops__primary btn-primary w-full py-3"
               :disabled="actionLoading || claimPreflightLoading || hasClaimed || acceptWaitSeconds > 0"
               @click="openClaimModal"
@@ -1955,7 +1969,7 @@ onUnmounted(() => {
             <!-- 重建 / 续单：老板要求所有订单都可操作（不限状态，打手交全部单/
                  进行中单争议无回应时先派再谈），带原单进创建页预填 -->
             <button
-              v-if="isOwner"
+              v-if="isOwner && canPublish"
               class="od-ops__chip btn-secondary w-full py-3"
               @click="rebuildOrder(order.id)"
             >
@@ -1963,12 +1977,27 @@ onUnmounted(() => {
             </button>
 
             <button
-              v-if="isOwner"
+              v-if="isOwner && canPublish"
               class="od-ops__chip btn-secondary w-full py-3"
               @click="repeatOrder(order.id)"
             >
               续单
             </button>
+
+            <!-- 无发单权限：隐藏重建/续单，改为申请引导，不留下跳 /orders/create 的入口 -->
+            <router-link
+              v-if="isOwner && !canPublish && publishApplyEnabled"
+              :to="{ name: 'publish-permission' }"
+              class="od-ops__chip btn-secondary w-full py-3 text-center"
+            >
+              申请发单权限
+            </router-link>
+            <p
+              v-else-if="isOwner && !canPublish"
+              class="message-warning od-ops__notice text-xs leading-6"
+            >
+              发单权限未开通，请联系管理员开通。
+            </p>
 
             <!-- 争议状态：管理员跳转派单台，争议双方联系管理员 -->
             <template v-if="order.status === 'DISPUTED'">

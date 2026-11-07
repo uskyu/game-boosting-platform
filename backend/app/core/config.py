@@ -62,6 +62,13 @@ class Settings(BaseSettings):
     DEFAULT_ADMIN_USERNAME: str = "SystemAdmin"
     DEFAULT_ADMIN_PASSWORD: str = ""
 
+    # 首次部署初始化 site_settings 时的默认权限（只在该行不存在时生效，
+    # 之后管理员在后台的修改不会因重启被覆盖）。生产站保持 true；
+    # 新站可在 .env 设 REGISTRATION_DEFAULT_CAN_PUBLISH=false。
+    REGISTRATION_DEFAULT_CAN_PUBLISH: bool = True
+    REGISTRATION_DEFAULT_CAN_ACCEPT: bool = True
+    PUBLISH_PERMISSION_APPLY_ENABLED: bool = True
+
     # File upload
     UPLOAD_DIR: str = "uploads"
 

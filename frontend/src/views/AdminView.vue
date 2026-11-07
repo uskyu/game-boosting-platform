@@ -20,6 +20,7 @@ import AdminWithdrawalCategorySettings from '@/components/admin/AdminWithdrawalC
 import AdminPayoutBatches from '@/components/admin/AdminPayoutBatches.vue'
 import AdminDepositSettings from '@/components/admin/AdminDepositSettings.vue'
 import AdminAnnouncements from '@/components/admin/AdminAnnouncements.vue'
+import AdminPublishApplications from '@/components/admin/AdminPublishApplications.vue'
 import Lightbox from '@/components/Lightbox.vue'
 import { useOrdersStore } from '@/stores/orders'
 import { useGamesStore } from '@/stores/games'
@@ -62,7 +63,7 @@ const walletStore = useWalletStore()
 const afterSalesStore = useAfterSalesStore()
 const withdrawalPayoutStore = useWithdrawalPayoutStore()
 
-const TAB_KEYS = ['dashboard', 'orders', 'withdrawals', 'afterSales', 'wallet-adjust', 'games', 'users', 'site', 'payment', 'recharges', 'service-fee', 'withdrawal-rule', 'withdrawal-category', 'payout-batches', 'deposit', 'announcements']
+const TAB_KEYS = ['dashboard', 'orders', 'withdrawals', 'afterSales', 'wallet-adjust', 'games', 'users', 'site', 'payment', 'recharges', 'service-fee', 'withdrawal-rule', 'withdrawal-category', 'payout-batches', 'deposit', 'announcements', 'publishRequests']
 
 function normalizeTab(tab) {
   const value = Array.isArray(tab) ? tab[0] : tab
@@ -1259,6 +1260,7 @@ onMounted(async () => {
           <button v-if="isAdmin" type="button" :class="activeTab === 'payout-batches' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'payout-batches'">打款批次</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'deposit' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'deposit'">保证金管理</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'announcements' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'announcements'">公告管理</button>
+          <button v-if="isAdmin" type="button" :class="activeTab === 'publishRequests' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'publishRequests'">发单申请</button>
         </nav>
         <button class="btn-secondary shrink-0 !px-4 !py-2" @click="refreshDashboard">刷新</button>
       </div>
@@ -1275,6 +1277,7 @@ onMounted(async () => {
     <AdminPayoutBatches v-else-if="activeTab === 'payout-batches'" />
     <AdminDepositSettings v-else-if="activeTab === 'deposit'" />
     <AdminAnnouncements v-else-if="activeTab === 'announcements'" />
+    <AdminPublishApplications v-else-if="activeTab === 'publishRequests'" />
 
     <section v-else-if="activeTab === 'orders'" class="surface-card admin-orders-panel">
       <div class="admin-orders-heading">

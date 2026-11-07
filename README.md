@@ -123,6 +123,11 @@ npm run dev            # http://localhost:3000，/api 代理到 8000
 | `DEFAULT_ADMIN_EMAIL` / `DEFAULT_ADMIN_PASSWORD` | 首次启动自动创建的管理员账号（密码至少 8 位）|
 | `COMMISSION_RATE` | 平台抽佣比例，0–1，默认 `0.0`（全额结算给打手，即不抽佣）|
 | `DEEPSEEK_API_KEY` | 可选，AI 需求解析用，测试环境填占位值就行 |
+| `REGISTRATION_DEFAULT_CAN_PUBLISH` | 新注册用户默认发单权限，默认 `true`；新站首次建库可设 `false` |
+| `REGISTRATION_DEFAULT_CAN_ACCEPT` | 新注册用户默认接单权限，默认 `true` |
+| `PUBLISH_PERMISSION_APPLY_ENABLED` | 是否允许无发单权限用户自助申请，默认 `true` |
+
+> 三个注册权限变量只在该站点**首次创建** `site_settings` 行时生效；之后以后台「站点管理」为准，重启不会覆盖管理员修改。生产站保持默认 `true` 不改变现有行为。
 
 ## 资金安全设计
 

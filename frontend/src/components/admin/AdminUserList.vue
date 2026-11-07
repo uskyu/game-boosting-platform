@@ -30,12 +30,109 @@ const restrictionFilterOptions = [
   { value: 'no_accept', label: '禁接单' },
 ]
 
-// 限制状态本地过滤（后端 list 暂无该筛选）
-const visibleUsers = computed(() => {
-  if (filters.restriction === 'no_publish') return store.users.filter((u) => u.can_publish === false)
-  if (filters.restriction === 'no_accept') return store.users.filter((u) => u.can_accept === false)
-  return store.users
-})
+// ── 限制筛选走后端（保证分页与总数口径一致；不再本地过滤当前页）──
+
+// ── 选择状态（批量发单权限）──
+const selectedUserIds = ref([])
+const pageSelectableUsers = computed(() => store.users.filter((user) => user.role !== 'ADMIN'))
+const allPageSelected = computed(() => (
+  pageSelectableUsers.value.length > 0
+  && pageSelectableUsers.value.every((user) => selectedUserIds.value.includes(user.id))
+))
+
+function isSelectable(user) {
+  return user.role !== 'ADMIN'
+}
+
+function toggleUserSelection(user) {
+  if (!isSelectable(user)) return
+  selectedUserIds.value = selectedUserIds.value.includes(user.id)
+    ? selectedUserIds.value.filter((id) => id !== user.id)
+    : [...selectedUserIds.value, user.id]
+}
+
+// 全选只作用于当前页可见的普通用户；ADMIN 永不进入选择集
+function togglePageSelection() {
+  if (!pageSelectableUsers.value.length) return
+  if (allPageSelected.value) {
+    const pageIds = new Set(pageSelectableUsers.value.map((user) => user.id))
+    selectedUserIds.value = selectedUserIds.value.filter((id) => !pageIds.has(id))
+    return
+  }
+  const union = new Set([...selectedUserIds.value, ...pageSelectableUsers.value.map((user) => user.id)])
+  selectedUserIds.value = [...union]
+}
+
+// ── 批量发单权限（二次确认）──
+
+const bulkModal = ref(null)
+
+async function openBulkModal(scope, canPublish) {
+  const user_ids = scope === 'selected' ? [...selectedUserIds.value] : []
+  if (scope === 'selected' && !user_ids.length) return
+  bulkModal.value = {
+    scope,
+    can_publish: canPublish,
+    user_ids,
+    error: '',
+    submitting: false,
+    eligible: null,
+    pending: null,
+    previewLoading: scope === 'all',
+    previewError: '',
+  }
+  if (scope !== 'all') return
+  // 全部普通用户：先拉受影响人数与待审核申请数，失败不阻断执行
+  const requestState = bulkModal.value
+  const result = await store.fetchBulkPreview()
+  // 弹窗已被关闭/替换：丢弃本次预览结果，避免写进新状态
+  if (bulkModal.value !== requestState) return
+  requestState.previewLoading = false
+  if (!result.success) {
+    requestState.previewError = '人数获取失败，操作仍会作用于全部启用中的普通用户'
+    return
+  }
+  const data = result.data || {}
+  requestState.eligible = Number(data.eligible ?? 0)
+  requestState.pending = Number(data.pending ?? 0)
+}
+
+function closeBulkModal() {
+  if (bulkModal.value?.submitting) return
+  bulkModal.value = null
+}
+
+async function confirmBulkPublish() {
+  const state = bulkModal.value
+  if (!state || state.submitting) return
+  state.error = ''
+  state.submitting = true
+
+  const payload = { can_publish: state.can_publish }
+  if (state.scope === 'selected') {
+    payload.scope = 'selected'
+    payload.user_ids = [...state.user_ids]
+  } else {
+    payload.scope = 'all_non_admin'
+  }
+
+  const result = await store.bulkPublishPermission(payload)
+  state.submitting = false
+  if (!result.success) {
+    state.error = result.error || '批量操作失败'
+    return
+  }
+
+  const updated = Number(result.data?.updated ?? 0)
+  const skipped = Number(result.data?.skipped ?? 0)
+  flash(
+    'success',
+    `批量${state.can_publish ? '解禁发单' : '禁发单'}完成：更新 ${updated} 人${skipped ? `，跳过 ${skipped} 人` : ''}`,
+  )
+  bulkModal.value = null
+  selectedUserIds.value = []
+  await load(store.pagination.page)
+}
 
 // ── 通知 flash ──
 
@@ -48,14 +145,19 @@ function flash(type, text) {
 }
 
 function load(page = 1) {
+  // 翻页/筛选/重新 load 都清空跨页选择，避免上一批用户混进批量操作
+  selectedUserIds.value = []
   return store.fetchUsers({
     page,
     query: filters.query.trim(),
     role: filters.role,
     isActive: filters.isActive,
+    // 服务端筛选：禁发单 = can_publish=false，禁接单 = can_accept=false
+    can_publish: filters.restriction === 'no_publish' ? false : undefined,
+    can_accept: filters.restriction === 'no_accept' ? false : undefined,
   })
 }
-watch(() => [filters.role, filters.isActive], () => load(1))
+watch(() => [filters.role, filters.isActive, filters.restriction], () => load(1))
 
 // ── 角色展示（ADMIN=管理员，其余一律视为打手）──
 
@@ -398,8 +500,45 @@ onMounted(load)
     </div>
 
     <template v-else>
+      <!-- 批量发单权限工具栏：选择只作用于当前页普通用户，ADMIN 不可选 -->
+      <div class="mt-5 flex flex-col gap-2 rounded-tile border border-line-1 bg-surface-2 p-3 sm:flex-row sm:items-center sm:justify-between">
+        <div class="flex flex-wrap items-center gap-3">
+          <label class="inline-flex min-h-[44px] items-center gap-2 text-sm text-ink-2">
+            <input
+              type="checkbox"
+              :checked="allPageSelected"
+              :disabled="!pageSelectableUsers.length"
+              @change="togglePageSelection"
+            />
+            全选本页
+          </label>
+          <span v-if="selectedUserIds.length" class="text-sm text-ink-2">已选 {{ selectedUserIds.length }} 人</span>
+          <span v-else class="text-xs text-ink-3">勾选普通用户后可批量操作</span>
+        </div>
+        <div class="admin-bulk-actions" :class="{ 'is-empty': !selectedUserIds.length }">
+          <button
+            type="button"
+            class="btn-secondary min-h-[44px] !px-4 !py-2"
+            :disabled="!selectedUserIds.length"
+            @click="openBulkModal('selected', false)"
+          >批量禁发单</button>
+          <button
+            type="button"
+            class="btn-secondary min-h-[44px] !px-4 !py-2"
+            :disabled="!selectedUserIds.length"
+            @click="openBulkModal('selected', true)"
+          >批量解禁发单</button>
+        </div>
+      </div>
+      <div class="mt-2 flex flex-wrap items-center gap-2 text-xs text-ink-3">
+        <span class="font-medium text-ink-2">全部普通用户：</span>
+        <button type="button" class="filter-pill" @click="openBulkModal('all', false)">全部禁发单</button>
+        <button type="button" class="filter-pill" @click="openBulkModal('all', true)">全部解禁</button>
+        <span>只影响启用中的普通用户，管理员不受影响。</span>
+      </div>
+
       <!-- 空态 -->
-      <div v-if="!visibleUsers.length" class="empty-state mt-6">
+      <div v-if="!store.users.length" class="empty-state mt-6">
         <div class="empty-state__icon" aria-hidden="true">👥</div>
         <h3 class="empty-state__title">暂无用户</h3>
         <p class="empty-state__copy">换个关键词或筛选条件试试。</p>
@@ -408,9 +547,18 @@ onMounted(load)
       <template v-else>
         <!-- 桌面（sm+）：数据表 -->
         <div class="mt-5 hidden overflow-x-auto sm:block">
-          <table class="data-table hidden !min-w-[1020px] sm:table">
+          <table class="data-table hidden !min-w-[1060px] sm:table">
             <thead>
               <tr>
+                <th class="w-10">
+                  <input
+                    type="checkbox"
+                    :checked="allPageSelected"
+                    :disabled="!pageSelectableUsers.length"
+                    aria-label="全选本页普通用户"
+                    @change="togglePageSelection"
+                  />
+                </th>
                 <th>#ID</th>
                 <th>用户</th>
                 <th>角色</th>
@@ -424,7 +572,16 @@ onMounted(load)
               </tr>
             </thead>
             <tbody>
-              <tr v-for="user in visibleUsers" :key="user.id">
+              <tr v-for="user in store.users" :key="user.id">
+                <td>
+                  <input
+                    type="checkbox"
+                    :checked="selectedUserIds.includes(user.id)"
+                    :disabled="!isSelectable(user)"
+                    :aria-label="`选择用户 ${user.username}`"
+                    @change="toggleUserSelection(user)"
+                  />
+                </td>
                 <td class="tabular-nums text-ink-3">#{{ user.id }}</td>
                 <td>
                   <div class="flex items-center gap-3">
@@ -478,8 +635,15 @@ onMounted(load)
 
         <!-- 移动端（<sm）：卡片列表 -->
         <div class="mt-5 space-y-3 sm:hidden">
-          <article v-for="user in visibleUsers" :key="user.id" class="rounded-tile border border-line-1 bg-surface-2 p-4">
+          <article v-for="user in store.users" :key="user.id" class="rounded-tile border border-line-1 bg-surface-2 p-4">
             <div class="flex items-center gap-3">
+              <input
+                type="checkbox"
+                :checked="selectedUserIds.includes(user.id)"
+                :disabled="!isSelectable(user)"
+                :aria-label="`选择用户 ${user.username}`"
+                @change="toggleUserSelection(user)"
+              />
               <span class="user-avatar">{{ avatarText(user) }}</span>
               <div class="min-w-0 flex-1">
                 <div class="flex flex-wrap items-center gap-2">
@@ -549,6 +713,58 @@ onMounted(load)
         </div>
       </template>
     </template>
+
+    <!-- 批量发单权限二次确认 -->
+    <div v-if="bulkModal" class="modal-scrim modal-scrim--sheet">
+      <div class="absolute inset-0" aria-hidden="true" @click="closeBulkModal"></div>
+      <div class="modal-card modal-sheet" role="dialog" aria-modal="true" aria-label="确认批量发单权限">
+        <div class="relative z-10">
+          <h3 class="text-2xl font-semibold text-ink-1">
+            确认{{ bulkModal.can_publish ? '解禁发单' : '禁发单' }}
+          </h3>
+          <p v-if="bulkModal.scope === 'selected'" class="mt-2 text-sm leading-6 text-ink-2">
+            将对已勾选的 <span class="font-semibold text-ink-1">{{ bulkModal.user_ids.length }}</span> 名普通用户
+            {{ bulkModal.can_publish ? '开通' : '关闭' }}发单权限。管理员不在批量范围内。
+          </p>
+          <p v-else class="mt-2 text-sm leading-6 text-ink-2">
+            <template v-if="bulkModal.previewLoading">正在获取受影响的用户人数…</template>
+            <template v-else-if="bulkModal.eligible != null">
+              将对全部 <span class="font-semibold text-ink-1">{{ bulkModal.eligible }}</span> 名启用中的普通用户
+              {{ bulkModal.can_publish ? '开通' : '关闭' }}发单权限；管理员、禁用用户不受影响。
+            </template>
+            <template v-else>
+              将对全部 <span class="font-semibold text-ink-1">启用中的普通用户</span>
+              {{ bulkModal.can_publish ? '开通' : '关闭' }}发单权限；管理员、禁用用户不受影响。
+            </template>
+          </p>
+          <p
+            v-if="bulkModal.scope === 'all' && bulkModal.can_publish && bulkModal.pending > 0"
+            class="mt-2 text-sm leading-6 text-warning"
+          >
+            其中 <span class="font-semibold">{{ bulkModal.pending }}</span> 名用户的待审核申请将一并自动通过（不逐人发送通知）。
+          </p>
+          <p v-if="bulkModal.scope === 'all' && bulkModal.previewError" class="mt-2 text-sm leading-6 text-danger">
+            {{ bulkModal.previewError }}
+          </p>
+          <div class="message-info mt-4">
+            此操作立即生效；单人的权限仍可在下方列表逐条调整。
+          </div>
+          <div v-if="bulkModal.error" class="message-error mt-4">{{ bulkModal.error }}</div>
+          <div class="mt-5 flex flex-wrap justify-end gap-2">
+            <button type="button" class="btn-ghost min-h-[44px] !px-4" :disabled="bulkModal.submitting" @click="closeBulkModal">取消</button>
+            <button
+              type="button"
+              :class="bulkModal.can_publish ? 'btn-primary' : 'btn-danger'"
+              class="min-h-[44px] !px-5"
+              :disabled="bulkModal.submitting"
+              @click="confirmBulkPublish"
+            >
+              {{ bulkModal.submitting ? '处理中...' : '确认执行' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <!-- 重置密码确认弹窗 -->
     <div v-if="resetModal" class="modal-scrim modal-scrim--sheet">

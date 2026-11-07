@@ -18,6 +18,9 @@ export const useAdminUsersStore = defineStore('adminUsers', () => {
         page: options.page || pagination.value.page, page_size: options.pageSize || pagination.value.pageSize,
         query: options.query || undefined, role: options.role || undefined,
         is_active: options.isActive === '' || options.isActive == null ? undefined : options.isActive,
+        // 权限筛选走后端（才能保证分页口径与总数正确）
+        can_publish: options.can_publish === '' || options.can_publish == null ? undefined : options.can_publish,
+        can_accept: options.can_accept === '' || options.can_accept == null ? undefined : options.can_accept,
       } })
       const data = response.data || {}
       users.value = data.items || []
@@ -32,6 +35,11 @@ export const useAdminUsersStore = defineStore('adminUsers', () => {
   async function resetPassword(id, password) { try { const r = await api.post(`/admin/users/${id}/reset-password`, { password }); return { success: true, data: r.data } } catch (e) { return fail(e) } }
   async function setStatus(id, isActive) { try { const r = await api.post(`/admin/users/${id}/status`, { is_active: isActive }); replace(r.data); return { success: true, data: r.data } } catch (e) { return fail(e) } }
   async function setRestrictions(id, payload) { try { const r = await api.post(`/admin/users/${id}/restrictions`, payload); replace(r.data); return { success: true, data: r.data } } catch (e) { return fail(e) } }
+  // GET /admin/users/bulk-publish-permission/preview —— { eligible, pending }
+  // eligible=启用中非管理员用户数；pending=其中有待审核申请的去重用户数
+  async function fetchBulkPreview() { try { const r = await api.get('/admin/users/bulk-publish-permission/preview'); return { success: true, data: r.data } } catch (e) { return fail(e) } }
+  // POST /admin/users/bulk-publish-permission —— { scope:'selected'|'all_non_admin', user_ids?, can_publish }
+  async function bulkPublishPermission(payload) { try { const r = await api.post('/admin/users/bulk-publish-permission', payload); return { success: true, data: r.data } } catch (e) { return fail(e) } }
   async function adjustBalance(id, amount, reason) { try { const r = await api.post(`/admin/users/${id}/adjust-balance`, { amount: Number(amount), reason }); return { success: true, data: r.data } } catch (e) { return fail(e) } }
   async function adjustDeposit(id, delta, remark) { try { const r = await api.post(`/admin/users/${id}/adjust-deposit`, { delta: Number(delta), remark }); return { success: true, data: r.data } } catch (e) { return fail(e) } }
   async function fetchUserTransactions(id, page = 1) {
@@ -53,5 +61,5 @@ export const useAdminUsersStore = defineStore('adminUsers', () => {
   }
   function replace(user) { const index = users.value.findIndex((item) => item.id === user?.id); if (index >= 0) users.value.splice(index, 1, user) }
   function fail(e) { return { success: false, error: e.message || '操作失败' } }
-  return { users, pagination, loading, error, fetchUsers, getUser, updateUser, resetPassword, setStatus, setRestrictions, adjustBalance, adjustDeposit, fetchUserTransactions, fetchUserOrders }
+  return { users, pagination, loading, error, fetchUsers, getUser, updateUser, resetPassword, setStatus, setRestrictions, fetchBulkPreview, bulkPublishPermission, adjustBalance, adjustDeposit, fetchUserTransactions, fetchUserOrders }
 })

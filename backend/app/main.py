@@ -23,6 +23,7 @@ from app.api.router import api_router
 from app.core.config import settings
 from app.core.request_timing import RequestTimingMiddleware
 from app.db.session import async_session_factory, close_db, engine, init_db
+from app.services.site_setting_service import ensure_site_settings
 from app.services.user_service import get_user_service
 
 # Configure logging
@@ -138,6 +139,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             async with async_session_factory() as session:
                 user_service = get_user_service(session)
                 await user_service.ensure_default_admin()
+                # 首次部署初始化站点设置（仅行不存在时创建，重启不覆盖后台修改）。
+                # 表未迁移时与 admin bootstrap 一样被 SQLAlchemyError 捕获，
+                # 只记录 warning，不阻止应用启动。
+                await ensure_site_settings(session)
                 await session.commit()
         except SQLAlchemyError:
             logger.warning(

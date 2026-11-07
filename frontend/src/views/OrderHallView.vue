@@ -77,6 +77,9 @@ function getOrderDisplayBadgeClass(order) {
 const loading = computed(() => ordersStore.loading)
 const error = computed(() => ordersStore.error)
 const isAuthenticated = computed(() => authStore.isAuthenticated)
+// 发单门禁：无权限时不展示发布入口，改为申请引导或联系管理员提示。
+const canPublish = computed(() => authStore.canPublish)
+const publishApplyEnabled = computed(() => siteStore.settings.publish_permission_apply_enabled !== false)
 const isAdmin = computed(() => authStore.isAdmin)
 
 // ── 今日已接单（大厅底部区块） ──
@@ -566,7 +569,20 @@ onUnmounted(() => {
       <div class="hall-summary min-w-0 flex-1" aria-label="大厅统计">
         <article v-for="item in hallStats" :key="item.key" class="hall-summary__item"><strong :class="item.tone">{{ item.value }}</strong><span>{{ item.label }}</span></article>
       </div>
-      <router-link v-if="isAuthenticated" :to="{ name: 'order-create' }" class="btn-primary flex shrink-0 items-center !px-5">发布订单</router-link>
+      <router-link
+        v-if="isAuthenticated && canPublish"
+        :to="{ name: 'order-create' }"
+        class="btn-primary flex shrink-0 items-center !px-5"
+      >发布订单</router-link>
+      <router-link
+        v-else-if="isAuthenticated && publishApplyEnabled"
+        :to="{ name: 'publish-permission' }"
+        class="btn-secondary flex shrink-0 items-center !px-4 text-center text-xs leading-5 sm:!px-5 sm:text-sm"
+      >申请发单权限</router-link>
+      <span
+        v-else-if="isAuthenticated"
+        class="max-w-[45%] shrink-0 rounded-tile border border-line-1 bg-surface-2 px-2 py-1 text-center text-[11px] leading-4 text-ink-2 sm:max-w-none sm:px-3 sm:text-xs"
+      >发单权限未开通，请联系管理员</span>
     </section>
 
     <div v-if="error" class="message-error">{{ error }}</div>

@@ -178,6 +178,8 @@ class UserResponse(BaseModel):
     display_role: UserRole = Field(description="前端展示角色")
     is_active: bool = Field(description="是否激活")
     is_verified: bool = Field(description="是否验证")
+    can_publish: bool = Field(default=True, description="是否可以发布订单（发单权限）")
+    can_accept: bool = Field(default=True, description="是否可以接单")
     avatar_url: str | None = Field(default=None, description="头像URL")
     phone: str | None = Field(default=None, description="手机号")
     bio: str | None = Field(default=None, description="个人简介")

@@ -6,6 +6,8 @@ import { useGamesStore } from '@/stores/games'
 import { useOrdersStore } from '@/stores/orders'
 import { useOrderTemplatesStore } from '@/stores/orderTemplates'
 import { useServiceFeeStore } from '@/stores/serviceFee'
+import { useAuthStore } from '@/stores/auth'
+import { useSiteStore } from '@/stores/site'
 import api from '@/utils/api'
 import { DEFAULT_PAYOUT_DELAY_DAYS, formatFeeRate, formatMoneyFixed, parsePayoutDelay, serviceFeeBreakdown } from '@/utils/display'
 import { getPublishButtonLabel } from '@/utils/humanCopy'
@@ -18,6 +20,8 @@ const gamesStore = useGamesStore()
 const ordersStore = useOrdersStore()
 const templatesStore = useOrderTemplatesStore()
 const serviceFeeStore = useServiceFeeStore()
+const authStore = useAuthStore()
+const siteStore = useSiteStore()
 // 全局服务费设置与逐单开关对任何发布者生效（2026-10-11 修复：此前按管理员
 // 身份门禁，普通用户发单既没有逐单选项、也不按全局费率收服务费）
 const globalServiceFeeRate = ref(0)
@@ -203,6 +207,11 @@ function handleGameChange() {
   const game = selectedGame.value
   formData.value.game_name = game?.name || ''
 }
+
+// 发单权限门禁（独立于上面的表单校验 canPublish，现有测试精确断言表单表达式）。
+// 无权限时整页只显示阻止卡片，不加载游戏/模板/服务费，也不处理重建预填。
+const hasPublishPermission = computed(() => authStore.canPublish)
+const publishApplyEnabled = computed(() => siteStore.settings.publish_permission_apply_enabled !== false)
 
 // ── 重建 / 续单预填（URL: /orders/create?recycle=<orderId>&mode=rebuild|repeat）──
 // 原游戏已下架时保留 game_id/game_name 并告警，发布被 canPublish 拦截
@@ -414,6 +423,8 @@ watch(
 )
 
 onMounted(async () => {
+  // 无发单权限：不请求游戏目录/模板/服务费，也不处理 recycle 预填，直接展示阻止卡片
+  if (!hasPublishPermission.value) return
   await Promise.all([gamesStore.ensureCatalog(), templatesStore.fetchTemplates()])
   // 全局服务费设置任何发布者都要读：总开关关闭时本单按全局费率烙盘
   // （表单给一句说明），开启时才渲染逐单「本单服务费」区块。
@@ -442,6 +453,7 @@ onMounted(async () => {
 
 <template>
   <div class="page-shell page-shell--create space-y-6">
+    <template v-if="hasPublishPermission">
     <section class="hero-panel p-6 sm:p-8">
       <p class="eyebrow">发布订单</p>
       <h1 class="section-title">填好需求，直接发布</h1>
@@ -656,5 +668,23 @@ onMounted(async () => {
         </button>
       </div>
     </div>
+    </template>
+    <section v-else class="hero-panel p-6 sm:p-8">
+      <!-- 无发单权限：不渲染表单，避免留下任何可用入口；给出申请或联系管理员路径 -->
+      <p class="eyebrow">发布订单</p>
+      <h1 class="section-title">暂无发单权限</h1>
+      <p class="section-copy max-w-3xl">
+        当前账号还没有发单权限，暂时不能发布订单。管理员发单不受此限制；如果你需要发单，可按下方方式开通。
+      </p>
+      <div class="mt-6 flex flex-wrap items-center gap-3">
+        <router-link
+          v-if="publishApplyEnabled"
+          :to="{ name: 'publish-permission' }"
+          class="btn-primary min-h-[44px] !px-5"
+        >申请发单权限</router-link>
+        <p v-else class="message-warning !my-0 text-sm leading-6">未开启自助申请，请联系管理员开通发单权限。</p>
+        <router-link :to="{ name: 'home' }" class="btn-secondary min-h-[44px] !px-5">返回大厅</router-link>
+      </div>
+    </section>
   </div>
 </template>

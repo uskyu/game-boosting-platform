@@ -15,6 +15,7 @@ from app.api.endpoints import (
     admin_announcements_router,
     admin_payment_router,
     admin_platform_income_router,
+    admin_publish_permission_router,
     admin_router,
     admin_site_router,
     admin_users_router,
@@ -33,6 +34,7 @@ from app.api.endpoints import (
     push_router,
     orders_router,
     order_templates_router,
+    publish_permission_router,
     recharge_router,
     reviews_router,
     search_router,
@@ -60,6 +62,8 @@ api_router.include_router(order_templates_router)
 # 售后：订单维度（/orders/{id}/after-sales）+ 个人维度（/after-sales/mine）
 api_router.include_router(after_sales_router)
 api_router.include_router(users_router)
+# 发单权限自助申请（登录用户）
+api_router.include_router(publish_permission_router)
 api_router.include_router(admin_router)
 api_router.include_router(admin_after_sales_router)
 api_router.include_router(admin_order_dispute_router)
@@ -75,6 +79,8 @@ api_router.include_router(admin_withdrawal_rule_router)
 api_router.include_router(admin_withdrawal_category_router)
 api_router.include_router(admin_withdrawal_payout_router)
 api_router.include_router(admin_users_router)
+# 发单权限申请审核（管理员）
+api_router.include_router(admin_publish_permission_router)
 api_router.include_router(chat_router)
 api_router.include_router(deposit_router)
 api_router.include_router(games_router)
