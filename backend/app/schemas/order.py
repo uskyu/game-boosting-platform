@@ -634,6 +634,18 @@ class OrderResponse(BaseModel):
     accept_available_at: datetime | None = Field(
         default=None, description="查看者可以接单的时间点（发布后 + 等待秒数）"
     )
+    # 发单人黑名单：查看者被该订单发布人拉黑时为 True（仍可见订单，但不能接单）。
+    accept_blocked: bool = Field(
+        default=False, description="查看者是否被该发布人拉黑（被拉黑时不能接单）"
+    )
+    accept_blocked_reason: str | None = Field(
+        default=None, description="被拉黑时的固定用户文案（不暴露发单人备注）"
+    )
+    # WS 新单卡片兜底：卡片按查看者档位补算前先标记为「等待时间未计算」，
+    # 前端据此显示「加载中」而不是「无需等待」。列表/详情接口恒为 False。
+    accept_window_pending: bool = Field(
+        default=False, description="接单等待时间是否尚未计算（WS 基础卡片专用）"
+    )
     # 接单图形验证码：由后台「接单需要验证码」开关决定，仅订单详情接口回填；
     # 列表接口保持默认 False，避免为每页订单多查一次设置。
     accept_captcha_required: bool = Field(

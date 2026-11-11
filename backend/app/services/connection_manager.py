@@ -139,6 +139,15 @@ class ConnectionManager:
             *(self._send_and_prune(user_id, ws, data) for ws in sockets)
         )
 
+    async def online_user_ids(self) -> set[int]:
+        """当前在线用户 ID 的线程/协程安全快照。
+
+        调用方（新单通知卡片按档位分组）只拿到一份拷贝，不直接读
+        ``connections``，避免在扇出过程中看到稍后被摘除的连接而产生悬挂引用。
+        """
+        async with self._lock:
+            return set(self.connections.keys())
+
     async def broadcast(self, data: dict) -> None:
         """Broadcast a small platform-wide event to every connected client."""
         async with self._lock:

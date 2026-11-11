@@ -190,6 +190,13 @@ export const useOrdersStore = defineStore('orders', () => {
       order.deadline || '',
       order.priority ?? '',
       order.accept_available_at || '',
+      // 等待时间 pending → 计算完成 / 拉黑标记变化也必须触发重渲：
+      // 只比 accept_available_at 时，pending 卡片在保证金关闭（两值都为 null）
+      // 或同一时间点下会被判成「没变化」，卡片会永远停在「加载中」。
+      order.accept_window_pending ?? '',
+      order.accept_blocked ?? '',
+      order.accept_blocked_reason || '',
+      order.accept_wait_seconds ?? '',
       order.my_claim?.status || '',
       order.cancel_pending ?? '',
       order.after_sale_pending ?? '',
@@ -665,8 +672,9 @@ export const useOrdersStore = defineStore('orders', () => {
   // 只在「当前就在大厅、且当前激活的正是第一页缓存」时生效；其余上下文
   //（我的派单、翻页到第 2 页等）一律 no-op，交给下一轮摘要对账纠正。
   // 不动 hallDigest 基线：摘要会在下轮发现变化并做一次全量对账（期望的自愈路径）。
-  // 卡片里 viewer 相关字段（如 accept_available_at）服务端直推版为 null，
-  // 大厅对 null 已容错（等价"无等待"）；真正抢单仍以详情页为准。
+  // 卡片里 viewer 相关字段（accept_wait_seconds/accept_available_at）在服务端
+  // 按在线收件人档位补算前可能为空，并由 accept_window_pending=true 显式标记；
+  // 大厅此时显示「等待时间加载中」，下一轮 2s/10s 对账会补精确倒计时。
   function applyNewOrderCard(card) {
     if (!card || card.id == null) return false
     if (ordersContext.value !== 'hall') return false

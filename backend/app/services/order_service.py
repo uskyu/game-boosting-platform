@@ -38,12 +38,14 @@ from app.models.order import (
 )
 from app.models.order_after_sale import AfterSaleStatus, OrderAfterSale
 from app.models.order_cancel_request import OrderCancelRequest, OrderCancelRequestStatus
+from app.models.publisher_blacklist import PublisherBlacklist
 from app.models.user import User, UserRole
 from app.models.wallet import Wallet, WalletTransaction, WalletTransactionType
 from app.schemas.booster_service import BoosterServiceOrderCreate
 from app.schemas.order import OrderCreate, OrderUpdate
 from app.services.ai_service import LLMService
 from app.services import platform_income_service
+from app.services.blacklist_service import ACCEPT_BLOCKED_DETAIL, is_user_blacklisted
 from app.services.site_setting_service import get_order_title_replacements
 from app.services.wallet_service import calculate_order_income, get_wallet_service
 
@@ -1158,6 +1160,7 @@ class OrderService:
         order_user_id: int,
         booster_id: int,
         now: datetime,
+        is_blacklisted: bool = False,
     ) -> tuple[str, ClaimStatus | None] | None:
         """接单的前置拒绝原因（纯读判定，无任何副作用）；None = 允许接单。
 
@@ -1169,7 +1172,8 @@ class OrderService:
         预检（不加锁）和持锁复核共用这一份判据，保证「先快速拒绝」绝不会
         放过任何持锁路径本该拒绝的请求，两条路径给用户的文案也完全一致。
         判定顺序与原实现保持一致（归档 → 抢单状态 → 订单状态 → 时限 →
-        名额 → 自己发的单）。
+        名额 → 自己发的单 → 发单人黑名单）。黑名单只在该单本来可接时才
+        返回拒绝，避免已满/已关闭的订单额外暴露拉黑关系。
         """
         if is_archived:
             return "订单已归档，不能接单", None
@@ -1200,7 +1204,17 @@ class OrderService:
             return "订单接单人数已满", ClaimStatus.FULL
         if order_user_id == booster_id:
             return "不能接取自己的订单", None
+        if is_blacklisted:
+            # 发单人已拉黑该用户：403（唯一走 403 的接单拒绝分支）
+            return ACCEPT_BLOCKED_DETAIL, None
         return None
+
+    @classmethod
+    def _accept_rejection_status(cls, reason: str) -> int:
+        """接单拒绝的 HTTP 状态：发单人黑名单 403，其余沿用历史 400。"""
+        if reason == ACCEPT_BLOCKED_DETAIL:
+            return status.HTTP_403_FORBIDDEN
+        return status.HTTP_400_BAD_REQUEST
 
     async def accept_order(
         self,
@@ -1273,6 +1287,14 @@ class OrderService:
                     Order.deadline,
                     Order.is_archived,
                     Order.created_at,
+                    # 发单人黑名单判断折进同一条预检查询：不增加额外往返，
+                    # 命中时在每日/保证金闸门之前快速失败。
+                    exists(
+                        select(PublisherBlacklist.id).where(
+                            PublisherBlacklist.publisher_id == Order.user_id,
+                            PublisherBlacklist.blocked_user_id == booster.id,
+                        )
+                    ).label("is_blacklisted"),
                 ).where(Order.id == order_id)
             )
         ).one_or_none()
@@ -1291,11 +1313,13 @@ class OrderService:
             order_user_id=preflight.user_id,
             booster_id=booster.id,
             now=now,
+            is_blacklisted=bool(preflight.is_blacklisted),
         )
         if blocked is not None:
             # 预检只读：不改 claim_status，写状态一律留给持锁路径。
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail=blocked[0]
+                status_code=self._accept_rejection_status(blocked[0]),
+                detail=blocked[0],
             )
         # 重复报名也是纯读判定，唯一约束 uq_order_claim_booster 仍是最终兜底。
         existing = await self._db.execute(
@@ -1354,6 +1378,14 @@ class OrderService:
                 detail="订单不存在",
             )
 
+        # 持锁复核时再查一次黑名单（只有抢单赢家多一次唯一索引查询）：
+        # 预检到持锁之间可能刚被发单人拉黑，必须用锁定读看最新提交。
+        is_blacklisted = await is_user_blacklisted(
+            self._db,
+            order.user_id,
+            booster.id,
+            for_update=True,
+        )
         blocked = self._accept_blocked_reason(
             is_archived=order.is_archived,
             claim_status=order.claim_status,
@@ -1364,6 +1396,7 @@ class OrderService:
             order_user_id=order.user_id,
             booster_id=booster.id,
             now=now,
+            is_blacklisted=is_blacklisted,
         )
         if blocked is not None:
             reason, sync_status = blocked
@@ -1373,7 +1406,7 @@ class OrderService:
                 order.claim_status = sync_status
                 await self._db.flush()
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail=reason
+                status_code=self._accept_rejection_status(reason), detail=reason
             )
 
         self._db.add(OrderClaim(order_id=order.id, booster_id=booster.id))

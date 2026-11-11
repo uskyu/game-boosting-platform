@@ -6,9 +6,9 @@ triggers both a DB notification record and a real-time WebSocket push.
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import insert, select
+from sqlalchemy import exists, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -25,8 +25,11 @@ from app.core.request_timing import (
 from app.core.post_commit import run_after_commit
 from app.models.notification import Notification, NotificationType, UserPreference
 from app.models.order import Order
+from app.models.publisher_blacklist import PublisherBlacklist
 from app.models.user import User, UserRole
 from app.schemas.notification import NotificationResponse
+from app.schemas.serializers import serialize_datetime_utc
+from app.services import deposit_service
 from app.services.connection_manager import get_connection_manager
 from app.services.notification_service import get_notification_service
 from app.services.web_push import push_user_notification
@@ -118,12 +121,20 @@ async def notify_boosters_new_order(
             setattr(request.state, TIMING_STATE_KEY + "_counts", counts)
         counts[name] = max(0, int(value))
 
-    # 平台模型：管理员发单，其余注册用户均为打手，全部纳入通知范围
+    # 平台模型：管理员发单，其余注册用户均为打手，全部纳入通知范围。
+    # 发单人黑名单：被本单发布人拉黑的用户不发「新订单」通知（大厅仍可见），
+    # 避免无效点击；用 NOT EXISTS 一次排除，不逐用户查询。
     async def select_recipients():
         result = await db.execute(
             select(User.id).where(
                 User.role != UserRole.ADMIN,
                 User.is_active.is_(True),
+                ~exists(
+                    select(PublisherBlacklist.id).where(
+                        PublisherBlacklist.publisher_id == order.user_id,
+                        PublisherBlacklist.blocked_user_id == User.id,
+                    )
+                ),
             )
         )
         recipient_ids = [int(uid) for uid in result.scalars().all()]
@@ -193,7 +204,69 @@ async def notify_boosters_new_order(
     if inserted_count != len(values):
         raise RuntimeError("Unable to persist all order notifications")
 
+    async def prepare_card_variants() -> dict[int, dict] | None:
+        """只为当前在线收件人按保证金档位生成少量卡片变体。
+
+        生产最多 7 个 wait 值 → 最多 7 个 dict；同组用户共享同一个只读
+        引用，不逐用户深拷贝嵌套结构。离线用户不通过 WS 收通知，继续
+        使用基础 pending 卡片兜底。
+
+        批量查询失败时返回空映射：通知照常发送/落库，发单不受影响。
+        """
+        if order_card is None:
+            return None
+        online_ids = await get_connection_manager().online_user_ids()
+        targets = [uid for uid in booster_ids if uid in online_ids]
+        if not targets:
+            return {}
+        try:
+            # 用 SAVEPOINT 包住批量读：即使查询在数据库层失败，也只回滚这个
+            # 保存点，当前事务仍可继续落库通知，不会让发单整体失败。
+            async with db.begin_nested():
+                waits = await deposit_service.get_many_tier_wait_seconds(db, targets)
+        except Exception:
+            logger.warning(
+                "Failed to compute per-tier accept wait seconds for new-order "
+                "cards; falling back to the pending base card",
+                exc_info=True,
+            )
+            return {}
+        created_at = order.created_at
+        if created_at is None:
+            return {}
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+
+        cards_by_user: dict[int, dict] = {}
+        cards_by_wait: dict[int, dict] = {}
+        for uid in targets:
+            wait = waits.get(uid)
+            if wait is None:
+                continue
+            card = cards_by_wait.get(wait)
+            if card is None:
+                card = {
+                    **order_card,
+                    "accept_wait_seconds": wait,
+                    "accept_available_at": serialize_datetime_utc(
+                        created_at + timedelta(seconds=wait)
+                    ),
+                    "accept_window_pending": False,
+                }
+                cards_by_wait[wait] = card
+            cards_by_user[uid] = card
+        return cards_by_user
+
     async def build_payloads():
+        try:
+            cards_by_user = await prepare_card_variants()
+        except Exception:
+            # 卡片变体只是体验增强：任何意外都不能让通知/发单失败
+            logger.warning(
+                "Failed to prepare new-order card variants; using base card",
+                exc_info=True,
+            )
+            cards_by_user = None
         # 回读只按 ref_id + type 定位本单发出的通知（ix_notifications_ref_id），
         # 不再附带 title/created_at 等无索引条件——那会让 MySQL 退回 user_id
         # 索引扫几十万行历史通知，表越大越慢。
@@ -220,9 +293,13 @@ async def notify_boosters_new_order(
                 created_at=notification_created_at,
                 read_at=None,
             ).model_dump(mode="json")
-            if order_card is not None:
-                # 全站扇出共享同一个只读卡片引用，避免逐条深拷贝
-                payload["order_card"] = order_card
+            card = order_card
+            if cards_by_user is not None:
+                # 在线命中档位的用户拿变体；离线/未命中的用户回落到基础卡
+                card = cards_by_user.get(user_id, order_card)
+            if card is not None:
+                # 同组共享同一个只读卡片引用，避免逐条深拷贝
+                payload["order_card"] = card
             payloads.append((user_id, payload))
         return payloads
 

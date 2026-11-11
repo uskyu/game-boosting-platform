@@ -8,6 +8,12 @@ from app.schemas.admin import (
     BoosterApplicationResponse,
     BoosterApplicationReviewRequest,
 )
+from app.schemas.blacklist import (
+    PublisherBlacklistCreate,
+    PublisherBlacklistItem,
+    PublisherBlacklistListResponse,
+    PublisherBlacklistLookupResponse,
+)
 from app.schemas.booster_service import (
     BoosterServiceCreate,
     BoosterServiceListResponse,
@@ -80,6 +86,11 @@ __all__ = [
     "BoosterServiceOrderCreate",
     "BoosterServiceResponse",
     "BoosterServiceUpdate",
+    # 黑名单 schemas
+    "PublisherBlacklistCreate",
+    "PublisherBlacklistItem",
+    "PublisherBlacklistListResponse",
+    "PublisherBlacklistLookupResponse",
     "ChatMessageResponse",
     "ChatUserBrief",
     # Chat schemas

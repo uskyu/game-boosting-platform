@@ -7,6 +7,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useAfterSalesStore, isPendingAfterSale } from '@/stores/afterSales'
 import { useOrdersStore } from '@/stores/orders'
 import { useSiteStore } from '@/stores/site'
+import BlacklistPickModal from '@/components/BlacklistPickModal.vue'
 import { formatCount, formatDateTime, formatOrderPrice, formatPayoutDelay, formatPrice, formatShortDate } from '@/utils/display'
 import { ORDER_STATUS_OPTIONS, CANCEL_PENDING_CLAIM_META, getClaimSettlementMeta, getOrderDisplayStatus, getOrderStatusBadgeClass, getOrderStatusLabel, isClaimCancelPending } from '@/utils/order'
 import { buildAfterSaleAssistMessage } from '@/utils/afterSaleAssist'
@@ -494,6 +495,19 @@ function repeatOrder(orderId) {
   router.push({ path: '/orders/create', query: { recycle: String(orderId), mode: 'repeat' } })
 }
 
+// 「我的派单」卡片的快捷拉黑：按需打开弹窗，弹窗自己请求该单的接单名单
+//（GET /orders/{id}/claims），不展示任何全站用户列表。
+const blacklistPickOpen = ref(false)
+const blacklistPickOrderId = ref(null)
+const blacklistPickOrderTitle = ref('')
+
+function openBlacklistPick(order) {
+  if (!order?.id) return
+  blacklistPickOrderId.value = order.id
+  blacklistPickOrderTitle.value = order.title || order.game_name || `订单 #${order.id}`
+  blacklistPickOpen.value = true
+}
+
 function handlePageChange(page) {
   if (page < 1 || page > pagination.value.pages || page === pagination.value.page) {
     return
@@ -823,6 +837,15 @@ onUnmounted(() => {
                  售后申请入口已迁到订单详情页右侧「操作」卡（2026-10-18），
                  列表只保留上方徽标行的「售后处理中」只读标记。 -->
             <div class="mt-3 flex flex-wrap justify-end gap-2">
+              <!-- 快捷拉黑：只对已有接单人的派单显示；弹窗只列该单接单人 -->
+              <button
+                v-if="canPublish && Number(order.claimed_count ?? 0) > 0"
+                type="button"
+                class="btn-danger !px-4 !py-2"
+                @click.stop="openBlacklistPick(order)"
+              >
+                拉黑
+              </button>
               <button
                 v-if="canPublish"
                 type="button"
@@ -866,5 +889,12 @@ onUnmounted(() => {
         </div>
       </section>
     </template>
+
+    <!-- 快捷拉黑弹窗：只展示该订单参与者，按需请求 /orders/{id}/claims -->
+    <BlacklistPickModal
+      v-model="blacklistPickOpen"
+      :order-id="blacklistPickOrderId"
+      :order-title="blacklistPickOrderTitle"
+    />
   </div>
 </template>

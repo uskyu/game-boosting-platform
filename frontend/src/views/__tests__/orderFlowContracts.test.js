@@ -249,7 +249,8 @@ describe('claim preflight contracts', () => {
   })
 
   it('disables the claim button and shows progress while the preflight runs', () => {
-    expect(detailSource).toMatch(/:disabled="actionLoading \|\| claimPreflightLoading \|\| hasClaimed \|\| acceptWaitSeconds > 0"/)
+    // 2026-11-11：等待时间 pending / 详情加载中 / 被拉黑同样禁用，避免提前放开接单
+    expect(detailSource).toMatch(/:disabled="actionLoading \|\| claimPreflightLoading \|\| hasClaimed \|\| acceptWaitSeconds > 0 \|\| acceptWindowPending \|\| detailLoading \|\| acceptBlocked"/)
     expect(detailSource).toContain('{{ claimButtonLabel }}')
     expect(detailSource).toMatch(/if \(claimPreflightLoading\.value\) return '正在确认…'/)
   })
@@ -514,8 +515,9 @@ describe('claim wait-gate contracts', () => {
   }
 
   it('disables both claim buttons and shows remaining seconds while waiting', () => {
-    // 入口按钮：等待期禁用（acceptWaitSeconds > 0），标签带剩余秒数
-    expect(detailSource).toMatch(/:disabled="actionLoading \|\| claimPreflightLoading \|\| hasClaimed \|\| acceptWaitSeconds > 0"/)
+    // 入口按钮：等待期禁用（acceptWaitSeconds > 0），标签带剩余秒数；
+    // pending / 详情加载中 / 被拉黑也不能提前可点（2026-11-11）
+    expect(detailSource).toMatch(/:disabled="actionLoading \|\| claimPreflightLoading \|\| hasClaimed \|\| acceptWaitSeconds > 0 \|\| acceptWindowPending \|\| detailLoading \|\| acceptBlocked"/)
     // 确认按钮：同样在等待期禁用并显示倒计时标签
     expect(detailSource).toMatch(/class="btn-primary flex-1" :disabled="actionLoading \|\| acceptWaitSeconds > 0 \|\| !claimCaptchaReady"/)
     expect(detailSource).toContain('{{ claimConfirmLabel }}')

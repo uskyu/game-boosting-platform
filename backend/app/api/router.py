@@ -25,6 +25,7 @@ from app.api.endpoints import (
     after_sales_router,
     auth_router,
     announcements_router,
+    blacklist_router,
     chat_router,
     deposit_router,
     games_router,
@@ -64,6 +65,8 @@ api_router.include_router(after_sales_router)
 api_router.include_router(users_router)
 # 发单权限自助申请（登录用户）
 api_router.include_router(publish_permission_router)
+# 发单人黑名单（登录用户，ADMIN 或 can_publish=True 可用）
+api_router.include_router(blacklist_router)
 api_router.include_router(admin_router)
 api_router.include_router(admin_after_sales_router)
 api_router.include_router(admin_order_dispute_router)

@@ -58,6 +58,26 @@ describe('getAcceptWaitMeta', () => {
       Date.now = originalNow
     }
   })
+
+  it('accept_window_pending 时返回 pending，绝不把缺失字段显示成「无需等待」', () => {
+    expect(getAcceptWaitMeta({ accept_window_pending: true }, SERVER_MS)).toEqual({
+      remaining: 0,
+      total: 0,
+      state: 'pending',
+    })
+    // 即使旧字段存在（WS 兜底卡片/详情预填快照）也要 pending 优先
+    expect(getAcceptWaitMeta({
+      accept_window_pending: true,
+      accept_wait_seconds: 30,
+      accept_available_at: new Date(SERVER_MS + 5000).toISOString(),
+    }, SERVER_MS)).toEqual({ remaining: 0, total: 0, state: 'pending' })
+    // 旧字段兼容：没有 pending 标记时行为不变
+    expect(getAcceptWaitMeta({ accept_window_pending: false }, SERVER_MS)).toEqual({
+      remaining: 0,
+      total: 0,
+      state: 'available',
+    })
+  })
 })
 
 describe('formatDueCountdown / getDueCountdownParts', () => {

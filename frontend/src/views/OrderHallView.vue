@@ -35,7 +35,9 @@ const siteStore = useSiteStore()
 const now = ref(serverNow())
 
 function getAcceptWaitMetaFor(order) {
-  if (!isOrderClaimable(order) || order.my_claim) {
+  // 被发单人拉黑的订单不展示倒计时（服务端也不会再下发等待字段），
+  // 徽标另行提示「发单人已限制」。
+  if (!isOrderClaimable(order) || order.my_claim || order.accept_blocked) {
     return { remaining: 0, total: 0, state: 'available' }
   }
   return getAcceptWaitMeta(order, now.value)
@@ -47,6 +49,19 @@ function getAcceptWaitLabel(order) {
   return total > 0
     ? `接单等待：剩余 ${remaining} 秒（配置等待 ${total} 秒）`
     : `接单等待：剩余 ${remaining} 秒`
+}
+
+// 卡片等待区展示：pending（服务端还没算好）优先于剩余秒数；
+// pending 时绝不能显示「无需等待」（旧版把 null 当无需等待就是该 bug）。
+function getAcceptWaitView(order) {
+  const meta = getAcceptWaitMetaFor(order)
+  if (meta.state === 'pending') {
+    return { pending: true, label: '等待时间加载中' }
+  }
+  if (meta.remaining > 0) {
+    return { pending: false, label: getAcceptWaitLabel(order) }
+  }
+  return { pending: false, label: '' }
 }
 
 const orders = computed(() => ordersStore.orders)
@@ -613,6 +628,8 @@ onUnmounted(() => {
         <div class="flex items-start justify-between gap-2">
           <p class="shrink-0 text-2xl font-semibold tabular-nums leading-7 text-price">{{ getPriceLabel(order) }}</p>
           <span v-if="isFullOrder(order)" class="badge-cancelled shrink-0">已抢空</span>
+          <!-- 被发单人拉黑：订单仍可点进详情，但不能接单 -->
+          <span v-else-if="order.accept_blocked" class="tag shrink-0 !bg-danger-soft !text-danger">发单人已限制</span>
           <span v-else-if="!isOrderClaimable(order)" :class="[getOrderDisplayBadgeClass(order), 'shrink-0']">{{ getOrderDisplayStatus(order) }}</span>
         </div>
 
@@ -622,9 +639,13 @@ onUnmounted(() => {
         <!-- 炸单赔偿 / 到账时效 / 当前情况收敛为一行 13px 小字 -->
         <p v-if="getMetaLine(order)" class="mt-1.5 truncate text-[13px] tabular-nums text-ink-2">{{ getMetaLine(order) }}</p>
 
-        <!-- 抢单倒计时：明确区分当前剩余等待与配置的总等待时长 -->
-        <div v-if="getAcceptWaitMetaFor(order).remaining > 0" class="mt-2">
-          <span class="tag !bg-warning-soft !text-warning tabular-nums">{{ getAcceptWaitLabel(order) }}</span>
+        <!-- 抢单倒计时：pending 显示「加载中」（服务端下一轮对账补精确倒计时），
+             有剩余秒数时明确区分当前剩余与配置的总等待时长 -->
+        <div v-if="getAcceptWaitView(order).pending" class="mt-2">
+          <span class="tag !bg-surface-3 !text-ink-2">等待时间加载中</span>
+        </div>
+        <div v-else-if="getAcceptWaitView(order).label" class="mt-2">
+          <span class="tag !bg-warning-soft !text-warning tabular-nums">{{ getAcceptWaitView(order).label }}</span>
         </div>
 
         <div v-if="getAttachment(order)" class="mt-3 overflow-hidden rounded-tile"><img :src="getAttachment(order)" alt="订单附件" loading="lazy" class="max-h-40 w-full rounded object-cover" /></div>

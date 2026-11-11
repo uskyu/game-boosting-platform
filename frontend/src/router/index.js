@@ -39,6 +39,13 @@ const routes = [
     meta: { title: '我的订单', requiresAuth: true },
   },
   {
+    // 发单人黑名单（入口只对 canPublish 用户显示；后端同样按权限 403 兜底）
+    path: '/blacklist',
+    name: 'blacklist',
+    component: () => import('@/views/BlacklistView.vue'),
+    meta: { title: '黑名单', requiresAuth: true },
+  },
+  {
     // 游戏专区（次级页面，原首页内容权重收敛）
     path: '/games',
     name: 'games',

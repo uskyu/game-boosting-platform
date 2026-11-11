@@ -64,6 +64,10 @@ from app.schemas.order import (
 from app.schemas.user import MessageResponse
 from app.services import captcha_service
 from app.services.ai_service import LLMService, get_llm_service
+from app.services.blacklist_service import (
+    ACCEPT_BLOCKED_DETAIL,
+    blacklisted_publisher_ids,
+)
 from app.services.credit_service import get_credit_service
 from app.services.file_service import save_image_bytes, validate_image_upload
 from app.services.order_service import get_order_service
@@ -122,18 +126,21 @@ def _delivery_attachment_items(attachments) -> list[OrderDeliveryAttachment]:
 async def _apply_accept_window(
     db, responses: list[OrderResponse], orders: list[Order], viewer: User
 ) -> None:
-    """按查看者的保证金档位，为订单补上「还需等待多少秒才能接单」。
+    """按查看者补上「还能不能接 / 还需等待多少秒才能接单」。
 
-    保证金模式关闭或查看者是管理员时不写任何字段，前端按「可立即接单」渲染。
+    保证金模式关闭或查看者是管理员时不写等待字段，前端按「可立即接单」渲染。
+    发单人黑名单与保证金无关：每个请求只查一次「拉黑了当前查看者的发单人
+    集合」，命中时标记 accept_blocked 并清空等待倒计时（显示「再等 N 秒」
+    却永远接不了会造成误导）。
     """
     if viewer.role == UserRole.ADMIN:
         return
+    # 一次索引反查，全请求复用：O(订单数) 集合判断，不产生 N+1
+    blocked_publishers = await blacklisted_publisher_ids(db, viewer.id)
     # 保证金开关/档位等待秒数：列表链路已由 list_orders 的聚合顺带取回（请求内
     # 缓存复用），详情等其它路径回退 deposit_service 原实现，二者同口径。
     order_service = get_order_service(db)
     deposit_enabled, wait_seconds = await order_service.accept_window_wait(viewer)
-    if not deposit_enabled:
-        return
     now = datetime.now(timezone.utc)
     orders_by_id = {order.id: order for order in orders}
     for response in responses:
@@ -154,6 +161,8 @@ async def _apply_accept_window(
                 continue
         if (
             order.user_id == viewer.id
+            # 已接过的单（含 claim 记录缺失、仅订单上挂了 booster_id 的老数据）
+            or order.booster_id == viewer.id
             or order.is_archived
             or order.status not in (OrderStatus.PENDING, OrderStatus.LOCKED)
             or order.claim_status != ClaimStatus.OPEN
@@ -163,6 +172,19 @@ async def _apply_accept_window(
         ):
             continue
 
+        # 只对「本来可接」的订单标记拉黑；自己的单/已满/已关闭/已接过的单
+        # 保持 accept_blocked=False（与滑块/按钮的可用性同口径）。
+        if order.user_id in blocked_publishers:
+            response.accept_blocked = True
+            response.accept_blocked_reason = ACCEPT_BLOCKED_DETAIL
+            response.accept_wait_seconds = None
+            response.accept_available_at = None
+            continue
+
+        response.accept_blocked = False
+        response.accept_blocked_reason = None
+        if not deposit_enabled:
+            continue
         response.accept_wait_seconds = wait_seconds
         if wait_seconds > 0 and response.created_at is not None:
             created = response.created_at
@@ -431,8 +453,16 @@ async def create_order(
     # 任何人发单：向所有活跃非管理员广播"新订单"通知（批量、单事务，排除自己）。
     # 卡片一律按「其他打手视角」构建：game_account/boss_contact 强制置空，
     # 不能把发布方（可能是管理员）视角的敏感字段推给全站打手。
+    # 等待字段此时尚未按收件人档位计算：先显式标记 pending，由
+    # notify_boosters_new_order 对在线收件人补出按档位分组后的卡片变体。
     card_response = OrderResponse.model_validate(order).model_copy(
-        update={"game_account": None, "boss_contact": None}
+        update={
+            "game_account": None,
+            "boss_contact": None,
+            "accept_window_pending": True,
+            "accept_wait_seconds": None,
+            "accept_available_at": None,
+        }
     )
     order_card = _apply_slim_list_payload(card_response).model_dump(mode="json")
 

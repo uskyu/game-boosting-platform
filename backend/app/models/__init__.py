@@ -28,6 +28,7 @@ from app.models.publish_permission_request import (
     PublishPermissionRequest,
     PublishPermissionStatus,
 )
+from app.models.publisher_blacklist import PublisherBlacklist
 from app.models.push_subscription import PushSubscription
 from app.models.order import Order, OrderStatus, PaymentStatus
 from app.models.order_after_sale import AfterSaleStatus, OrderAfterSale
@@ -95,6 +96,7 @@ __all__ = [
     "UserSession",
     "PublishPermissionRequest",
     "PublishPermissionStatus",
+    "PublisherBlacklist",
     "PushSubscription",
     "Wallet",
     "WalletTransaction",

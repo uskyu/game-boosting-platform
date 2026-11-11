@@ -28,6 +28,7 @@ from app.api.endpoints.after_sales import (
     after_sales_router,
 )
 from app.api.endpoints.announcements import router as announcements_router
+from app.api.endpoints.blacklist import router as blacklist_router
 from app.api.endpoints.chat import router as chat_router
 from app.api.endpoints.deposit import router as deposit_router
 from app.api.endpoints.games import router as games_router
@@ -66,6 +67,7 @@ __all__ = [
     "after_sales_router",
     "auth_router",
     "announcements_router",
+    "blacklist_router",
     "chat_router",
     "deposit_router",
     "games_router",

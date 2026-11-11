@@ -4,10 +4,12 @@ import { useRouter } from 'vue-router'
 
 import Lightbox from '@/components/Lightbox.vue'
 import AfterSaleStatusModal from '@/components/AfterSaleStatusModal.vue'
+import BlacklistConfirmModal from '@/components/BlacklistConfirmModal.vue'
 import OrderDeliverModal from '@/components/OrderDeliverModal.vue'
 import OrderTimeline from '@/components/OrderTimeline.vue'
 import { useAfterSalesStore } from '@/stores/afterSales'
 import { useAuthStore } from '@/stores/auth'
+import { useBlacklistStore } from '@/stores/blacklist'
 import { useChatStore } from '@/stores/chat'
 import { useOrdersStore } from '@/stores/orders'
 import { useSiteStore } from '@/stores/site'
@@ -29,6 +31,7 @@ const authStore = useAuthStore()
 const chatStore = useChatStore()
 const ordersStore = useOrdersStore()
 const afterSalesStore = useAfterSalesStore()
+const blacklistStore = useBlacklistStore()
 const siteStore = useSiteStore()
 // 发单/接单权限：管理员不受限；未返回字段时默认放行（兼容旧响应）。
 const canPublish = computed(() => authStore.canPublish)
@@ -239,11 +242,20 @@ const humanStatusSubtitle = computed(() => {
   return getHumanStatusSubtitle(order.value?.status, order.value?.service_type, viewRole.value)
 })
 const isPending = computed(() => order.value?.status === 'PENDING')
+// 发单人是否拉黑了当前查看者：服务端在本来可接的订单上下发标记，并固定
+// accept_blocked_reason 文案（不暴露发单人填写的备注）。
+const acceptBlocked = computed(() => Boolean(order.value?.accept_blocked))
+const acceptBlockedReason = computed(
+  () => order.value?.accept_blocked_reason || '你已被该发布人拉黑，无法接此单',
+)
+// 等待时间尚未由服务端按当前查看者计算（如 WS 新单卡片/详情预填快照）：
+// 此时字段缺失不能当成「无需等待」，按钮也不能提前放开。
+const acceptWindowPending = computed(() => Boolean(order.value?.accept_window_pending))
 
 // 与订单大厅保持一致：LOCKED 多人订单只要仍有空余名额即可继续接单。
 const canAcceptOrder = computed(() => {
   const o = order.value
-  if (!o || isOwner.value || hasClaimed.value) return false
+  if (!o || isOwner.value || hasClaimed.value || acceptBlocked.value) return false
   if (!['PENDING', 'LOCKED'].includes(o.status) || o.claim_status !== 'OPEN') return false
   if (o.is_archived || Number(o.claimed_count) >= Number(o.max_claims)) return false
   if (o.status === 'LOCKED' && Number(o.max_claims) <= 1) return false
@@ -270,13 +282,16 @@ const acceptWaitSeconds = computed(
 )
 // 本单要求等待的总秒数（后端按当前用户所在阶梯下发，null=保证金模式关闭）
 const acceptRequiredWait = computed(() => acceptWaitMeta.value.total)
-const acceptWaitState = computed(
-  () => (acceptWaitSeconds.value > 0 ? 'waiting' : acceptWaitMeta.value.state),
-)
+const acceptWaitState = computed(() => {
+  if (acceptWaitSeconds.value > 0) return 'waiting'
+  if (acceptWindowPending.value) return 'pending'
+  return acceptWaitMeta.value.state
+})
 const claimButtonLabel = computed(() => {
   if (hasClaimed.value) return '已接手订单'
   if (claimPreflightLoading.value) return '正在确认…'
   if (acceptWaitSeconds.value > 0) return `接手订单（${acceptWaitSeconds.value} 秒后可接）`
+  if (acceptWindowPending.value) return '等待时间加载中…'
   return '接手订单'
 })
 const claimConfirmLabel = computed(() => {
@@ -513,6 +528,25 @@ function claimBoosterName(claim) {
   return claim?.booster_nickname || (claim?.booster_id != null ? `用户 #${claim.booster_id}` : '打手')
 }
 
+// ── 接单名单快捷拉黑（发单人/管理员）──
+// 复用 blacklist store 与 BlacklistConfirmModal，与「我的派单」列表的快捷拉黑
+// 保持同一套二次确认文案与提交逻辑。
+const showBlacklistConfirm = ref(false)
+const blacklistTarget = ref(null)
+
+function openBlacklistConfirm(claim) {
+  if (!claim?.booster_id || blacklistStore.isBlocked(claim.booster_id)) return
+  blacklistTarget.value = {
+    userId: Number(claim.booster_id),
+    username: claimBoosterName(claim),
+  }
+  showBlacklistConfirm.value = true
+}
+
+function onBlacklistBlocked(userId) {
+  successMessage.value = `已拉黑该打手（用户 #${userId}）；对方仍能看到订单，但不能接单。`
+}
+
 // 服务费拆分：后端按有效费率回显（分位四舍五入，与结算同口径）；费率 0 时不展示
 // 到账时效是否为「没填 → 默认 3 天」：是则在数值后标注「默认」，让用户分得清
 // 「我自己填了 3 天」和「我没填、系统按 3 天算」。
@@ -618,6 +652,11 @@ async function openClaimModal() {
   if (hasClaimed.value || actionLoading.value || claimPreflightLoading.value || acceptWaitSeconds.value > 0) {
     return
   }
+  // 被发单人拉黑、或等待时间尚未由服务端计算时，不进入接单流程；
+  // 服务端接单接口的 403/400 仍是最终兜底。
+  if (acceptBlocked.value || acceptWindowPending.value) {
+    return
+  }
   errorMessage.value = ''
   successMessage.value = ''
   // 上一次弹窗残留的验证码一律作废（一次性、可能已被消费）
@@ -650,6 +689,21 @@ async function openClaimModal() {
       errorMessage.value = fresh.error || '网络异常，请稍后重试'
     }
     showClaimFailModal.value = true
+    return
+  }
+  // 预检拿到最新快照后重新判断：拉黑可能发生在页面打开之后；等待时间也可能
+  // 刚从 pending 补算出来且仍在等待。两种情况都不打开验证码弹窗，改为操作卡提示。
+  if (acceptBlocked.value) {
+    showClaimModal.value = false
+    errorMessage.value = acceptBlockedReason.value
+    showClaimFailModal.value = true
+    return
+  }
+  if (acceptWindowPending.value || acceptWaitSeconds.value > 0) {
+    showClaimModal.value = false
+    errorMessage.value = acceptWaitSeconds.value > 0
+      ? `接单还需等待 ${acceptWaitSeconds.value} 秒，倒计时结束后再试`
+      : '正在获取接单等待时间，请稍候…'
     return
   }
   if (!canAcceptOrder.value) {
@@ -1723,6 +1777,16 @@ onUnmounted(() => {
               <p v-else-if="claim.status !== 'CLAIMED'" class="mt-2 text-xs text-ink-3">未提交交付截图</p>
             </div>
             <div class="flex shrink-0 items-center gap-3">
+              <!-- 发单人可直接从接单名单拉黑该打手（只影响后续接单，不追溯本单） -->
+              <button
+                v-if="claim.booster_id"
+                type="button"
+                class="btn-secondary !min-h-[36px] !px-3"
+                :disabled="blacklistStore.isBlocked(claim.booster_id)"
+                @click.stop="openBlacklistConfirm(claim)"
+              >
+                {{ blacklistStore.isBlocked(claim.booster_id) ? '已拉黑' : '拉黑' }}
+              </button>
               <div class="text-right">
                 <span :class="claimRowStatusMeta(claim).tagClass">
                   {{ claimRowStatusMeta(claim).label }}
@@ -1824,7 +1888,17 @@ onUnmounted(() => {
 
           <!-- 桌面竖排；<xl 压缩为单行操作栏：返回列表 | 联系 | 主操作 -->
           <div class="od-ops__body mt-6 flex flex-col gap-3">
-            <!-- 抢单等待状态仅影响展示，按钮禁用条件仍由剩余秒数和服务端共同决定。 -->
+            <!-- 被发单人拉黑：订单仍可查看，但接单入口不可用（服务端 403 兜底） -->
+            <p
+              v-if="isBooster && !isOwner && acceptBlocked"
+              class="message-warning od-ops__notice text-xs leading-6"
+            >
+              {{ acceptBlockedReason }}
+              <span class="mt-1 block font-normal text-ink-2">订单仍可查看，已接订单不受影响。</span>
+            </p>
+
+            <!-- 抢单等待状态仅影响展示，按钮禁用条件仍由剩余秒数和服务端共同决定。
+                 pending（等待时间未计算）不能被当成「无需等待」。 -->
             <div
               v-if="isBooster && canAccept && canAcceptOrder"
               :class="[acceptWaitState === 'waiting' ? 'message-warning' : 'message-info', 'od-ops__notice', 'text-xs leading-6']"
@@ -1834,6 +1908,9 @@ onUnmounted(() => {
               </template>
               <template v-else-if="acceptWaitState === 'ready'">
                 接单等待已结束：配置等待 {{ acceptRequiredWait }} 秒，当前可立即接单。
+              </template>
+              <template v-else-if="acceptWaitState === 'pending'">
+                正在获取接单等待时间…
               </template>
               <template v-else>
                 接单无需等待：当前可立即接单。
@@ -1851,7 +1928,7 @@ onUnmounted(() => {
             <button
               v-if="isBooster && canAccept && (canAcceptOrder || (order.status === 'PENDING' && !isOwner && hasClaimed))"
               class="od-ops__primary btn-primary w-full py-3"
-              :disabled="actionLoading || claimPreflightLoading || hasClaimed || acceptWaitSeconds > 0"
+              :disabled="actionLoading || claimPreflightLoading || hasClaimed || acceptWaitSeconds > 0 || acceptWindowPending || detailLoading || acceptBlocked"
               @click="openClaimModal"
             >
               {{ claimButtonLabel }}
@@ -2110,6 +2187,13 @@ onUnmounted(() => {
 
     <!-- 弹窗/灯箱挂在页面根节点：loading 骨架屏切换会卸载子组件并丢弃其关闭事件 -->
     <template v-if="order">
+      <BlacklistConfirmModal
+        v-model="showBlacklistConfirm"
+        :user-id="blacklistTarget?.userId"
+        :username="blacklistTarget?.username || ''"
+        @blocked="onBlacklistBlocked"
+      />
+
       <OrderDeliverModal
         v-model="showDeliverModal"
         :order-id="order.id"

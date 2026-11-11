@@ -105,10 +105,15 @@ export function getAcceptWaitSeconds(availableAt, now = serverNow()) {
 }
 
 /**
- * 订单接单等待展示状态：等待中、等待已结束，或无需等待。
- * 该状态只用于前端文案，接单权限仍由服务端校验。
+ * 订单接单等待展示状态：等待中、等待已结束、无需等待，或等待时间尚未计算。
+ * ``pending`` 表示服务端还没按当前查看者算好等待时间（如 WS 新单卡片、详情预填
+ * 的快照），此时字段缺失 **不能**当成「无需等待」；该状态只用于前端文案，
+ * 接单权限仍由服务端校验。
  */
 export function getAcceptWaitMeta(order, now = serverNow()) {
+  if (order?.accept_window_pending) {
+    return { remaining: 0, total: 0, state: 'pending' }
+  }
   const configuredWait = Number(order?.accept_wait_seconds)
   const total = Number.isFinite(configuredWait) && configuredWait > 0 ? Math.floor(configuredWait) : 0
   const remaining = getAcceptWaitSeconds(order?.accept_available_at, now)

@@ -29,6 +29,7 @@ from app.models.deposit import (
 )
 from app.models.order import ClaimLifecycleStatus, Order, OrderClaim
 from app.models.user import User
+from app.models.wallet import Wallet
 from app.services.wallet_service import get_wallet_service
 
 logger = logging.getLogger(__name__)
@@ -520,6 +521,57 @@ async def get_user_tier(db: AsyncSession, user_id: int) -> tuple[DepositTier | N
     return resolve_tier(tiers, balance), balance
 
 
+async def get_many_tier_wait_seconds(
+    db: AsyncSession,
+    user_ids: list[int],
+) -> dict[int, int]:
+    """批量计算每个用户当前档位的接单等待秒数（新单 WS 卡片分组专用）。
+
+    与 ``get_user_tier`` 同口径（门槛 ≤ 保证金余额的最高一档），但**不逐用户
+    查库**：一次保证金总开关 + 一次启用档位表 + 一次 ``wallets`` IN 查询，
+    Python 内 ``resolve_tier`` 解析。钱包行不存在时按 0 余额处理（与刚创建
+    的钱包一致），绝不为了读档位去写钱包。
+    """
+    ids = list(dict.fromkeys(int(uid) for uid in user_ids))
+    if not ids:
+        return {}
+    if not await is_deposit_enabled(db):
+        return {uid: 0 for uid in ids}
+
+    tiers = await _enabled_tiers_once(db)
+    if not tiers:
+        # 空表时补默认档位（与 list_tiers 行为一致）；正常生产/初始化后
+        # 档位表非空，不会走到这里。
+        await ensure_default_tiers(db)
+        tiers = await _enabled_tiers_once(db)
+
+    wallet_result = await db.execute(
+        select(Wallet.user_id, Wallet.deposit_balance).where(
+            Wallet.user_id.in_(ids)
+        )
+    )
+    balances = {
+        int(user_id): Decimal(str(balance or 0))
+        for user_id, balance in wallet_result.all()
+    }
+
+    waits: dict[int, int] = {}
+    for uid in ids:
+        tier = resolve_tier(tiers, balances.get(uid, Decimal("0")))
+        waits[uid] = int(tier.wait_seconds or 0) if tier is not None else 0
+    return waits
+
+
+async def _enabled_tiers_once(db: AsyncSession) -> list[DepositTier]:
+    """一次查询取回启用档位（按门槛升序），不触发默认档位写入。"""
+    result = await db.execute(
+        select(DepositTier)
+        .where(DepositTier.enabled.is_(True))
+        .order_by(DepositTier.threshold.asc())
+    )
+    return list(result.scalars().all())
+
+
 # ---------------------------------------------------------------------------
 # 每日接单量（按北京时间每日 0:00 刷新）
 # ---------------------------------------------------------------------------
@@ -734,6 +786,7 @@ __all__ = [
     "daily_accept_status",
     "daily_accept_window",
     "ensure_default_tiers",
+    "get_many_tier_wait_seconds",
     "get_or_create_deposit_setting",
     "get_user_tier",
     "is_deposit_enabled",

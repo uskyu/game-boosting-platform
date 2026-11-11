@@ -149,6 +149,8 @@ onMounted(async () => {
             <router-link to="/orders" class="btn-secondary !px-4">我的订单</router-link>
             <router-link v-if="user?.role !== 'ADMIN'" to="/services" class="btn-secondary !px-4">接单工作台</router-link>
             <router-link v-if="user?.role !== 'ADMIN'" to="/publish-permission" class="btn-secondary !px-4">发单权限</router-link>
+            <!-- 黑名单仅发单用户（管理员也算）可用，后端同样按权限 403 兜底 -->
+            <router-link v-if="authStore.canPublish" to="/blacklist" class="btn-secondary !px-4">黑名单</router-link>
             <router-link to="/wallet" class="btn-secondary !px-4">钱包</router-link>
             <router-link v-if="user?.role === 'ADMIN'" to="/admin" class="btn-secondary !px-4">管理后台</router-link>
             <router-link to="/settings" class="btn-secondary !px-4">设置</router-link>

@@ -91,4 +91,30 @@ describe('orders store snapshot comparison', () => {
     expect(result).toEqual({ success: true, unchanged: true })
     expect(store.orders).toBe(previousOrders)
   })
+
+  // 2026-11-11：WS 新单卡片带 accept_window_pending=true，第一次 2s/10s 对账
+  // 补算出等待时间/拉黑标记时，即便 accept_available_at 仍为 null（保证金关闭
+  // 或同一秒），也必须重渲；否则卡片会永远停在「等待时间加载中」。
+  it('refreshes when accept_window_pending clears or accept_blocked appears', async () => {
+    const store = useOrdersStore()
+    const pendingCard = { ...makeOrder(), accept_window_pending: true }
+    const resolvedCard = {
+      ...makeOrder(),
+      accept_window_pending: false,
+      accept_blocked: true,
+      accept_blocked_reason: '你已被该发布人拉黑，无法接此单',
+    }
+    apiGet
+      .mockResolvedValueOnce(orderListResponse([pendingCard]))
+      .mockResolvedValueOnce(orderListResponse([resolvedCard]))
+
+    await store.fetchOrders()
+    const previousOrders = store.orders
+    const result = await store.fetchOrders({ silent: true })
+
+    expect(result).toEqual({ success: true })
+    expect(store.orders).not.toBe(previousOrders)
+    expect(store.orders[0].accept_window_pending).toBe(false)
+    expect(store.orders[0].accept_blocked).toBe(true)
+  })
 })
