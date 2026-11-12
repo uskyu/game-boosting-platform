@@ -55,6 +55,9 @@ let knownNotifIds = null
 // 请求本身有硬超时，故这个锁会由 finally 可靠释放。
 let notifPolling = false
 const NOTIF_REQUEST_TIMEOUT = 10_000
+// 前台恢复时刷新 /auth/me 的节流时间戳：visibilitychange + focus 会连续触发，
+// 15 秒内只刷一次，避免重复请求（也不会反过来触发任何可见性事件，无循环）。
+let lastMeRefreshAt = 0
 // 认证代次和请求序号共同阻止旧账号的轮询响应落到新账号状态上。
 let authGeneration = 0
 let notifRequestSeq = 0
@@ -413,6 +416,12 @@ function handleAppVisibility() {
   // 恢复前台时同时检查 WS 活性：仍 OPEN 但 pong 超时的半开连接会被替换；
   // healthy 连接保持不动，focus/visibility 双事件不会创建重复 socket。
   chatStore.recoverWebSocketIfStale()
+  // 后台可能刚调整了发单权限/发单封禁/全站管控：长驻标签页里的 user 快照
+  // 会过期，这里按节流刷新一次 /auth/me，让按钮与服务端权限保持一致。
+  if (Date.now() - lastMeRefreshAt > 15_000) {
+    lastMeRefreshAt = Date.now()
+    authStore.fetchCurrentUser().catch(() => {})
+  }
   // 移动浏览器从后台恢复时，页面冻结期间可能错过通知，立即做一次对账。
   const generation = authGeneration
   pollOrderNotifications({ generation }).catch(() => {})
@@ -504,7 +513,7 @@ onBeforeUnmount(() => {
           <ThemeToggle />
 
           <template v-if="isAuthenticated">
-            <span :class="[roleMeta.badgeClass, 'hidden lg:inline-flex']">{{ roleMeta.label }}</span>
+            <span :class="[roleMeta.badgeClass, 'hidden shrink-0 whitespace-nowrap lg:inline-flex']">{{ roleMeta.label }}</span>
             <router-link to="/profile" class="btn-secondary !px-4 hidden lg:inline-flex">{{ user?.username || copy.profile }}</router-link>
             <router-link to="/settings" class="btn-ghost !px-3 hidden lg:inline-flex" title="设置">
               <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">

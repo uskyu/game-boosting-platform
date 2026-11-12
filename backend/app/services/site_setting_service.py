@@ -29,6 +29,7 @@ async def ensure_site_settings(db) -> SiteSetting:
         registration_default_can_publish=settings.REGISTRATION_DEFAULT_CAN_PUBLISH,
         registration_default_can_accept=settings.REGISTRATION_DEFAULT_CAN_ACCEPT,
         publish_permission_apply_enabled=settings.PUBLISH_PERMISSION_APPLY_ENABLED,
+        publish_permission_required=settings.PUBLISH_PERMISSION_REQUIRED,
     )
     db.add(setting)
     await db.flush()

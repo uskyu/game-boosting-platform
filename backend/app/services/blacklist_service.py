@@ -16,6 +16,8 @@ from app.core.security import escape_like
 from app.models.publisher_blacklist import PublisherBlacklist
 from app.models.user import User, UserRole
 from app.schemas.blacklist import PublisherBlacklistItem, PublisherBlacklistLookupResponse
+from app.services.publish_permission_service import can_publish_effective
+from app.services.site_setting_service import get_or_create_site_setting
 
 # 单发单人上限（服务层校验）
 BLACKLIST_LIMIT_PER_PUBLISHER = 500
@@ -28,9 +30,16 @@ TARGET_FORBIDDEN_DETAIL = "该用户不可拉黑"
 LIMIT_EXCEEDED_DETAIL = "黑名单已达上限（最多 500 人）"
 
 
-def ensure_can_manage_blacklist(user: User) -> None:
-    """黑名单只允许管理员或具备发单权限的用户使用。"""
-    if user.role == UserRole.ADMIN or bool(user.can_publish):
+async def ensure_can_manage_blacklist(db: AsyncSession, user: User) -> None:
+    """黑名单只允许管理员或当前实际可发单的用户使用。
+
+    全站总开关关闭时，未封禁的非管理员无需已开通发单权限也可使用；
+    被封禁发单的用户始终不能用（与发单权限口径一致）。
+    """
+    setting = await get_or_create_site_setting(db)
+    if can_publish_effective(
+        user, required=bool(setting.publish_permission_required)
+    ):
         return
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,

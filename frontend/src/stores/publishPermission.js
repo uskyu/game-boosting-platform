@@ -34,6 +34,12 @@ export function getPublishPermissionStatusTagClass(status) {
 const emptyMine = {
   can_publish: false,
   apply_enabled: true,
+  // 全站发单权限管控是否开启（默认开启，与站点设置一致）
+  required: true,
+  // 个人发单封禁（显式封禁在两种模式下都阻止发单）
+  publish_banned: false,
+  // 后端权威快照：当前用户是否真的可以发单
+  can_publish_effective: false,
   latest: null,
   has_pending: false,
 }
@@ -54,10 +60,18 @@ export const usePublishPermissionStore = defineStore('publishPermission', () => 
     try {
       const response = await api.get('/publish-permission/mine')
       const data = response.data || {}
+      // can_publish_effective 是后端权威快照；旧响应缺少该字段时回退到
+      // 原始开通标记（无封禁字段时视为未封禁），避免把已开通用户误判成未开通。
+      const canPublishEffective = typeof data.can_publish_effective === 'boolean'
+        ? data.can_publish_effective
+        : data.can_publish === true && data.publish_banned !== true
       mine.value = {
         can_publish: data.can_publish === true,
         // 未返回时按开启处理（与站点默认一致）
         apply_enabled: data.apply_enabled !== false,
+        required: data.required !== false,
+        publish_banned: data.publish_banned === true,
+        can_publish_effective: canPublishEffective === true,
         latest: data.latest || null,
         has_pending: data.has_pending === true || data.latest?.status === 'PENDING',
       }

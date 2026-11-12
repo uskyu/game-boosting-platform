@@ -21,6 +21,8 @@ export const useAdminUsersStore = defineStore('adminUsers', () => {
         // 权限筛选走后端（才能保证分页口径与总数正确）
         can_publish: options.can_publish === '' || options.can_publish == null ? undefined : options.can_publish,
         can_accept: options.can_accept === '' || options.can_accept == null ? undefined : options.can_accept,
+        // 封禁筛选：true=只看被封禁发单的用户
+        publish_banned: options.publish_banned === '' || options.publish_banned == null ? undefined : options.publish_banned,
       } })
       const data = response.data || {}
       users.value = data.items || []

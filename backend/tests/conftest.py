@@ -17,6 +17,12 @@ from app.core.post_commit import drain_registry, start_registry, stop_registry
 from app.db.session import get_async_session
 from app.main import app
 from app.models.base import Base
+from app.services import captcha_service, rate_limit_service
+
+# 反自动化限流默认在测试里关闭：既有用例大量连续调用列表/摘要/验证码接口，
+# 开启会让与被测行为无关的用例触发 429。需要验证限流的用例显式请求
+# ``rate_limits_enabled`` fixture。
+settings.RATE_LIMIT_ENABLED = False
 
 # Build test DB URL: replace database name with test variant
 _prod_url = settings.DB_URL
@@ -120,6 +126,35 @@ async def reset_database() -> AsyncGenerator[None, None]:
         )
         await session.commit()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limit_state():
+    """限流桶/验证码存储按用例隔离，避免上一个用例的计数或绑定串到下一个。"""
+    rate_limit_service.reset()
+    captcha_service._store.clear()
+    captcha_service._scenes.clear()
+    captcha_service._subjects.clear()
+    captcha_service._users.clear()
+    captcha_service._bindings.clear()
+    captcha_service._rate.clear()
+    yield
+    rate_limit_service.reset()
+    captcha_service._store.clear()
+    captcha_service._scenes.clear()
+    captcha_service._subjects.clear()
+    captcha_service._users.clear()
+    captcha_service._bindings.clear()
+    captcha_service._rate.clear()
+
+
+@pytest.fixture
+def rate_limits_enabled(monkeypatch):
+    """显式打开反自动化限流（默认在测试里关闭）。"""
+    monkeypatch.setattr(settings, "RATE_LIMIT_ENABLED", True)
+    rate_limit_service.reset()
+    yield
+    rate_limit_service.reset()
 
 
 @pytest.fixture(autouse=True)

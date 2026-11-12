@@ -25,6 +25,9 @@ class PublishPermissionRequestItem(BaseModel):
     created_at: datetime
     resolved_at: datetime | None = None
     history_count: int = 0
+    # 后台申请列表据此提示/禁用审核：用户当前是否已开通、是否被封禁发单。
+    can_publish: bool = True
+    publish_banned: bool = False
 
     @field_serializer("user_created_at", "created_at", "resolved_at")
     def serialize_dt(self, value: datetime | None) -> str | None:
@@ -34,7 +37,11 @@ class PublishPermissionRequestItem(BaseModel):
 class PublishPermissionMineResponse(BaseModel):
     """「我的发单权限」页所需状态。"""
 
+    # can_publish 是「已开通」标记；实际能否发单看 can_publish_effective。
     can_publish: bool
+    publish_banned: bool
+    required: bool = True
+    can_publish_effective: bool
     apply_enabled: bool
     latest: PublishPermissionRequestItem | None = None
     has_pending: bool = False

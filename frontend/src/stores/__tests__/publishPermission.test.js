@@ -45,7 +45,15 @@ describe('publishPermission store', () => {
     const store = usePublishPermissionStore()
     const latest = makeLatest()
     apiGet.mockResolvedValueOnce({
-      data: { can_publish: false, apply_enabled: true, latest, has_pending: true },
+      data: {
+        can_publish: false,
+        apply_enabled: true,
+        required: true,
+        publish_banned: true,
+        can_publish_effective: false,
+        latest,
+        has_pending: true,
+      },
     })
 
     const result = await store.fetchMine()
@@ -55,12 +63,40 @@ describe('publishPermission store', () => {
     expect(result.success).toBe(true)
     expect(store.mine.can_publish).toBe(false)
     expect(store.mine.apply_enabled).toBe(true)
+    expect(store.mine.required).toBe(true)
+    expect(store.mine.publish_banned).toBe(true)
+    expect(store.mine.can_publish_effective).toBe(false)
     expect(store.mine.latest).toEqual(latest)
     expect(store.mine.has_pending).toBe(true)
     expect(store.loading).toBe(false)
   })
 
-  it('fetchMine defaults apply_enabled to true and infers has_pending from latest', async () => {
+  it('fetchMine normalizes the global-open snapshot', async () => {
+    const store = usePublishPermissionStore()
+    apiGet.mockResolvedValueOnce({
+      data: {
+        can_publish: false,
+        apply_enabled: true,
+        required: false,
+        publish_banned: false,
+        can_publish_effective: true,
+      },
+    })
+
+    await store.fetchMine()
+
+    expect(store.mine).toEqual({
+      can_publish: false,
+      apply_enabled: true,
+      required: false,
+      publish_banned: false,
+      can_publish_effective: true,
+      latest: null,
+      has_pending: false,
+    })
+  })
+
+  it('fetchMine defaults apply_enabled/required and infers has_pending from latest', async () => {
     const store = usePublishPermissionStore()
     apiGet.mockResolvedValueOnce({
       data: { can_publish: true, latest: makeLatest({ status: 'PENDING' }) },
@@ -70,8 +106,29 @@ describe('publishPermission store', () => {
 
     expect(result.success).toBe(true)
     expect(store.mine.apply_enabled).toBe(true)
+    // 缺少 required/publish_banned 的旧响应：按管控开启、未封禁处理
+    expect(store.mine.required).toBe(true)
+    expect(store.mine.publish_banned).toBe(false)
+    // 旧响应缺少权威快照时回退到原始开通标记
+    expect(store.mine.can_publish_effective).toBe(true)
     expect(store.mine.has_pending).toBe(true)
     expect(store.mine.latest.status).toBe('PENDING')
+  })
+
+  it('fetchMine derives effective permission from old responses', async () => {
+    const store = usePublishPermissionStore()
+    apiGet.mockResolvedValueOnce({ data: { can_publish: false } })
+    await store.fetchMine()
+    expect(store.mine.can_publish_effective).toBe(false)
+
+    apiGet.mockResolvedValueOnce({ data: { can_publish: true, publish_banned: true } })
+    await store.fetchMine()
+    expect(store.mine.can_publish_effective).toBe(false)
+
+    // 后端明确返回快照时优先采用（全站开放时 raw grant=false 但 effective=true）
+    apiGet.mockResolvedValueOnce({ data: { can_publish: false, required: false, can_publish_effective: true } })
+    await store.fetchMine()
+    expect(store.mine.can_publish_effective).toBe(true)
   })
 
   it('fetchMine surfaces the API error without clobbering results', async () => {
@@ -222,6 +279,9 @@ describe('publishPermission store', () => {
     expect(store.mine).toEqual({
       can_publish: false,
       apply_enabled: true,
+      required: true,
+      publish_banned: false,
+      can_publish_effective: false,
       latest: null,
       has_pending: false,
     })

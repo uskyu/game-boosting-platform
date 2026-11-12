@@ -67,6 +67,11 @@ function handlePage(page) {
 }
 
 function openApprove(item) {
+  // 被封禁用户即使申请通过也无法发单；后端也会返回 400，这里先拦一道。
+  if (item?.publish_banned === true) {
+    notice.value = { type: 'warning', text: '该用户已被封禁发单，请先到用户管理解除封禁' }
+    return
+  }
   reviewModal.value = { type: 'approve', item, reason: '', error: '', submitting: false }
 }
 
@@ -187,6 +192,7 @@ watch(statusFilter, () => load(1))
               <span :class="['tag', getPublishPermissionStatusTagClass(item.status)]">
                 {{ getPublishPermissionStatusLabel(item.status) }}
               </span>
+              <span v-if="item.publish_banned" class="tag !bg-danger-soft !text-danger">封禁中</span>
             </div>
             <p class="mt-1 text-xs text-ink-3">
               {{ item.email || '未填写邮箱' }} · 用户 #{{ item.user_id }}
@@ -216,8 +222,17 @@ watch(statusFilter, () => load(1))
           <span v-if="item.resolved_at">处理于 {{ formatDateTime(item.resolved_at) }}</span>
         </p>
 
+        <p v-if="item.status === 'PENDING' && item.publish_banned" class="message-warning mt-3 text-sm leading-6">
+          该用户已被封禁发单，请先到用户管理解除封禁
+        </p>
         <div v-if="item.status === 'PENDING'" class="mt-4 flex flex-wrap justify-end gap-2">
-          <button type="button" class="btn-primary min-h-[44px] !px-4 !py-2" @click="openApprove(item)">通过</button>
+          <button
+            type="button"
+            class="btn-primary min-h-[44px] !px-4 !py-2"
+            :disabled="item.publish_banned === true"
+            :title="item.publish_banned === true ? '该用户已被封禁发单，请先到用户管理解除封禁' : ''"
+            @click="openApprove(item)"
+          >通过</button>
           <button type="button" class="btn-danger min-h-[44px] !px-4 !py-2" @click="openReject(item)">驳回</button>
         </div>
       </article>

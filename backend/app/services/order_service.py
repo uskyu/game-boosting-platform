@@ -18,7 +18,7 @@ from sqlalchemy.orm import aliased, joinedload, selectinload
 from app.core.money import resolve_service_fee_rate
 from app.core.product_time import product_day_bounds
 from app.core.security import encrypt_text, escape_like
-from app.core.title_rules import apply_title_replacements
+from app.core.title_rules import apply_title_replacements, normalize_rules
 from app.models.booster_service import BoosterService
 from app.models.deposit import (
     SETTLEMENT_MODE_AFTER_APPROVAL,
@@ -46,7 +46,14 @@ from app.schemas.order import OrderCreate, OrderUpdate
 from app.services.ai_service import LLMService
 from app.services import platform_income_service
 from app.services.blacklist_service import ACCEPT_BLOCKED_DETAIL, is_user_blacklisted
-from app.services.site_setting_service import get_order_title_replacements
+from app.services.publish_permission_service import (
+    can_publish_effective,
+    publish_forbidden_detail,
+)
+from app.services.site_setting_service import (
+    get_or_create_site_setting,
+    get_order_title_replacements,
+)
 from app.services.wallet_service import calculate_order_income, get_wallet_service
 
 logger = logging.getLogger(__name__)
@@ -187,15 +194,21 @@ class OrderService:
             - 任何活跃用户均可发单。ADMIN（平台单）不冻结资金；
             - 非管理员发布时托管 price × max_claims：发布人可用余额
               减少、冻结余额增加（ESCROW_HOLD），余额不足返回 400。
-            - 被禁止发单（can_publish=False）的非管理员返回 403；
-              ADMIN 发单不受 can_publish 限。
+            - 发单权限按全站开关计算：publish_banned=true 的非管理员一律 403；
+              全站 required=true 时还需 can_publish=true（已开通），false 时
+              未封禁的非管理员都可发单；ADMIN 不受这些限制。
             - 服务费费率（百分比）仅 ADMIN 可设置，非管理员传入也被忽略
               （按平台默认费率结算，打手入账 = price × (1 - 有效费率)）。
         """
-        if user.role != UserRole.ADMIN and not user.can_publish:
+        # 站点设置只读一次：既用于发单权限总开关，也用于后面的标题替换规则。
+        setting = await get_or_create_site_setting(self._db)
+        required = bool(setting.publish_permission_required)
+        if user.role != UserRole.ADMIN and not can_publish_effective(
+            user, required=required
+        ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="您已被禁止发布订单",
+                detail=publish_forbidden_detail(user, required=required),
             )
         game = await self._resolve_game(
             game_id=order_data.game_id,
@@ -248,7 +261,7 @@ class OrderService:
                     detail=f"余额不足以托管该订单（需 ¥{escrow_required}）",
                 )
 
-        title_rules = await get_order_title_replacements(self._db)
+        title_rules = normalize_rules(setting.order_title_replacements)
         order = Order(
             user_id=user.id,
             game_id=game.id if game is not None else order_data.game_id,

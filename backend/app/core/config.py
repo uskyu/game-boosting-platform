@@ -68,6 +68,9 @@ class Settings(BaseSettings):
     REGISTRATION_DEFAULT_CAN_PUBLISH: bool = True
     REGISTRATION_DEFAULT_CAN_ACCEPT: bool = True
     PUBLISH_PERMISSION_APPLY_ENABLED: bool = True
+    # 全站发单权限总开关的初始值（同样只在 site_settings 行不存在时生效）。
+    # 生产站保持 true；之后以后台「站点管理」里的开关为准。
+    PUBLISH_PERMISSION_REQUIRED: bool = True
 
     # File upload
     UPLOAD_DIR: str = "uploads"
@@ -92,6 +95,11 @@ class Settings(BaseSettings):
     # 因此分开配置。60 秒滑动窗口内的允许次数。
     CAPTCHA_RATE_LIMIT_REGISTER: int = 20
     CAPTCHA_RATE_LIMIT_ACCEPT: int = 60
+
+    # 反自动化限流总开关（大厅列表/摘要/接单验证码/接单尝试）。生产默认开启；
+    # 测试环境在 conftest 里关闭，避免既有用例连续请求触发 429；需要验证
+    # 限流的用例会显式打开。
+    RATE_LIMIT_ENABLED: bool = True
 
     PUSH_VAPID_PUBLIC_KEY: str = ""
     PUSH_VAPID_PRIVATE_KEY: str = ""

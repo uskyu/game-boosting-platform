@@ -5,11 +5,13 @@
 1. 开关关闭（默认）：接单保持旧行为，请求可以完全不带 body；
 2. 开关开启：必须携带 accept 场景的 captcha_id/captcha_code，缺失/错误/跨场景
    一律返回 400 且 detail 为 ``{"code": "captcha_invalid", ...}``；
-3. ``GET /orders/accept-captcha`` 关闭时 400、开启时返回 captcha_id + base64 图片；
+3. ``GET /orders/accept-captcha`` 关闭时 400、开启时必须带 order_id 并返回
+   绑定到该订单+用户的 captcha_id + base64 图片；
 4. 订单详情按开关回填 ``accept_captcha_required``，供前端决定是否先弹验证码。
 
 验证码是一次性消费的：每个需要「正确码」的用例都现场调用
-``captcha_service.create("accept")`` 生成，不能复用。
+``captcha_service.create("accept", subject=订单, user_id=用户)`` 生成；
+跨单、跨账号、同一订单的旧码都不能复用。
 """
 
 from httpx import AsyncClient
@@ -29,9 +31,11 @@ async def _set_accept_captcha(db_session, enabled: bool) -> None:
     await db_session.commit()
 
 
-def _make_accept_captcha() -> dict:
-    """生成 accept 场景验证码并取出明文（仅测试可用）。"""
-    captcha_id, _ = captcha_service.create("accept")
+def _make_accept_captcha(order_id: int, user_id: int) -> dict:
+    """生成绑定到订单+用户的 accept 验证码并取出明文（仅测试可用）。"""
+    captcha_id, _ = captcha_service.create(
+        "accept", subject=order_id, user_id=user_id
+    )
     code = captcha_service._store[captcha_id][0]
     return {"captcha_id": captcha_id, "captcha_code": code}
 
@@ -103,7 +107,7 @@ async def test_accept_with_wrong_captcha_code(
     """开关开启：验证码字符错误 → 400 captcha_invalid。"""
     await _set_accept_captcha(db_session, True)
     order = await _create_order(client, admin_user)
-    payload = _make_accept_captcha()
+    payload = _make_accept_captcha(order["id"], booster_user["user"]["id"])
     payload["captcha_code"] = "wrong"
 
     resp = await _accept(client, order["id"], booster_user, json=payload)
@@ -118,7 +122,7 @@ async def test_accept_with_correct_captcha_succeeds(
     await _set_accept_captcha(db_session, True)
     order = await _create_order(client, admin_user)
 
-    payload = _make_accept_captcha()
+    payload = _make_accept_captcha(order["id"], booster_user["user"]["id"])
     resp = await _accept(client, order["id"], booster_user, json=payload)
     assert resp.status_code == 200, resp.text
     data = resp.json()
@@ -167,19 +171,21 @@ async def test_get_accept_captcha_disabled_returns_400(
 async def test_get_accept_captcha_enabled_returns_image(
     client: AsyncClient, admin_user: dict, booster_user: dict, db_session
 ):
-    """开关开启：返回 captcha_id 与 base64 data URI 图片。"""
+    """开关开启：返回 captcha_id 与 base64 data URI 图片，且绑定到订单。"""
     await _set_accept_captcha(db_session, True)
+    order = await _create_order(client, admin_user)
 
     resp = await client.get(
-        "/orders/accept-captcha", headers=auth_header(booster_user)
+        f"/orders/accept-captcha?order_id={order['id']}",
+        headers=auth_header(booster_user),
     )
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert data["captcha_id"]
     assert data["image"].startswith("data:image/png;base64,")
+    assert captcha_service._subjects[data["captcha_id"]] == str(order["id"])
+    assert captcha_service._users[data["captcha_id"]] == booster_user["user"]["id"]
 
-    # 生成的验证码是 accept 场景，可直接用于接单
-    order = await _create_order(client, admin_user)
     code = captcha_service._store[data["captcha_id"]][0]
     accept_resp = await _accept(
         client,
@@ -209,3 +215,88 @@ async def test_order_detail_exposes_accept_captcha_required_flag(
     )
     assert detail.status_code == 200
     assert detail.json()["accept_captcha_required"] is True
+
+
+async def test_get_accept_captcha_requires_order_id(
+    client: AsyncClient, booster_user: dict, db_session
+):
+    """开启接单验证码后，不传订单 ID 不能拿码（否则无法绑定，脚本可攒池）。"""
+    await _set_accept_captcha(db_session, True)
+
+    resp = await client.get(
+        "/orders/accept-captcha", headers=auth_header(booster_user)
+    )
+    assert resp.status_code == 400
+    assert "缺少订单信息" in resp.json()["detail"]
+
+
+async def test_accept_captcha_cannot_be_used_for_another_order(
+    client: AsyncClient, admin_user: dict, booster_user: dict, db_session
+):
+    """验证码绑定订单：A 单的码拿去接 B 单必须失败，B 单不被改动。"""
+    await _set_accept_captcha(db_session, True)
+    order_a = await _create_order(client, admin_user)
+    order_b = await _create_order(client, admin_user)
+    payload = _make_accept_captcha(order_a["id"], booster_user["user"]["id"])
+
+    resp = await _accept(client, order_b["id"], booster_user, json=payload)
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["code"] == "captcha_invalid"
+
+    detail_b = await client.get(
+        f"/orders/{order_b['id']}", headers=auth_header(admin_user)
+    )
+    assert detail_b.json()["claimed_count"] == 0
+
+    # 同一账号拿 A 单的新码接 A 单仍然正常，证明拒绝的是跨单而不是整个流程
+    fresh = _make_accept_captcha(order_a["id"], booster_user["user"]["id"])
+    ok = await _accept(client, order_a["id"], booster_user, json=fresh)
+    assert ok.status_code == 200, ok.text
+
+
+async def test_accept_captcha_cannot_be_used_by_another_user(
+    client: AsyncClient,
+    admin_user: dict,
+    booster_user: dict,
+    registered_user: dict,
+    db_session,
+):
+    """验证码绑定用户：A 拿到的码不能由 B 提交。"""
+    await _set_accept_captcha(db_session, True)
+    order = await _create_order(client, admin_user)
+    payload = _make_accept_captcha(order["id"], booster_user["user"]["id"])
+
+    resp = await _accept(client, order["id"], registered_user, json=payload)
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["code"] == "captcha_invalid"
+
+    # 原用户用自己的新码接同一单仍然成功
+    fresh = _make_accept_captcha(order["id"], booster_user["user"]["id"])
+    ok = await _accept(client, order["id"], booster_user, json=fresh)
+    assert ok.status_code == 200, ok.text
+
+
+async def test_auth_captcha_accept_scene_is_closed(client: AsyncClient):
+    """老入口 /auth/captcha?scene=accept 不再发码，避免绕过订单绑定。"""
+    resp = await client.get("/auth/captcha?scene=accept")
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "接单验证码请从订单详情获取"
+
+
+async def test_new_accept_captcha_invalidates_previous_for_same_order(
+    client: AsyncClient, admin_user: dict, booster_user: dict, db_session
+):
+    """同一用户同一订单只保留最新一张码：旧的立即作废，脚本无法囤码轮换。"""
+    await _set_accept_captcha(db_session, True)
+    order = await _create_order(client, admin_user)
+    user_id = booster_user["user"]["id"]
+
+    old_payload = _make_accept_captcha(order["id"], user_id)
+    new_payload = _make_accept_captcha(order["id"], user_id)
+
+    old_resp = await _accept(client, order["id"], booster_user, json=old_payload)
+    assert old_resp.status_code == 400
+    assert old_resp.json()["detail"]["code"] == "captcha_invalid"
+
+    new_resp = await _accept(client, order["id"], booster_user, json=new_payload)
+    assert new_resp.status_code == 200, new_resp.text

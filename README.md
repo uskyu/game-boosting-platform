@@ -126,8 +126,9 @@ npm run dev            # http://localhost:3000，/api 代理到 8000
 | `REGISTRATION_DEFAULT_CAN_PUBLISH` | 新注册用户默认发单权限，默认 `true`；新站首次建库可设 `false` |
 | `REGISTRATION_DEFAULT_CAN_ACCEPT` | 新注册用户默认接单权限，默认 `true` |
 | `PUBLISH_PERMISSION_APPLY_ENABLED` | 是否允许无发单权限用户自助申请，默认 `true` |
+| `PUBLISH_PERMISSION_REQUIRED` | 全站发单权限总开关初始值，默认 `true`；`false` 时全站开放发单（仅封禁发单的用户被拦截） |
 
-> 三个注册权限变量只在该站点**首次创建** `site_settings` 行时生效；之后以后台「站点管理」为准，重启不会覆盖管理员修改。生产站保持默认 `true` 不改变现有行为。
+> 上述权限变量只在该站点**首次创建** `site_settings` 行时生效；之后以后台「站点管理」为准，重启不会覆盖管理员修改。生产站保持默认 `true` 不改变现有行为。全站发单权限总开关以后台设置为准，环境变量只负责初始化缺失的配置行。
 
 ## 资金安全设计
 

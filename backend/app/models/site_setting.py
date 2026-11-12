@@ -62,6 +62,12 @@ class SiteSetting(Base):
     publish_permission_apply_enabled: Mapped[bool] = mapped_column(
         Boolean(), nullable=False, default=True, server_default="1"
     )
+    # 全站发单权限总开关（2026-11-12）：true=非管理员必须已开通发单权限
+    # （can_publish=true 且 publish_banned=false）才能发单；false=全站开放，
+    # 未被封禁发单的非管理员都可发单。管理员始终不受此开关限制。
+    publish_permission_required: Mapped[bool] = mapped_column(
+        Boolean(), nullable=False, default=True, server_default="1"
+    )
     updated_by: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

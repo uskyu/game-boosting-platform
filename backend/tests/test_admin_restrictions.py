@@ -39,19 +39,22 @@ async def _restrict(client: AsyncClient, admin_user: dict, user_id: int, payload
     return resp
 
 
-async def test_banned_publish_forbidden_then_recover(
+async def test_publish_banned_forbidden_then_unban(
     client: AsyncClient, registered_user: dict, admin_user: dict
 ):
-    """禁发单后 POST /orders/create → 403；解禁后恢复 201。"""
+    """明确封禁发单（publish_banned=True）后 POST /orders/create → 403；
+    解除封禁（publish_banned=False）后恢复 201。"""
     await _topup(client, admin_user, registered_user)
     user_id = registered_user["user"]["id"]
 
-    # 解禁状态可发单（冒烟）
+    # 正常状态可发单（冒烟）
     await _create_order(client, registered_user, price="10.00")
 
-    resp = await _restrict(client, admin_user, user_id, {"can_publish": False})
+    resp = await _restrict(client, admin_user, user_id, {"publish_banned": True})
     assert resp.status_code == 200, resp.text
-    assert resp.json()["can_publish"] is False
+    # 封禁与「已开通」分离：can_publish 不变，can_accept 不受影响
+    assert resp.json()["can_publish"] is True
+    assert resp.json()["publish_banned"] is True
     assert resp.json()["can_accept"] is True
 
     resp = await client.post(
@@ -60,13 +63,57 @@ async def test_banned_publish_forbidden_then_recover(
         headers=auth_header(registered_user),
     )
     assert resp.status_code == 403
-    assert "禁止发布" in resp.json()["detail"]
+    assert "封禁发单" in resp.json()["detail"]
 
-    resp = await _restrict(client, admin_user, user_id, {"can_publish": True})
+    resp = await _restrict(client, admin_user, user_id, {"publish_banned": False})
     assert resp.status_code == 200
-    assert resp.json()["can_publish"] is True
+    assert resp.json()["publish_banned"] is False
 
     await _create_order(client, registered_user, price="10.00")
+
+
+async def test_ungranted_publish_forbidden_until_global_open(
+    client: AsyncClient, registered_user: dict, admin_user: dict
+):
+    """can_publish=False（未开通）在 required=True 时 403；全站开放后 201。"""
+    await _topup(client, admin_user, registered_user)
+    user_id = registered_user["user"]["id"]
+
+    resp = await _restrict(client, admin_user, user_id, {"can_publish": False})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["can_publish"] is False
+    assert resp.json()["publish_banned"] is False
+
+    resp = await client.post(
+        "/orders/create",
+        json={"game_name": "王者荣耀", "price": "10.00"},
+        headers=auth_header(registered_user),
+    )
+    assert resp.status_code == 403
+    assert "暂无发单权限" in resp.json()["detail"]
+
+    # 全站开放后未开通用户也能发单
+    resp = await client.put(
+        "/admin/site/settings",
+        json={"site_name": "平台", "publish_permission_required": False},
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 200, resp.text
+    await _create_order(client, registered_user, price="10.00")
+
+    # 开关改回 true 后立即回到 403
+    resp = await client.put(
+        "/admin/site/settings",
+        json={"site_name": "平台", "publish_permission_required": True},
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 200
+    resp = await client.post(
+        "/orders/create",
+        json={"game_name": "王者荣耀", "price": "10.00"},
+        headers=auth_header(registered_user),
+    )
+    assert resp.status_code == 403
 
 
 async def test_banned_accept_forbidden(
@@ -129,13 +176,17 @@ async def test_cannot_restrict_self(client: AsyncClient, admin_user: dict):
 async def test_restriction_fields_visible_in_responses(
     client: AsyncClient, registered_user: dict, admin_user: dict
 ):
-    """列表/详情回显 can_publish / can_accept。"""
+    """列表/详情回显 can_publish / publish_banned / can_accept。"""
     user_id = registered_user["user"]["id"]
     resp = await client.get(f"/admin/users/{user_id}", headers=auth_header(admin_user))
     assert resp.status_code == 200
     assert resp.json()["can_publish"] is True
+    assert resp.json()["publish_banned"] is False
     assert resp.json()["can_accept"] is True
 
     resp = await client.get("/admin/users", headers=auth_header(admin_user))
     assert resp.status_code == 200
-    assert all("can_publish" in item and "can_accept" in item for item in resp.json()["items"])
+    assert all(
+        "can_publish" in item and "publish_banned" in item and "can_accept" in item
+        for item in resp.json()["items"]
+    )

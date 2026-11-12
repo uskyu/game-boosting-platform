@@ -143,6 +143,24 @@ async def _enable_accept_captcha(db_session) -> None:
     await db_session.commit()
 
 
+async def _create_order(client, publisher) -> dict:
+    """接单验证码现在必须绑定订单，先让管理员发一张单。"""
+    resp = await client.post(
+        "/orders/create",
+        json={
+            "game_name": "王者荣耀",
+            "title": "限流测试订单",
+            "current_rank": "钻石",
+            "target_rank": "王者",
+            "price": "200.00",
+            "max_claims": 1,
+        },
+        headers=auth_header(publisher),
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
 @pytest.fixture(autouse=True)
 def _clear_rate_buckets():
     """每个用例前清空限流桶，避免用例之间互相挤占。"""
@@ -151,17 +169,20 @@ def _clear_rate_buckets():
     captcha_service._rate.clear()
 
 
-async def test_accept_captcha_ignores_client_ip(client, booster_user, db_session):
+async def test_accept_captcha_ignores_client_ip(
+    client, booster_user, admin_user, db_session
+):
     """接单验证码只按用户分桶，完全不同 IP 也不互相影响、也不产生 IP 桶。
 
     接单接口强制登录，按用户限流已足够；再按 IP 会在同网吧/NAT 场景下
     互相挤占（2026-10-23 事故的直接诱因），因此接单链路不应碰 IP。
     """
     await _enable_accept_captcha(db_session)
+    order = await _create_order(client, admin_user)
 
     for ip in ("124.128.43.76", "58.144.196.191", "203.0.113.9"):
         resp = await client.get(
-            "/orders/accept-captcha",
+            f"/orders/accept-captcha?order_id={order['id']}",
             headers={**auth_header(booster_user), "X-Forwarded-For": ip},
         )
         assert resp.status_code == 200, resp.text
@@ -172,18 +193,23 @@ async def test_accept_captcha_ignores_client_ip(client, booster_user, db_session
 
 
 async def test_accept_captcha_rate_limited_per_user(
-    client, booster_user, db_session
+    client, booster_user, admin_user, db_session
 ):
     """同一账号超限返回结构化 detail，前端据此提示并自动重试。"""
     await _enable_accept_captcha(db_session)
+    order = await _create_order(client, admin_user)
     limit = captcha_service.rate_limit_for("accept")
     headers = auth_header(booster_user)
 
     for _ in range(limit):
-        resp = await client.get("/orders/accept-captcha", headers=headers)
+        resp = await client.get(
+            f"/orders/accept-captcha?order_id={order['id']}", headers=headers
+        )
         assert resp.status_code == 200
 
-    blocked = await client.get("/orders/accept-captcha", headers=headers)
+    blocked = await client.get(
+        f"/orders/accept-captcha?order_id={order['id']}", headers=headers
+    )
     assert blocked.status_code == 429
     detail = blocked.json()["detail"]
     assert detail["code"] == "captcha_rate_limited"
@@ -191,14 +217,15 @@ async def test_accept_captcha_rate_limited_per_user(
 
 
 async def test_accept_captcha_spoofed_xff_does_not_reset_quota(
-    client, booster_user, db_session
+    client, booster_user, admin_user, db_session
 ):
     """伪造 XFF 不能绕过接单限流（桶键与 IP 无关，轮换 IP 也没用）。"""
     await _enable_accept_captcha(db_session)
+    order = await _create_order(client, admin_user)
     limit = captcha_service.rate_limit_for("accept")
     for index in range(limit):
         resp = await client.get(
-            "/orders/accept-captcha",
+            f"/orders/accept-captcha?order_id={order['id']}",
             headers={
                 **auth_header(booster_user),
                 "X-Forwarded-For": f"203.0.113.{index + 1}",
@@ -207,7 +234,7 @@ async def test_accept_captcha_spoofed_xff_does_not_reset_quota(
         assert resp.status_code == 200
 
     blocked = await client.get(
-        "/orders/accept-captcha",
+        f"/orders/accept-captcha?order_id={order['id']}",
         headers={**auth_header(booster_user), "X-Forwarded-For": "203.0.113.250"},
     )
     assert blocked.status_code == 429

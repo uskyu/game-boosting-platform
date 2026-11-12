@@ -23,6 +23,7 @@ from app.api.deps import (
     get_current_booster,
 )
 from app.api.notification_utils import notify_boosters_new_order, notify_user
+from app.api.rate_limit import enforce_key_limit, enforce_user_limit
 from app.core.config import settings
 from app.core.post_commit import run_after_commit
 from app.core.request_timing import (
@@ -75,6 +76,23 @@ from app.services.site_setting_service import get_or_create_site_setting
 
 router = APIRouter(prefix="/orders", tags=["订单"])
 logger = logging.getLogger(__name__)
+
+# 反自动化限流参数（2026-11-11）：脚本抢单器会以 0.25-0.8 秒一轮拉大厅、
+# 并发预取多张验证码，再在放行瞬间连发接单。正常前端是「WS 为主 + 摘要
+# 2 秒兜底 + 列表 10 秒对账」，下列额度都留了数倍余量：
+# - 大厅批量列表 1 次/1.5 秒（slim 或 page_size>=100；脚本主要走这条）；
+#   其他列表 4 次/1 秒（搜索框 300ms 防抖、翻页/切页会连续请求，必须留余量）
+# - 大厅摘要 1 次/1 秒（前端断线兜底 2 秒一轮）
+# - 接单验证码 1 次/秒 + 20 次/分钟（正常人开一次弹窗，误点刷新也够）
+# - 接单尝试 1 次/秒/用户 + 同一用户同一订单 5 次/10 分钟
+# 可用 settings.RATE_LIMIT_ENABLED 整体关闭（测试默认关闭）。
+_HALL_SLIM_LIST_RATE = (1, 1.5)
+_ORDERS_LIST_RATE = (4, 1.0)
+_HALL_DIGEST_RATE = (1, 1.0)
+_ACCEPT_CAPTCHA_BURST_RATE = (1, 1.0)
+_ACCEPT_CAPTCHA_MINUTE_RATE = (20, 60.0)
+_ACCEPT_BURST_RATE = (1, 1.0)
+_ACCEPT_PER_ORDER_RATE = (5, 600.0)
 
 
 class AcceptCaptchaResponse(BaseModel):
@@ -541,6 +559,23 @@ async def list_orders(
     """
     order_service = get_order_service(db)
 
+    # 大厅轮询限流：脚本以 0.8 秒一轮拉全量列表，正常前端是 10 秒对账、
+    # 断线 2 秒兜底。管理员后台看单不限制，避免影响运营操作。
+    # 严格桶覆盖「slim 或 page_size>=100 且不是我的派单」：脚本即使去掉
+    # slim 参数、保留 100 条批量抓取，也仍然被同一额度卡住。
+    if current_user.role != UserRole.ADMIN:
+        if not mine_published and (slim or page_size >= 100):
+            scope, rate = "orders_hall_list", _HALL_SLIM_LIST_RATE
+        else:
+            scope, rate = "orders_list", _ORDERS_LIST_RATE
+        enforce_user_limit(
+            current_user.id,
+            scope,
+            rate[0],
+            rate[1],
+            code="orders_rate_limited",
+        )
+
     # 老板ID搜索仅用于"我的派单"（发布人查自己的单）与管理员；
     # 对普通打手关闭该过滤，防止把老板ID当作探测他人订单的条件。
     effective_boss_contact = (
@@ -607,6 +642,15 @@ async def get_hall_digest(
     相关的订单，管理员不加过滤）：口径不同会让客户端「摘要没变就不拉全量」的
     判断失效（摘要不变但列表实际已变）。
     """
+    # 摘要也是脚本的高频探测通道：正常前端 2 秒一轮，脚本 0.25-0.4 秒一轮。
+    if current_user.role != UserRole.ADMIN:
+        enforce_user_limit(
+            current_user.id,
+            "hall_digest",
+            _HALL_DIGEST_RATE[0],
+            _HALL_DIGEST_RATE[1],
+            code="hall_digest_rate_limited",
+        )
     order_service = get_order_service(db)
     count, max_updated_at, earliest_deadline = await order_service.hall_digest(current_user)
     # 顶部统计条的全量数字（2026-10-19 老板反馈「进行中 19 不准」）：
@@ -629,19 +673,27 @@ async def get_hall_digest(
     summary="获取接单图形验证码",
     description=(
         "后台开启「接单需要验证码」后可用：返回验证码ID与base64图片，"
-        "有效期5分钟、一次性使用；与注册验证码按场景隔离"
+        "有效期5分钟、一次性使用；验证码绑定到当前用户与订单，"
+        "跨单/跨账号复用一律无效"
     ),
 )
 async def get_accept_captcha(
     request: Request,
     db: DatabaseSession,
     current_user: Annotated[User, Depends(get_current_booster)],
+    order_id: Annotated[
+        int | None,
+        Query(ge=1, description="验证码绑定到的订单 ID；接单场景必传"),
+    ] = None,
 ) -> AcceptCaptchaResponse:
     """生成接单场景的图形验证码（仅非管理员打手可获取）。
 
     路由必须声明在 ``GET /{order_id}`` 之前，否则 ``accept-captcha`` 会被
-    int 路径参数解析成 422。限流同时按「场景+用户」与「场景+IP」分桶：
-    前者防单账号刷图，后者防同 IP 多账号刷图。
+    int 路径参数解析成 422。接单码**绑定当前用户 + 订单**：脚本预取的码
+    只能用于这一单、只能由这个账号提交，不能攒池跨单复用。
+
+    限流只按「用户」分桶，不按 IP：接单接口强制登录，每个账号一个独立桶；
+    再加 IP 桶会误伤同网吧/NAT 的正常打手（2026-10-23 事故的诱因）。
     """
     setting = await get_or_create_site_setting(db)
     if not setting.accept_captcha_enabled:
@@ -650,12 +702,24 @@ async def get_accept_captcha(
             detail="接单验证码已关闭",
         )
 
-    # 接单验证码**只按用户限流**，不按 IP。
-    #
-    # 接单接口由 get_current_booster 强制登录，每个账号一个独立桶，已经足够
-    # 防刷；再加 IP 桶没有任何收益，反而会误伤——同网吧/同公司/同运营商 NAT
-    # 下的正常打手会互相挤占额度。2026-10-23 的事故就是 IP 桶取错地址导致
-    # 全站共用一个桶（20 次/分钟），晚高峰 31 人抢单时集体 429。
+    # 反自动化：脚本会一次 Promise.all 并发预取 3 张码；1 次/秒的突发限制
+    # 会让后两张直接 429，20 次/分钟的总额度也限制单账号刷图规模。
+    enforce_user_limit(
+        current_user.id,
+        "accept_captcha_burst",
+        _ACCEPT_CAPTCHA_BURST_RATE[0],
+        _ACCEPT_CAPTCHA_BURST_RATE[1],
+        code="captcha_rate_limited",
+    )
+    enforce_user_limit(
+        current_user.id,
+        "accept_captcha_minute",
+        _ACCEPT_CAPTCHA_MINUTE_RATE[0],
+        _ACCEPT_CAPTCHA_MINUTE_RATE[1],
+        code="captcha_rate_limited",
+    )
+
+    # 旧版 60 次/分钟用户桶保留：作为最后一道总额度，也兼容既有测试。
     accept_limit = captcha_service.rate_limit_for("accept")
     if not captcha_service.check_rate_limit(
         captcha_service.user_rate_key("accept", current_user.id), accept_limit
@@ -669,9 +733,53 @@ async def get_accept_captcha(
             },
         )
 
+    if order_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="缺少订单信息，请从订单详情重新获取验证码",
+        )
+
+    # 只给「当前确实能接」的订单发码：避免脚本拿订单号枚举/囤积无效码，
+    # 也避免给已满、已关闭、自己的单发码后用户白等。
+    order = await db.get(Order, order_id)
+    if order is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="订单不存在或已关闭",
+        )
+    if order.user_id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="不能接自己的订单",
+        )
+    now = datetime.now(timezone.utc)
+    deadline = order.deadline
+    if deadline is not None:
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=timezone.utc)
+        if deadline <= now:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="该订单当前不可接单",
+            )
+    if (
+        order.is_archived
+        or order.booster_id == current_user.id
+        or order.status not in (OrderStatus.PENDING, OrderStatus.LOCKED)
+        or order.claim_status != ClaimStatus.OPEN
+        or int(order.claimed_count or 0) >= int(order.max_claims or 0)
+        or (order.status == OrderStatus.LOCKED and int(order.max_claims or 0) <= 1)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="该订单当前不可接单",
+        )
+
     # PIL 图片生成放线程池，避免多人同时打开接单弹窗时阻塞事件循环
     captcha_id, png_bytes = await anyio.to_thread.run_sync(
-        captcha_service.create, "accept"
+        lambda: captcha_service.create(
+            "accept", subject=order_id, user_id=current_user.id
+        )
     )
     b64 = base64.b64encode(png_bytes).decode("ascii")
     return AcceptCaptchaResponse(
@@ -1077,7 +1185,23 @@ async def accept_order(
     - Admin state changes go through /admin/orders/{id}/intervene, not here
     - 后台开启「接单需要验证码」时必须携带 captcha_id/captcha_code；
       关闭时保持旧契约（可不带请求体）
+    - 验证码绑定到当前用户与订单，跨单/跨账号提交一律 400
     """
+    # 反自动化：脚本会在放行瞬间连发多张预取码；单用户 1 次/秒 + 同订单
+    # 5 次/10 分钟，让它只能一秒试一张，无法靠 3 张码把命中率堆上去。
+    enforce_user_limit(
+        current_user.id,
+        "accept",
+        _ACCEPT_BURST_RATE[0],
+        _ACCEPT_BURST_RATE[1],
+        code="accept_rate_limited",
+    )
+    enforce_key_limit(
+        f"accept:order:{current_user.id}:{order_id}",
+        _ACCEPT_PER_ORDER_RATE[0],
+        _ACCEPT_PER_ORDER_RATE[1],
+        code="accept_rate_limited",
+    )
     order_service = get_order_service(db)
 
     # 验证码闸门放在 accept_order 之前：避免校验失败时先改动任何订单/名额数据。
@@ -1088,7 +1212,11 @@ async def accept_order(
             or not payload.captcha_id
             or not payload.captcha_code
             or not captcha_service.verify(
-                payload.captcha_id, payload.captcha_code, "accept"
+                payload.captcha_id,
+                payload.captcha_code,
+                "accept",
+                subject=order_id,
+                user_id=current_user.id,
             )
         ):
             raise _accept_captcha_invalid()

@@ -94,7 +94,15 @@ async function refreshAcceptCaptcha({ autoRetry = true } = {}) {
   claimCaptchaError.value = ''
   let retryScheduled = false
   try {
-    const response = await api.get('/orders/accept-captcha')
+    const orderId = order.value?.id
+    if (!orderId) {
+      claimCaptchaError.value = '订单信息加载中，请稍后重试'
+      return
+    }
+    // 验证码绑定当前订单：服务端只接受本单的码，脚本预取的码不能跨单复用
+    const response = await api.get('/orders/accept-captcha', {
+      params: { order_id: orderId },
+    })
     if (seq !== claimCaptchaSeq) return
     claimCaptchaId.value = response.data?.captcha_id || ''
     claimCaptchaImage.value = response.data?.image || ''

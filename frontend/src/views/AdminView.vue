@@ -19,6 +19,7 @@ import AdminWithdrawalRuleSettings from '@/components/admin/AdminWithdrawalRuleS
 import AdminWithdrawalCategorySettings from '@/components/admin/AdminWithdrawalCategorySettings.vue'
 import AdminPayoutBatches from '@/components/admin/AdminPayoutBatches.vue'
 import AdminDepositSettings from '@/components/admin/AdminDepositSettings.vue'
+import AdminDepositLedger from '@/components/admin/AdminDepositLedger.vue'
 import AdminAnnouncements from '@/components/admin/AdminAnnouncements.vue'
 import AdminPublishApplications from '@/components/admin/AdminPublishApplications.vue'
 import Lightbox from '@/components/Lightbox.vue'
@@ -63,7 +64,7 @@ const walletStore = useWalletStore()
 const afterSalesStore = useAfterSalesStore()
 const withdrawalPayoutStore = useWithdrawalPayoutStore()
 
-const TAB_KEYS = ['dashboard', 'orders', 'withdrawals', 'afterSales', 'wallet-adjust', 'games', 'users', 'site', 'payment', 'recharges', 'service-fee', 'withdrawal-rule', 'withdrawal-category', 'payout-batches', 'deposit', 'announcements', 'publishRequests']
+const TAB_KEYS = ['dashboard', 'orders', 'withdrawals', 'afterSales', 'wallet-adjust', 'games', 'users', 'site', 'payment', 'recharges', 'service-fee', 'withdrawal-rule', 'withdrawal-category', 'payout-batches', 'deposit', 'depositLedger', 'announcements', 'publishRequests']
 
 function normalizeTab(tab) {
   const value = Array.isArray(tab) ? tab[0] : tab
@@ -1259,6 +1260,7 @@ onMounted(async () => {
           <button v-if="isAdmin" type="button" :class="activeTab === 'withdrawal-category' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'withdrawal-category'">提现分类</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'payout-batches' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'payout-batches'">打款批次</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'deposit' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'deposit'">保证金管理</button>
+          <button v-if="isAdmin" type="button" :class="activeTab === 'depositLedger' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'depositLedger'">保证金流水</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'announcements' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'announcements'">公告管理</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'publishRequests' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'publishRequests'">发单申请</button>
         </nav>
@@ -1276,6 +1278,7 @@ onMounted(async () => {
     <AdminWithdrawalCategorySettings v-else-if="activeTab === 'withdrawal-category'" />
     <AdminPayoutBatches v-else-if="activeTab === 'payout-batches'" />
     <AdminDepositSettings v-else-if="activeTab === 'deposit'" />
+    <AdminDepositLedger v-else-if="activeTab === 'depositLedger'" />
     <AdminAnnouncements v-else-if="activeTab === 'announcements'" />
     <AdminPublishApplications v-else-if="activeTab === 'publishRequests'" />
 

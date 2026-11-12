@@ -1,10 +1,12 @@
 """保证金（余额划转 / 阶梯权益）请求响应模型。"""
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
+from app.models.wallet import WalletTransactionType
 from app.schemas.serializers import serialize_datetime_utc
 
 
@@ -181,3 +183,66 @@ class DepositSettingsAdminUpdate(BaseModel):
     tiers: list[DepositTierUpsert] = Field(..., min_length=1, max_length=50)
 
     model_config = ConfigDict(extra="forbid")
+
+
+# =============================================================================
+# 后台「保证金流水」
+# =============================================================================
+
+
+class AdminDepositLedgerStats(BaseModel):
+    """查询区间内保证金转入/转回汇总（不随 direction 过滤变化）。"""
+
+    in_amount: Decimal = Field(description="转入保证金合计（元）")
+    in_count: int = Field(description="转入保证金笔数")
+    out_amount: Decimal = Field(description="保证金转回合计（元）")
+    out_count: int = Field(description="保证金转回笔数")
+    out_users: int = Field(description="发生保证金转回的用户数")
+    self_out_amount: Decimal = Field(description="其中用户自助转回金额（不含管理员调整）")
+    self_out_count: int = Field(description="其中用户自助转回笔数")
+    self_out_users: int = Field(description="其中用户自助转回的用户数")
+    net_amount: Decimal = Field(description="净变化 = 转入 - 转回（元）")
+
+
+class AdminDepositLedgerItem(BaseModel):
+    """单条保证金划转流水。"""
+
+    id: int = Field(description="流水ID")
+    user_id: int = Field(description="用户ID")
+    username: str = Field(description="用户名")
+    email: str = Field(description="用户邮箱")
+    type: WalletTransactionType = Field(description="流水类型")
+    direction: Literal["in", "out"] = Field(description="方向：in=转入保证金，out=转回余额")
+    available_change: Decimal = Field(
+        description="可用余额变动（用户自助转入为负、转回为正；管理员调保证金不动可用余额，恒为 0）"
+    )
+    deposit_change: Decimal = Field(description="保证金变动（转入为正、转回为负）")
+    available_before: Decimal = Field(description="变动前可用余额")
+    available_after: Decimal = Field(description="变动后可用余额")
+    current_deposit_balance: Decimal = Field(description="该用户当前保证金余额")
+    remark: str | None = Field(default=None, description="备注")
+    order_id: int | None = Field(default=None, description="关联订单ID（管理员调整通常为空）")
+    operator_id: int | None = Field(default=None, description="操作管理员ID；空=用户自助操作")
+    operator_username: str | None = Field(default=None, description="操作管理员用户名")
+    created_at: datetime = Field(description="发生时间（UTC）")
+
+    @field_serializer("created_at")
+    def serialize_dt(self, value: datetime | None) -> str | None:
+        return serialize_datetime_utc(value)
+
+
+class AdminDepositLedgerResponse(BaseModel):
+    """后台保证金流水列表 + 区间汇总。"""
+
+    items: list[AdminDepositLedgerItem] = Field(description="流水列表")
+    total: int = Field(description="总数量")
+    page: int = Field(description="当前页码")
+    page_size: int = Field(description="每页数量")
+    pages: int = Field(description="总页数")
+    start_date: date = Field(description="实际查询起始日期（北京时间）")
+    end_date: date = Field(description="实际查询结束日期（北京时间）")
+    stats: AdminDepositLedgerStats = Field(description="区间汇总")
+
+    @field_serializer("start_date", "end_date")
+    def serialize_day(self, value: date | None) -> str | None:
+        return value.isoformat() if value else None

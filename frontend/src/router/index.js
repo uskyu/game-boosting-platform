@@ -214,14 +214,20 @@ router.beforeEach(async (to, from, next) => {
   setDocTitle()
   siteStore.fetchSettings().then(setDocTitle)
 
+  // 记录本次导航内是否已经强制刷新过 /auth/me：冷加载分支刚拉过时，
+  // 发单权限判定直接复用，避免同一导航重复请求。
+  let userRefreshedForNavigation = false
+
   if (!authStore.accessToken && authStore.refreshToken && !authStore.user) {
     // 冷加载时 access 已过期/丢失但 refresh 还在：先恢复会话再判断，
     // 否则带着有效凭证访问受保护页会被误踹到登录页（"不自动登录"）。
     await authStore.initialize()
+    userRefreshedForNavigation = true
   } else if (authStore.accessToken && !authStore.user) {
     if (to.meta.adminOnly || to.meta.guest || to.meta.requiresPublishPermission) {
       // admin 判定 / 已登录访问登录页 / 发单权限判定需要准确身份，保持阻塞等待
       await authStore.fetchCurrentUser()
+      userRefreshedForNavigation = true
     } else {
       // 普通页面不阻塞渲染：后台补全用户信息；会话失效由 401 拦截器兜底（刷新令牌或跳登录）
       authStore.fetchCurrentUser()
@@ -240,11 +246,15 @@ router.beforeEach(async (to, from, next) => {
   }
 
   if (to.meta.requiresPublishPermission) {
-    // 冷加载时 user 可能尚未就绪：再阻塞等一次，避免 user 为空导致误判。
-    if (!authStore.user) {
+    // 发单权限必须以服务端最新快照为准：管理员可能刚切换全站管控/封禁某个用户，
+    // 长驻会话里的 user 缓存会过期。进入发单页时总是刷新 /auth/me（冷加载分支
+    // 刚拉过则复用），再检查 canPublish。
+    if (!userRefreshedForNavigation) {
       await authStore.fetchCurrentUser()
     }
-    if (!authStore.canPublish) {
+    // user 为空说明 /auth/me 没拿到有效身份（失败/未就绪），不能按默认放行；
+    // 后端仍会兜底 403，但前端也不应把未验证会话放进发单页。
+    if (!authStore.user || !authStore.canPublish) {
       next({ name: 'publish-permission', query: { redirect: to.fullPath } })
       return
     }

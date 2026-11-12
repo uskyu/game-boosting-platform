@@ -17,6 +17,9 @@ export const useSiteStore = defineStore('site', () => {
     registration_default_can_publish: true,
     registration_default_can_accept: true,
     publish_permission_apply_enabled: true,
+    // 全站发单权限管控总开关：true=按个人发单权限管控；false=全站开放
+    // （个人封禁仍然生效）。默认与后端一致，未拉到设置时按管控开启处理。
+    publish_permission_required: true,
     max_online_devices: 2,
     order_title_replacements: [
       { original: '名牌', replacement: '【MP】' },

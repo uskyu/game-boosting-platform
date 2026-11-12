@@ -7,10 +7,12 @@ Handles user registration, login, and token management.
 from fastapi import APIRouter, Request, status
 from fastapi.exceptions import HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentSessionId, CurrentUser, DatabaseSession
 from app.core.client_ip import client_ip_from_request
 from app.core.post_commit import run_after_commit
+from app.models.user import User
 from app.schemas.user import (
     MessageResponse,
     PasswordChange,
@@ -23,10 +25,27 @@ from app.schemas.user import (
 )
 from app.services import captcha_service, user_session_service
 from app.services.connection_manager import get_connection_manager
+from app.services.publish_permission_service import can_publish_effective
 from app.services.site_setting_service import get_or_create_site_setting
 from app.services.user_service import get_user_service
 
 router = APIRouter(prefix="/auth", tags=["认证"])
+
+
+async def _user_response(db: AsyncSession, user: User) -> UserResponse:
+    """构造带实际发单权限快照的用户响应。
+
+    ``can_publish`` 是「是否已开通」，前端不能直接当作能否发单：全站开关
+    关闭时未开通用户也能发单，被封禁用户则始终不能。这里每次请求都读取
+    最新站点设置，避免客户端拿旧快照做错误判断。
+    """
+    setting = await get_or_create_site_setting(db)
+    required = bool(setting.publish_permission_required)
+    return UserResponse.model_validate(user).model_copy(
+        update={
+            "can_publish_effective": can_publish_effective(user, required=required)
+        }
+    )
 
 
 class CaptchaResponse(BaseModel):
@@ -54,7 +73,7 @@ async def _close_revoked_sessions(user_id: int, sids: list[str]) -> None:
     "/captcha",
     response_model=CaptchaResponse,
     summary="获取图形验证码",
-    description="返回验证码ID和base64图片，有效期5分钟，一次性使用；scene=register|accept",
+    description="返回验证码ID和base64图片，有效期5分钟，一次性使用；scene=register",
 )
 async def get_captcha(
     request: Request,
@@ -65,22 +84,24 @@ async def get_captcha(
     import base64
 
     scene = (scene or "register").strip().lower()
-    if scene not in ("register", "accept"):
+    if scene == "accept":
+        # 接单验证码必须绑定订单+用户，只能走 /orders/accept-captcha?order_id=；
+        # 保留这个老入口会绕过绑定，直接拒绝。
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="接单验证码请从订单详情获取",
+        )
+    if scene != "register":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="验证码场景无效",
         )
 
     setting = await get_or_create_site_setting(db)
-    if scene == "register" and not setting.registration_captcha_enabled:
+    if not setting.registration_captcha_enabled:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="注册验证码已关闭",
-        )
-    if scene == "accept" and not setting.accept_captcha_enabled:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="接单验证码已关闭",
         )
 
     ip = client_ip_from_request(request)
@@ -165,7 +186,7 @@ async def register(
         refresh_token=tokens["refresh_token"],
         token_type=tokens["token_type"],
         expires_in=tokens["expires_in"],
-        user=UserResponse.model_validate(user),
+        user=await _user_response(db, user),
     )
 
 
@@ -212,7 +233,7 @@ async def login(
         refresh_token=tokens["refresh_token"],
         token_type=tokens["token_type"],
         expires_in=tokens["expires_in"],
-        user=UserResponse.model_validate(user),
+        user=await _user_response(db, user),
     )
 
 
@@ -246,7 +267,7 @@ async def refresh_token(
         refresh_token=tokens["refresh_token"],
         token_type=tokens["token_type"],
         expires_in=tokens["expires_in"],
-        user=UserResponse.model_validate(user),
+        user=await _user_response(db, user),
     )
 
 
@@ -257,6 +278,7 @@ async def refresh_token(
     description="获取当前登录用户的信息",
 )
 async def get_current_user_info(
+    db: DatabaseSession,
     current_user: CurrentUser,
 ) -> UserResponse:
     """
@@ -264,7 +286,7 @@ async def get_current_user_info(
 
     Requires valid JWT token in Authorization header.
     """
-    return UserResponse.model_validate(current_user)
+    return await _user_response(db, current_user)
 
 
 @router.put(
@@ -290,7 +312,7 @@ async def update_current_user(
 
     updated_user = await user_service.update_user(current_user, update_data)
 
-    return UserResponse.model_validate(updated_user)
+    return await _user_response(db, updated_user)
 
 
 @router.post(
@@ -336,7 +358,7 @@ async def change_password(
         refresh_token=tokens["refresh_token"],
         token_type=tokens["token_type"],
         expires_in=tokens["expires_in"],
-        user=UserResponse.model_validate(user),
+        user=await _user_response(db, user),
     )
 
 

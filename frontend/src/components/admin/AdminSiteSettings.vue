@@ -1,8 +1,10 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useSiteStore } from '@/stores/site'
+import { useAdminUsersStore } from '@/stores/adminUsers'
 
 const store = useSiteStore()
+const adminUsersStore = useAdminUsersStore()
 const form = reactive({
   site_name: '',
   site_description: '',
@@ -12,6 +14,7 @@ const form = reactive({
   registration_default_can_publish: true,
   registration_default_can_accept: true,
   publish_permission_apply_enabled: true,
+  publish_permission_required: true,
   max_online_devices: 2,
   order_title_replacements: [],
   footer_html: '',
@@ -32,6 +35,8 @@ function sync() {
   form.registration_default_can_publish = store.settings.registration_default_can_publish !== false
   form.registration_default_can_accept = store.settings.registration_default_can_accept !== false
   form.publish_permission_apply_enabled = store.settings.publish_permission_apply_enabled !== false
+  // 全站发单管控默认开；只有后端明确 false 才视为全站开放
+  form.publish_permission_required = store.settings.publish_permission_required !== false
   form.max_online_devices = Number(store.settings.max_online_devices ?? 2)
   form.order_title_replacements = (store.settings.order_title_replacements || []).map((rule) => ({
     original: rule.original || '',
@@ -81,6 +86,15 @@ async function save() {
     }
     seen.add(rule.original)
   }
+  // 从「按发单权限管控」切到「全站开放」是不可忽略的放宽：保存前必须二次确认。
+  const globalWasRequired = store.settings.publish_permission_required !== false
+  if (globalWasRequired && !form.publish_permission_required) {
+    const confirmed = window.confirm(
+      '关闭全站发单管控后，所有未被封禁的普通用户（包括「未开通发单」的用户）都可以立即发单。'
+      + '「未开通」标记会保留，重新开启管控后恢复限制；个人封禁仍然生效。确认关闭？',
+    )
+    if (!confirmed) return
+  }
   const r = await store.updateSettings({
     site_name: form.site_name.trim(),
     site_description: form.site_description.trim() || null,
@@ -91,6 +105,7 @@ async function save() {
     registration_default_can_publish: form.registration_default_can_publish,
     registration_default_can_accept: form.registration_default_can_accept,
     publish_permission_apply_enabled: form.publish_permission_apply_enabled,
+    publish_permission_required: form.publish_permission_required,
     max_online_devices: normalizedMaxDevices(),
     order_title_replacements: replacements,
     footer_html: form.footer_html.trim(),
@@ -128,6 +143,43 @@ async function remove() {
   notice.value = r.success
     ? { type: 'success', text: 'Logo 已删除' }
     : { type: 'error', text: r.error }
+}
+
+// ── 一键收回全部普通用户发单权限（不是封禁）──
+const bulkRevoking = ref(false)
+
+function bulkRevokeConfirmText(preview) {
+  const intro = preview.success
+    ? `将收回全部 ${Number(preview.data?.eligible ?? 0)} 名启用中普通用户的发单权限（管理员、禁用用户不受影响）。`
+    : '人数获取失败。将收回全部启用中普通用户的发单权限（管理员、禁用用户不受影响）。'
+  return `${intro}\n\n这只是收回「已开通」标记，不是封禁：全站发单管控关闭时，未被封禁的用户仍可发单；重新开启管控后，这些用户需要重新申请或由管理员开通；个人封禁仍然生效。\n\n确认收回？`
+}
+
+async function revokeAllPublishPermissions() {
+  if (bulkRevoking.value) return
+  bulkRevoking.value = true
+  try {
+    // 先取受影响人数；预览失败不阻断，确认文案退化为通用人数说明
+    const preview = await adminUsersStore.fetchBulkPreview()
+    if (!window.confirm(bulkRevokeConfirmText(preview))) return
+    const result = await adminUsersStore.bulkPublishPermission({
+      scope: 'all_non_admin',
+      can_publish: false,
+    })
+    if (!result.success) {
+      notice.value = { type: 'error', text: result.error || '收回发单权限失败' }
+      return
+    }
+    const updated = Number(result.data?.updated ?? 0)
+    const skipped = Number(result.data?.skipped ?? 0)
+    notice.value = {
+      type: 'success',
+      text: `已收回 ${updated} 名普通用户的发单权限${skipped ? `，跳过 ${skipped} 人` : ''}。`
+        + '这不是封禁：只收回「已开通」标记；全站管控关闭时未被封禁用户仍可发单，重新开启后需重新申请或由管理员开通；被封禁用户始终不能发单。',
+    }
+  } finally {
+    bulkRevoking.value = false
+  }
 }
 
 onMounted(async () => {
@@ -231,6 +283,43 @@ onMounted(async () => {
         </div>
       </div>
 
+      <!-- 全站发单权限管控：决定普通用户发单是否需要个人开通 -->
+      <div class="rounded-tile border border-line-1 p-4">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div class="min-w-0">
+            <p class="text-sm font-semibold text-ink-1">全站发单权限管控</p>
+            <p class="mt-1 text-xs leading-5 text-ink-3">保存后立即生效，对所有普通用户（含老用户）生效；管理员发单不受影响。</p>
+          </div>
+          <button
+            type="button"
+            :class="form.publish_permission_required ? 'filter-pill-active' : 'filter-pill'"
+            :aria-pressed="form.publish_permission_required"
+            @click="form.publish_permission_required = !form.publish_permission_required"
+          >
+            {{ form.publish_permission_required ? '管控开启' : '全站开放' }}
+          </button>
+        </div>
+
+        <p v-if="form.publish_permission_required" class="mt-3 rounded-tile border border-dashed border-line-1 p-3 text-xs leading-5 text-ink-2">
+          当前按发单权限管控；未开通的普通用户不能发单，可申请或由管理员开通；被封禁用户始终不能发单。
+        </p>
+        <p v-else class="mt-3 rounded-tile border border-dashed border-line-1 p-3 text-xs leading-5 text-ink-2">
+          全站开放；所有未被封禁的普通用户都可以发单；未开通标记保留，重新开启后恢复限制；个人封禁仍生效。
+        </p>
+
+        <div class="mt-3 flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            class="btn-secondary min-h-[44px] !px-4"
+            :disabled="bulkRevoking"
+            @click="revokeAllPublishPermissions"
+          >
+            {{ bulkRevoking ? '收回中...' : '一键收回全部普通用户发单权限' }}
+          </button>
+          <p class="text-xs leading-5 text-ink-3">只收回「已开通」标记，不是封禁；封禁与解封仍请在「用户管理」逐人操作。</p>
+        </div>
+      </div>
+
       <div class="rounded-tile border border-line-1 p-4">
         <p class="text-sm font-semibold text-ink-1">注册权限</p>
         <p class="mt-1 text-xs leading-5 text-ink-3">管理新用户注册时的默认权限，以及无发单权限用户的自助申请入口。</p>
@@ -239,7 +328,7 @@ onMounted(async () => {
           <!-- 前两个默认开关只作用于注册后的新用户 -->
           <div class="rounded-tile border border-dashed border-line-1 p-3">
             <p class="text-xs leading-5 text-ink-3">
-              只影响注册后的新用户，老用户权限保持不变；管理员发单不受这里限制。关闭发单后，可在「用户管理」单独或批量开通。
+              只影响注册后的新用户，老用户权限保持不变；管理员发单不受这里限制。关闭发单后，可在「用户管理」单独或批量开通。现有用户的发单权限由上方「全站发单权限管控」统一决定。
             </p>
 
             <div class="mt-3 space-y-4">

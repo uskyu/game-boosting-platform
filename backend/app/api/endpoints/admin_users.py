@@ -56,6 +56,18 @@ def _summary(wallet: Wallet | None) -> AdminUserBalanceSummary:
     )
 
 
+def _bulk_publish_values(can_publish: bool) -> dict:
+    """批量调整发单权限的更新值。
+
+    开通（true）必须同时清除 publish_banned，否则封禁用户拿到 can_publish
+    仍然不能发单；禁止（false）只撤销开通，保留封禁标记不动。
+    """
+    values: dict = {"can_publish": can_publish}
+    if can_publish:
+        values["publish_banned"] = False
+    return values
+
+
 def _user_response(user: User, wallet: Wallet | None) -> AdminUserResponse:
     return AdminUserResponse(
         id=user.id,
@@ -65,6 +77,7 @@ def _user_response(user: User, wallet: Wallet | None) -> AdminUserResponse:
         is_active=user.is_active,
         is_verified=user.is_verified,
         can_publish=user.can_publish,
+        publish_banned=user.publish_banned,
         can_accept=user.can_accept,
         created_at=user.created_at,
         booster_quota=user.booster_quota,
@@ -90,6 +103,7 @@ async def list_admin_users(
     role: UserRole | None = None,
     is_active: bool | None = None,
     can_publish: bool | None = Query(None),
+    publish_banned: bool | None = Query(None),
     can_accept: bool | None = Query(None),
 ) -> AdminUserListResponse:
     filters = []
@@ -103,6 +117,8 @@ async def list_admin_users(
     # 权限筛选必须在 SQL 里做：前端过滤只能覆盖当前页，分页总数会算错
     if can_publish is not None:
         filters.append(User.can_publish.is_(can_publish))
+    if publish_banned is not None:
+        filters.append(User.publish_banned.is_(publish_banned))
     if can_accept is not None:
         filters.append(User.can_accept.is_(can_accept))
 
@@ -144,10 +160,9 @@ async def bulk_update_publish_permission(
         target_ids = [int(uid) for uid in result.scalars().all()]
         skipped = len(unique_ids) - len(target_ids)
         if target_ids:
+            values = _bulk_publish_values(payload.can_publish)
             await db.execute(
-                update(User)
-                .where(User.id.in_(target_ids))
-                .values(can_publish=payload.can_publish)
+                update(User).where(User.id.in_(target_ids)).values(**values)
             )
             if payload.can_publish:
                 await auto_approve_pending_for_users(db, current_admin.id, target_ids)
@@ -160,7 +175,7 @@ async def bulk_update_publish_permission(
             User.role != UserRole.ADMIN,
             User.is_active.is_(True),
         )
-        .values(can_publish=payload.can_publish)
+        .values(**_bulk_publish_values(payload.can_publish))
     )
     updated = int(result.rowcount or 0)
     if payload.can_publish:
@@ -225,8 +240,20 @@ async def update_admin_user(
 ) -> AdminUserDetailResponse:
     user = await _load_user(user_id, db)
     data = payload.model_dump(exclude_unset=True)
+    # 显式传 publish_banned=null 视为不修改，避免把非空列写成 NULL；
+    # 其余已传字段语义保持不变。
+    if "publish_banned" in data and data["publish_banned"] is None:
+        data.pop("publish_banned")
+        payload = AdminUserUpdate(**data)
     if not data:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="没有可更新的字段")
+    # 「开通发单」与「封禁发单」是互斥语义：同时为 true 会让最终状态取决于
+    # 字段应用顺序，直接在入口拒绝，和 restrictions 端点保持一致。
+    if data.get("can_publish") is True and data.get("publish_banned") is True:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="不能同时开通和封禁发单",
+        )
     if data.get("role") is not None:
         if user_id == current_admin.id and data["role"] != UserRole.ADMIN:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能降级自己的管理员角色")
@@ -244,8 +271,10 @@ async def update_admin_user(
         user = await get_user_service(db).update_user(user, payload, bypass_username_cooldown=True)
     except IntegrityError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="用户名已被占用") from exc
-    # 管理员直接开通发单权限时，顺带把该用户待审核的自助申请置为通过
+    # 管理员直接开通发单权限时，同时解除封禁并顺带通过待审核的自助申请；
+    # 仅撤销开通（false）时保留封禁标记。
     if data.get("can_publish") is True:
+        user.publish_banned = False
         await auto_approve_pending_for_users(db, current_admin.id, [user.id])
     wallet = (await db.execute(select(Wallet).where(Wallet.user_id == user_id))).scalar_one_or_none()
     return AdminUserDetailResponse(**_user_response(user, wallet).model_dump(), phone=user.phone, bio=user.bio)
@@ -321,9 +350,22 @@ async def set_admin_user_restrictions(
     if user_id == current_admin.id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能给自己设置管控限制")
     data = payload.model_dump(exclude_unset=True)
-    updates = {k: v for k, v in data.items() if k in ("can_publish", "can_accept") and v is not None}
+    updates = {
+        k: v
+        for k, v in data.items()
+        if k in ("can_publish", "can_accept", "publish_banned") and v is not None
+    }
     if not updates:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="没有可更新的限制字段")
+    # 开通与封禁互斥；同时为 true 时不能靠字段顺序决定最终状态。
+    if updates.get("can_publish") is True and updates.get("publish_banned") is True:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="不能同时开通和封禁发单",
+        )
+    # 开通发单权限同时解除封禁；单独传 publish_banned=false 只解封、不动开通。
+    if updates.get("can_publish") is True:
+        updates["publish_banned"] = False
     for field, value in updates.items():
         setattr(user, field, value)
     # 管理员直接解禁发单时，顺带把待审核申请置为通过；禁发单不影响申请

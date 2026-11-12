@@ -81,6 +81,8 @@ services:
       REGISTRATION_DEFAULT_CAN_PUBLISH: ${REGISTRATION_DEFAULT_CAN_PUBLISH:-true}
       REGISTRATION_DEFAULT_CAN_ACCEPT: ${REGISTRATION_DEFAULT_CAN_ACCEPT:-true}
       PUBLISH_PERMISSION_APPLY_ENABLED: ${PUBLISH_PERMISSION_APPLY_ENABLED:-true}
+      # 全站发单权限总开关初始值（仅首次创建 site_settings 行时生效）
+      PUBLISH_PERMISSION_REQUIRED: ${PUBLISH_PERMISSION_REQUIRED:-true}
     # 内网服务：不发布宿主机端口，API 仅经前端 nginx /api 反代访问
     networks:
       - game-boosting-network

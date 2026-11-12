@@ -178,7 +178,15 @@ class UserResponse(BaseModel):
     display_role: UserRole = Field(description="前端展示角色")
     is_active: bool = Field(description="是否激活")
     is_verified: bool = Field(description="是否验证")
-    can_publish: bool = Field(default=True, description="是否可以发布订单（发单权限）")
+    can_publish: bool = Field(default=True, description="是否已开通发单权限（can_publish）")
+    publish_banned: bool = Field(
+        default=False,
+        description="是否被明确封禁发单（任何模式下都不能发单或自助申请）",
+    )
+    can_publish_effective: bool | None = Field(
+        default=None,
+        description="当前实际能否发单（服务端按全站发单权限开关与封禁状态计算）",
+    )
     can_accept: bool = Field(default=True, description="是否可以接单")
     avatar_url: str | None = Field(default=None, description="头像URL")
     phone: str | None = Field(default=None, description="手机号")

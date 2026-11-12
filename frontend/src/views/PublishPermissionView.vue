@@ -19,18 +19,24 @@ const notice = ref({ type: '', text: '' })
 const confirmWithdraw = ref(false)
 const loaded = ref(false)
 
-// 优先用 /publish-permission/mine 的结果；首次加载前先按 authStore 的默认值展示，
-// 管理员始终视为已开通。
+// 优先用 /publish-permission/mine 的权威快照 can_publish_effective（管理员、
+// 个人封禁、全站开放均已计入）；首次加载前先按 authStore 的默认值展示。
 const canPublish = computed(() => (
   authStore.isAdmin
     ? true
     : loaded.value
-      ? store.mine.can_publish === true
+      ? store.mine.can_publish_effective === true
       : authStore.canPublish
 ))
 const applyEnabled = computed(() => store.mine.apply_enabled !== false)
 const latest = computed(() => store.mine.latest || null)
 const isPending = computed(() => store.mine.has_pending === true || latest.value?.status === 'PENDING')
+// 个人发单封禁：显式封禁在「全站开放」模式下也阻止发单；管理员始终可发单，
+// 即使历史数据里误写了 publish_banned 也不展示封禁卡片。
+const isBanned = computed(() => !authStore.isAdmin && store.mine.publish_banned === true)
+// 全站发单管控关闭：所有未被封禁的普通用户都可以直接发单，个人标记不影响；
+// 管理员走「已开通」分支，不展示普通用户的开放说明。
+const isGlobalOpen = computed(() => !authStore.isAdmin && store.mine.required === false)
 const statusLabel = computed(() => getPublishPermissionStatusLabel(latest.value?.status))
 const statusTagClass = computed(() => getPublishPermissionStatusTagClass(latest.value?.status))
 const canApply = computed(() => !isPending.value && applyEnabled.value)
@@ -135,8 +141,79 @@ onMounted(async () => {
 
     <div v-if="notice.text" :class="noticeClass(notice.type)">{{ notice.text }}</div>
 
-    <!-- 已开通 -->
-    <section v-if="canPublish" class="surface-card p-6 sm:p-8">
+    <!-- 个人发单封禁：自助申请不可用，只能联系管理员解封 -->
+    <section v-if="isBanned" class="surface-card p-6 sm:p-8">
+      <div class="flex flex-wrap items-center gap-2">
+        <h2 class="text-xl font-semibold text-ink-1">发单权限已封禁</h2>
+        <span class="tag !bg-danger-soft !text-danger">已封禁</span>
+      </div>
+      <p class="mt-2 text-sm leading-6 text-ink-2">
+        你的账号已被管理员封禁发单，暂时不能发布订单。自助申请发单权限暂不可用，如需恢复请联系管理员解除封禁。
+      </p>
+      <div v-if="isPending" class="mt-5 rounded-tile border border-line-1 bg-surface-2 p-4">
+        <p class="text-sm leading-6 text-ink-2">你还有一份待审核的发单申请；被封禁期间即使通过也无法发单，可先撤回。</p>
+        <button
+          type="button"
+          class="btn-ghost mt-3 min-h-[44px] !px-4 text-danger"
+          :disabled="store.submitting"
+          @click="withdrawLatest"
+        >
+          {{ confirmWithdraw ? '确认撤回申请？' : '撤回申请' }}
+        </button>
+        <button
+          v-if="confirmWithdraw"
+          type="button"
+          class="btn-secondary ml-2 mt-3 min-h-[44px] !px-4"
+          :disabled="store.submitting"
+          @click="confirmWithdraw = false"
+        >
+          取消
+        </button>
+      </div>
+    </section>
+
+    <!-- 全站开放：所有未被封禁的普通用户都可直接发单，无需申请 -->
+    <template v-else-if="isGlobalOpen">
+      <section class="surface-card p-6 sm:p-8">
+        <div class="flex flex-wrap items-center gap-2">
+          <h2 class="text-xl font-semibold text-ink-1">全站开放发单，无需申请</h2>
+          <span class="tag !bg-success-soft !text-success">全站开放</span>
+        </div>
+        <p class="mt-2 text-sm leading-6 text-ink-2">
+          当前站点已关闭全站发单权限管控：所有未被封禁的普通用户都可以直接发布订单。你的个人「未开通 / 已开通」标记在管控关闭期间不影响发单；管理员重新开启管控后，将恢复按个人发单权限判断，未开通用户需要重新申请或由管理员开通。
+        </p>
+        <div class="mt-5 flex flex-wrap gap-3">
+          <router-link :to="redirectTarget || { name: 'order-create' }" class="btn-primary min-h-[44px] !px-5">
+            {{ redirectTarget ? '继续发布订单' : '去发布订单' }}
+          </router-link>
+          <router-link :to="{ name: 'orders' }" class="btn-secondary min-h-[44px] !px-5">我的派单</router-link>
+        </div>
+        <div v-if="isPending" class="mt-5 rounded-tile border border-line-1 bg-surface-2 p-4">
+          <p class="text-sm leading-6 text-ink-2">你有一份待审核的发单申请；全站开放期间无需审核即可发单，不需要这份申请，可撤回。</p>
+          <button
+            type="button"
+            class="btn-ghost mt-3 min-h-[44px] !px-4 text-danger"
+            :disabled="store.submitting"
+            @click="withdrawLatest"
+          >
+            {{ confirmWithdraw ? '确认撤回申请？' : '撤回申请' }}
+          </button>
+          <button
+            v-if="confirmWithdraw"
+            type="button"
+            class="btn-secondary ml-2 mt-3 min-h-[44px] !px-4"
+            :disabled="store.submitting"
+            @click="confirmWithdraw = false"
+          >
+            取消
+          </button>
+        </div>
+      </section>
+    </template>
+
+    <template v-else>
+      <!-- 已开通 -->
+      <section v-if="canPublish" class="surface-card p-6 sm:p-8">
       <div class="flex flex-wrap items-center gap-2">
         <h2 class="text-xl font-semibold text-ink-1">发单权限已开通</h2>
         <span class="tag !bg-success-soft !text-success">已开通</span>
@@ -238,6 +315,7 @@ onMounted(async () => {
         <h2 class="text-xl font-semibold text-ink-1">未开启自助申请</h2>
         <p class="mt-2 text-sm leading-6 text-ink-2">当前站点未开启发单权限自助申请，请联系管理员开通。</p>
       </section>
+    </template>
     </template>
 
     <!-- 列表请求失败但仍保留上次结果：给出重试入口 -->

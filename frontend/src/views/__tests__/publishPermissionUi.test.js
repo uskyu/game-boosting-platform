@@ -70,11 +70,12 @@ describe('发单权限 UI 契约', () => {
     expect(adminSource).toMatch(/<AdminAnnouncements v-else-if="activeTab === 'announcements'" \/>/)
   })
 
-  it('adds the three site settings fields to defaults, sync and save payload', () => {
+  it('adds the site settings fields to defaults, sync and save payload', () => {
     for (const field of [
       'registration_default_can_publish',
       'registration_default_can_accept',
       'publish_permission_apply_enabled',
+      'publish_permission_required',
     ]) {
       expect(siteStoreSource).toContain(`${field}: true`)
       expect(siteSettingsSource).toContain(field)
@@ -82,11 +83,48 @@ describe('发单权限 UI 契约', () => {
     expect(siteSettingsSource).toMatch(/form\.registration_default_can_publish = store\.settings\.registration_default_can_publish !== false/)
     expect(siteSettingsSource).toMatch(/form\.registration_default_can_accept = store\.settings\.registration_default_can_accept !== false/)
     expect(siteSettingsSource).toMatch(/form\.publish_permission_apply_enabled = store\.settings\.publish_permission_apply_enabled !== false/)
+    expect(siteSettingsSource).toMatch(/form\.publish_permission_required = store\.settings\.publish_permission_required !== false/)
     // 布尔 false 必须显式进保存 payload（不能仅在 true 时带上）
     const saveBlock = slice(siteSettingsSource, 'const r = await store.updateSettings({', 'function addReplacement')
     expect(saveBlock).toMatch(/registration_default_can_publish: form\.registration_default_can_publish,/)
     expect(saveBlock).toMatch(/registration_default_can_accept: form\.registration_default_can_accept,/)
     expect(saveBlock).toMatch(/publish_permission_apply_enabled: form\.publish_permission_apply_enabled,/)
+    expect(saveBlock).toMatch(/publish_permission_required: form\.publish_permission_required,/)
+  })
+
+  it('adds the global publish-control card with confirm and one-click revoke', () => {
+    expect(siteSettingsSource).toMatch(/全站发单权限管控/)
+    // 开关两态文案（ON / OFF）
+    expect(siteSettingsSource).toMatch(/当前按发单权限管控；未开通的普通用户不能发单，可申请或由管理员开通；被封禁用户始终不能发单。/)
+    expect(siteSettingsSource).toMatch(/全站开放；所有未被封禁的普通用户都可以发单；未开通标记保留，重新开启后恢复限制；个人封禁仍生效。/)
+    expect(siteSettingsSource).toMatch(/保存后立即生效/)
+    expect(siteSettingsSource).toMatch(/:class="form\.publish_permission_required \? 'filter-pill-active' : 'filter-pill'"/)
+    expect(siteSettingsSource).toMatch(/:aria-pressed="form\.publish_permission_required"/)
+
+    // true → false 保存前必须二次确认
+    const confirmBlock = slice(siteSettingsSource, 'const globalWasRequired =', 'const r = await store.updateSettings({')
+    expect(confirmBlock).toMatch(/store\.settings\.publish_permission_required !== false/)
+    expect(confirmBlock).toMatch(/if \(globalWasRequired && !form\.publish_permission_required\)/)
+    expect(confirmBlock).toMatch(/window\.confirm\(/)
+    expect(confirmBlock).toMatch(/所有未被封禁的普通用户/)
+    expect(confirmBlock).toMatch(/if \(!confirmed\) return/)
+
+    // 一键收回：先预览人数，再确认，再调用冻结的批量接口
+    expect(siteSettingsSource).toMatch(/import \{ useAdminUsersStore \} from '@\/stores\/adminUsers'/)
+    expect(siteSettingsSource).toMatch(/const adminUsersStore = useAdminUsersStore\(\)/)
+    expect(siteSettingsSource).toMatch(/一键收回全部普通用户发单权限/)
+    const revokeBlock = slice(siteSettingsSource, 'async function revokeAllPublishPermissions()', 'onMounted')
+    expect(revokeBlock).toMatch(/await adminUsersStore\.fetchBulkPreview\(\)/)
+    expect(revokeBlock).toMatch(/window\.confirm\(bulkRevokeConfirmText\(preview\)\)/)
+    expect(revokeBlock).toMatch(/scope: 'all_non_admin'/)
+    expect(revokeBlock).toMatch(/can_publish: false/)
+    expect(revokeBlock).toMatch(/这不是封禁/)
+    expect(revokeBlock).toMatch(/重新开启后需重新申请或由管理员开通/)
+    // 预览失败也要给出通用人数说明并允许继续确认
+    expect(siteSettingsSource).toMatch(/人数获取失败。将收回全部启用中普通用户的发单权限/)
+
+    // 注册权限卡说明老用户由上方总开关控制
+    expect(siteSettingsSource).toMatch(/现有用户的发单权限由上方「全站发单权限管控」统一决定/)
   })
 
   it('blocks saving site settings until they loaded successfully', () => {
@@ -114,14 +152,22 @@ describe('发单权限 UI 契约', () => {
     expect(siteSettingsSource).toMatch(/:aria-pressed="form\.publish_permission_apply_enabled"/)
   })
 
-  it('exposes default-open canPublish/canAccept computed in the auth store', () => {
-    expect(authStoreSource).toMatch(/const canPublish = computed\(\(\) => isAdmin\.value \|\| user\.value\?\.can_publish !== false\)/)
+  it('exposes effective canPublish/canAccept computed in the auth store', () => {
+    const canPublishBlock = slice(authStoreSource, 'const canPublish = computed(() => {', 'const canAccept = computed')
+    // 管理员始终可发单；后端快照 can_publish_effective 优先于原始开通标记
+    expect(canPublishBlock).toMatch(/if \(isAdmin\.value\) return true/)
+    expect(canPublishBlock).toMatch(/if \(user\.value\?\.can_publish_effective === true\) return true/)
+    expect(canPublishBlock).toMatch(/if \(user\.value\?\.can_publish_effective === false\) return false/)
+    // 个人封禁在两种模式下都阻止发单（旧响应无快照字段时的兜底）
+    expect(canPublishBlock).toMatch(/if \(user\.value\?\.publish_banned === true\) return false/)
+    // 兼容旧响应/旧 fixture：缺少快照时保持默认放行
+    expect(canPublishBlock).toMatch(/return user\.value\?\.can_publish !== false/)
     expect(authStoreSource).toMatch(/const canAccept = computed\(\(\) => isAdmin\.value \|\| user\.value\?\.can_accept !== false\)/)
     expect(authStoreSource).toMatch(/^\s*canPublish,\s*$/m)
     expect(authStoreSource).toMatch(/^\s*canAccept,\s*$/m)
   })
 
-  it('registers /publish-permission and blocks order-create until the user is loaded', () => {
+  it('registers /publish-permission and refreshes /auth/me before blocking order-create', () => {
     expect(routerSource).toMatch(/path: '\/publish-permission'/)
     expect(routerSource).toMatch(/name: 'publish-permission'/)
     expect(routerSource).toMatch(/component: \(\) => import\('@\/views\/PublishPermissionView\.vue'\)/)
@@ -131,9 +177,11 @@ describe('发单权限 UI 契约', () => {
 
     // 冷加载分支必须把 requiresPublishPermission 放进阻塞等待名单
     expect(routerSource).toMatch(/to\.meta\.adminOnly \|\| to\.meta\.guest \|\| to\.meta\.requiresPublishPermission/)
+    // 冷加载分支拉过 /auth/me 后记录复用标记，避免同一导航重复请求
+    expect(routerSource).toMatch(/userRefreshedForNavigation/)
     const guard = slice(routerSource, 'if (to.meta.requiresPublishPermission) {', 'if (to.meta.guest && authStore.isAuthenticated)')
-    expect(guard).toMatch(/await authStore\.fetchCurrentUser\(\)/)
-    expect(guard).toMatch(/authStore\.canPublish/)
+    expect(guard).toMatch(/if \(!userRefreshedForNavigation\) \{[\s\S]{0,120}await authStore\.fetchCurrentUser\(\)/)
+    expect(guard).toMatch(/if \(!authStore\.user \|\| !authStore\.canPublish\)/)
     expect(guard).toMatch(/next\(\{ name: 'publish-permission', query: \{ redirect: to\.fullPath \} \}\)/)
   })
 
@@ -212,6 +260,9 @@ describe('发单权限 UI 契约', () => {
     expect(registerSource).toMatch(/const defaultMeta = computed\(\(\) => \{/)
     expect(registerSource).toMatch(/siteStore\.settings\.registration_default_can_publish !== false/)
     expect(registerSource).toMatch(/siteStore\.settings\.registration_default_can_accept !== false/)
+    // 全站开放时发单默认值按「允许」计算（与旧注册默认值取或）
+    expect(registerSource).toMatch(/const globalOpen = siteStore\.settings\.publish_permission_required === false/)
+    expect(registerSource).toMatch(/const canPublishByDefault = globalOpen\s*\|\| siteStore\.settings\.registration_default_can_publish !== false/)
     expect(registerSource).toMatch(/注册后就能发布需求、管理订单和进入聊天。/)
     // 发单开 + 接单关：不再承诺注册后即可接单
     expect(registerSource).toMatch(/注册后即可发布需求；接单权限需联系管理员开通。/)
@@ -231,6 +282,7 @@ describe('发单权限 UI 契约', () => {
   it('adds server-side permission filters and batch publish actions to user management', () => {
     expect(adminUsersStoreSource).toMatch(/can_publish: options\.can_publish/)
     expect(adminUsersStoreSource).toMatch(/can_accept: options\.can_accept/)
+    expect(adminUsersStoreSource).toMatch(/publish_banned: options\.publish_banned === '' \|\| options\.publish_banned == null \? undefined : options\.publish_banned/)
     expect(adminUsersStoreSource).toMatch(/async function bulkPublishPermission\(payload\)/)
     expect(adminUsersStoreSource).toMatch(/\/admin\/users\/bulk-publish-permission/)
     // 全部普通用户操作前先取预览人数（失败不阻断）
@@ -249,20 +301,55 @@ describe('发单权限 UI 契约', () => {
 
     expect(userListSource).toMatch(/const selectedUserIds = ref\(\[\]\)/)
     expect(userListSource).toMatch(/can_publish: filters\.restriction === 'no_publish' \? false : undefined/)
+    // 未开通筛选同时要求未封禁，避免批量开通时把封禁用户混进来
+    expect(userListSource).toMatch(/publish_banned: filters\.restriction === 'banned_publish'[\s\S]{0,120}'no_publish' \? false : undefined/)
     expect(userListSource).toMatch(/can_accept: filters\.restriction === 'no_accept' \? false : undefined/)
+    // 限制筛选四态：全部 / 未开通发单 / 封禁发单 / 禁接单
+    expect(userListSource).toMatch(/\{ value: 'no_publish', label: '未开通发单' \}/)
+    expect(userListSource).toMatch(/\{ value: 'banned_publish', label: '封禁发单' \}/)
+    expect(userListSource).toMatch(/\{ value: 'no_accept', label: '禁接单' \}/)
     // 不再用本地过滤替代服务端分页
     expect(userListSource).not.toMatch(/const visibleUsers = computed/)
     expect(userListSource).toMatch(/selectedUserIds\.value = \[\]/)
     expect(userListSource).toMatch(/function isSelectable\(user\) \{\s*return user\.role !== 'ADMIN'/)
     expect(userListSource).toMatch(/全选本页/)
-    expect(userListSource).toMatch(/批量禁发单/)
-    expect(userListSource).toMatch(/批量解禁发单/)
-    expect(userListSource).toMatch(/全部禁发单/)
+    expect(userListSource).toMatch(/批量收回发单权限/)
+    expect(userListSource).toMatch(/批量开通发单权限/)
+    expect(userListSource).toMatch(/全部收回发单权限/)
+    expect(userListSource).toMatch(/全部开通发单权限/)
     expect(userListSource).toMatch(/只影响启用中的普通用户，管理员不受影响/)
     expect(userListSource).toMatch(/payload\.scope = 'selected'/)
     expect(userListSource).toMatch(/payload\.scope = 'all_non_admin'/)
     expect(userListSource).toMatch(/can_publish: state\.can_publish/)
     expect(userListSource).toMatch(/store\.bulkPublishPermission\(payload\)/)
+    // 批量弹窗明确区分「收回」与「封禁」，开通会清除封禁
+    expect(userListSource).toMatch(/收回只撤销「已开通」标记，不是封禁/)
+    expect(userListSource).toMatch(/开通发单权限会同时清除所选用户已有的发单封禁/)
+
+    // 徽标：封禁优先于未开通
+    expect(userListSource).toMatch(/v-if="user\.publish_banned === true"[\s\S]{0,120}封禁发单/)
+    expect(userListSource).toMatch(/v-else-if="user\.can_publish === false"[\s\S]{0,80}未开通发单/)
+    expect(userListSource).toMatch(/v-if="user\.can_accept === false"[\s\S]{0,40}禁接单/)
+
+    // 三态动作：解除封禁 / 开通发单 / 封禁发单
+    const publishActionSource = slice(userListSource, 'function publishAction(user) {', 'function publishActionLabel')
+    expect(publishActionSource).toMatch(/if \(user\.publish_banned === true\) return 'unban'/)
+    expect(publishActionSource).toMatch(/if \(user\.can_publish === false\) return 'grant'/)
+    expect(publishActionSource).toMatch(/return 'ban'/)
+    const toggleSource = slice(userListSource, 'async function togglePublish(user) {', 'async function toggleAccept')
+    expect(toggleSource).toMatch(/action === 'unban'[\s\S]{0,40}\{ publish_banned: false \}/)
+    expect(toggleSource).toMatch(/action === 'grant'[\s\S]{0,40}\{ can_publish: true \}/)
+    expect(toggleSource).toMatch(/\{ publish_banned: true \}/)
+    expect(toggleSource).toMatch(/已解除发单封禁/)
+    expect(toggleSource).toMatch(/已开通发单权限/)
+    expect(toggleSource).toMatch(/已封禁发单/)
+    expect(userListSource).toMatch(/publishActionLabel\(user\)/)
+
+    // 全站管控关闭时显示横幅（进入管理页强制刷新设置）
+    expect(userListSource).toMatch(/siteStore\.settings\.publish_permission_required === false/)
+    expect(userListSource).toMatch(/全站发单管控当前已关闭：『未开通发单』用户现在也可以发单；『封禁发单』仍然生效。重新开启后未开通用户将不能发单。/)
+    expect(userListSource).toMatch(/siteStore\.fetchSettings\(true\)/)
+
     // 桌面表格与移动卡片都有选择框
     expect((userListSource.match(/type="checkbox"/g) || []).length).toBeGreaterThanOrEqual(4)
   })
@@ -277,6 +364,11 @@ describe('发单权限 UI 契约', () => {
     expect(adminApplicationsSource).toMatch(/item\.reason/)
     expect(adminApplicationsSource).toMatch(/item\.created_at/)
     expect(adminApplicationsSource).toMatch(/item\.history_count/)
+    // 封禁申请：显示封禁标签/警告，通过按钮禁用，驳回仍可用
+    expect(adminApplicationsSource).toMatch(/v-if="item\.publish_banned"[\s\S]{0,80}封禁中/)
+    expect(adminApplicationsSource).toMatch(/该用户已被封禁发单，请先到用户管理解除封禁/)
+    expect(adminApplicationsSource).toMatch(/:disabled="item\.publish_banned === true"/)
+    expect(adminApplicationsSource).toMatch(/if \(item\?\.publish_banned === true\)/)
     expect(adminApplicationsSource).toMatch(/function openApprove\(item\)/)
     expect(adminApplicationsSource).toMatch(/function openReject\(item\)/)
     expect(adminApplicationsSource).toMatch(/state\.type === 'reject' && !reason/)
@@ -305,9 +397,13 @@ describe('发单权限 UI 契约', () => {
     expect(loadSource).toMatch(/await load\(pages\)/)
   })
 
-  it('implements the four-state self-service application page', () => {
+  it('implements the banned / global-open / granted / application page states', () => {
     expect(permissionViewSource).toMatch(/await Promise\.all\(\[authStore\.fetchCurrentUser\(\), loadMine\(\)\]\)/)
     expect(permissionViewSource).toMatch(/store\.fetchMine\(\)/)
+    // 加载后以 mine.can_publish_effective 为准；封禁与全站开放是独立状态
+    expect(permissionViewSource).toMatch(/store\.mine\.can_publish_effective === true/)
+    expect(permissionViewSource).toMatch(/const isBanned = computed\(\(\) => !authStore\.isAdmin && store\.mine\.publish_banned === true\)/)
+    expect(permissionViewSource).toMatch(/const isGlobalOpen = computed\(\(\) => !authStore\.isAdmin && store\.mine\.required === false\)/)
     expect(permissionViewSource).toMatch(/const isPending = computed/)
     expect(permissionViewSource).toMatch(/store\.mine\.has_pending/)
     expect(permissionViewSource).toMatch(/v-if="canPublish"[\s\S]{0,160}发单权限已开通/)
@@ -315,6 +411,26 @@ describe('发单权限 UI 契约', () => {
     expect(permissionViewSource).toMatch(/撤回申请/)
     expect(permissionViewSource).toMatch(/重新申请发单权限/)
     expect(permissionViewSource).toMatch(/未开启自助申请/)
+
+    // 封禁态：不能申请，可联系管理员；有 pending 时可撤回
+    const bannedBlock = slice(permissionViewSource, 'v-if="isBanned"', 'v-else-if="isGlobalOpen"')
+    expect(bannedBlock).toMatch(/发单权限已封禁/)
+    expect(bannedBlock).toMatch(/自助申请发单权限暂不可用/)
+    expect(bannedBlock).toMatch(/请联系管理员解除封禁/)
+    expect(bannedBlock).not.toMatch(/canApply/)
+
+    // 全站开放态：无需申请，说明个人标记不生效；pending 可撤回
+    const globalOpenBlock = slice(permissionViewSource, 'v-else-if="isGlobalOpen"', '<!-- 已开通 -->')
+    expect(globalOpenBlock).toMatch(/全站开放发单，无需申请/)
+    expect(globalOpenBlock).toMatch(/个人「未开通 \/ 已开通」标记在管控关闭期间不影响发单/)
+    expect(globalOpenBlock).toMatch(/管理员重新开启管控后，将恢复按个人发单权限判断/)
+    expect(globalOpenBlock).toMatch(/去发布订单/)
+    expect(globalOpenBlock).toMatch(/不需要这份申请，可撤回/)
+    expect(globalOpenBlock).not.toMatch(/canApply/)
+
+    // 状态顺序：封禁 → 全站开放 → 受限模式（已开通/申请）
+    expect(permissionViewSource.indexOf('v-if="isBanned"')).toBeLessThan(permissionViewSource.indexOf('v-else-if="isGlobalOpen"'))
+    expect(permissionViewSource.indexOf('v-else-if="isGlobalOpen"')).toBeLessThan(permissionViewSource.indexOf('v-if="canPublish"'))
     expect(permissionViewSource).toMatch(/maxlength="500"/)
     expect(permissionViewSource).toMatch(/store\.apply\(reason\.value\)/)
     expect(permissionViewSource).toMatch(/store\.withdraw\(latest\.value\.id\)/)

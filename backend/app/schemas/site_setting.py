@@ -89,6 +89,14 @@ class SiteSettingUpdate(BaseModel):
         default=None,
         description="是否允许无发单权限的用户自助提交申请",
     )
+    # 全站发单权限总开关：不传保持不变；显式 false 表示全站开放发单
+    publish_permission_required: bool | None = Field(
+        default=None,
+        description=(
+            "是否要求非管理员已开通发单权限才能发单；"
+            "false=全站开放（仅封禁发单的用户仍被拦截）"
+        ),
+    )
 
     model_config = ConfigDict(extra="forbid")
 
@@ -151,6 +159,8 @@ class SiteSettingResponse(BaseModel):
     registration_default_can_publish: bool = True
     registration_default_can_accept: bool = True
     publish_permission_apply_enabled: bool = True
+    # 全站发单权限总开关（公开可读：申请页/发单入口据此提示）
+    publish_permission_required: bool = True
     updated_by: int | None
     updated_at: datetime
     logo_recommendation: str = "建议使用 512×512 以上的 PNG、JPEG 或 WebP 图片，文件不超过 10MB。"

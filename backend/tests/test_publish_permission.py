@@ -107,6 +107,7 @@ async def test_admin_settings_toggle_registration_defaults(
             "registration_default_can_publish": False,
             "registration_default_can_accept": False,
             "publish_permission_apply_enabled": False,
+            "publish_permission_required": False,
         },
         headers=headers,
     )
@@ -115,11 +116,13 @@ async def test_admin_settings_toggle_registration_defaults(
     assert resp.json()["registration_default_can_publish"] is False
     assert resp.json()["registration_default_can_accept"] is False
     assert resp.json()["publish_permission_apply_enabled"] is False
+    assert resp.json()["publish_permission_required"] is False
 
     public = await client.get("/site/settings")
     assert public.json()["registration_default_can_publish"] is False
     assert public.json()["registration_default_can_accept"] is False
     assert public.json()["publish_permission_apply_enabled"] is False
+    assert public.json()["publish_permission_required"] is False
 
     # 不传时保持原值
     resp = await client.put(
@@ -130,6 +133,7 @@ async def test_admin_settings_toggle_registration_defaults(
     assert resp.json()["registration_default_can_publish"] is False
     assert resp.json()["registration_default_can_accept"] is False
     assert resp.json()["publish_permission_apply_enabled"] is False
+    assert resp.json()["publish_permission_required"] is False
 
 
 async def test_ensure_site_settings_uses_env_once(
@@ -147,6 +151,7 @@ async def test_ensure_site_settings_uses_env_once(
     monkeypatch.setattr(config.settings, "REGISTRATION_DEFAULT_CAN_PUBLISH", False)
     monkeypatch.setattr(config.settings, "REGISTRATION_DEFAULT_CAN_ACCEPT", True)
     monkeypatch.setattr(config.settings, "PUBLISH_PERMISSION_APPLY_ENABLED", False)
+    monkeypatch.setattr(config.settings, "PUBLISH_PERMISSION_REQUIRED", False)
 
     created = await ensure_site_settings(db_session)
     await db_session.commit()
@@ -155,16 +160,19 @@ async def test_ensure_site_settings_uses_env_once(
     assert created.registration_default_can_publish is False
     assert created.registration_default_can_accept is True
     assert created.publish_permission_apply_enabled is False
+    assert created.publish_permission_required is False
 
     # 管理员改过之后，二次启动不得被 env 覆盖
     created.registration_default_can_publish = True
     created.publish_permission_apply_enabled = True
+    created.publish_permission_required = True
     await db_session.commit()
 
     again = await ensure_site_settings(db_session)
     await db_session.commit()
     assert again.registration_default_can_publish is True
     assert again.publish_permission_apply_enabled is True
+    assert again.publish_permission_required is True
     assert again.registration_default_can_accept is True
 
 
@@ -182,6 +190,9 @@ async def test_apply_and_duplicate_pending_conflict(
     mine = await client.get("/publish-permission/mine", headers=auth_header(registered_user))
     assert mine.status_code == 200
     assert mine.json()["can_publish"] is False
+    assert mine.json()["publish_banned"] is False
+    assert mine.json()["required"] is True
+    assert mine.json()["can_publish_effective"] is False
     assert mine.json()["apply_enabled"] is True
     assert mine.json()["latest"] is None
     assert mine.json()["has_pending"] is False
@@ -192,6 +203,8 @@ async def test_apply_and_duplicate_pending_conflict(
     assert body["status"] == "PENDING"
     assert body["reason"] == "想发单"
     assert body["history_count"] == 1
+    assert body["can_publish"] is False
+    assert body["publish_banned"] is False
 
     mine = await client.get("/publish-permission/mine", headers=auth_header(registered_user))
     assert mine.json()["has_pending"] is True
@@ -295,6 +308,8 @@ async def test_review_approve_grants_publish_and_notifies(
     # 权限已下发
     me = await client.get("/auth/me", headers=auth_header(registered_user))
     assert me.json()["can_publish"] is True
+    assert me.json()["publish_banned"] is False
+    assert me.json()["can_publish_effective"] is True
 
     # 通知已写入（复用 APPLICATION_APPROVED）
     notifications = (
@@ -590,6 +605,8 @@ async def test_admin_user_list_filters_by_can_publish(
     assert data["total"] >= 2
     assert {item["id"] for item in data["items"]} >= {regular_id, booster_id}
     assert all(item["can_publish"] is False for item in data["items"])
+    # 未开通不是封禁：publish_banned 应保持 false，且响应带该字段
+    assert all(item["publish_banned"] is False for item in data["items"])
 
     resp = await client.get(
         "/admin/users",

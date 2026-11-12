@@ -21,6 +21,8 @@ async def test_public_settings_are_lazy_created(client: AsyncClient):
     assert data["site_name"] == "游戏服务平台"
     assert data["site_logo_url"] is None
     assert data["logo_recommendation"]
+    # 全站发单权限总开关默认要求已开通发单权限，且公开可读
+    assert data["publish_permission_required"] is True
 
 
 async def test_admin_can_update_settings_and_upload_delete_logo(

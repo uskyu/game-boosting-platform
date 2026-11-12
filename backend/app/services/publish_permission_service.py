@@ -22,6 +22,36 @@ from app.schemas.publish_permission import (
 )
 from app.services.site_setting_service import get_or_create_site_setting
 
+# 403 文案：被封禁发单与「未开通」必须区分，前端据此给出不同引导。
+PUBLISH_BANNED_DETAIL = "您已被封禁发单，无法发布订单"
+PUBLISH_NOT_GRANTED_DETAIL = "您暂无发单权限，请先申请或联系管理员开通"
+
+
+def can_publish_effective(user: User, *, required: bool) -> bool:
+    """计算当前用户实际能否发单（管理员始终可发）。
+
+    - 明确封禁发单（publish_banned）优先级最高，任何模式都拦住；
+    - 全站总开关 required=false 时，未封禁的非管理员无需已开通权限；
+    - required=true 时仍需 can_publish（已开通）。
+    """
+    if user.role == UserRole.ADMIN:
+        return True
+    if bool(user.publish_banned):
+        return False
+    if not required:
+        return True
+    return bool(user.can_publish)
+
+
+def publish_forbidden_detail(user: User, *, required: bool) -> str:
+    """发单被拒时的 403 文案；调用前应先确认 can_publish_effective 为 false。"""
+    if bool(user.publish_banned):
+        return PUBLISH_BANNED_DETAIL
+    if required and not bool(user.can_publish):
+        return PUBLISH_NOT_GRANTED_DETAIL
+    # 理论上不可达；保守返回未开通文案，避免下发空 detail。
+    return PUBLISH_NOT_GRANTED_DETAIL
+
 
 def _utcnow() -> datetime:
     """数据库统一存 naive UTC（项目约定）。"""
@@ -61,6 +91,8 @@ def _to_item(
         created_at=request.created_at,
         resolved_at=request.resolved_at,
         history_count=history_count,
+        can_publish=bool(user.can_publish),
+        publish_banned=bool(user.publish_banned),
     )
 
 
@@ -124,8 +156,12 @@ async def get_mine(db: AsyncSession, user: User) -> PublishPermissionMineRespons
     if latest is not None:
         latest_item = await _build_item(db, latest, user)
 
+    required = bool(setting.publish_permission_required)
     return PublishPermissionMineResponse(
         can_publish=bool(user.can_publish),
+        publish_banned=bool(user.publish_banned),
+        required=required,
+        can_publish_effective=can_publish_effective(user, required=required),
         apply_enabled=bool(setting.publish_permission_apply_enabled),
         latest=latest_item,
         has_pending=has_pending,
@@ -153,13 +189,25 @@ async def apply(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="管理员无需申请发单权限",
         )
+    # 明确封禁发单的用户不能走自助申请，只能由管理员解除封禁后开通。
+    if locked_user.publish_banned:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=PUBLISH_BANNED_DETAIL,
+        )
+
+    setting = await get_or_create_site_setting(db)
+    # 全站开放时所有人本来就能发单，申请没有意义（包括 can_publish=false 的老用户）。
+    if not setting.publish_permission_required:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="当前全站开放发单，无需申请",
+        )
     if locked_user.can_publish:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="已具备发单权限",
         )
-
-    setting = await get_or_create_site_setting(db)
     if not setting.publish_permission_apply_enabled:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -332,6 +380,13 @@ async def review(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="申请用户不存在",
+        )
+
+    if action == "approve" and target_user.publish_banned:
+        # 审核通过不清除封禁：封禁是独立的管理动作，必须先解除再审核。
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="该用户已被封禁发单，请先解除封禁后再审核",
         )
 
     now = _utcnow()

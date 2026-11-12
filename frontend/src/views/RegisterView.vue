@@ -62,7 +62,11 @@ const captchaEnabled = computed(() => siteStore.settings.registration_captcha_en
 // 注册默认权限文案：同时考虑发单/接单两个新用户默认开关，
 // 关闭发单时再按自助申请开关引导自助申请或联系管理员。
 const defaultMeta = computed(() => {
-  const canPublishByDefault = siteStore.settings.registration_default_can_publish !== false
+  // 全站发单管控关闭时，注册默认禁发单也会失效（所有人都能发单），
+  // 所以按「有效默认」展示文案；管控开启时仍按注册默认值展示。
+  const globalOpen = siteStore.settings.publish_permission_required === false
+  const canPublishByDefault = globalOpen
+    || siteStore.settings.registration_default_can_publish !== false
   const canAcceptByDefault = siteStore.settings.registration_default_can_accept !== false
   if (canPublishByDefault && canAcceptByDefault) {
     return '注册后就能发布需求、管理订单和进入聊天。'

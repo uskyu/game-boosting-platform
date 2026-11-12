@@ -1,7 +1,7 @@
 """发单人黑名单接口。
 
-只允许 ADMIN 或 can_publish=True 的登录用户使用；不提供任何「列出用户 /
-模糊搜索用户」能力，lookup 仅做实名/邮箱完全匹配。
+只允许 ADMIN 或当前实际可发单的登录用户使用（受全站发单权限开关约束）；
+不提供任何「列出用户 / 模糊搜索用户」能力，lookup 仅做实名/邮箱完全匹配。
 """
 
 from typing import Annotated
@@ -40,7 +40,7 @@ async def list_my_blacklist(
         Query(max_length=100, description="按已拉黑用户名过滤（不搜索全站）"),
     ] = None,
 ) -> PublisherBlacklistListResponse:
-    blacklist_service.ensure_can_manage_blacklist(current_user)
+    await blacklist_service.ensure_can_manage_blacklist(db, current_user)
     items, total = await blacklist_service.list_mine(
         db,
         current_user,
@@ -79,7 +79,7 @@ async def lookup_blacklist_user(
         ),
     ],
 ) -> PublisherBlacklistLookupResponse:
-    blacklist_service.ensure_can_manage_blacklist(current_user)
+    await blacklist_service.ensure_can_manage_blacklist(db, current_user)
 
     keyword = q.strip()
     if len(keyword) < 2:
@@ -116,7 +116,7 @@ async def add_user_to_blacklist(
     db: DatabaseSession,
     current_user: CurrentUser,
 ) -> PublisherBlacklistItem:
-    blacklist_service.ensure_can_manage_blacklist(current_user)
+    await blacklist_service.ensure_can_manage_blacklist(db, current_user)
     return await blacklist_service.add_blacklist(
         db,
         current_user,
@@ -136,7 +136,7 @@ async def remove_user_from_blacklist(
     db: DatabaseSession,
     current_user: CurrentUser,
 ) -> Response:
-    blacklist_service.ensure_can_manage_blacklist(current_user)
+    await blacklist_service.ensure_can_manage_blacklist(db, current_user)
     await blacklist_service.remove_blacklist(
         db,
         current_user,

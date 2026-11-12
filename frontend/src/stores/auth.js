@@ -68,9 +68,16 @@ export const useAuthStore = defineStore('auth', () => {
   const isBooster = computed(() => !!user.value && user.value.role !== 'ADMIN')
   const isAdmin = computed(() => user.value?.role === 'ADMIN')
   const userRole = computed(() => user.value?.role || null)
-  // 发单/接单权限：管理员不受限；其余用户默认放行，只有后端明确返回 false
-  // 才视为未开通——兼容尚未升级的旧响应和旧测试 fixture。
-  const canPublish = computed(() => isAdmin.value || user.value?.can_publish !== false)
+  // 发单/接单权限：管理员不受限。发单以后端快照 can_publish_effective 为准
+  // （全站开放/管理员/个人封禁的最终判定），旧响应没有该字段时回退到
+  // publish_banned / can_publish 的默认放行逻辑，兼容旧接口和旧测试 fixture。
+  const canPublish = computed(() => {
+    if (isAdmin.value) return true
+    if (user.value?.can_publish_effective === true) return true
+    if (user.value?.can_publish_effective === false) return false
+    if (user.value?.publish_banned === true) return false
+    return user.value?.can_publish !== false
+  })
   const canAccept = computed(() => isAdmin.value || user.value?.can_accept !== false)
 
   // Actions

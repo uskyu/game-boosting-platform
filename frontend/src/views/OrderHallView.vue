@@ -307,6 +307,11 @@ let hallUnmounted = false
 // 摘要与基线一致就跳过全量列表，把列表请求量降一个数量级。断线期（事故压力
 // 全部来自 2s 一次的全量列表）收益最大；WS 正常时也省掉一次必然无变化的对账。
 const HALL_FORCED_FULL_INTERVAL = 30_000
+// 启动静默窗口：startHallLifecycle 已经拉了一次全量列表 + 摘要；WS 连接、
+// 通知 watcher 往往在同一瞬间再触发 silentRefresh，两条请求会落在后端
+// 1.5s 限流窗口里自己撞 429。窗口内的刷新合并成一次延迟补拉，既避开限流，
+// 又不漏掉启动后 2 秒内到达的新单事件。
+const HALL_STARTUP_GRACE_MS = 2_000
 // 摘要一致时最多只跳过这么久：摘要是聚合信号，可能有盲区（列表与摘要的批次差、
 // 后端摘要聚合缓存延迟），30 秒强制一次全量兜住盲区，保证最坏延迟有上界。
 // null = 基线未知（刚断线/刚挂载），此时必须全量，没有摘要可对比。
@@ -326,6 +331,10 @@ let hallResumeRefreshTimer = null
 // 合并刷新期间到达的通知，当前请求结束后补拉一次，避免「有声音但没新单」
 //（通知恰好撞上轮询在飞时，旧版直接丢弃刷新信号）。
 let hallRefreshQueued = false
+// 启动静默窗口结束时刻；窗口内到达的刷新信号合并成一个延迟补拉，避免
+// 与 startHallLifecycle 的首屏列表请求在限流窗口内相撞。
+let hallStartupUntil = 0
+let hallStartupRefreshTimer = null
 // 在飞保护：弱网下一轮没跑完就不开新一轮，避免请求堆积占满浏览器连接
 let hallRefreshing = false
 
@@ -425,6 +434,17 @@ function handleHallVisibility() {
 
 async function silentRefresh() {
   if (hallUnmounted || !isAuthenticated.value || document.visibilityState !== 'visible') return
+  // 启动窗口内不立即发请求：首屏已经在拉列表/摘要，WS 连接等 watcher 的
+  // 立即刷新先合并成一次 2s 后的补拉，避免同一条限流窗口内自撞 429。
+  if (Date.now() < hallStartupUntil) {
+    if (hallStartupRefreshTimer === null) {
+      hallStartupRefreshTimer = window.setTimeout(() => {
+        hallStartupRefreshTimer = null
+        silentRefresh().catch(() => {})
+      }, hallStartupUntil - Date.now() + 50)
+    }
+    return
+  }
   if (hallRefreshing) {
     hallRefreshQueued = true
     return
@@ -518,6 +538,13 @@ async function startHallLifecycle() {
   hallDigestBaseline = null
   lastHallFullRefreshAt = 0
   hallDigestUnavailable = false
+  // 首屏这两条请求（列表 + 摘要）先发；2 秒内 watcher 的刷新请求合并到窗口后。
+  hallStartupUntil = Date.now() + HALL_STARTUP_GRACE_MS
+  hallRefreshQueued = false
+  if (hallStartupRefreshTimer !== null) {
+    window.clearTimeout(hallStartupRefreshTimer)
+    hallStartupRefreshTimer = null
+  }
   fetchOrders()
   // 顶部统计条全量数字：随摘要接口一起回来。首屏直接拉一次，
   // 而不是等列表响应（列表那三个 hall_* 字段只是对账基线，不含名额统计）。
@@ -568,6 +595,11 @@ onUnmounted(() => {
     window.clearTimeout(hallResumeRefreshTimer)
     hallResumeRefreshTimer = null
   }
+  if (hallStartupRefreshTimer) {
+    window.clearTimeout(hallStartupRefreshTimer)
+    hallStartupRefreshTimer = null
+  }
+  hallStartupUntil = 0
   document.removeEventListener('visibilitychange', handleHallVisibility)
   window.removeEventListener('focus', handleHallVisibility)
   if (hallRefreshTimer) {

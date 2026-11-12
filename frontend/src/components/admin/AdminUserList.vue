@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useAdminUsersStore } from '@/stores/adminUsers'
+import { useSiteStore } from '@/stores/site'
 import { getTransactionTypeLabel } from '@/stores/wallet'
 import { formatDateTime, formatPrice } from '@/utils/display'
 import { getClaimStatusMeta } from '@/utils/order'
@@ -10,6 +11,7 @@ import { getClaimStatusMeta } from '@/utils/order'
 const router = useRouter()
 const auth = useAuthStore()
 const store = useAdminUsersStore()
+const siteStore = useSiteStore()
 
 // ── 筛选（角色两态：管理员 / 打手）──
 
@@ -26,7 +28,8 @@ const statusFilterOptions = [
 ]
 const restrictionFilterOptions = [
   { value: '', label: '全部限制' },
-  { value: 'no_publish', label: '禁发单' },
+  { value: 'no_publish', label: '未开通发单' },
+  { value: 'banned_publish', label: '封禁发单' },
   { value: 'no_accept', label: '禁接单' },
 ]
 
@@ -127,7 +130,7 @@ async function confirmBulkPublish() {
   const skipped = Number(result.data?.skipped ?? 0)
   flash(
     'success',
-    `批量${state.can_publish ? '解禁发单' : '禁发单'}完成：更新 ${updated} 人${skipped ? `，跳过 ${skipped} 人` : ''}`,
+    `批量${state.can_publish ? '开通发单权限' : '收回发单权限'}完成：更新 ${updated} 人${skipped ? `，跳过 ${skipped} 人` : ''}`,
   )
   bulkModal.value = null
   selectedUserIds.value = []
@@ -152,8 +155,13 @@ function load(page = 1) {
     query: filters.query.trim(),
     role: filters.role,
     isActive: filters.isActive,
-    // 服务端筛选：禁发单 = can_publish=false，禁接单 = can_accept=false
+    // 服务端筛选：未开通发单 = can_publish=false 且未封禁（封禁用户单独筛，
+    // 避免把他们混进「未开通」后批量开通时误解除封禁）；
+    // 封禁发单 = publish_banned=true，禁接单 = can_accept=false
     can_publish: filters.restriction === 'no_publish' ? false : undefined,
+    publish_banned: filters.restriction === 'banned_publish'
+      ? true
+      : (filters.restriction === 'no_publish' ? false : undefined),
     can_accept: filters.restriction === 'no_accept' ? false : undefined,
   })
 }
@@ -282,13 +290,32 @@ async function toggleStatus(user) {
   }
 }
 
-// ── 禁发单 / 禁接单 ──
+// ── 发单封禁 / 开通发单 ──
+// 三态动作：封禁中 → 解除封禁；未开通（且未封禁）→ 开通发单；否则 → 封禁发单。
+// 开通会同时清除封禁；封禁是显式限制，与「收回已开通标记」不同。
+function publishAction(user) {
+  if (user.publish_banned === true) return 'unban'
+  if (user.can_publish === false) return 'grant'
+  return 'ban'
+}
+
+function publishActionLabel(user) {
+  const action = publishAction(user)
+  if (action === 'unban') return '解除封禁'
+  if (action === 'grant') return '开通发单'
+  return '封禁发单'
+}
 
 async function togglePublish(user) {
-  const next = !(user.can_publish ?? true)
-  const result = await store.setRestrictions(user.id, { can_publish: next })
+  const action = publishAction(user)
+  const payload = action === 'unban'
+    ? { publish_banned: false }
+    : action === 'grant'
+      ? { can_publish: true }
+      : { publish_banned: true }
+  const result = await store.setRestrictions(user.id, payload)
   if (result.success) {
-    flash('success', next ? '已解除禁发单' : '已禁发单')
+    flash('success', action === 'unban' ? '已解除发单封禁' : action === 'grant' ? '已开通发单权限' : '已封禁发单')
     await load(store.pagination.page)
   } else {
     flash('error', result.error)
@@ -464,7 +491,10 @@ function goOrder(orderId) {
   router.push(`/admin/dispatch/${orderId}`)
 }
 
-onMounted(load)
+onMounted(async () => {
+  // 进入管理页强制刷新站点设置：顶部横幅要反映最新的全站发单管控状态
+  await Promise.all([load(), siteStore.fetchSettings(true)])
+})
 </script>
 
 <template>
@@ -494,6 +524,10 @@ onMounted(load)
 
     <div v-if="notice.text" class="mt-4" :class="notice.type === 'success' ? 'message-success' : 'message-error'">{{ notice.text }}</div>
 
+    <div v-if="siteStore.settings.publish_permission_required === false" class="message-info mt-4">
+      全站发单管控当前已关闭：『未开通发单』用户现在也可以发单；『封禁发单』仍然生效。重新开启后未开通用户将不能发单。
+    </div>
+
     <!-- 加载骨架 -->
     <div v-if="store.loading" class="mt-5 space-y-2" aria-busy="true">
       <div v-for="n in 5" :key="`user-skeleton-${n}`" class="skeleton h-16 !rounded-tile"></div>
@@ -521,19 +555,19 @@ onMounted(load)
             class="btn-secondary min-h-[44px] !px-4 !py-2"
             :disabled="!selectedUserIds.length"
             @click="openBulkModal('selected', false)"
-          >批量禁发单</button>
+          >批量收回发单权限</button>
           <button
             type="button"
             class="btn-secondary min-h-[44px] !px-4 !py-2"
             :disabled="!selectedUserIds.length"
             @click="openBulkModal('selected', true)"
-          >批量解禁发单</button>
+          >批量开通发单权限</button>
         </div>
       </div>
       <div class="mt-2 flex flex-wrap items-center gap-2 text-xs text-ink-3">
         <span class="font-medium text-ink-2">全部普通用户：</span>
-        <button type="button" class="filter-pill" @click="openBulkModal('all', false)">全部禁发单</button>
-        <button type="button" class="filter-pill" @click="openBulkModal('all', true)">全部解禁</button>
+        <button type="button" class="filter-pill" @click="openBulkModal('all', false)">全部收回发单权限</button>
+        <button type="button" class="filter-pill" @click="openBulkModal('all', true)">全部开通发单权限</button>
         <span>只影响启用中的普通用户，管理员不受影响。</span>
       </div>
 
@@ -589,8 +623,9 @@ onMounted(load)
                     <div class="min-w-0">
                       <p class="truncate font-medium text-ink-1">{{ user.username }}</p>
                       <p class="truncate text-xs text-ink-3">{{ user.email }}</p>
-                      <div v-if="user.can_publish === false || user.can_accept === false" class="mt-1 flex flex-wrap gap-1">
-                        <span v-if="user.can_publish === false" class="badge-cancelled">禁发单</span>
+                      <div v-if="user.publish_banned === true || user.can_publish === false || user.can_accept === false" class="mt-1 flex flex-wrap gap-1">
+                        <span v-if="user.publish_banned === true" class="badge-cancelled">封禁发单</span>
+                        <span v-else-if="user.can_publish === false" class="badge-cancelled">未开通发单</span>
                         <span v-if="user.can_accept === false" class="badge-cancelled">禁接单</span>
                       </div>
                     </div>
@@ -612,10 +647,10 @@ onMounted(load)
                     <button
                       type="button"
                       class="btn-ghost !px-3 !py-1.5"
-                      :disabled="isSelf(user)"
-                      :title="isSelf(user) ? '不能给自己设置' : ''"
+                      :disabled="isSelf(user) || user.role === 'ADMIN'"
+                      :title="user.role === 'ADMIN' ? '管理员发单不受限制' : (isSelf(user) ? '不能给自己设置' : '')"
                       @click="togglePublish(user)"
-                    >{{ (user.can_publish ?? true) ? '禁发单' : '解禁发单' }}</button>
+                    >{{ publishActionLabel(user) }}</button>
                     <button
                       type="button"
                       class="btn-ghost !px-3 !py-1.5"
@@ -650,7 +685,8 @@ onMounted(load)
                   <p class="truncate font-semibold text-ink-1">{{ user.username }}</p>
                   <span :class="roleTagClass(user.role)">{{ roleLabel(user.role) }}</span>
                   <span :class="user.is_active ? 'badge-approved' : 'badge-cancelled'">{{ user.is_active ? '启用' : '禁用' }}</span>
-                  <span v-if="user.can_publish === false" class="badge-cancelled">禁发单</span>
+                  <span v-if="user.publish_banned === true" class="badge-cancelled">封禁发单</span>
+                  <span v-else-if="user.can_publish === false" class="badge-cancelled">未开通发单</span>
                   <span v-if="user.can_accept === false" class="badge-cancelled">禁接单</span>
                 </div>
                 <p class="mt-0.5 truncate text-xs text-ink-3">#{{ user.id }} · {{ user.email }}</p>
@@ -669,10 +705,10 @@ onMounted(load)
               <button
                 type="button"
                 class="btn-ghost min-h-[44px] !px-4 !py-2"
-                :disabled="isSelf(user)"
-                :title="isSelf(user) ? '不能给自己设置' : ''"
+                :disabled="isSelf(user) || user.role === 'ADMIN'"
+                :title="user.role === 'ADMIN' ? '管理员发单不受限制' : (isSelf(user) ? '不能给自己设置' : '')"
                 @click="togglePublish(user)"
-              >{{ (user.can_publish ?? true) ? '禁发单' : '解禁发单' }}</button>
+              >{{ publishActionLabel(user) }}</button>
               <button
                 type="button"
                 class="btn-ghost min-h-[44px] !px-4 !py-2"
@@ -720,21 +756,21 @@ onMounted(load)
       <div class="modal-card modal-sheet" role="dialog" aria-modal="true" aria-label="确认批量发单权限">
         <div class="relative z-10">
           <h3 class="text-2xl font-semibold text-ink-1">
-            确认{{ bulkModal.can_publish ? '解禁发单' : '禁发单' }}
+            确认{{ bulkModal.can_publish ? '开通发单权限' : '收回发单权限' }}
           </h3>
           <p v-if="bulkModal.scope === 'selected'" class="mt-2 text-sm leading-6 text-ink-2">
             将对已勾选的 <span class="font-semibold text-ink-1">{{ bulkModal.user_ids.length }}</span> 名普通用户
-            {{ bulkModal.can_publish ? '开通' : '关闭' }}发单权限。管理员不在批量范围内。
+            {{ bulkModal.can_publish ? '开通' : '收回' }}发单权限。管理员不在批量范围内。
           </p>
           <p v-else class="mt-2 text-sm leading-6 text-ink-2">
             <template v-if="bulkModal.previewLoading">正在获取受影响的用户人数…</template>
             <template v-else-if="bulkModal.eligible != null">
               将对全部 <span class="font-semibold text-ink-1">{{ bulkModal.eligible }}</span> 名启用中的普通用户
-              {{ bulkModal.can_publish ? '开通' : '关闭' }}发单权限；管理员、禁用用户不受影响。
+              {{ bulkModal.can_publish ? '开通' : '收回' }}发单权限；管理员、禁用用户不受影响。
             </template>
             <template v-else>
               将对全部 <span class="font-semibold text-ink-1">启用中的普通用户</span>
-              {{ bulkModal.can_publish ? '开通' : '关闭' }}发单权限；管理员、禁用用户不受影响。
+              {{ bulkModal.can_publish ? '开通' : '收回' }}发单权限；管理员、禁用用户不受影响。
             </template>
           </p>
           <p
@@ -746,7 +782,15 @@ onMounted(load)
           <p v-if="bulkModal.scope === 'all' && bulkModal.previewError" class="mt-2 text-sm leading-6 text-danger">
             {{ bulkModal.previewError }}
           </p>
-          <div class="message-info mt-4">
+          <div class="message-info mt-4 text-sm leading-6">
+            <template v-if="bulkModal.can_publish">
+              开通发单权限会同时清除所选用户已有的发单封禁（若有）。
+            </template>
+            <template v-else>
+              收回只撤销「已开通」标记，不是封禁：全站发单管控关闭时，未被封禁的用户仍可发单；重新开启后需重新申请或由管理员开通。个人封禁不受影响，被封禁用户始终不能发单。
+            </template>
+          </div>
+          <div class="message-info mt-3">
             此操作立即生效；单人的权限仍可在下方列表逐条调整。
           </div>
           <div v-if="bulkModal.error" class="message-error mt-4">{{ bulkModal.error }}</div>

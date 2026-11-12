@@ -60,6 +60,9 @@ async def update_site_settings(
         setting.registration_default_can_accept = payload.registration_default_can_accept
     if payload.publish_permission_apply_enabled is not None:
         setting.publish_permission_apply_enabled = payload.publish_permission_apply_enabled
+    # 全站发单权限总开关：同样必须用 is not None 判断，显式 False 要生效
+    if payload.publish_permission_required is not None:
+        setting.publish_permission_required = payload.publish_permission_required
     setting.updated_by = current_admin.id
     await db.flush()
     await db.refresh(setting)

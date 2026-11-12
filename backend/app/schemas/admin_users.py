@@ -37,6 +37,7 @@ class AdminUserResponse(BaseModel):
     is_active: bool
     is_verified: bool
     can_publish: bool = True
+    publish_banned: bool = False
     can_accept: bool = True
     created_at: datetime
     booster_quota: int
@@ -79,6 +80,7 @@ class AdminUserUpdate(BaseModel):
     is_verified: bool | None = None
     booster_quota: int | None = Field(default=None, ge=0, le=50)
     can_publish: bool | None = None
+    publish_banned: bool | None = None
     can_accept: bool | None = None
 
     @field_validator("username")
@@ -117,6 +119,8 @@ class AdminUserRestrictionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     can_publish: bool | None = None
+    # 明确封禁发单：与「未开通发单权限」分离；can_publish=true 会同时清除它。
+    publish_banned: bool | None = None
     can_accept: bool | None = None
     reason: str | None = Field(default=None, max_length=500)
 

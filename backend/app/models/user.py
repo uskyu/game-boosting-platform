@@ -7,7 +7,7 @@ from datetime import datetime
 from enum import Enum as PyEnum
 from typing import TYPE_CHECKING
 
-from sqlalchemy import JSON, Enum, ForeignKey, Numeric, String, Text
+from sqlalchemy import JSON, Boolean, Enum, ForeignKey, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -110,6 +110,16 @@ class User(Base):
     can_publish: Mapped[bool] = mapped_column(
         default=True,
         nullable=False,
+    )
+
+    # 明确封禁发单（2026-11-12）：与「未开通发单权限」解耦。
+    # true 时无论全站总开关是否开放、can_publish 是否为 true 都不能发单，
+    # 也不能自助申请发单权限；只有管理员解除封禁后才能恢复。
+    publish_banned: Mapped[bool] = mapped_column(
+        Boolean(),
+        nullable=False,
+        default=False,
+        server_default="0",
     )
 
     can_accept: Mapped[bool] = mapped_column(

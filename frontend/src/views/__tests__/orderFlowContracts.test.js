@@ -368,6 +368,18 @@ describe('hall refresh contracts', () => {
     )
   })
 
+  it('coalesces startup refresh signals so the hall does not 429 itself', () => {
+    // 2026-11-12 浏览器实测：启动时 startHallLifecycle 的首屏列表 + WS 连接触发的
+    // silentRefresh 在 1.5s 全局限流窗口内相撞，正常大厅会显示「操作过于频繁」。
+    // 启动窗口内的刷新必须合并成一次延迟补拉，不能直接再发请求。
+    expect(hallSource).toMatch(/const HALL_STARTUP_GRACE_MS = 2_000/)
+    expect(hallSource).toMatch(/let hallStartupUntil = 0/)
+    expect(hallSource).toMatch(/if \(Date\.now\(\) < hallStartupUntil\) \{/)
+    expect(hallSource).toMatch(/hallStartupUntil = Date\.now\(\) \+ HALL_STARTUP_GRACE_MS/)
+    expect(hallSource).toMatch(/hallStartupRefreshTimer/)
+    expect(hallSource).toMatch(/window\.clearTimeout\(hallStartupRefreshTimer\)/)
+  })
+
   it('backs off fallback polling when the server is slow and recovers when healthy', () => {
     // 2026-10-14 生产事故：WS 断线时 2s 全量轮询在服务器拥塞期自激（CPU 打满 →
     // 更多掉线 → 全站 504）。兜底节奏必须能自适应降频，且服务器健康即回 2s。

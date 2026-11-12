@@ -14,6 +14,7 @@ async def test_admin_can_list_and_view_users(client: AsyncClient, registered_use
     data = response.json()
     assert data["total"] >= 1
     assert all("hashed_password" not in item for item in data["items"])
+    assert all("publish_banned" in item for item in data["items"])
 
     user_id = registered_user["user"]["id"]
     response = await client.get(f"/admin/users/{user_id}", headers=auth_header(admin_user))
