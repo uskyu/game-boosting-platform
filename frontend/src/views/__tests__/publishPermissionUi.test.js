@@ -275,8 +275,15 @@ describe('发单权限 UI 契约', () => {
     expect(registerSource).not.toMatch(/<p class="text-sm text-ink-2">注册后就能发布需求/)
   })
 
-  it('adds a 发单权限 shortcut to the profile for non-admins', () => {
-    expect(profileSource).toMatch(/v-if="user\?\.role !== 'ADMIN'" to="\/publish-permission" class="btn-secondary !px-4">发单权限<\/router-link>/)
+  it('hides the duplicate order/desk/permission/wallet shortcuts on the profile', () => {
+    expect(profileSource).not.toMatch(/>我的订单</)
+    expect(profileSource).not.toMatch(/>接单工作台</)
+    expect(profileSource).not.toMatch(/>发单权限</)
+    expect(profileSource).not.toMatch(/>钱包</)
+    // 黑名单、设置、退出登录仍保留
+    expect(profileSource).toMatch(/>黑名单</)
+    expect(profileSource).toMatch(/>设置</)
+    expect(profileSource).toMatch(/handleLogout/)
   })
 
   it('adds server-side permission filters and batch publish actions to user management', () => {
