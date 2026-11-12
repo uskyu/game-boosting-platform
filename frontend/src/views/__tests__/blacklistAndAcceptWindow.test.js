@@ -7,7 +7,6 @@ const hallSource = readFileSync(new URL('../OrderHallView.vue', import.meta.url)
 const listSource = readFileSync(new URL('../OrderList.vue', import.meta.url), 'utf8')
 const profileSource = readFileSync(new URL('../ProfileView.vue', import.meta.url), 'utf8')
 const blacklistViewSource = readFileSync(new URL('../BlacklistView.vue', import.meta.url), 'utf8')
-const pickModalSource = readFileSync(new URL('../../components/BlacklistPickModal.vue', import.meta.url), 'utf8')
 const confirmModalSource = readFileSync(new URL('../../components/BlacklistConfirmModal.vue', import.meta.url), 'utf8')
 const routerSource = readFileSync(new URL('../../router/index.js', import.meta.url), 'utf8')
 
@@ -124,46 +123,21 @@ describe('大厅卡片：拉黑徽标与等待加载中', () => {
   })
 })
 
-describe('我的派单：快捷拉黑入口与弹窗', () => {
-  it('compiles OrderList with the pick modal', () => {
+describe('订单详情：打手卡片的快捷拉黑', () => {
+  it('no longer mounts the quick blacklist picker in 我的派单', () => {
     compileView(listSource, 'OrderList.vue')
+    expect(listSource).not.toMatch(/BlacklistPickModal/)
+    expect(listSource).not.toMatch(/openBlacklistPick\(/)
+    expect(listSource).not.toMatch(/blacklistPickOpen/)
   })
 
-  it('only shows 拉黑 for published orders with claims, and stops click-through', () => {
-    expect(listSource).toMatch(/import BlacklistPickModal from '@\/components\/BlacklistPickModal\.vue'/)
-    const actions = slice(listSource, '<div class="mt-3 flex flex-wrap justify-end gap-2">', '重建订单')
-    expect(actions).toMatch(/v-if="canPublish && Number\(order\.claimed_count \?\? 0\) > 0"/)
-    expect(actions).toMatch(/@click\.stop="openBlacklistPick\(order\)"/)
-    expect(actions.indexOf('拉黑')).toBeLessThan(actions.indexOf('openBlacklistPick'))
-  })
-
-  it('mounts the modal with the order id and title (loaded on demand)', () => {
-    expect(listSource).toMatch(/const blacklistPickOpen = ref\(false\)/)
-    expect(listSource).toMatch(/function openBlacklistPick\(order\)/)
-    expect(listSource).toMatch(/<BlacklistPickModal[\s\S]{0,220}:order-id="blacklistPickOrderId"/)
-    expect(listSource).toMatch(/<BlacklistPickModal[\s\S]{0,260}:order-title="blacklistPickOrderTitle"/)
-  })
-
-  it('compiles the pick modal and only lists that order\'s claimants', () => {
-    compileView(pickModalSource, 'BlacklistPickModal.vue')
-    expect(pickModalSource).toMatch(/api\.get\(`\/orders\/\$\{props\.orderId\}\/claims`\)/)
-    expect(pickModalSource).toMatch(/claim\?\.booster_nickname/)
-    expect(pickModalSource).toMatch(/#{{ claim\.booster_id }}/)
-    expect(pickModalSource).toMatch(/formatDateTime\(claim\.created_at\)/)
-    expect(pickModalSource).toMatch(/getClaimStatusMeta\(claim\?\.status\)/)
-    // 不请求全站用户列表/模糊搜索
-    expect(pickModalSource).not.toMatch(/\/users/)
-    expect(pickModalSource).not.toMatch(/blacklistStore\.lookup/)
-    expect(pickModalSource).not.toMatch(/refreshOrdersContext|fetchOrders\(/)
-  })
-
-  it('shows 已拉黑 for known blocked users and reuses the shared confirmation copy', () => {
-    expect(pickModalSource).toMatch(/blacklistStore\.isBlocked\(claim\.booster_id\)/)
-    expect(pickModalSource).toMatch(/>已拉黑</)
-    expect(pickModalSource).toMatch(/BLACKLIST_BLOCK_NOTICE/)
-    expect(pickModalSource).toMatch(/emit\('blocked'/)
-    // 成功后只在本地标记（store.add 记 id），不重刷整页
-    expect(pickModalSource).toMatch(/await blacklistStore\.add\(userId\)/)
+  it('moves the action next to the booster in the order summary card', () => {
+    expect(detailSource).toMatch(/const canBlacklistOrderBooster = computed/)
+    expect(detailSource).toMatch(/function openBlacklistConfirmForOrderBooster\(\)/)
+    expect(detailSource).toMatch(/v-if="canBlacklistOrderBooster"[\s\S]{0,260}openBlacklistConfirmForOrderBooster/)
+    expect(detailSource).toMatch(/blacklistStore\.isBlocked\(order\.booster_id\)/)
+    // 只给发单人；打手本人/旁观者不能看到快捷拉黑
+    expect(detailSource).toMatch(/isOwner\.value[\s\S]{0,120}Number\(order\.value\.booster_id\) !== Number\(currentUser\.value\?\.id\)/)
   })
 })
 

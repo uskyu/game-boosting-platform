@@ -542,6 +542,14 @@ function claimBoosterName(claim) {
 const showBlacklistConfirm = ref(false)
 const blacklistTarget = ref(null)
 
+// 订单概要「打手」卡片上的快捷拉黑：只给发单人（不是管理员代操作），
+// 目标固定为该单的 booster；多名额的其余打手仍走下方接单名单逐条操作。
+const canBlacklistOrderBooster = computed(() => (
+  isOwner.value
+  && order.value?.booster_id != null
+  && Number(order.value.booster_id) !== Number(currentUser.value?.id)
+))
+
 function openBlacklistConfirm(claim) {
   if (!claim?.booster_id || blacklistStore.isBlocked(claim.booster_id)) return
   blacklistTarget.value = {
@@ -549,6 +557,15 @@ function openBlacklistConfirm(claim) {
     username: claimBoosterName(claim),
   }
   showBlacklistConfirm.value = true
+}
+
+function openBlacklistConfirmForOrderBooster() {
+  const booster = order.value?.booster
+  if (!booster || order.value?.booster_id == null) return
+  openBlacklistConfirm({
+    booster_id: order.value.booster_id,
+    booster_nickname: booster.username,
+  })
 }
 
 function onBlacklistBlocked(userId) {
@@ -1642,12 +1659,20 @@ onUnmounted(() => {
           </div>
           <div v-if="order.booster" class="info-tile min-w-0">
             <p class="info-tile__label">打手</p>
-            <p class="info-tile__value break-words">
+            <div class="info-tile__value flex flex-wrap items-center gap-3 break-words">
               <router-link
                 :to="{ name: 'booster-profile', params: { id: order.booster_id } }"
                 class="text-primary underline-offset-4 hover:underline"
               >{{ order.booster.username }}</router-link>
-            </p>
+              <!-- 快捷拉黑从「我的派单」列表移到订单概要的打手行：发单人在这里就能操作 -->
+              <button
+                v-if="canBlacklistOrderBooster"
+                type="button"
+                class="btn-secondary shrink-0 !min-h-[32px] !px-3 !py-1 text-xs"
+                :disabled="blacklistStore.isBlocked(order.booster_id)"
+                @click.stop="openBlacklistConfirmForOrderBooster"
+              >{{ blacklistStore.isBlocked(order.booster_id) ? '已拉黑' : '拉黑' }}</button>
+            </div>
           </div>
         </div>
       </section>
