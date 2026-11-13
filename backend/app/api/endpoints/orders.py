@@ -6,10 +6,12 @@ Handles order creation, listing, and management operations.
 import asyncio
 import base64
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import urlsplit
 
 import anyio
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
@@ -93,6 +95,7 @@ _ACCEPT_CAPTCHA_BURST_RATE = (1, 1.0)
 _ACCEPT_CAPTCHA_MINUTE_RATE = (20, 60.0)
 _ACCEPT_BURST_RATE = (1, 1.0)
 _ACCEPT_PER_ORDER_RATE = (5, 600.0)
+_MAX_ORDER_ID = 2_147_483_647
 
 
 class AcceptCaptchaResponse(BaseModel):
@@ -108,6 +111,62 @@ def _accept_captcha_invalid() -> HTTPException:
         status_code=status.HTTP_400_BAD_REQUEST,
         detail={"code": "captcha_invalid", "message": "验证码错误或已过期"},
     )
+
+
+def _legacy_accept_captcha_order_id(request: Request) -> int | None:
+    """从旧版订单详情页 Referer 提取订单号，供绑定验证码兼容升级过渡。
+
+    只接受与当前请求同源的 ``/orders/{id}`` 路径；Referer 缺失、跨源、
+    非数字订单号或子路由一律不作为绑定依据。验证码之后仍严格绑定该订单和用户。
+    """
+    referer = request.headers.get("referer")
+    if not referer:
+        return None
+
+    try:
+        ref = urlsplit(referer)
+        current = urlsplit(str(request.url))
+        ref_port = ref.port or (443 if ref.scheme == "https" else 80)
+        current_port = current.port or (443 if current.scheme == "https" else 80)
+    except ValueError:
+        return None
+
+    # HTTPS 在生产环境由外层代理终止；后端看到的 request.url 可能是 HTTP，
+    # 因此默认端口下允许 scheme 在 http/https 间转换。仍要求 hostname 完全一致；
+    # 若请求 Host 和 Referer 都显式带端口，则要求端口相同（含本地自定义端口）。
+    if (
+        ref.scheme.lower() not in {"http", "https"}
+        or not ref.netloc
+        or ref.hostname is None
+        or current.hostname is None
+        or ref.hostname.lower() != current.hostname.lower()
+        or ref.username is not None
+        or ref.password is not None
+    ):
+        return None
+
+    expected_ref_port = 443 if ref.scheme.lower() == "https" else 80
+    if ref.port is not None and current.port is not None:
+        # 请求与 Referer 都显式带端口时必须相同。scheme 可不同，因为 HTTPS
+        # 会在反向代理终止；显式端口代表代理暴露的同一个本地/自定义入口。
+        if ref.port != current.port:
+            return None
+    elif ref.port is not None and ref.port != expected_ref_port:
+        return None
+    elif current.port is not None:
+        expected_current_port = 443 if current.scheme.lower() == "https" else 80
+        if current.port != expected_current_port:
+            return None
+
+    match = re.fullmatch(r"/orders/([1-9][0-9]{0,9})/?", ref.path)
+    if not match:
+        return None
+
+    try:
+        order_id = int(match.group(1))
+    except ValueError:
+        return None
+    return order_id if order_id <= _MAX_ORDER_ID else None
 
 
 async def _cleanup_rejected_delivery_files(urls: list[str]) -> None:
@@ -702,6 +761,18 @@ async def get_accept_captcha(
             detail="接单验证码已关闭",
         )
 
+    # 新版客户端显式传 order_id。旧页面升级过渡时仅接受同源订单详情 Referer
+    # 中的 /orders/{id}，解析后的订单仍要过完整可接校验，签发的验证码也绑定
+    # 到该订单与当前用户；不提供无订单绑定的降级验证码。
+    resolved_order_id = order_id
+    if resolved_order_id is None:
+        resolved_order_id = _legacy_accept_captcha_order_id(request)
+        if resolved_order_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="页面版本已更新，请刷新后重新进入订单获取验证码",
+            )
+
     # 反自动化：脚本会一次 Promise.all 并发预取 3 张码；1 次/秒的突发限制
     # 会让后两张直接 429，20 次/分钟的总额度也限制单账号刷图规模。
     enforce_user_limit(
@@ -733,15 +804,9 @@ async def get_accept_captcha(
             },
         )
 
-    if order_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="缺少订单信息，请从订单详情重新获取验证码",
-        )
-
-    # 只给「当前确实能接」的订单发码：避免脚本拿订单号枚举/囤积无效码，
-    # 也避免给已满、已关闭、自己的单发码后用户白等。
-    order = await db.get(Order, order_id)
+    # 参数已验证且限流通过后再读订单，限制可被无效 Referer 驱动的 DB 查询量。
+    # 缺参/跨源请求在上方直接拒绝，不消耗限流额度。
+    order = await db.get(Order, resolved_order_id)
     if order is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -778,7 +843,7 @@ async def get_accept_captcha(
     # PIL 图片生成放线程池，避免多人同时打开接单弹窗时阻塞事件循环
     captcha_id, png_bytes = await anyio.to_thread.run_sync(
         lambda: captcha_service.create(
-            "accept", subject=order_id, user_id=current_user.id
+            "accept", subject=resolved_order_id, user_id=current_user.id
         )
     )
     b64 = base64.b64encode(png_bytes).decode("ascii")

@@ -18,7 +18,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 
 from app.models.site_setting import SiteSetting
-from app.services import captcha_service
+from app.services import captcha_service, rate_limit_service
 from tests.conftest import auth_header
 
 
@@ -217,17 +217,138 @@ async def test_order_detail_exposes_accept_captcha_required_flag(
     assert detail.json()["accept_captcha_required"] is True
 
 
-async def test_get_accept_captcha_requires_order_id(
+async def test_get_accept_captcha_without_order_context_requests_refresh(
     client: AsyncClient, booster_user: dict, db_session
 ):
-    """开启接单验证码后，不传订单 ID 不能拿码（否则无法绑定，脚本可攒池）。"""
+    """无 order_id 且无可验证 Referer 时拒绝签发无绑定验证码并提示刷新。"""
     await _set_accept_captcha(db_session, True)
 
     resp = await client.get(
         "/orders/accept-captcha", headers=auth_header(booster_user)
     )
     assert resp.status_code == 400
-    assert "缺少订单信息" in resp.json()["detail"]
+    assert resp.json()["detail"] == "页面版本已更新，请刷新后重新进入订单获取验证码"
+    assert captcha_service._store == {}
+
+
+async def test_legacy_accept_captcha_uses_same_origin_order_referer(
+    client: AsyncClient, admin_user: dict, booster_user: dict, db_session
+):
+    """旧页面无 query 参数时，从订单详情 Referer 提取订单并仍按订单+用户绑定。"""
+    await _set_accept_captcha(db_session, True)
+    order = await _create_order(client, admin_user)
+    headers = {
+        **auth_header(booster_user),
+        "Referer": f"https://test/orders/{order['id']}?from=hall#claim",
+    }
+
+    # 测试客户端 API scheme 是 HTTP；线上 TLS 代理终止后也会呈现该组合。
+    resp = await client.get("/orders/accept-captcha", headers=headers)
+
+    assert resp.status_code == 200, resp.text
+    captcha_id = resp.json()["captcha_id"]
+    assert captcha_service._subjects[captcha_id] == str(order["id"])
+    assert captcha_service._users[captcha_id] == booster_user["user"]["id"]
+
+    code = captcha_service._store[captcha_id][0]
+    accepted = await _accept(
+        client,
+        order["id"],
+        booster_user,
+        json={"captcha_id": captcha_id, "captcha_code": code},
+    )
+    assert accepted.status_code == 200, accepted.text
+
+
+async def test_legacy_accept_captcha_rejects_cross_origin_referer(
+    client: AsyncClient,
+    admin_user: dict,
+    booster_user: dict,
+    db_session,
+    rate_limits_enabled,
+):
+    """跨源 Referer 不可用于猜测绑定订单，且无效请求不消耗限流额度。"""
+    await _set_accept_captcha(db_session, True)
+    order = await _create_order(client, admin_user)
+    headers = {
+        **auth_header(booster_user),
+        "Referer": f"https://attacker.example/orders/{order['id']}",
+    }
+
+    rejected = await client.get("/orders/accept-captcha", headers=headers)
+    assert rejected.status_code == 400
+    assert "刷新" in rejected.json()["detail"]
+    assert captcha_service._store == {}
+
+    # 紧接着的有效同源请求可通过，证明前一个拒绝没有占用 1 次/秒额度。
+    headers["Referer"] = f"https://test/orders/{order['id']}"
+    accepted = await client.get("/orders/accept-captcha", headers=headers)
+    assert accepted.status_code == 200, accepted.text
+    captcha_id = accepted.json()["captcha_id"]
+    assert captcha_service._subjects[captcha_id] == str(order["id"])
+    assert captcha_service._users[captcha_id] == booster_user["user"]["id"]
+
+    code = captcha_service._store[captcha_id][0]
+    accepted = await _accept(
+        client,
+        order["id"],
+        booster_user,
+        json={"captcha_id": captcha_id, "captcha_code": code},
+    )
+    assert accepted.status_code == 200, accepted.text
+
+
+async def test_legacy_accept_captcha_rejects_non_order_referer(
+    client: AsyncClient, admin_user: dict, booster_user: dict, db_session
+):
+    """同源但不是订单详情的路径也不能推导绑定订单。"""
+    await _set_accept_captcha(db_session, True)
+    order = await _create_order(client, admin_user)
+    headers = {
+        **auth_header(booster_user),
+        "Referer": f"http://test/orders/{order['id']}/after-sale/apply",
+    }
+
+    resp = await client.get("/orders/accept-captcha", headers=headers)
+
+    assert resp.status_code == 400
+    assert "刷新" in resp.json()["detail"]
+    assert captcha_service._store == {}
+
+
+async def test_legacy_accept_captcha_rejects_mismatched_scheme_port(
+    client: AsyncClient, admin_user: dict, booster_user: dict, db_session
+):
+    """TLS 反代可转换 scheme，但必须拒绝和 scheme 不匹配的显式端口。"""
+    await _set_accept_captcha(db_session, True)
+    order = await _create_order(client, admin_user)
+    headers = {
+        **auth_header(booster_user),
+        "Referer": f"http://test:443/orders/{order['id']}",
+    }
+
+    resp = await client.get("/orders/accept-captcha", headers=headers)
+
+    assert resp.status_code == 400
+    assert "刷新" in resp.json()["detail"]
+    assert captcha_service._store == {}
+
+
+async def test_legacy_accept_captcha_rejects_out_of_range_order_id(
+    client: AsyncClient, booster_user: dict, db_session
+):
+    """越界数字 Referer ID 在访问数据库前拒绝，不触发数据库溢出。"""
+    await _set_accept_captcha(db_session, True)
+    headers = {
+        **auth_header(booster_user),
+        "Referer": "https://test/orders/2147483648",
+    }
+
+    resp = await client.get("/orders/accept-captcha", headers=headers)
+
+    assert resp.status_code == 400
+    assert "刷新" in resp.json()["detail"]
+    assert captcha_service._store == {}
 
 
 async def test_accept_captcha_cannot_be_used_for_another_order(
