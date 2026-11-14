@@ -3,6 +3,7 @@ Chat service module.
 Handles conversation and message related business logic.
 """
 
+import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -28,6 +29,22 @@ from app.models.order import ClaimStatus, Order, OrderClaim, OrderStatus
 from app.models.user import User, UserRole
 from app.services.site_setting_service import get_order_title_replacements
 
+logger = logging.getLogger(__name__)
+
+
+def _is_order_conversation_unique_conflict(exc: IntegrityError) -> bool:
+    """是否命中了「每个订单只有一条会话」的唯一键。
+
+    MySQL/InnoDB 的重复键错误码固定为 1062，消息里带约束名。这里只接受
+    目标约束，避免把外键失败、参与者唯一键等其他数据库错误误当成并发
+    建联而吞掉。
+    """
+    orig = exc.orig
+    args = getattr(orig, "args", ()) if orig is not None else ()
+    if not args or args[0] != 1062:
+        return False
+    return "uq_conversations_order_id" in str(orig)
+
 
 class ChatService:
     """聊天业务服务。"""
@@ -42,7 +59,10 @@ class ChatService:
         order_id: int | None = None,
     ) -> Conversation:
         """创建或获取会话。"""
-        if current_user.id == target_user_id:
+        # 先取成普通整数：唯一键冲突分支可能要回滚事务，回滚会让 ORM 对象
+        # 过期，之后再读 current_user.id 会触发异步隐式加载（MissingGreenlet）。
+        current_user_id = current_user.id
+        if current_user_id == target_user_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="不能和自己发起对话",
@@ -59,7 +79,7 @@ class ChatService:
             # 完结后的售后回看。命中就直接返回，跳过下面的状态与参与者校验
             # （历史会话本身已经证明双方当时建联成功）。
             existing_conversation = await self._find_existing_conversation(
-                user_id=current_user.id,
+                user_id=current_user_id,
                 target_user_id=target_user.id,
                 conversation_type=conversation_type,
                 order_id=order_id,
@@ -102,7 +122,7 @@ class ChatService:
                 )
 
         conversation = await self._find_existing_conversation(
-            user_id=current_user.id,
+            user_id=current_user_id,
             target_user_id=target_user.id,
             conversation_type=conversation_type,
             order_id=order_id,
@@ -126,7 +146,7 @@ class ChatService:
         # Re-check under the lock: another concurrent request may have
         # just created the conversation we were about to create.
         conversation = await self._find_existing_conversation(
-            user_id=current_user.id,
+            user_id=current_user_id,
             target_user_id=target_user.id,
             conversation_type=conversation_type,
             order_id=order_id,
@@ -138,30 +158,33 @@ class ChatService:
             )
             return conversation
 
+        # 先把调用方此前排队的写入落库（例如服务卡下单刚创建的订单）。
+        # SQLAlchemy 在 begin_nested() 建立 SAVEPOINT 之前会先 flush 待处理
+        # 状态；不先 flush，这些写入会落在保存点之外，语义不可控。
+        await self._db.flush()
+
         conversation = Conversation(
             type=conversation_type,
             order_id=order_id,
         )
-        self._db.add(conversation)
         try:
-            await self._db.flush()
-        except IntegrityError:
-            # The uq_conversations_order_id constraint fired: another request
-            # created the ORDER conversation between the locking window and
-            # our insert (e.g. in a different DB session that committed).
-            await self._db.rollback()
-            existing = await self._find_existing_conversation(
-                user_id=current_user.id,
-                target_user_id=target_user.id,
+            # 只把会话插入包在保存点里：唯一键冲突只撤销这一条 INSERT，
+            # 不回滚调用方整个请求事务（同事务里可能已有订单等业务写入）。
+            async with self._db.begin_nested():
+                self._db.add(conversation)
+                await self._db.flush()
+        except IntegrityError as exc:
+            existing = await self._recover_order_conversation_conflict(
+                exc=exc,
+                current_user_id=current_user_id,
+                target_user_id=target_user_id,
                 conversation_type=conversation_type,
                 order_id=order_id,
             )
             if existing is None:
+                # 不是订单会话唯一键冲突（外键/其他约束）：保持原异常，
+                # 由上层按真实错误处理。
                 raise
-            existing.unread_count = await self._get_unread_count(
-                current_user=current_user,
-                conversation_id=existing.id,
-            )
             return existing
 
         current_is_admin = current_user.role == UserRole.ADMIN
@@ -194,35 +217,105 @@ class ChatService:
         # （标题/价格/段位/#id 链接），并刷新会话 preview 使列表页可见。
         if order_id is not None and conversation_type == ConversationType.ORDER:
             try:
-                # 重新解析订单以确保卡片数据可用，避免上方分支变量作用域
-                # 带来的 possibly-undefined 风险，同时拿到最新快照。
-                card_order = await self._get_order_for_conversation(order_id)
-                title_rules = await get_order_title_replacements(self._db)
-                card_meta = self._build_order_card_meta(card_order, title_rules)
-                card_content = self._build_order_card_content(
-                    card_order, title_rules
-                )
-                now = datetime.now(timezone.utc)
-                first_msg = Message(
-                    conversation_id=conversation.id,
-                    sender_id=None,
-                    message_type=MessageType.SYSTEM,
-                    content=card_content,
-                    meta_json=card_meta,
-                    created_at=now,
-                )
-                self._db.add(first_msg)
-                await self._db.flush()
-                conversation.last_message_at = first_msg.created_at
-                conversation.last_message_preview = self._build_message_preview(first_msg)
-                await self._db.flush()
+                # 卡片写入也放进保存点：数据库层失败时只撤销这一段，事务
+                # 不会进入 failed 状态，后面的会话重载仍可继续执行。
+                async with self._db.begin_nested():
+                    # 重新解析订单以确保卡片数据可用，避免上方分支变量作用域
+                    # 带来的 possibly-undefined 风险，同时拿到最新快照。
+                    card_order = await self._get_order_for_conversation(order_id)
+                    title_rules = await get_order_title_replacements(self._db)
+                    card_meta = self._build_order_card_meta(card_order, title_rules)
+                    card_content = self._build_order_card_content(
+                        card_order, title_rules
+                    )
+                    now = datetime.now(timezone.utc)
+                    first_msg = Message(
+                        conversation_id=conversation.id,
+                        sender_id=None,
+                        message_type=MessageType.SYSTEM,
+                        content=card_content,
+                        meta_json=card_meta,
+                        created_at=now,
+                    )
+                    self._db.add(first_msg)
+                    await self._db.flush()
+                    conversation.last_message_at = first_msg.created_at
+                    conversation.last_message_preview = self._build_message_preview(first_msg)
+                    await self._db.flush()
             except Exception:
-                # 卡片写入失败不阻断会话创建；由调用方事务决定是否回滚，
-                # 此处保留会话本身。
-                pass
+                # 卡片写入失败不阻断会话创建；保存点已回滚，事务仍可用。
+                logger.warning(
+                    "Failed to write order card system message for order %s",
+                    order_id,
+                    exc_info=True,
+                )
 
         conversation = await self._get_conversation_or_404(conversation.id)
         conversation.unread_count = 0
+        return conversation
+
+    async def _recover_order_conversation_conflict(
+        self,
+        *,
+        exc: IntegrityError,
+        current_user_id: int,
+        target_user_id: int,
+        conversation_type: ConversationType,
+        order_id: int | None,
+    ) -> Conversation | None:
+        """订单会话唯一键冲突后的恢复。
+
+        返回 None 表示异常不是订单会话唯一键冲突，调用方应原样抛出；
+        命中目标约束时返回双方已存在的会话，或在不属于这组参与者时返回
+        409（绝不把用户加入别人的会话，也不泄露该会话的任何内容）。
+
+        保存点回滚后当前事务仍可能停留在旧的一致性读快照里：并发赢家的
+        会话若在本事务首个快照之后才提交，普通 SELECT 看不到。此时整事务
+        回滚一次以开启新快照再查；该路径只在并发建联的极端时序出现，
+        聊天建联端点在此之前没有其他业务写入。
+        """
+        if order_id is None or conversation_type != ConversationType.ORDER:
+            return None
+        if not _is_order_conversation_unique_conflict(exc):
+            return None
+
+        existing = await self._find_existing_conversation(
+            user_id=current_user_id,
+            target_user_id=target_user_id,
+            conversation_type=conversation_type,
+            order_id=order_id,
+        )
+
+        if existing is not None:
+            return await self._attach_unread_count(existing, current_user_id)
+
+        await self._db.rollback()
+        existing = await self._find_existing_conversation(
+            user_id=current_user_id,
+            target_user_id=target_user_id,
+            conversation_type=conversation_type,
+            order_id=order_id,
+        )
+        if existing is None:
+            # 该订单已有一条属于其他参与者的会话（例如别的打手先与老板
+            # 建联）。不自动加入，也不能把会话内容返回给当前请求者。
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="该订单已有其他会话，无法重复创建",
+            )
+        return await self._attach_unread_count(existing, current_user_id)
+
+    async def _attach_unread_count(
+        self,
+        conversation: Conversation,
+        current_user_id: int,
+    ) -> Conversation:
+        """重新读取当前用户再算未读，避免使用可能已过期的 ORM 对象。"""
+        current_user = await self._get_active_user(current_user_id)
+        conversation.unread_count = await self._get_unread_count(
+            current_user=current_user,
+            conversation_id=conversation.id,
+        )
         return conversation
 
     async def get_user_conversations(

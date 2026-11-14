@@ -510,12 +510,15 @@ async def create_or_get_conversation(
     db: DatabaseSession,
 ) -> ConversationResponse:
     chat_service = get_chat_service(db)
+    # 冲突恢复可能回滚事务，ORM user 会因此过期；先取标量，序列化时不再
+    # 触碰用户对象，避免异步隐式加载（MissingGreenlet）变成 500。
+    current_user_id = current_user.id
     conversation = await chat_service.create_or_get_conversation(
         current_user=current_user,
         target_user_id=payload.target_user_id,
         order_id=payload.order_id,
     )
-    return _serialize_conversation(conversation, current_user.id)
+    return _serialize_conversation(conversation, current_user_id)
 
 
 @router.get(
