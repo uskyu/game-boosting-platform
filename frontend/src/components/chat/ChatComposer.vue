@@ -14,6 +14,12 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  // 悬浮小窗模式：隐藏安全提示、缩短 placeholder，避免窄宽度下输入框
+  // 占位文字换行后被裁切；完整聊天页保持原有提示。
+  compact: {
+    type: Boolean,
+    default: false,
+  },
 })
 
 const emit = defineEmits(['update:modelValue', 'send', 'send-image', 'typing'])
@@ -60,7 +66,7 @@ function handleFileChange(event) {
 
 <template>
   <div class="chat-composer">
-    <div class="chat-security-notice">
+    <div v-if="!compact" class="chat-security-notice">
       请勿在聊天中发送账号密码等敏感信息
     </div>
 
@@ -89,7 +95,7 @@ function handleFileChange(event) {
           rows="1"
           class="chat-textarea"
           :disabled="disabled || sending"
-          placeholder="输入聊天内容，Enter 发送，Shift + Enter 换行"
+          :placeholder="compact ? '输入消息…' : '输入聊天内容，Enter 发送，Shift + Enter 换行'"
           @input="handleInput"
           @keydown="handleKeydown"
         ></textarea>

@@ -97,6 +97,10 @@ class ConversationResponse(BaseModel):
     id: int = Field(description="会话ID")
     type: ConversationType = Field(description="会话类型")
     order_id: int | None = Field(default=None, description="关联订单ID")
+    counterpart_user_id: int | None = Field(
+        default=None,
+        description="ORDER 会话中发布人之外的实际对方用户ID；PRIVATE 为空",
+    )
     created_at: datetime = Field(description="创建时间")
     updated_at: datetime = Field(description="更新时间")
     last_message_at: datetime | None = Field(default=None, description="最后消息时间")

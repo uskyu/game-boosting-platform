@@ -688,14 +688,22 @@ async def list_orders(
     summary="大厅对账摘要",
     description=(
         "轻量轮询：只返回当前可见订单的数量/最近更新时间/最早截止时间，"
-        "客户端断线兜底轮询先拉摘要，无变化则跳过全量列表请求"
+        "客户端断线兜底轮询先拉摘要，无变化则跳过全量列表请求；"
+        "include_stats=false 时跳过顶部统计聚合（四个数字返回 0，stats_included=false）"
     ),
 )
 async def get_hall_digest(
     current_user: CurrentUser,
     db: DatabaseSession,
+    include_stats: Annotated[
+        bool,
+        Query(description="是否一并计算顶部统计条数字；false 时跳过较重的统计聚合"),
+    ] = True,
 ) -> HallDigestResponse:
     """大厅对账摘要：一条聚合查询代替全量列表，供客户端判断是否需要刷新。
+
+    ``include_stats`` 缺省 true 保持原有响应；false 时只做轻量对账，跳过
+    顶部统计聚合，供客户端 2 秒兜底轮询使用。
 
     过滤条件与 list_orders 的 booster_scope 完全一致（非管理员只看可接/自己
     相关的订单，管理员不加过滤）：口径不同会让客户端「摘要没变就不拉全量」的
@@ -714,6 +722,18 @@ async def get_hall_digest(
     count, max_updated_at, earliest_deadline = await order_service.hall_digest(current_user)
     # 顶部统计条的全量数字（2026-10-19 老板反馈「进行中 19 不准」）：
     # 前端以前在当页 20 条上 filter，翻页会变、也把待审核混进了进行中。
+    #
+    # 2026-11-15（大厅 P1b）：统计是摘要里最重的一段（两次名额聚合查询），
+    # 而 2 秒兜底轮询只需要三个对账字段。include_stats=false 时直接跳过
+    # hall_stats，四个数字保持默认 0，用 stats_included 明确告知「本次没有统计」，
+    # 前端据此保留上一次有效数字而不是把统计清零。
+    if not include_stats:
+        return HallDigestResponse(
+            count=count,
+            max_updated_at=max_updated_at,
+            earliest_deadline=earliest_deadline,
+            stats_included=False,
+        )
     stats = await order_service.hall_stats(current_user)
     return HallDigestResponse(
         count=count,
@@ -723,6 +743,7 @@ async def get_hall_digest(
         active_count=stats["active"],
         pending_review_count=stats["pending_review"],
         completed_today=stats["completed_today"],
+        stats_included=True,
     )
 
 

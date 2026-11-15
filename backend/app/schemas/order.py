@@ -837,6 +837,10 @@ class HallDigestResponse(BaseModel):
     active_count: int = Field(default=0, description="进行中名额（已接单、尚未交付）")
     pending_review_count: int = Field(default=0, description="待审核名额（已交付、等确认）")
     completed_today: int = Field(default=0, description="今日完成名额数（北京时间自然日）")
+    stats_included: bool = Field(
+        default=False,
+        description="本次响应是否包含上方四个统计数字（include_stats=false 时为 false，字段保持 0）",
+    )
 
     @field_serializer("max_updated_at", "earliest_deadline")
     def _serialize_datetimes(self, value: datetime | None, _info) -> str | None:
@@ -852,6 +856,7 @@ class HallDigestResponse(BaseModel):
                 "active_count": 5,
                 "pending_review_count": 2,
                 "completed_today": 4,
+                "stats_included": True,
             }
         }
     )

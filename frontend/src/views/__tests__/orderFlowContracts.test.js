@@ -60,16 +60,40 @@ describe('order-flow view contracts', () => {
     const handlerEnd = detailSource.indexOf('async function fetchReviews(', handlerStart)
     const handler = detailSource.slice(handlerStart, handlerEnd)
     expect(handler).toMatch(/chatError\.value = ''/)
-    expect(handler).toMatch(/chatError\.value = (result\.error|err\?\.message)/)
+    expect(handler).toMatch(/chatError\.value = failureText/)
+    expect(handler).toMatch(/const failureText = resolveChatFailureText\(result\)/)
     // 顶部横幅必须照旧工作
-    expect(handler).toMatch(/errorMessage\.value = result\.error/)
-    expect(handler).toMatch(/errorMessage\.value = err\?\.message/)
+    expect(handler).toMatch(/errorMessage\.value = failureText/)
+    expect(handler).toMatch(/resolveChatFailureText\(\{[\s\S]{0,120}status: err\?\.status/)
+    // 409 必须给出可操作的下一步，而不是只显示“请求失败”。
+    expect(detailSource).toMatch(/function resolveChatFailureText\(result\)/)
+    expect(detailSource).toMatch(/result\?\.status === 409[\s\S]{0,200}消息中心/)
+    expect(detailSource).toMatch(/code === 'chat_rate_limited'/)
 
     const buttonIndex = detailSource.indexOf("联系打手' : '联系老板'")
     expect(buttonIndex).toBeGreaterThan(-1)
     expect(detailSource).toMatch(/联系打手[\s\S]{0,400}v-if="chatError"/)
     expect(detailSource.slice(buttonIndex, buttonIndex + 400)).toMatch(/v-if="chatError"/)
     expect(detailSource).toMatch(/<p v-if="chatError" class="message-error mt-2 text-xs">\{\{ chatError \}\}<\/p>/)
+  })
+
+  it('opens order chat in the floating window and keeps an expand route', () => {
+    expect(detailSource).toContain("import ChatFloatingWindow from '@/components/chat/ChatFloatingWindow.vue'")
+    expect(detailSource).toMatch(/const chatFloatingOpen = ref\(false\)/)
+    expect(detailSource).toMatch(/const chatFloatingConversationId = ref\(null\)/)
+
+    const handlerStart = detailSource.indexOf('async function handleStartConversation()')
+    const handlerEnd = detailSource.indexOf('// 悬浮聊天窗关闭', handlerStart)
+    const handler = detailSource.slice(handlerStart, handlerEnd)
+    expect(handler).toMatch(/chatFloatingConversationId\.value = result\.data\.id/)
+    expect(handler).toMatch(/chatFloatingOpen\.value = true/)
+    expect(handler).not.toMatch(/router\.push\(\{ name: 'chat-detail'/)
+
+    expect(detailSource).toMatch(/function closeChatFloating\(\)[\s\S]{0,160}chatFloatingOpen\.value = false/)
+    expect(detailSource).toMatch(/function expandChatFloating\(\)[\s\S]{0,320}router\.push\(\{ name: 'chat-detail'/)
+    expect(detailSource).toMatch(/<ChatFloatingWindow[\s\S]{0,260}:open="chatFloatingOpen"/)
+    expect(detailSource).toMatch(/class="order-chat-fab"/)
+    expect(detailSource).toMatch(/v-if="order && canStartChat && !chatFloatingOpen"/)
   })
 
   it('silently hydrates order details after successful accept and always clears action loading', () => {

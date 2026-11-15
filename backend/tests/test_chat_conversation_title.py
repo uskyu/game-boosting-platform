@@ -153,14 +153,14 @@ async def test_solo_participant_conversation_does_not_500(
     assert payload["participants"][0]["user_id"] == user_id
 
 
-async def test_order_conversation_with_only_owner_participant_uses_order_booster(
+async def test_order_conversation_with_only_owner_participant_has_no_counterpart(
     client: AsyncClient,
     registered_user: dict,
     booster_user: dict,
     admin_user: dict,
     db_session,
 ) -> None:
-    """遗留会话只登记了老板时，counterpart 仍可从订单角色解析出打手。"""
+    """遗留会话只登记了老板时，不能把订单上的 booster_id 当成实际对方。"""
     publisher = registered_user
     booster = booster_user
 
@@ -197,6 +197,6 @@ async def test_order_conversation_with_only_owner_participant_uses_order_booster
 
     payload = await _get_conversation(client, publisher, conversation.id)
 
-    assert payload["counterpart"]["id"] == booster["user"]["id"]
-    assert payload["counterpart"]["username"] == booster["user"]["username"]
+    # order.booster_id 不在会话参与者中，不能作为“对话对方”返回。
+    assert payload["counterpart"] is None
     assert payload["other_participants"] == []

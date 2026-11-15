@@ -579,31 +579,114 @@ describe('applyOrderStateChange 同步 currentOrder', () => {
 describe('fetchHallDigest 不写共享 loading/error（大厅断线兜底专用探测）', () => {
   // 回归：摘要探测是大厅断线兜底的心跳请求，与列表请求共用 api，但绝不能碰
   // 共享 loading（会把列表骨架屏/详情页一起锁住）或共享 error（大厅顶部弹红条）。
-  it('成功返回 {success, data}，不碰共享 loading/error，也不回写列表基线', async () => {
+  it('成功返回 {success, data, status, retryAfter, stale}，不碰共享 loading/error，也不回写列表基线', async () => {
     const store = useOrdersStore()
     store.loading = true
-    const digest = { count: 3, max_updated_at: '2026-10-14T00:00:00Z', earliest_deadline: null }
-    apiGet.mockResolvedValueOnce({ data: digest })
+    const digest = { count: 3, max_updated_at: '2026-10-14T00:00:00Z', earliest_deadline: null, stats_included: false }
+    apiGet.mockResolvedValueOnce({ data: digest, status: 200 })
 
-    const result = await store.fetchHallDigest()
+    const result = await store.fetchHallDigest({ includeStats: false })
 
-    expect(apiGet).toHaveBeenCalledWith('/orders/hall-digest')
-    expect(result).toEqual({ success: true, data: digest })
+    expect(apiGet).toHaveBeenCalledWith('/orders/hall-digest', { params: { include_stats: false } })
+    expect(result).toEqual({
+      success: true,
+      data: digest,
+      status: 200,
+      retryAfter: null,
+      stale: false,
+    })
     expect(store.loading).toBe(true)
     expect(store.error).toBeNull()
     // 探测结果只在返回值里给调用方对比；hallDigest 只由列表响应写入
     expect(store.hallDigest).toBeNull()
   })
 
-  it('失败静默：返回 {success:false,error} 且不写共享 loading/error', async () => {
+  it('缺省 includeStats=true，带统计的响应写入 hallStats', async () => {
+    const store = useOrdersStore()
+    const digest = {
+      count: 2,
+      max_updated_at: '2026-10-14T00:00:00Z',
+      earliest_deadline: null,
+      pending_count: 3,
+      active_count: 5,
+      pending_review_count: 2,
+      completed_today: 4,
+      stats_included: true,
+    }
+    apiGet.mockResolvedValueOnce({ data: digest, status: 200 })
+
+    await store.fetchHallDigest()
+
+    expect(apiGet).toHaveBeenCalledWith('/orders/hall-digest', { params: { include_stats: true } })
+    expect(store.hallStats).toEqual({
+      pending_count: 3,
+      active_count: 5,
+      pending_review_count: 2,
+      completed_today: 4,
+    })
+  })
+
+  it('stats_included=false 的摘要绝不清零上一次有效统计', () => {
+    const store = useOrdersStore()
+    store.setHallStats({
+      pending_count: 3,
+      active_count: 5,
+      pending_review_count: 2,
+      completed_today: 4,
+      stats_included: true,
+    })
+
+    store.setHallStats({
+      pending_count: 0,
+      active_count: 0,
+      pending_review_count: 0,
+      completed_today: 0,
+      stats_included: false,
+    })
+    expect(store.hallStats).toEqual({
+      pending_count: 3,
+      active_count: 5,
+      pending_review_count: 2,
+      completed_today: 4,
+    })
+
+    // 缺字段（老后端）同样保留上一次有效值，不把 0 当成真实数字
+    store.setHallStats({ pending_count: 1, active_count: 1 })
+    expect(store.hallStats).toEqual({
+      pending_count: 3,
+      active_count: 5,
+      pending_review_count: 2,
+      completed_today: 4,
+    })
+  })
+
+  it('失败静默：返回 {success:false,status,retryAfter,error} 且不写共享 loading/error', async () => {
     const store = useOrdersStore()
     apiGet.mockRejectedValueOnce({ status: 404, message: '未找到' })
 
     const result = await store.fetchHallDigest()
 
-    expect(result).toEqual({ success: false, status: 404, error: '未找到' })
+    expect(result).toEqual({
+      success: false,
+      data: null,
+      status: 404,
+      retryAfter: null,
+      error: '未找到',
+      stale: false,
+    })
     expect(store.loading).toBe(false)
     expect(store.error).toBeNull()
+  })
+
+  it('429 把 Retry-After 透传给调用方（用于大厅退避）', async () => {
+    const store = useOrdersStore()
+    apiGet.mockRejectedValueOnce({ status: 429, message: '操作过于频繁', retryAfter: 2 })
+
+    const result = await store.fetchHallDigest()
+
+    expect(result.status).toBe(429)
+    expect(result.retryAfter).toBe(2)
+    expect(result.success).toBe(false)
   })
 
   it('被后续探测作废的旧响应不落地（stale、无 data），也不动共享 loading', async () => {
@@ -612,13 +695,19 @@ describe('fetchHallDigest 不写共享 loading/error（大厅断线兜底专用�
     apiGet.mockImplementationOnce(() => slow.promise)
 
     const slowCall = store.fetchHallDigest()
-    apiGet.mockResolvedValueOnce({ data: { count: 9, max_updated_at: 'fresh', earliest_deadline: null } })
+    apiGet.mockResolvedValueOnce({ data: { count: 9, max_updated_at: 'fresh', earliest_deadline: null }, status: 200 })
     const fresh = await store.fetchHallDigest()
     expect(fresh.success).toBe(true)
 
-    slow.resolve({ data: { count: 1, max_updated_at: 'stale', earliest_deadline: null } })
+    slow.resolve({ data: { count: 1, max_updated_at: 'stale', earliest_deadline: null }, status: 200 })
     // 陈旧摘要不能给调用方做基线对比（会误判"没变"而跳过该拉的全量）
-    expect(await slowCall).toEqual({ success: true, stale: true })
+    expect(await slowCall).toEqual({
+      success: true,
+      data: null,
+      status: 200,
+      retryAfter: null,
+      stale: true,
+    })
     expect(store.loading).toBe(false)
     expect(store.error).toBeNull()
   })
@@ -633,7 +722,14 @@ describe('fetchHallDigest 不写共享 loading/error（大厅断线兜底专用�
     await store.fetchHallDigest()
 
     slow.reject({ message: '网络错误' })
-    expect(await slowCall).toEqual({ success: false, stale: true, status: undefined, error: '网络错误' })
+    expect(await slowCall).toEqual({
+      success: false,
+      data: null,
+      stale: true,
+      status: undefined,
+      retryAfter: null,
+      error: '网络错误',
+    })
     expect(store.error).toBeNull()
   })
 })

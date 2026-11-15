@@ -354,7 +354,12 @@ export const useOrdersStore = defineStore('orders', () => {
       if ((!silent || options.reportError) && activeOrdersCacheKey === cacheKey) {
         error.value = err.message
       }
-      return { success: false, error: err.message }
+      // status/retryAfter 供大厅判断「全量列表被限流」并按 Retry-After 退避；
+      // 仅在实际存在时附加，其余调用方拿到的失败结构保持原样。
+      const failure = { success: false, error: err.message }
+      if (err.status !== undefined) failure.status = err.status
+      if (err.retryAfter !== undefined) failure.retryAfter = err.retryAfter
+      return failure
     } finally {
       const remaining = Math.max(0, (orderListActiveRequests.get(requestKey) || 1) - 1)
       if (remaining) orderListActiveRequests.set(requestKey, remaining)
@@ -402,6 +407,10 @@ export const useOrdersStore = defineStore('orders', () => {
   // 视图显示「—」而不是把 0 当成真实数字）
   function setHallStats(stats) {
     if (!stats) return
+    // 大厅 P1b：include_stats=false 的摘要只做对账，四个统计字段是默认 0。
+    // 必须只认 stats_included === true 的响应，否则 2 秒兜底轮询会把顶部
+    // 统计反复清零；带 false/缺省字段时保留上一次有效值。
+    if (stats.stats_included !== true) return
     hallStats.value = {
       pending_count: Number(stats.pending_count ?? 0),
       active_count: Number(stats.active_count ?? 0),
@@ -410,27 +419,54 @@ export const useOrdersStore = defineStore('orders', () => {
     }
   }
 
-  // GET /orders/hall-digest → { count, max_updated_at, earliest_deadline }
+  // GET /orders/hall-digest?include_stats=<bool>
+  // options.includeStats：false 时后端跳过较重的统计聚合（2 秒兜底轮询用），
+  // 缺省 true 保证首屏/30 秒统计刷新拿到顶部数字。
   // 不写共享 loading（摘要只是断线兜边的判断输入，不驱动任何骨架屏），失败也不写
   // 共享 error（静默探测失败由调用方按"摘要不可用"退回全量刷新，不该在大厅顶部
   // 弹红条）。序号守卫保证被后续探测作废的旧响应不落地。
-  async function fetchHallDigest() {
+  async function fetchHallDigest(options = {}) {
+    const includeStats = options.includeStats !== false
     const requestSeq = ++digestRequestSeq
     try {
-      const response = await api.get('/orders/hall-digest')
+      const response = await api.get('/orders/hall-digest', {
+        params: { include_stats: includeStats },
+      })
       if (requestSeq !== digestRequestSeq) {
         // 陈旧摘要不能给调用方做基线对比（会误判"没变"而跳过该拉的全量），
         // 因此 stale 结果不带 data。
-        return { success: true, stale: true }
+        return {
+          success: true,
+          data: null,
+          status: response.status,
+          retryAfter: null,
+          stale: true,
+        }
       }
-      // 统计条数字随摘要一起回来：成功一次即刷新（视图顶部不再依赖列表分页）
+      // 统计条数字随摘要一起回来：成功一次即刷新（视图顶部不再依赖列表分页）；
+      // setHallStats 自己会忽略 stats_included !== true 的轮询响应。
       setHallStats(response.data)
-      return { success: true, data: response.data }
-    } catch (err) {
-      if (requestSeq !== digestRequestSeq) {
-        return { success: false, stale: true, status: err.status, error: err.message }
+      return {
+        success: true,
+        data: response.data,
+        status: response.status,
+        retryAfter: null,
+        stale: false,
       }
-      return { success: false, status: err.status, error: err.message }
+    } catch (err) {
+      const result = {
+        success: false,
+        data: null,
+        status: err.status,
+        retryAfter: err.retryAfter ?? null,
+        error: err.message,
+        stale: false,
+      }
+      if (requestSeq !== digestRequestSeq) {
+        // 被后续探测作废的失败同样只标 stale，不向调用方提供可用结论
+        return { ...result, stale: true }
+      }
+      return result
     }
   }
 

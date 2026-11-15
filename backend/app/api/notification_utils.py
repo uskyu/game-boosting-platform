@@ -121,7 +121,9 @@ async def notify_boosters_new_order(
             setattr(request.state, TIMING_STATE_KEY + "_counts", counts)
         counts[name] = max(0, int(value))
 
-    # 平台模型：管理员发单，其余注册用户均为打手，全部纳入通知范围。
+    # 平台模型：管理员发单，其余活跃且允许接单的注册用户纳入通知范围。
+    # 被管理员禁止接单（can_accept=False）的用户不发「新订单」通知，避免
+    # 推送无法执行的抢单入口。
     # 发单人黑名单：被本单发布人拉黑的用户不发「新订单」通知（大厅仍可见），
     # 避免无效点击；用 NOT EXISTS 一次排除，不逐用户查询。
     async def select_recipients():
@@ -129,6 +131,7 @@ async def notify_boosters_new_order(
             select(User.id).where(
                 User.role != UserRole.ADMIN,
                 User.is_active.is_(True),
+                User.can_accept.is_(True),
                 ~exists(
                     select(PublisherBlacklist.id).where(
                         PublisherBlacklist.publisher_id == order.user_id,

@@ -4,6 +4,7 @@ import { resolveConversationTitle, resolveCounterpartUsers } from '../chat'
 
 const owner = { id: 1, username: 'Lin', role: 'USER' }
 const booster = { id: 2, username: 'BoostKing', role: 'BOOSTER' }
+const otherBooster = { id: 4, username: 'OtherBoost', role: 'BOOSTER' }
 const admin = { id: 3, username: '平台客服', role: 'ADMIN' }
 
 function orderConversation(overrides = {}) {
@@ -65,7 +66,7 @@ describe('resolveCounterpartUsers', () => {
     expect(resolveCounterpartUsers(conversation, admin.id)).toEqual([owner])
   })
 
-  it('没有参与者用户对象时用订单里的 user_username / booster_username 兜底', () => {
+  it('订单 booster_id 不在会话中时，不能把它当成发布人的对方', () => {
     const conversation = {
       id: 101,
       type: 'ORDER',
@@ -81,8 +82,57 @@ describe('resolveCounterpartUsers', () => {
       counterpart: null,
     }
 
-    expect(resolveConversationTitle(conversation, owner.id)).toBe('BoostKing')
+    // 会话里只有老板；订单上的 booster_id 尚未参与这条会话，不能显示成对方。
+    expect(resolveConversationTitle(conversation, owner.id)).toBe('订单 #9')
+    // 非发布人视角仍取实际参与者中的发布人。
     expect(resolveConversationTitle(conversation, booster.id)).toBe('Lin')
+  })
+
+  it('订单 booster_id=A，但会话实际对方是 B：标题必须显示 B', () => {
+    const conversation = {
+      id: 103,
+      type: 'ORDER',
+      order: {
+        id: 9,
+        user_id: owner.id,
+        booster_id: booster.id,
+        user_username: owner.username,
+        booster_username: booster.username,
+      },
+      counterpart_user_id: otherBooster.id,
+      participants: [
+        { user_id: owner.id, role_snapshot: 'USER', user: owner },
+        { user_id: otherBooster.id, role_snapshot: 'BOOSTER', user: otherBooster },
+      ],
+      other_participants: [otherBooster],
+      counterpart: null,
+    }
+
+    expect(resolveCounterpartUsers(conversation, owner.id)).toEqual([otherBooster])
+    expect(resolveConversationTitle(conversation, owner.id)).toBe('OtherBoost')
+  })
+
+  it('后端 counterpart 纠正后优先于订单 booster_id', () => {
+    const conversation = {
+      id: 104,
+      type: 'ORDER',
+      order: {
+        id: 9,
+        user_id: owner.id,
+        booster_id: booster.id,
+        user_username: owner.username,
+        booster_username: booster.username,
+      },
+      counterpart_user_id: otherBooster.id,
+      participants: [
+        { user_id: owner.id, role_snapshot: 'USER', user: owner },
+        { user_id: otherBooster.id, role_snapshot: 'BOOSTER', user: otherBooster },
+      ],
+      other_participants: [otherBooster],
+      counterpart: otherBooster,
+    }
+
+    expect(resolveConversationTitle(conversation, owner.id)).toBe('OtherBoost')
   })
 
   it('订单会话无对方可取时兜底“订单 #id”', () => {

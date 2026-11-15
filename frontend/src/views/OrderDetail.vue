@@ -5,6 +5,7 @@ import { useRouter } from 'vue-router'
 import Lightbox from '@/components/Lightbox.vue'
 import AfterSaleStatusModal from '@/components/AfterSaleStatusModal.vue'
 import BlacklistConfirmModal from '@/components/BlacklistConfirmModal.vue'
+import ChatFloatingWindow from '@/components/chat/ChatFloatingWindow.vue'
 import OrderDeliverModal from '@/components/OrderDeliverModal.vue'
 import OrderTimeline from '@/components/OrderTimeline.vue'
 import { useAfterSalesStore } from '@/stores/afterSales'
@@ -48,6 +49,9 @@ const claimPreflightLoading = ref(false)
 // 避免页面继续渲染大厅缓存里过期的可接订单，诱导用户反复点击。
 let claimFailShouldReload = false
 const chatLoading = ref(false)
+// 悬浮聊天窗：点击订单上的聊天入口后不跳路由，直接在当前订单页浮层对话。
+const chatFloatingOpen = ref(false)
+const chatFloatingConversationId = ref(null)
 // 会话失败就近提示：终态订单后端仍拒绝「新建」会话（403），
 // 顶部 errorMessage 离按钮太远，用户只看到按钮闪一下"打开中..."，故在按钮下方同步展示。
 const chatError = ref('')
@@ -225,7 +229,33 @@ const chatTargetUserId = computed(() => {
   }
   return null
 })
-const canStartChat = computed(() => chatTargetUserId.value != null)
+// 当前订单 + 当前对方在本地的会话（用于悬浮入口的未读角标；没有则显示 0）。
+const orderChatConversation = computed(() => {
+  const orderId = Number(order.value?.id)
+  const targetId = Number(chatTargetUserId.value)
+  if (!Number.isFinite(orderId) || !Number.isFinite(targetId)) {
+    return null
+  }
+  return chatStore.conversations.find((item) => {
+    if (Number(item.order_id) !== orderId) return false
+    if (Number(item.counterpart_user_id) === targetId) return true
+    return (item.participants || []).some(
+      (participant) => Number(participant.user_id ?? participant.user?.id) === targetId,
+    )
+  }) || null
+})
+// 非发布人没有接单权限时，仍允许打开已有的历史会话（can_accept=false 不能
+// 封死售后记录），但不给「新建订单咨询」入口，避免点了必 403。
+const canStartChat = computed(() => {
+  if (chatTargetUserId.value == null) {
+    return false
+  }
+  if (isOwner.value || canAccept.value) {
+    return true
+  }
+  return Boolean(orderChatConversation.value)
+})
+const orderChatUnread = computed(() => Math.max(0, Number(orderChatConversation.value?.unread_count || 0)))
 const statusMeta = computed(() => getOrderStatusMeta(viewCancelPending.value ? 'CANCELLING' : order.value?.status))
 const viewRole = computed(() => isAssignedBooster.value || (isBooster.value && !isOwner.value) ? 'booster' : 'owner')
 const humanStatusLabel = computed(() => getHumanStatusLabel(order.value?.status, order.value?.service_type, viewRole.value))
@@ -1238,6 +1268,24 @@ async function handleCancel() {
   actionLoading.value = false
 }
 
+// 建联失败文案：优先使用后端可读 detail（409 已包含可操作提示），
+// 没有 detail 时按状态码给出下一步动作，避免只显示“请求失败”。
+function resolveChatFailureText(result) {
+  if (result?.error) {
+    return result.error
+  }
+  if (result?.status === 409) {
+    return '该订单已有其他对话，请到消息中心查看你参与的会话，或联系客服协助处理'
+  }
+  if (result?.code === 'chat_rate_limited' || result?.status === 429) {
+    return '操作过于频繁，请稍后再试'
+  }
+  if (result?.status === 403) {
+    return '当前无法联系对方，请到消息中心查看已有会话或联系客服协助'
+  }
+  return '打开会话失败，请稍后重试'
+}
+
 async function handleStartConversation() {
   // 重入 guard：请求在飞时忽略连点，避免重复创建会话
   if (!chatTargetUserId.value || chatLoading.value) {
@@ -1248,23 +1296,53 @@ async function handleStartConversation() {
   errorMessage.value = ''
   chatError.value = ''
   successMessage.value = ''
+  const requestedOrderId = order.value?.id
+  const requestedTargetId = chatTargetUserId.value
   try {
-    const result = await chatStore.startConversation(chatTargetUserId.value, order.value.id)
+    const result = await chatStore.startConversation(requestedTargetId, requestedOrderId)
     if (result.success && result.data) {
-      router.push({ name: 'chat-detail', params: { id: result.data.id } })
+      // 订单可能已在请求期间切换：不要把旧订单会话的浮窗开到新订单上。
+      if (Number(order.value?.id) !== Number(requestedOrderId)) {
+        return
+      }
+      // 订单会话改为在当前页打开悬浮窗，保留订单上下文；需要全屏时点浮窗
+      // 头部的“展开”按钮进入消息中心。
+      chatFloatingConversationId.value = result.data.id
+      chatFloatingOpen.value = true
     } else if (result.success) {
       // stale：会话其实已在服务端创建成功，只是本地会话上下文已切换
       successMessage.value = '会话已创建，请到消息中心查看'
     } else {
-      errorMessage.value = result.error || '打开会话失败，请稍后重试'
-      chatError.value = result.error || '打开会话失败，请稍后重试'
+      const failureText = resolveChatFailureText(result)
+      errorMessage.value = failureText
+      chatError.value = failureText
     }
   } catch (err) {
-    errorMessage.value = err?.message || '打开会话失败，请稍后重试'
-    chatError.value = err?.message || '打开会话失败，请稍后重试'
+    const failureText = resolveChatFailureText({
+      error: err?.message,
+      status: err?.status,
+      code: err?.code,
+    })
+    errorMessage.value = failureText
+    chatError.value = failureText
   } finally {
     // 任何路径都要复位，否则按钮永久停在"打开中..."
     chatLoading.value = false
+  }
+}
+
+// 悬浮聊天窗关闭：卸载 ChatPanel 会清空 activeConversationId，之后的新消息
+// 会重新进入未读；不把浮窗改成 v-show 隐藏，避免“看起来关了但其实仍在读”。
+function closeChatFloating() {
+  chatFloatingOpen.value = false
+}
+
+// 展开到完整的消息中心详情页；关闭浮窗后再跳，避免两个 ChatPanel 同时挂载。
+function expandChatFloating() {
+  const conversationId = chatFloatingConversationId.value
+  chatFloatingOpen.value = false
+  if (conversationId != null) {
+    router.push({ name: 'chat-detail', params: { id: conversationId } })
   }
 }
 
@@ -1290,12 +1368,18 @@ async function handleContactAdmin(options = {}) {
       // stale：会话其实已在服务端创建成功，只是本地会话上下文已切换
       successMessage.value = '会话已创建，请到消息中心查看'
     } else {
-      errorMessage.value = result.error || '打开会话失败，请稍后重试'
-      chatError.value = result.error || '打开会话失败，请稍后重试'
+      const failureText = resolveChatFailureText(result)
+      errorMessage.value = failureText
+      chatError.value = failureText
     }
   } catch (err) {
-    errorMessage.value = err?.message || '打开会话失败，请稍后重试'
-    chatError.value = err?.message || '打开会话失败，请稍后重试'
+    const failureText = resolveChatFailureText({
+      error: err?.message,
+      status: err?.status,
+      code: err?.code,
+    })
+    errorMessage.value = failureText
+    chatError.value = failureText
   } finally {
     // 任何路径都要复位，否则按钮永久停在"打开中..."
     chatLoading.value = false
@@ -1478,6 +1562,8 @@ watch(
   (orderId) => {
     // 换单时清掉上一单的本地等待补时，避免把闸门禁用态带到另一张单上。
     acceptGateOverrideUntil.value = 0
+    // 换单时关闭上一单的悬浮聊天窗，避免浮窗仍指向旧订单会话。
+    chatFloatingOpen.value = false
     loadDetail(orderId).catch(() => {})
   },
   { immediate: true }
@@ -2526,5 +2612,112 @@ onUnmounted(() => {
         @withdrawn="onAfterSaleWithdrawn"
       />
     </template>
+
+    <!-- 订单悬浮聊天窗：桌面为右侧非模态浮卡，手机为底部抽屉；关闭即卸载 ChatPanel。 -->
+    <ChatFloatingWindow
+      v-if="order"
+      :open="chatFloatingOpen"
+      :conversation-id="chatFloatingConversationId"
+      :title="isOwner ? '联系打手' : '联系老板'"
+      @close="closeChatFloating"
+      @expand="expandChatFloating"
+    />
+
+    <!-- 订单悬浮入口：只对当前订单有明确聊天对象的人显示，避免把 409 暴露给所有人。 -->
+    <button
+      v-if="order && canStartChat && !chatFloatingOpen"
+      type="button"
+      class="order-chat-fab"
+      :class="{ 'order-chat-fab--loading': chatLoading }"
+      :disabled="chatLoading"
+      :aria-label="isOwner ? '联系打手' : '联系老板'"
+      @click="handleStartConversation"
+    >
+      <svg viewBox="0 0 24 24" class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+      </svg>
+      <span v-if="orderChatUnread > 0" class="order-chat-fab__badge">
+        {{ orderChatUnread > 99 ? '99+' : orderChatUnread }}
+      </span>
+    </button>
   </div>
 </template>
+
+<style scoped>
+.order-chat-fab {
+  position: fixed;
+  right: 20px;
+  bottom: 28px;
+  z-index: 35;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+  background: var(--primary);
+  color: var(--on-primary);
+  box-shadow: 0 12px 28px rgba(var(--brand-rgb), 0.28);
+  transition: transform 0.16s ease, box-shadow 0.16s ease, opacity 0.16s ease;
+}
+
+.order-chat-fab:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 16px 32px rgba(var(--brand-rgb), 0.34);
+}
+
+.order-chat-fab:active {
+  transform: translateY(0) scale(0.98);
+}
+
+.order-chat-fab:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+}
+
+.order-chat-fab--loading {
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.order-chat-fab__badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 19px;
+  height: 19px;
+  padding: 0 5px;
+  border: 1px solid var(--surface);
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 17px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 768–1279 有固定订单操作栏（约 64px）；<768 再叠 56px TabBar。 */
+@media (max-width: 1279px) {
+  .order-chat-fab {
+    bottom: calc(88px + env(safe-area-inset-bottom));
+  }
+}
+
+@media (max-width: 767px) {
+  .order-chat-fab {
+    right: 16px;
+    bottom: calc(160px + env(safe-area-inset-bottom));
+  }
+}
+
+/* 桌面右栏已有固定的「联系打手/联系老板」按钮，悬浮球只在移动端补入口，
+   避免遮挡右栏操作卡。 */
+@media (min-width: 1280px) {
+  .order-chat-fab {
+    display: none;
+  }
+}
+</style>

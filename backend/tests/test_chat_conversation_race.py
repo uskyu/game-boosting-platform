@@ -7,8 +7,8 @@ ORM 用户属性触发 ``MissingGreenlet``，最终返回 500。本文件钉住�
 1. 同一对用户并发双向建联最终拿到同一个会话，且库里只有一条会话、
    一组参与者和一张订单卡片系统消息；
 2. 唯一键冲突后的恢复路径不再依赖过期 ORM 对象，能返回并发赢家会话；
-3. 订单已有另一组参与者的会话时，后来者只能得到 409，不能复用或读取
-   别人的会话，也不会被自动加入。
+3. 订单已有另一组参与者的会话时，后来者会创建自己的独立会话（同一订单
+   + 不同对方），不能复用、读取或加入别人的会话。
 """
 
 import asyncio
@@ -203,6 +203,7 @@ class _ConflictInjectingSession:
             conversation = Conversation(
                 type=ConversationType.ORDER,
                 order_id=self._order_id,
+                counterpart_user_id=self._booster_id,
             )
             other.add(conversation)
             await other.flush()
@@ -299,7 +300,7 @@ async def test_unique_conflict_recovery_after_rollback_returns_winner(
     assert participant_count == 2
 
 
-async def test_order_conversation_with_other_participants_is_not_reused(
+async def test_order_conversation_with_other_participants_creates_own_conversation(
     client: AsyncClient,
     admin_user: dict,
     registered_user: dict,
@@ -307,7 +308,7 @@ async def test_order_conversation_with_other_participants_is_not_reused(
     db_session,
     make_captcha,
 ) -> None:
-    """订单已有别人与老板的会话时，后来者不能复用、加入或读取它。"""
+    """订单已有别人与老板的会话时，后来者创建自己的会话，不能复用/读取别人的。"""
     publisher = registered_user
     first_booster = booster_user
     await _top_up(client, admin_user, publisher)
@@ -331,29 +332,37 @@ async def test_order_conversation_with_other_participants_is_not_reused(
         username="OtherChatBooster",
     )
 
-    # PENDING 订单允许任意活跃打手咨询，因此该请求能走到插入并撞唯一键；
-    # 但它不是既有会话的参与者，必须得到 409 而不是复用别人的会话。
-    conflict = await _open_conversation(
+    # PENDING 订单允许任意活跃打手咨询；新对方会创建自己的会话，而不是
+    # 复用/加入老板与第一个打手的会话，也不会得到 409。
+    own = await _open_conversation(
         client,
         stranger,
         target_user_id=publisher["user"]["id"],
         order_id=order_id,
     )
-    assert conflict.status_code == 409, conflict.text
-    assert "已有其他会话" in conflict.json()["detail"]
+    assert own.status_code == 200, own.text
+    own_conversation_id = own.json()["id"]
+    assert own_conversation_id != conversation_id
+    assert own.json()["counterpart_user_id"] == stranger["user"]["id"]
 
-    detail = await client.get(
+    # 双方都不能读取对方的私聊。
+    first_detail = await client.get(
         f"/chat/conversations/{conversation_id}",
         headers=auth_header(stranger),
     )
-    assert detail.status_code == 403, detail.text
+    assert first_detail.status_code == 403, first_detail.text
+    own_detail = await client.get(
+        f"/chat/conversations/{own_conversation_id}",
+        headers=auth_header(first_booster),
+    )
+    assert own_detail.status_code == 403, own_detail.text
 
     conversation_count = (
         await db_session.execute(
             select(func.count(Conversation.id)).where(Conversation.order_id == order_id)
         )
     ).scalar()
-    assert conversation_count == 1
+    assert conversation_count == 2
 
     participant_ids = set(
         (

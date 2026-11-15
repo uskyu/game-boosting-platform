@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from app.api.deps import CurrentUser, DatabaseSession
+from app.api.rate_limit import enforce_user_limit
 from app.core.security import token_session_version, verify_token
 from app.db.session import async_session_factory
 from app.models.chat import Conversation, ConversationParticipant, Message
@@ -41,6 +42,10 @@ logger = logging.getLogger(__name__)
 # 连接寿命中位数正好 60 秒）。放到 10 分钟后，手机短时冻结再回来连接仍然活着；
 # 真正的死连接由客户端 45s 无 pong 主动换连 + 服务端发送 5s 超时即摘除两道保险清理。
 WS_IDLE_TIMEOUT_SECONDS = 600
+
+# 建联端点宽限流：只防脚本洪水。真正的「新建 ORDER 会话」严格限流在
+# ChatService 的既有会话查询之后执行，历史会话读取/续聊不消耗额度。
+_CHAT_CONVERSATION_CREATE_RATE = (120, 60)
 
 
 def _serialize_participant(
@@ -106,27 +111,32 @@ def _resolve_counterpart(
     current_user_id: int,
     other_participants: list[ChatUserBrief],
 ) -> ChatUserBrief | None:
-    """按当前视角解析“对话对方”。
+    """按当前视角解析“对话对方”，只认会话的实际参与者。
 
-    订单会话优先按订单角色选人：下单方看到的对方是打手，打手看到的是下单方，
-    管理员/客服视角看到的是下单方。订单角色不可用时退回参与者列表，并且
-    优先非 ADMIN，避免把客服拼进会话标题。
+    发布人视角：优先 counterpart_user_id 指向的实际参与者（非管理员对方），
+    没有再取会话中的非管理员参与者。打手视角取发布人；管理员视角取发布人。
+    任何情况下都不会把 order.booster_id 直接当成对方——该 ID 可能并不在
+    这条会话里（例如老板已与打手 A 建联，订单后来由打手 B 接单）。
     """
     order = conversation.order
     if order is not None:
-        if current_user_id == order.user_id:
-            preferred_id = order.booster_id
-        elif order.booster_id is not None and current_user_id == order.booster_id:
-            preferred_id = order.user_id
-        else:
-            # 管理员/客服或其他视角：优先展示下单方
-            preferred_id = order.user_id
+        participant_by_id = {
+            participant.user_id: participant.user
+            for participant in conversation.participants
+        }
+        owner_id = order.user_id
 
-        if preferred_id is not None:
-            if order.user_id == preferred_id and order.user is not None:
-                return ChatUserBrief.model_validate(order.user)
-            if order.booster_id == preferred_id and order.booster is not None:
-                return ChatUserBrief.model_validate(order.booster)
+        if current_user_id == owner_id:
+            counterpart_id = getattr(conversation, "counterpart_user_id", None)
+            if counterpart_id is not None and counterpart_id != current_user_id:
+                counterpart_user = participant_by_id.get(counterpart_id)
+                if counterpart_user is not None:
+                    return ChatUserBrief.model_validate(counterpart_user)
+        else:
+            # 打手或管理员视角：优先发布人，但必须是实际参与者。
+            publisher = participant_by_id.get(owner_id) if owner_id is not None else None
+            if publisher is not None and owner_id != current_user_id:
+                return ChatUserBrief.model_validate(publisher)
 
     for participant in other_participants:
         if participant.role != UserRole.ADMIN:
@@ -164,6 +174,7 @@ def _serialize_conversation(
         id=conversation.id,
         type=conversation.type,
         order_id=conversation.order_id,
+        counterpart_user_id=getattr(conversation, "counterpart_user_id", None),
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
         last_message_at=conversation.last_message_at,
@@ -509,6 +520,15 @@ async def create_or_get_conversation(
     current_user: CurrentUser,
     db: DatabaseSession,
 ) -> ConversationResponse:
+    # 宽限流只防脚本洪水；新建 ORDER 会话的严格桶在 service 中已有会话
+    # 查询之后才计数，打开历史会话不会消耗额度。
+    enforce_user_limit(
+        current_user.id,
+        "chat_conversation_create",
+        _CHAT_CONVERSATION_CREATE_RATE[0],
+        _CHAT_CONVERSATION_CREATE_RATE[1],
+        code="chat_rate_limited",
+    )
     chat_service = get_chat_service(db)
     # 冲突恢复可能回滚事务，ORM user 会因此过期；先取标量，序列化时不再
     # 触碰用户对象，避免异步隐式加载（MissingGreenlet）变成 500。

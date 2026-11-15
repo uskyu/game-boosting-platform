@@ -679,9 +679,19 @@ export const useChatStore = defineStore('chat', () => {
       const conversation = replaceConversation(response.data)
       return { success: true, data: conversation }
     } catch (err) {
-      if (!isCurrentAuthContext(authContext)) return { success: false, stale: true, error: err.message }
-      error.value = err.message
-      return { success: false, error: err.message }
+      const status = err?.status ?? null
+      const detail = err?.original?.response?.data?.detail
+      const code = err?.code ?? (
+        detail && typeof detail === 'object' && !Array.isArray(detail)
+          ? (detail.code ?? null)
+          : null
+      )
+      const message = err?.message || '打开会话失败，请稍后重试'
+      if (!isCurrentAuthContext(authContext)) {
+        return { success: false, stale: true, error: message, status, code }
+      }
+      error.value = message
+      return { success: false, error: message, status, code }
     }
   }
 

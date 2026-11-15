@@ -119,6 +119,18 @@ function readableApiError(error) {
   return detail || error.message || '请求失败'
 }
 
+// 429 的 Retry-After：优先响应头（标准），其次后端结构化 detail（限流接口
+// 统一在 detail.retry_after 里带秒数）。解析失败返回 null，调用方按默认退避。
+function readRetryAfterSeconds(error) {
+  const response = error.response
+  if (!response) return null
+  const raw = response.headers?.['retry-after']
+    ?? response.headers?.['Retry-After']
+    ?? response.data?.detail?.retry_after
+  const seconds = Number(raw)
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : null
+}
+
 // Response interceptor - handle errors and token refresh
 api.interceptors.response.use(
   // 每个响应的 Date 头用于校准服务器时钟（倒计时锚点），见 display.js
@@ -196,6 +208,8 @@ api.interceptors.response.use(
       status: error.response?.status,
       message: readableApiError(error),
       errors: error.response?.data?.errors,
+      // 429 退避用：大厅摘要/列表需要按 Retry-After 精确等待，不能立即重试
+      retryAfter: readRetryAfterSeconds(error),
       original: error,
     })
   }

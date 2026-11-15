@@ -37,12 +37,16 @@ class Conversation(TimestampMixin, Base):
     """Conversation model."""
 
     __tablename__ = "conversations"
-    # One conversation per order: prevents races in
-    # create_or_get_conversation from spawning duplicate order chats.
-    # (In MySQL, NULL values don't collide, so PRIVATE conversations are
-    # unaffected and serialized separately via user row locks.)
+    # 同一订单允许发布人分别与不同打手建立独立私聊：唯一性从「每单一条」
+    # 收敛为「每单 + 对方唯一」。counterpart_user_id 记录 ORDER 会话中
+    # 非发布人一方的实际参与者；PRIVATE 会话该列为 NULL。
+    # （MySQL 中 NULL 不参与唯一冲突，PRIVATE 仍靠用户行锁串行化。）
     __table_args__ = (
-        UniqueConstraint("order_id", name="uq_conversations_order_id"),
+        UniqueConstraint(
+            "order_id",
+            "counterpart_user_id",
+            name="uq_conversations_order_counterpart",
+        ),
     )
 
     id: Mapped[int] = mapped_column(
@@ -63,6 +67,14 @@ class Conversation(TimestampMixin, Base):
 
     order_id: Mapped[int | None] = mapped_column(
         ForeignKey("orders.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    # ORDER 会话的「对方」：发布人之外的唯一实际参与者。发布人联系客服等
+    # 显式例外下也可以是管理员。PRIVATE 会话为 NULL。
+    counterpart_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )

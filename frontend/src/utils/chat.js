@@ -4,10 +4,13 @@
  * 历史问题：标题直接拼接 other_participants，三人订单会话（客户 + 打手 +
  * 客服）会把 ADMIN 也拼进去；other_participants 被空数组覆盖时标题又退化
  * 成“订单 #id”。这里统一按“当前视角的对方”解析：
- *   1. 后端 counterpart（已按订单角色选人）；
- *   2. 订单会话按 order.user_id / booster_id 选对方（管理员视角优先下单方）；
+ *   1. 后端 counterpart（已按实际参与者选人）；
+ *   2. 订单会话按 counterpart_user_id / 实际参与者选对方；
  *   3. other_participants / participants 排除自己，并优先非 ADMIN；
  *   4. 只有客服可展示时再退回客服，最后才用订单号 / 会话号兜底。
+ *
+ * 注意：不能优先用 order.booster_id。订单可能先由打手 A 与老板建联、
+ * 之后才被打手 B 接单；A 会话的对方仍是 A，而不是 order.booster_id=B。
  */
 
 function normalizeId(value) {
@@ -62,14 +65,44 @@ function findParticipantUser(conversation, userId) {
   return participant?.user || null
 }
 
-function buildOrderUsernameCandidate(order, preferredId) {
-  if (isSameUser(preferredId, order?.user_id) && hasText(order?.user_username)) {
-    return { id: order.user_id, username: order.user_username }
+function findActualOtherUserById(conversation, userId) {
+  const fromOthers = findOtherUser(conversation, userId)
+  if (hasUsername(fromOthers)) {
+    return fromOthers
   }
-  if (isSameUser(preferredId, order?.booster_id) && hasText(order?.booster_username)) {
-    return { id: order.booster_id, username: order.booster_username }
+  const fromParticipants = findParticipantUser(conversation, userId)
+  if (hasUsername(fromParticipants)) {
+    return fromParticipants
   }
   return null
+}
+
+function collectActualOtherUsers(conversation, currentUserId) {
+  const currentId = normalizeId(currentUserId)
+  const users = []
+  const seen = new Set()
+
+  const add = (user) => {
+    if (!hasUsername(user) || isSameUser(user?.id, currentId)) {
+      return
+    }
+    const id = normalizeId(user?.id)
+    const key = id !== null ? `id:${id}` : `name:${user.username.trim()}`
+    if (seen.has(key)) {
+      return
+    }
+    seen.add(key)
+    users.push(user)
+  }
+
+  ;(conversation?.other_participants || []).forEach(add)
+  ;(conversation?.participants || []).forEach((participant) => add(participant?.user))
+  return users
+}
+
+function pickActualOther(conversation, currentUserId) {
+  const others = collectActualOtherUsers(conversation, currentUserId)
+  return others.find((user) => !isAdminUser(user)) || others[0] || null
 }
 
 function resolveOrderCounterpart(conversation, currentUserId) {
@@ -80,31 +113,26 @@ function resolveOrderCounterpart(conversation, currentUserId) {
     return null
   }
 
-  let preferredId = order.user_id
-  if (isSameUser(currentUserId, order.user_id)) {
-    // 下单方视角：对方是接单打手（未接单时由参与者列表兜底）
-    preferredId = order.booster_id
-  } else if (isSameUser(currentUserId, order.booster_id)) {
-    // 打手视角：对方是下单方
-    preferredId = order.user_id
-  }
-  // 其他视角（管理员/客服）：优先下单方
-
-  if (normalizeId(preferredId) === null) {
-    return null
-  }
-
-  const fromOthers = findOtherUser(conversation, preferredId)
-  if (hasUsername(fromOthers)) {
-    return fromOthers
+  const currentId = normalizeId(currentUserId)
+  if (isSameUser(currentId, order.user_id)) {
+    // 发布人视角：优先 counterpart_user_id 指向的实际参与者，绝不再按
+    // order.booster_id 选人。优先非管理员，只有客服在场时才退回客服。
+    const counterpartId = normalizeId(conversation?.counterpart_user_id)
+    if (counterpartId !== null && !isSameUser(counterpartId, currentId)) {
+      const counterpart = findActualOtherUserById(conversation, counterpartId)
+      if (hasUsername(counterpart)) {
+        return counterpart
+      }
+    }
+    return pickActualOther(conversation, currentId)
   }
 
-  const fromParticipants = findParticipantUser(conversation, preferredId)
-  if (hasUsername(fromParticipants)) {
-    return fromParticipants
+  // 打手 / 管理员视角：对方是发布人，且必须是这条会话的实际参与者。
+  const publisher = findActualOtherUserById(conversation, order.user_id)
+  if (hasUsername(publisher)) {
+    return publisher
   }
-
-  return buildOrderUsernameCandidate(order, preferredId)
+  return pickActualOther(conversation, currentId)
 }
 
 /**

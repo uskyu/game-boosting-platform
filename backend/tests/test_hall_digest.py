@@ -87,7 +87,76 @@ async def test_hall_digest_requires_auth_and_returns_shape(
         "active_count": 0,
         "pending_review_count": 0,
         "completed_today": 0,
+        # 默认调用（不传 include_stats）与旧行为一致：统计参与计算
+        "stats_included": True,
     }
+
+
+async def test_hall_digest_include_stats_false_skips_stats(
+    client: AsyncClient, admin_user: dict, booster_user: dict, monkeypatch
+):
+    """include_stats=false：跳过 hall_stats，四个统计字段仍为数字 0（不为 null），
+    并返回 stats_included=false，让前端保留上一次有效统计。"""
+    from app.services.order_service import OrderService
+
+    calls = {"count": 0}
+
+    async def _must_not_be_called(self, user):
+        calls["count"] += 1
+        raise AssertionError("include_stats=false 时不应调用 hall_stats")
+
+    monkeypatch.setattr(OrderService, "hall_stats", _must_not_be_called)
+
+    # 有可接订单时摘要 count 正常，但统计必须被跳过（pending_count 不能是 1）
+    await _make_order(client, admin_user)
+
+    resp = await client.get(
+        DIGEST,
+        params={"include_stats": "false"},
+        headers=auth_header(booster_user),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert calls["count"] == 0
+    assert body["stats_included"] is False
+    assert body["count"] == 1
+    assert body["max_updated_at"] is not None
+    assert body["earliest_deadline"] is None
+    for field in ("pending_count", "active_count", "pending_review_count", "completed_today"):
+        assert body[field] == 0
+        assert body[field] is not None
+
+
+async def test_hall_digest_include_stats_true_calls_stats(
+    client: AsyncClient, booster_user: dict, monkeypatch
+):
+    """include_stats=true（显式）与默认调用一样计算并返回统计，stats_included=true。"""
+    from app.services.order_service import OrderService
+
+    calls = {"count": 0}
+    original = OrderService.hall_stats
+
+    async def _record(self, user):
+        calls["count"] += 1
+        return await original(self, user)
+
+    monkeypatch.setattr(OrderService, "hall_stats", _record)
+
+    resp = await client.get(
+        DIGEST,
+        params={"include_stats": "true"},
+        headers=auth_header(booster_user),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert calls["count"] == 1
+    assert body["stats_included"] is True
+    assert {
+        "pending_count",
+        "active_count",
+        "pending_review_count",
+        "completed_today",
+    } <= body.keys()
 
 
 async def test_new_claimable_order_changes_count(

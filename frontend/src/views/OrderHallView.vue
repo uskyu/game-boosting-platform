@@ -307,6 +307,16 @@ let hallUnmounted = false
 // 摘要与基线一致就跳过全量列表，把列表请求量降一个数量级。断线期（事故压力
 // 全部来自 2s 一次的全量列表）收益最大；WS 正常时也省掉一次必然无变化的对账。
 const HALL_FORCED_FULL_INTERVAL = 30_000
+// 大厅 P1b：顶部统计（四个数字）单独按 30 秒刷新。2 秒兜底轮询默认
+// include_stats=false（后端跳过较重的统计聚合），只有到期的那一轮才带
+// include_stats=true；即使 WS 长时间断开，统计也不会一直停在首屏数字。
+const HALL_STATS_REFRESH_INTERVAL = 30_000
+// 429 专用退避：摘要/全量被限流时按 Retry-After 暂停大厅请求（不把限流
+// 当成「摘要不可用」升级成每轮全量），但页面不能因此永久停在旧数据上：
+// 距上次成功全量超过 60 秒时允许一次强制全量对账。
+const HALL_DIGEST_MAX_STALE_MS = 60_000
+// 后端 429 一定会带 Retry-After；缺失/非法时用保守默认值兜底，避免立即重试。
+const HALL_DIGEST_DEFAULT_RETRY_MS = 5_000
 // 启动静默窗口：startHallLifecycle 已经拉了一次全量列表 + 摘要；WS 连接、
 // 通知 watcher 往往在同一瞬间再触发 silentRefresh，两条请求会落在后端
 // 1.5s 限流窗口里自己撞 429。窗口内的刷新合并成一次延迟补拉，既避开限流，
@@ -321,6 +331,12 @@ let lastHallFullRefreshAt = 0
 // hall-digest 路由不存在（404，老后端）时，本页生命周期直接退回旧版全量兜底，
 // 不为一个不存在的接口每轮多打一个注定失败的探测请求。
 let hallDigestUnavailable = false
+// 摘要 429 的退避到期时刻（0 = 不在退避）。与 hallDigestUnavailable 严格分开：
+// 限流只是暂时不能探测，到期会自动恢复，绝不能升级成「摘要不可用 → 每轮全量」。
+let hallDigestRetryAt = 0
+// 上次带 stats 的摘要刷新（发起）时刻；2 秒兜底连续跑时也每 30 秒补一次
+// include_stats=true，避免顶部统计一直停在首屏数字。
+let lastHallStatsRefreshAt = 0
 // 抢单倒计时：独立 1 秒计时器，仅驱动 now 变化
 let countdownTimer = null
 // 切回页面时 focus 与 visibilitychange 几乎同时触发；两次都立刻发请求会让
@@ -380,14 +396,49 @@ function hallDigestKey(digest) {
   return `${digest.count ?? ''}|${digest.max_updated_at ?? ''}|${digest.earliest_deadline ?? ''}`
 }
 
+// 429 的 Retry-After → 退避毫秒数；缺失/非法时用保守默认值，绝不立即重试。
+function hallDigestRetryDelayMs(retryAfter) {
+  const seconds = Number(retryAfter)
+  const safeSeconds = Number.isFinite(seconds) && seconds > 0
+    ? seconds
+    : HALL_DIGEST_DEFAULT_RETRY_MS / 1000
+  return safeSeconds * 1000
+}
+
+// 统计刷新是否到期：2 秒兜底轮询平时不带统计，只有到期的那一轮才 include_stats=true。
+function hallStatsRefreshDue() {
+  return Date.now() - lastHallStatsRefreshAt >= HALL_STATS_REFRESH_INTERVAL
+}
+
+// 所有摘要请求统一在这里记账：
+// - 成功（且未被后续探测作废）说明限流已恢复，立即解除退避；
+// - 429 记下 Retry-After 到期时刻，到期前不再探测（调用方负责早退）；
+// - 带统计的请求按发起时刻记时，失败也不会在 2 秒下一轮重复触发重聚合。
+async function requestHallDigest(options = {}) {
+  const includeStats = options.includeStats === true
+  if (includeStats) lastHallStatsRefreshAt = Date.now()
+  const result = await ordersStore.fetchHallDigest({ includeStats })
+  if (result.success && !result.stale) {
+    hallDigestRetryAt = 0
+    if (includeStats) lastHallStatsRefreshAt = Date.now()
+  } else if (!result.stale && result.status === 429) {
+    hallDigestRetryAt = Date.now() + hallDigestRetryDelayMs(result.retryAfter)
+  }
+  return result
+}
+
 // 摘要探测：失败/不可用一律返回 null，调用方必须退回全量——兜底路径宁可多拉
-// 一次全量，也不能因为摘要故障漏掉新单。
-async function probeHallDigestKey() {
-  const result = await ordersStore.fetchHallDigest()
+// 一次全量，也不能因为摘要故障漏掉新单。429 例外：它只设置退避，由调用方
+// 判断「本轮不退回全量」，避免限流被误判成摘要不可用。
+// includeStats 缺省按统计是否到期决定：2 秒兜底平时 false，到期那轮 true。
+async function probeHallDigestKey(options = {}) {
+  const includeStats = options.includeStats ?? hallStatsRefreshDue()
+  const result = await requestHallDigest({ includeStats })
   if (!result.success) {
     if (result.status === 404) hallDigestUnavailable = true
     return null
   }
+  if (result.stale) return null
   return hallDigestKey(result.data)
 }
 
@@ -410,9 +461,17 @@ function refreshHallRecentClaimsIfDue() {
 // 无论 WS 是否正常都建基线：WS 正常时的 10s 对账也要先探摘要，基线必须持续维护。
 async function recordHallFullRefreshSuccess() {
   lastHallFullRefreshAt = Date.now()
+  // 全量成功说明服务端限流已经恢复：立即解除 429 退避，恢复正常的摘要优先路径。
+  hallDigestRetryAt = 0
   const fromList = hallDigestKey(ordersStore.hallDigest)
   if (fromList !== null) {
     hallDigestBaseline = fromList
+    // 列表响应不带顶部统计数字：统计到期时补一次 include_stats=true 的摘要，
+    // 保证即使轮询连续走「全量对账」轮次，顶部统计也按 30 秒刷新。
+    // 摘要接口 404（老后端）不再打注定失败的探测。
+    if (!hallDigestUnavailable && hallStatsRefreshDue()) {
+      await probeHallDigestKey()
+    }
     return
   }
   hallDigestBaseline = await probeHallDigestKey()
@@ -449,20 +508,36 @@ async function silentRefresh() {
     hallRefreshQueued = true
     return
   }
+  // 429 专用退避：到期前既不探摘要，也不发全量列表（避免在限流窗口里反复
+  // 撞墙）。但页面不能永久停在旧数据上：距上次成功全量超过 60 秒时，即使
+  // 仍在退避期也放行一次强制全量对账；全量若再被 429，同样按 Retry-After
+  // 续期退避，不会立即重试。
+  const nowMs = Date.now()
+  const digestBackoffActive = nowMs < hallDigestRetryAt
+  const forcedFullReconcile = digestBackoffActive
+    && nowMs - lastHallFullRefreshAt >= HALL_DIGEST_MAX_STALE_MS
+  if (digestBackoffActive && !forcedFullReconcile) return
   hallRefreshing = true
   let succeeded = false
   // 只给全量刷新计时：null = 本轮被摘要跳过、没有全量，finally 里就不喂退避判定。
   // 摘要探测的耗时/成败一律不计入退避——退避语义仍只看全量列表。
   let fullRefreshElapsedMs = null
+  // 全量列表被 429 时走单独的 Retry-After 退避，不能算进「慢请求」判定。
+  let fullRateLimited = false
+  // 只有真正成功的全量才算「成功全量」，用于 60 秒最大陈旧窗口判定。
+  let fullRefreshConfirmed = false
   try {
     // 摘要优先：WS 正常时的 10s 对账与断线 2s 兜底都先探摘要——摘要可用、
     // 基线已知、还在强制窗口内，才值得先探测；任一不满足（首次、基线未知、
     // 超过 30s、老后端）都直接走原来的全量。
+    // 429 退避超时后的强制对账跳过摘要探测，直接全量。
     if (
-      !hallDigestUnavailable
+      !forcedFullReconcile
+      && !hallDigestUnavailable
       && hallDigestBaseline !== null
       && hallFullRefreshWithinWindow()
     ) {
+      // 2 秒兜底默认 include_stats=false；统计到期的那一轮才带 true（由 probe 判定）。
       const digestKey = await probeHallDigestKey()
       if (digestKey === hallDigestBaseline) {
         // 摘要没变：跳过全量，本轮的兜底心跳只花在一次摘要请求上；
@@ -470,28 +545,46 @@ async function silentRefresh() {
         refreshHallRecentClaimsIfDue()
         return
       }
+      // 摘要 429：只进限流退避，本轮绝不能退回全量（限流 ≠ 摘要不可用）。
+      if (Date.now() < hallDigestRetryAt) return
     }
 
     const fullRefreshStartedAt = performance.now()
     try {
-      await measureOrderFlowStage(
+      const fullResult = await measureOrderFlowStage(
         'hall_refresh',
         'hall_list_refresh',
         () => ordersStore.refreshOrdersContext('hall', { silent: true, slim: true, page: 1, pageSize: 100 }),
       )
-      succeeded = true
+      fullRateLimited = fullResult?.status === 429
+      fullRefreshConfirmed = fullResult?.success !== false
+      // 保持原有退避语义：非 429 的完成轮次照旧交给耗时判定（429 单独退避）。
+      if (!fullRateLimited) succeeded = true
+      if (fullRateLimited) {
+        // 全量 429：按 Retry-After 续期，退避期内不再探测/全量；恢复后再重置。
+        hallDigestRetryAt = Math.max(
+          hallDigestRetryAt,
+          Date.now() + hallDigestRetryDelayMs(fullResult.retryAfter),
+        )
+      }
     } finally {
       // 先定格全量耗时：基线同步可能带一次摘要兜底请求，不能算进全量节奏
       fullRefreshElapsedMs = performance.now() - fullRefreshStartedAt
     }
-    refreshHallRecentClaimsIfDue()
-    await recordHallFullRefreshSuccess()
+    if (!fullRateLimited) {
+      refreshHallRecentClaimsIfDue()
+      // 只有真正成功的全量才推进 60 秒最大陈旧窗口基准。
+      if (fullRefreshConfirmed) await recordHallFullRefreshSuccess()
+    }
   } catch {
     // 静默失败等下一轮
   } finally {
     hallRefreshing = false
     if (!hallUnmounted && fullRefreshElapsedMs !== null) {
-      adjustHallFallbackInterval(succeeded, fullRefreshElapsedMs)
+      // 429 是限流不是慢请求：单独按 Retry-After 退避，不喂全量节奏判定。
+      if (!fullRateLimited) {
+        adjustHallFallbackInterval(succeeded, fullRefreshElapsedMs)
+      }
     }
     if (hallRefreshQueued && !hallUnmounted) {
       hallRefreshQueued = false
@@ -534,10 +627,13 @@ watch(() => chatStore.socketStatus, (status, previousStatus) => {
 // 身份可能在挂载后才由后台 /auth/me 补全（守卫已不阻塞），挂载和补全两条路径都走这里。
 async function startHallLifecycle() {
   if (hallUnmounted) return
-  // 摘要基线/强制窗口/探测可用性按本次挂载重建：旧挂载的基线与当前列表无关
+  // 摘要基线/强制窗口/探测可用性/429 退避按本次挂载重建：旧挂载的状态与
+  // 当前列表无关，不能把上一次的限流退避带进新首屏。
   hallDigestBaseline = null
   lastHallFullRefreshAt = 0
   hallDigestUnavailable = false
+  hallDigestRetryAt = 0
+  lastHallStatsRefreshAt = 0
   // 首屏这两条请求（列表 + 摘要）先发；2 秒内 watcher 的刷新请求合并到窗口后。
   hallStartupUntil = Date.now() + HALL_STARTUP_GRACE_MS
   hallRefreshQueued = false
@@ -546,9 +642,9 @@ async function startHallLifecycle() {
     hallStartupRefreshTimer = null
   }
   fetchOrders()
-  // 顶部统计条全量数字：随摘要接口一起回来。首屏直接拉一次，
-  // 而不是等列表响应（列表那三个 hall_* 字段只是对账基线，不含名额统计）。
-  ordersStore.fetchHallDigest().catch(() => {})
+  // 顶部统计条全量数字：随摘要接口一起回来。首屏必须 include_stats=true；
+  // 后续 2 秒兜底只在对账字段够用时 include_stats=false，按 30 秒补统计。
+  requestHallDigest({ includeStats: true }).catch(() => {})
   // 站点设置决定「今日已接单」区块是否渲染；App 启动时已预取，这里基本直接命中缓存
   await siteStore.fetchSettings()
   if (hallRecentClaimsVisible.value) {
@@ -587,6 +683,8 @@ onUnmounted(() => {
   hallDigestBaseline = null
   lastHallFullRefreshAt = 0
   hallDigestUnavailable = false
+  hallDigestRetryAt = 0
+  lastHallStatsRefreshAt = 0
   if (countdownTimer) {
     window.clearInterval(countdownTimer)
     countdownTimer = null

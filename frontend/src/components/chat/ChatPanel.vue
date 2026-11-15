@@ -12,7 +12,24 @@ const props = defineProps({
     type: [Number, String],
     required: true,
   },
+  // 悬浮小窗模式：收窄头部操作，只保留标题/状态/关闭
+  compact: {
+    type: Boolean,
+    default: false,
+  },
+  // 头部右侧关闭按钮（由宿主决定是否展示）
+  showClose: {
+    type: Boolean,
+    default: false,
+  },
+  // 悬浮窗宿主：释放 chat-shell 的 24rem 最小高度，并展示“展开”按钮
+  floating: {
+    type: Boolean,
+    default: false,
+  },
 })
+
+const emit = defineEmits(['close', 'expand'])
 
 const authStore = useAuthStore()
 const chatStore = useChatStore()
@@ -321,20 +338,20 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="chat-shell">
+  <section class="chat-shell" :class="{ 'chat-shell--floating': floating }">
     <div v-if="conversation" class="flex h-full min-h-0 flex-col overflow-hidden">
-      <header class="chat-panel-header">
-        <div class="min-w-0">
-          <div class="flex flex-wrap items-center gap-2">
+      <header class="chat-panel-header" :class="{ 'chat-panel-header--compact': compact }">
+        <div class="min-w-0 flex-1">
+          <div class="flex min-w-0 flex-wrap items-center gap-2">
             <h1 class="truncate text-lg font-semibold text-ink-1">{{ conversationTitle }}</h1>
-            <span class="chat-status-pill">{{ socketStatusText }}</span>
+            <span class="chat-status-pill shrink-0">{{ socketStatusText }}</span>
           </div>
           <p class="mt-0.5 truncate text-xs text-ink-2">{{ conversationSubtitle }}</p>
         </div>
 
         <div class="flex shrink-0 items-center gap-2">
           <button
-            v-if="searchOpen"
+            v-if="!compact && searchOpen"
             type="button"
             class="btn-ghost hidden !px-3 text-xs sm:inline-flex"
             @click="toggleSearch"
@@ -342,7 +359,7 @@ onBeforeUnmount(() => {
             收起搜索
           </button>
           <button
-            v-else
+            v-else-if="!compact"
             type="button"
             class="chat-icon-button hidden !h-9 !min-w-9 !px-2 sm:inline-flex"
             title="搜索消息"
@@ -354,7 +371,7 @@ onBeforeUnmount(() => {
             </svg>
           </button>
           <button
-            v-if="!hasAdmin && !authStore.isAdmin"
+            v-if="!compact && !hasAdmin && !authStore.isAdmin"
             type="button"
             class="btn-secondary shrink-0 !min-h-[36px] !px-4 text-xs"
             :disabled="invitingAdmin"
@@ -363,16 +380,42 @@ onBeforeUnmount(() => {
             {{ invitingAdmin ? '呼叫中...' : '呼叫客服' }}
           </button>
           <span
-            v-else-if="hasAdmin"
+            v-else-if="!compact && hasAdmin"
             class="chat-status-pill !bg-warning-soft !text-warning"
           >
             客服已加入
           </span>
+          <button
+            v-if="floating"
+            type="button"
+            class="chat-icon-button !h-9 !min-w-9 !px-2"
+            title="展开聊天窗口"
+            aria-label="展开聊天窗口"
+            data-chat-expand
+            @click="emit('expand')"
+          >
+            <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" />
+            </svg>
+          </button>
+          <button
+            v-if="showClose"
+            type="button"
+            class="chat-icon-button !h-9 !min-w-9 !px-2"
+            title="关闭聊天窗口"
+            aria-label="关闭聊天窗口"
+            data-chat-close
+            @click="emit('close')"
+          >
+            <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M6 6l12 12M18 6 6 18" />
+            </svg>
+          </button>
         </div>
       </header>
 
-      <!-- 消息搜索：默认收起，头部图标按需展开；手机端隐藏 -->
-      <div v-if="searchOpen" class="hidden border-b border-line-1 px-4 py-2.5 sm:block sm:px-6">
+      <!-- 消息搜索：默认收起，头部图标按需展开；小窗与手机端隐藏 -->
+      <div v-if="!compact && searchOpen" class="hidden border-b border-line-1 px-4 py-2.5 sm:block sm:px-6">
         <ChatSearchBar
           v-model="searchQuery"
           :results="searchResults"
@@ -416,6 +459,7 @@ onBeforeUnmount(() => {
           v-model="draft"
           :disabled="!conversation"
           :sending="sending"
+          :compact="compact"
           @send="handleSend"
           @send-image="handleSendImage"
           @typing="chatStore.sendTyping(normalizedConversationId)"
@@ -424,9 +468,40 @@ onBeforeUnmount(() => {
     </div>
 
     <div v-else class="empty-state !py-20">
+      <!-- 会话加载失败时没有头部，仍为悬浮窗保留一个可见的关闭入口 -->
+      <button
+        v-if="showClose"
+        type="button"
+        class="chat-icon-button absolute right-4 top-4 !h-9 !min-w-9 !px-2"
+        title="关闭聊天窗口"
+        aria-label="关闭聊天窗口"
+        data-chat-close
+        @click="emit('close')"
+      >
+        <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M6 6l12 12M18 6 6 18" />
+        </svg>
+      </button>
       <div class="empty-state__icon" aria-hidden="true">💬</div>
       <p class="empty-state__title">会话不存在</p>
       <p class="empty-state__copy">这个会话可能已被移除，或没有访问权限。</p>
     </div>
   </section>
 </template>
+
+<style scoped>
+/* 悬浮窗宿主卡片已提供边框/圆角/阴影，聊天壳去掉自身卡片外观并释放 min-height */
+.chat-shell--floating {
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* 小窗头部保持单行：标题 truncate，右侧关闭/展开按钮 shrink-0 */
+.chat-panel-header--compact {
+  flex-wrap: nowrap;
+  padding-left: 1rem;
+  padding-right: 1rem;
+}
+</style>

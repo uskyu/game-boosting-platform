@@ -12,8 +12,9 @@ from fastapi import HTTPException, UploadFile, status
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload, selectinload
+from sqlalchemy.orm import aliased, joinedload, selectinload
 
+from app.api.rate_limit import enforce_user_limit
 from app.core.config import settings
 from app.core.security import escape_like
 from app.core.title_rules import apply_title_replacements
@@ -31,9 +32,14 @@ from app.services.site_setting_service import get_order_title_replacements
 
 logger = logging.getLogger(__name__)
 
+# 严格限流只作用于「即将新建 ORDER 会话」的路径（每用户 20 次/10 分钟）；
+# 已有会话查询命中时直接返回，不消耗额度。端点层的宽限流由 API 层负责。
+_NEW_ORDER_CONVERSATION_RATE = (20, 600)
+_NEW_ORDER_CONVERSATION_SCOPE = "chat_order_conversation_create"
+
 
 def _is_order_conversation_unique_conflict(exc: IntegrityError) -> bool:
-    """是否命中了「每个订单只有一条会话」的唯一键。
+    """是否命中了订单会话唯一键（旧「每单一条」或新「每单+对方」）。
 
     MySQL/InnoDB 的重复键错误码固定为 1062，消息里带约束名。这里只接受
     目标约束，避免把外键失败、参与者唯一键等其他数据库错误误当成并发
@@ -43,7 +49,11 @@ def _is_order_conversation_unique_conflict(exc: IntegrityError) -> bool:
     args = getattr(orig, "args", ()) if orig is not None else ()
     if not args or args[0] != 1062:
         return False
-    return "uq_conversations_order_id" in str(orig)
+    message = str(orig)
+    return (
+        "uq_conversations_order_id" in message
+        or "uq_conversations_order_counterpart" in message
+    )
 
 
 class ChatService:
@@ -68,16 +78,70 @@ class ChatService:
                 detail="不能和自己发起对话",
             )
 
-        target_user = await self._get_active_user(target_user_id)
         conversation_type = ConversationType.PRIVATE
+        order: Order | None = None
+        counterpart_user_id: int | None = None
 
         if order_id is not None:
             order = await self._get_order_for_conversation(order_id)
             conversation_type = ConversationType.ORDER
+            counterpart_user_id = self._compute_counterpart_id(
+                order=order,
+                user_id=current_user_id,
+                target_user_id=target_user_id,
+            )
 
             # 已有会话优先：订单进行期聊起来的会话必须能随时打开，包含订单
-            # 完结后的售后回看。命中就直接返回，跳过下面的状态与参与者校验
-            # （历史会话本身已经证明双方当时建联成功）。
+            # 完结后的售后回看，以及对 can_accept=false 账号的历史售后。
+            # 命中就跳过目标账号活跃状态与新建会话资格校验（历史会话本身
+            # 已经证明双方当时建联成功）。
+            existing_conversation = await self._find_existing_conversation(
+                user_id=current_user_id,
+                target_user_id=target_user_id,
+                conversation_type=conversation_type,
+                order_id=order_id,
+                counterpart_user_id=counterpart_user_id,
+            )
+            if existing_conversation is not None:
+                existing_conversation.unread_count = await self._get_unread_count(
+                    current_user=current_user,
+                    conversation_id=existing_conversation.id,
+                )
+                return existing_conversation
+
+        target_user = await self._get_active_user(target_user_id)
+
+        if order is not None:
+            # 走到这里说明要新建会话，才做可联络与参与者资格校验（终态
+            # 订单只校验归档，联络资格由下面的参与者集合判定）。
+            self._assert_order_contactable(order)
+            order_participants = await self._get_order_participant_ids(order)
+            self._assert_order_conversation_eligible(
+                order=order,
+                current_user=current_user,
+                target_user=target_user,
+                participant_ids=order_participants,
+            )
+            if counterpart_user_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="只能由订单发布人与服务方发起对话",
+                )
+
+            existing_conversation = await self._find_existing_conversation(
+                user_id=current_user_id,
+                target_user_id=target_user.id,
+                conversation_type=conversation_type,
+                order_id=order_id,
+                counterpart_user_id=counterpart_user_id,
+            )
+            if existing_conversation is not None:
+                existing_conversation.unread_count = await self._get_unread_count(
+                    current_user=current_user,
+                    conversation_id=existing_conversation.id,
+                )
+                return existing_conversation
+        else:
             existing_conversation = await self._find_existing_conversation(
                 user_id=current_user_id,
                 target_user_id=target_user.id,
@@ -90,49 +154,6 @@ class ChatService:
                     conversation_id=existing_conversation.id,
                 )
                 return existing_conversation
-
-            # 走到这里说明要新建会话，才做可联络校验（终态订单只校验归档，
-            # 联络资格由下面的参与者集合判定）。
-            self._assert_order_contactable(order)
-            order_participants = await self._get_order_participant_ids(order)
-
-            # 订单客户永远可联络；所有抢单打手（含首抢 order.booster_id + OrderClaim
-            # booster_id 集合）均视为订单参与者，第 2 及后续打手也能基于订单创建
-            # 对话。PENDING 且可联络状态下任意活跃打手可与客户建联，便于接单前沟通。
-            current_is_participant = await self._is_order_contact_participant(
-                user=current_user,
-                order=order,
-                participant_ids=order_participants,
-            )
-            if not current_is_participant:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="当前用户无权基于该订单创建对话",
-                )
-
-            target_is_participant = await self._is_order_contact_participant(
-                user=target_user,
-                order=order,
-                participant_ids=order_participants,
-            )
-            if not target_is_participant:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="目标用户不属于该订单",
-                )
-
-        conversation = await self._find_existing_conversation(
-            user_id=current_user_id,
-            target_user_id=target_user.id,
-            conversation_type=conversation_type,
-            order_id=order_id,
-        )
-        if conversation is not None:
-            conversation.unread_count = await self._get_unread_count(
-                current_user=current_user,
-                conversation_id=conversation.id,
-            )
-            return conversation
 
         # Serialize concurrent creations so we don't spawn duplicate
         # conversations between the same pair of users. Locks the two user
@@ -150,6 +171,7 @@ class ChatService:
             target_user_id=target_user.id,
             conversation_type=conversation_type,
             order_id=order_id,
+            counterpart_user_id=counterpart_user_id,
         )
         if conversation is not None:
             conversation.unread_count = await self._get_unread_count(
@@ -157,6 +179,17 @@ class ChatService:
                 conversation_id=conversation.id,
             )
             return conversation
+
+        # 严格限流只覆盖「确实要新建 ORDER 会话」的路径：上面的 existing
+        # 查询已全部未命中，不会误伤历史会话的打开/续聊。
+        if order is not None:
+            enforce_user_limit(
+                current_user_id,
+                _NEW_ORDER_CONVERSATION_SCOPE,
+                _NEW_ORDER_CONVERSATION_RATE[0],
+                _NEW_ORDER_CONVERSATION_RATE[1],
+                code="chat_rate_limited",
+            )
 
         # 先把调用方此前排队的写入落库（例如服务卡下单刚创建的订单）。
         # SQLAlchemy 在 begin_nested() 建立 SAVEPOINT 之前会先 flush 待处理
@@ -166,6 +199,7 @@ class ChatService:
         conversation = Conversation(
             type=conversation_type,
             order_id=order_id,
+            counterpart_user_id=counterpart_user_id,
         )
         try:
             # 只把会话插入包在保存点里：唯一键冲突只撤销这一条 INSERT，
@@ -180,6 +214,7 @@ class ChatService:
                 target_user_id=target_user_id,
                 conversation_type=conversation_type,
                 order_id=order_id,
+                counterpart_user_id=counterpart_user_id,
             )
             if existing is None:
                 # 不是订单会话唯一键冲突（外键/其他约束）：保持原异常，
@@ -262,12 +297,15 @@ class ChatService:
         target_user_id: int,
         conversation_type: ConversationType,
         order_id: int | None,
+        counterpart_user_id: int | None,
     ) -> Conversation | None:
         """订单会话唯一键冲突后的恢复。
 
-        返回 None 表示异常不是订单会话唯一键冲突，调用方应原样抛出；
-        命中目标约束时返回双方已存在的会话，或在不属于这组参与者时返回
-        409（绝不把用户加入别人的会话，也不泄露该会话的任何内容）。
+        返回 None 表示异常不是订单会话唯一键冲突，调用方应原样抛出。
+        命中目标约束时优先返回「同一订单 + 同一对方」的会话；不同对方
+        的正常创建不会命中新唯一键，会直接插入成功，不再返回 409。
+        只有同对方冲突后仍查不到会话（真正的异常时序）才返回可操作的 409，
+        绝不把用户加入别人的会话，也不泄露会话或对方信息。
 
         保存点回滚后当前事务仍可能停留在旧的一致性读快照里：并发赢家的
         会话若在本事务首个快照之后才提交，普通 SELECT 看不到。此时整事务
@@ -284,6 +322,7 @@ class ChatService:
             target_user_id=target_user_id,
             conversation_type=conversation_type,
             order_id=order_id,
+            counterpart_user_id=counterpart_user_id,
         )
 
         if existing is not None:
@@ -295,13 +334,18 @@ class ChatService:
             target_user_id=target_user_id,
             conversation_type=conversation_type,
             order_id=order_id,
+            counterpart_user_id=counterpart_user_id,
         )
         if existing is None:
-            # 该订单已有一条属于其他参与者的会话（例如别的打手先与老板
-            # 建联）。不自动加入，也不能把会话内容返回给当前请求者。
+            # 同订单同对方已发生唯一键冲突，却读不到对应会话：属于异常
+            # 时序（例如快照尚未追上并发提交）。给出可操作提示，不泄露
+            # 对方身份或任何会话内容。
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="该订单已有其他会话，无法重复创建",
+                detail=(
+                    "该订单已有其他对话，请到消息中心查看你参与的会话，"
+                    "或联系客服协助处理"
+                ),
             )
         return await self._attach_unread_count(existing, current_user_id)
 
@@ -908,29 +952,99 @@ class ChatService:
                 ids.add(int(bid))
         return ids
 
-    async def _is_order_contact_participant(
+    def _compute_counterpart_id(
         self,
-        user: User,
+        *,
         order: Order,
+        user_id: int,
+        target_user_id: int,
+    ) -> int | None:
+        """计算 ORDER 会话的对方（发布人之外的一方）。
+
+        建联双方必须至少有一方是订单发布人；两名非发布人之间不会产生
+        counterpart，也会在资格校验中被拒绝。
+        """
+        owner_id = order.user_id
+        if owner_id is None:
+            return None
+        if user_id == owner_id:
+            return target_user_id
+        if target_user_id == owner_id:
+            return user_id
+        return None
+
+    def _assert_order_conversation_eligible(
+        self,
+        *,
+        order: Order,
+        current_user: User,
+        target_user: User,
         participant_ids: set[int],
-    ) -> bool:
-        """判断用户是否具备基于该订单的联络资格。"""
-        if user.id in participant_ids:
-            return True
-        # 订单客户本身已在集合中；此处保留显式分支以便日志追踪
-        if user.id == order.user_id:
-            return True
-        # 可联络的 PENDING 订单允许任意活跃打手（非 ADMIN）与客户建联
-        # 需已通过 _assert_order_contactable 的归档/截止/claim_status 校验
-        if order.status == OrderStatus.PENDING:
-            # 任意非管理员活跃用户均可作为潜在打手身份建联，贴合
-            # order_service 中「Every non-admin account can act as a booster」
-            if not user.is_active:
-                return False
-            if user.role == UserRole.ADMIN:
-                return False
-            return True
-        return False
+    ) -> None:
+        """新建 ORDER 会话前的服务端权限校验。
+
+        规则：
+        - 至少一方必须是订单发布人，两名非发布人一律 403；
+        - 非发布人一方必须是活跃的非管理员；
+        - 管理员联系发布人（target=发布人）保留客服显式例外，管理员主动
+          联系服务方则不允许（历史已有会话在上面已优先返回）；
+        - PENDING 接单前咨询：非发布人若不是 order.booster_id、也没有
+          OrderClaim，则必须 can_accept=True；已抢单/已接单/终态售后参与者
+          按现有参与者规则放行。
+        """
+        owner_id = order.user_id
+        if owner_id is None or (
+            current_user.id != owner_id and target_user.id != owner_id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="只能由订单发布人与服务方发起对话",
+            )
+
+        non_publisher = target_user if current_user.id == owner_id else current_user
+        if not non_publisher.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="当前账号已停用，无法发起订单对话",
+            )
+
+        if non_publisher.role == UserRole.ADMIN:
+            admin_contacting_publisher = (
+                current_user.role == UserRole.ADMIN
+                and target_user.id == owner_id
+            )
+            if not admin_contacting_publisher:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="管理员只能主动联系订单发布人，不能主动联系服务方",
+                )
+            # 客服联系发布人的显式例外：不要求管理员是订单参与者。
+            return
+
+        if non_publisher.id in participant_ids:
+            return
+
+        # 非参与者：只有 PENDING 且仍在开放抢单时允许接单前咨询，且必须
+        # 当前可接单。FULL/PAUSED/CLOSED 的订单只允许已参与打手与发布人
+        # 继续沟通（_assert_order_contactable 对 PAUSED/CLOSED 已拦，
+        # FULL 需要在这里按 claim_status 再拦一次）。
+        if order.status == OrderStatus.PENDING and order.claim_status == ClaimStatus.OPEN:
+            if not non_publisher.can_accept:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="该账号当前不可接单，暂无法发起订单咨询",
+                )
+            return
+
+        detail = (
+            "当前用户无权基于该订单创建对话"
+            if current_user.id != owner_id
+            else "目标用户不属于该订单"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=detail,
+        )
 
     def _build_order_card_meta(
         self, order: Order, title_rules: list[dict] | None = None
@@ -981,18 +1095,35 @@ class ChatService:
         target_user_id: int,
         conversation_type: ConversationType,
         order_id: int | None,
+        counterpart_user_id: int | None = None,
     ) -> Conversation | None:
+        """查找双方都已参与的会话。
+
+        ORDER 会话优先按 ``(order_id, counterpart_user_id)`` 定位：管理员
+        被邀请进三人会话后，发布人与打手的 pair 仍然能命中同一会话。
+        新键未命中时回退到「双方都是参与者」的查询，兼容 071 之前
+        counterpart_user_id 为 NULL 的历史会话。PRIVATE 同样只要求双方
+        都是参与者，不额外判断人数。
+        """
+        participant_a = aliased(ConversationParticipant)
+        participant_b = aliased(ConversationParticipant)
         query = (
             select(Conversation.id)
             .join(
-                ConversationParticipant,
-                ConversationParticipant.conversation_id == Conversation.id,
+                participant_a,
+                and_(
+                    participant_a.conversation_id == Conversation.id,
+                    participant_a.user_id == user_id,
+                ),
+            )
+            .join(
+                participant_b,
+                and_(
+                    participant_b.conversation_id == Conversation.id,
+                    participant_b.user_id == target_user_id,
+                ),
             )
             .where(Conversation.type == conversation_type)
-            .where(ConversationParticipant.user_id.in_([user_id, target_user_id]))
-            .group_by(Conversation.id)
-            .having(func.count(func.distinct(ConversationParticipant.user_id)) == 2)
-            .order_by(Conversation.id.desc())
         )
 
         if order_id is None:
@@ -1000,7 +1131,26 @@ class ChatService:
         else:
             query = query.where(Conversation.order_id == order_id)
 
-        result = await self._db.execute(query)
+        if (
+            conversation_type == ConversationType.ORDER
+            and order_id is not None
+            and counterpart_user_id is not None
+        ):
+            preferred_query = (
+                query.where(
+                    Conversation.counterpart_user_id == counterpart_user_id
+                )
+                .order_by(Conversation.id.desc())
+                .limit(1)
+            )
+            result = await self._db.execute(preferred_query)
+            conversation_id = result.scalars().first()
+            if conversation_id is not None:
+                return await self._get_conversation_or_404(conversation_id)
+
+        result = await self._db.execute(
+            query.order_by(Conversation.id.desc()).limit(1)
+        )
         conversation_id = result.scalars().first()
         if conversation_id is None:
             return None
