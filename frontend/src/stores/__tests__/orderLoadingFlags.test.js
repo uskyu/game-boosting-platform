@@ -14,14 +14,14 @@ import { useOrdersStore } from '@/stores/orders'
 
 let pinia
 
-function orderListResponse(items = [], pageSize = 20) {
+function orderListResponse(items = [], pageSize = 20, page = 1, total = items.length, pages = 1) {
   return {
     data: {
       items,
-      page: 1,
+      page,
       page_size: pageSize,
-      total: items.length,
-      pages: 1,
+      total,
+      pages,
     },
   }
 }
@@ -235,6 +235,30 @@ describe('订单列表上下文缓存', () => {
     expect(store.ordersContext).toBe('minePublished')
     expect(store.orders.map((order) => order.id)).toEqual([9])
     expect(store.loading).toBe(false)
+  })
+
+  it('翻回上一页时按真实页码请求，不被另一页缓存的分页对象带偏', async () => {
+    // 回归：setPage 曾原地修改 pagination.value.page，而该对象也被
+    // 列表快照的 pagination 引用。翻到第 2 页会把第 1 页缓存里的页码改成 2；
+    // 再点「上一页」时 activateOrdersCache 恢复出页码 2，请求又回到第 2 页，
+    // 页面停在 2 / 2，只有滚动位置跳回顶部。
+    const store = useOrdersStore()
+    apiGet
+      .mockResolvedValueOnce(orderListResponse([{ id: 1 }], 20, 1, 32, 2))
+      .mockResolvedValueOnce(orderListResponse([{ id: 2 }], 20, 2, 32, 2))
+      .mockResolvedValueOnce(orderListResponse([{ id: 1 }], 20, 1, 32, 2))
+
+    await store.refreshOrdersContext('minePublished', { page: 1, slim: true })
+    store.setPage(2)
+    await store.refreshOrdersContext('minePublished', { slim: true })
+    expect(store.pagination.page).toBe(2)
+
+    store.setPage(1)
+    await store.refreshOrdersContext('minePublished', { slim: true })
+
+    expect(apiGet.mock.calls.map((call) => call[1].params.page)).toEqual([1, 2, 1])
+    expect(store.pagination.page).toBe(1)
+    expect(store.orders.map((order) => order.id)).toEqual([1])
   })
 })
 

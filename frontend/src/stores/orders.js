@@ -1073,11 +1073,16 @@ export const useOrdersStore = defineStore('orders', () => {
   }
 
   function setPage(page) {
-    pagination.value.page = page
-    paginationByContext.value[ordersContext.value] = {
+    // 不要原地改 pagination.value.page：列表快照的 pagination 和当前
+    // pagination 曾共享同一个对象，原地改页码会把另一页缓存里的页码也改掉。
+    // 之后翻回该页时，activateOrdersCache 会按被污染的缓存页码重建请求，
+    // 出现「点上一页却仍请求第 2 页、页码停在 2」的翻页失效。
+    const next = {
       ...paginationByContext.value[ordersContext.value],
       page,
     }
+    pagination.value = next
+    paginationByContext.value[ordersContext.value] = next
   }
 
   function clearAnalysisResult() {
