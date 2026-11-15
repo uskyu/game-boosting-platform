@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 const floatingSource = readFileSync(new URL('../ChatFloatingWindow.vue', import.meta.url), 'utf8')
 const panelSource = readFileSync(new URL('../ChatPanel.vue', import.meta.url), 'utf8')
 const composerSource = readFileSync(new URL('../ChatComposer.vue', import.meta.url), 'utf8')
+const messageListSource = readFileSync(new URL('../ChatMessageList.vue', import.meta.url), 'utf8')
 
 function compileSfc(source, filename) {
   const { descriptor, errors } = parse(source, { filename })
@@ -276,11 +277,41 @@ describe('ChatPanel 悬浮/紧凑模式', () => {
   it('keeps the default (non-compact) panel capabilities intact', () => {
     const template = templateOf(panelSource)
 
-    expect(template).toMatch(/<section class="chat-shell"/)
+    expect(template).toMatch(/<section[\s\S]{0,220}class="chat-shell"/)
     expect(template).toMatch(/<ChatSearchBar/)
     expect(template).toMatch(/@click="handleInviteAdmin"/)
     expect(template).toMatch(/<ChatMessageList/)
     expect(template).toMatch(/<ChatComposer/)
+  })
+
+  it('supports dragging and pasting chat images', () => {
+    compileSfc(composerSource, 'ChatComposer.vue')
+    const panelTemplate = templateOf(panelSource)
+    const panelScript = scriptOf(panelSource)
+    const composerTemplate = templateOf(composerSource)
+    const composerScript = scriptOf(composerSource)
+
+    expect(composerTemplate).toMatch(/@paste="handlePaste"/)
+    expect(composerTemplate).toMatch(/\bmultiple\b/)
+    expect(composerScript).toMatch(/chatImageFilesFromClipboard/)
+    expect(composerScript).toMatch(/emit\('send-images', files\)/)
+    expect(composerScript).toMatch(/emit\('image-error', error\)/)
+    expect(panelTemplate).toMatch(/@send-images="handleSendImages"/)
+    expect(panelTemplate).toMatch(/@image-error="handleImageError"/)
+    expect(panelTemplate).toMatch(/@drop="handleDrop"/)
+    expect(panelTemplate).toMatch(/@dragover="handleDragOver"/)
+    expect(panelTemplate).toMatch(/chat-drop-overlay/)
+    expect(panelScript).toMatch(/chatImageFilesFromDataTransfer/)
+    expect(panelScript).toMatch(/validateChatImageFiles/)
+  })
+
+  it('sticks to bottom again when an image message finishes loading', () => {
+    const template = templateOf(messageListSource)
+    const script = scriptOf(messageListSource)
+
+    expect(template).toMatch(/@load\.capture="handleMediaLoad"/)
+    expect(script).toMatch(/followMediaLoad = true/)
+    expect(script).toMatch(/async function handleMediaLoad/)
   })
 
   it('passes compact down to ChatComposer so the narrow input stays readable', () => {

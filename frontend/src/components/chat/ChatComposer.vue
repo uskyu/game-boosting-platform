@@ -1,5 +1,10 @@
 <script setup>
 import { ref } from 'vue'
+import {
+  CHAT_IMAGE_ACCEPT,
+  chatImageFilesFromClipboard,
+  validateChatImageFiles,
+} from '@/utils/chatImage'
 
 const props = defineProps({
   modelValue: {
@@ -22,7 +27,7 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['update:modelValue', 'send', 'send-image', 'typing'])
+const emit = defineEmits(['update:modelValue', 'send', 'send-images', 'image-error', 'typing'])
 
 const fileInputRef = ref(null)
 
@@ -54,13 +59,35 @@ function openFileDialog() {
   fileInputRef.value?.click()
 }
 
-function handleFileChange(event) {
-  const file = event.target.files?.[0]
-  if (file) {
-    emit('send-image', file)
+function submitImages(files) {
+  if (props.disabled || props.sending || !files.length) {
+    return
   }
 
+  const error = validateChatImageFiles(files)
+  if (error) {
+    emit('image-error', error)
+    return
+  }
+
+  emit('send-images', files)
+}
+
+function handleFileChange(event) {
+  const files = Array.from(event.target.files || [])
   event.target.value = ''
+  submitImages(files)
+}
+
+function handlePaste(event) {
+  const files = chatImageFilesFromClipboard(event.clipboardData)
+  if (!files.length) {
+    // 纯文本粘贴保持浏览器默认行为；只有剪贴板里带图片时才接管。
+    return
+  }
+
+  event.preventDefault()
+  submitImages(files)
 }
 </script>
 
@@ -75,7 +102,8 @@ function handleFileChange(event) {
         ref="fileInputRef"
         type="file"
         class="hidden"
-        accept="image/png,image/jpeg,image/gif,image/webp"
+        :accept="CHAT_IMAGE_ACCEPT"
+        multiple
         @change="handleFileChange"
       />
 
@@ -83,6 +111,8 @@ function handleFileChange(event) {
         type="button"
         class="chat-icon-button"
         :disabled="disabled || sending"
+        title="发送图片（支持拖拽或粘贴）"
+        aria-label="发送图片，支持拖拽或粘贴"
         @click="openFileDialog"
       >
         图片
@@ -98,6 +128,7 @@ function handleFileChange(event) {
           :placeholder="compact ? '输入消息…' : '输入聊天内容，Enter 发送，Shift + Enter 换行'"
           @input="handleInput"
           @keydown="handleKeydown"
+          @paste="handlePaste"
         ></textarea>
       </label>
 

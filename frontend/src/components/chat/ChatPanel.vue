@@ -3,6 +3,10 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import { resolveConversationTitle } from '@/utils/chat'
+import {
+  chatImageFilesFromDataTransfer,
+  validateChatImageFiles,
+} from '@/utils/chatImage'
 import ChatComposer from './ChatComposer.vue'
 import ChatMessageList from './ChatMessageList.vue'
 import ChatSearchBar from './ChatSearchBar.vue'
@@ -47,8 +51,10 @@ const actionMessage = ref('')
 const actionError = ref('')
 const highlightedMessageId = ref(null)
 const messageListRef = ref(null)
+const dragActive = ref(false)
 
 let highlightTimer = null
+let dragDepth = 0
 
 const normalizedConversationId = computed(() => Number(props.conversationId))
 const conversation = computed(() => (
@@ -217,8 +223,15 @@ async function handleSend() {
   sending.value = false
 }
 
-async function handleSendImage(file) {
-  if (!file || sending.value) {
+async function handleSendImages(files) {
+  const list = Array.from(files || [])
+  if (!list.length || sending.value) {
+    return
+  }
+
+  const validationError = validateChatImageFiles(list)
+  if (validationError) {
+    actionError.value = validationError
     return
   }
 
@@ -226,15 +239,100 @@ async function handleSendImage(file) {
   actionError.value = ''
   actionMessage.value = ''
 
-  const result = await chatStore.sendImage(normalizedConversationId.value, file)
-  if (result.success) {
-    await nextTick()
-    messageListRef.value?.scrollToBottom(true)
-  } else {
-    actionError.value = result.error || '发送图片失败'
+  let sent = 0
+  let failure = ''
+  try {
+    for (const file of list) {
+      const result = await chatStore.sendImage(normalizedConversationId.value, file)
+      if (!result.success) {
+        failure = result.error || '发送图片失败'
+        break
+      }
+      sent += 1
+    }
+  } finally {
+    sending.value = false
   }
 
-  sending.value = false
+  if (sent) {
+    await nextTick()
+    messageListRef.value?.scrollToBottom(true)
+  }
+
+  if (failure) {
+    actionError.value = sent
+      ? `已发送 ${sent} 张图片，后续发送失败：${failure}`
+      : failure
+  } else if (sent > 1) {
+    actionMessage.value = `已发送 ${sent} 张图片`
+  }
+}
+
+function handleImageError(message) {
+  actionError.value = message || '图片发送失败'
+}
+
+function isFileDrag(event) {
+  return Array.from(event.dataTransfer?.types || []).includes('Files')
+}
+
+function resetImageDrag() {
+  dragDepth = 0
+  dragActive.value = false
+}
+
+function handleDragEnter(event) {
+  if (!conversation.value || sending.value || !isFileDrag(event)) {
+    return
+  }
+
+  event.preventDefault()
+  dragDepth += 1
+  dragActive.value = true
+}
+
+function handleDragOver(event) {
+  if (!conversation.value || sending.value || !isFileDrag(event)) {
+    return
+  }
+
+  event.preventDefault()
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = 'copy'
+  }
+  dragActive.value = true
+}
+
+function handleDragLeave() {
+  if (!dragActive.value) {
+    return
+  }
+
+  dragDepth = Math.max(0, dragDepth - 1)
+  if (!dragDepth) {
+    dragActive.value = false
+  }
+}
+
+function handleDrop(event) {
+  if (!isFileDrag(event)) {
+    return
+  }
+
+  event.preventDefault()
+  resetImageDrag()
+
+  if (!conversation.value || sending.value) {
+    return
+  }
+
+  const files = chatImageFilesFromDataTransfer(event.dataTransfer)
+  if (!files.length) {
+    actionError.value = '仅支持 jpg、png、gif、webp 图片'
+    return
+  }
+
+  handleSendImages(files)
 }
 
 async function handleRecall(messageId) {
@@ -338,7 +436,14 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="chat-shell" :class="{ 'chat-shell--floating': floating }">
+  <section
+    class="chat-shell"
+    :class="{ 'chat-shell--floating': floating }"
+    @dragenter="handleDragEnter"
+    @dragover="handleDragOver"
+    @dragleave="handleDragLeave"
+    @drop="handleDrop"
+  >
     <div v-if="conversation" class="flex h-full min-h-0 flex-col overflow-hidden">
       <header class="chat-panel-header" :class="{ 'chat-panel-header--compact': compact }">
         <div class="min-w-0 flex-1">
@@ -461,7 +566,8 @@ onBeforeUnmount(() => {
           :sending="sending"
           :compact="compact"
           @send="handleSend"
-          @send-image="handleSendImage"
+          @send-images="handleSendImages"
+          @image-error="handleImageError"
           @typing="chatStore.sendTyping(normalizedConversationId)"
         />
       </div>
@@ -486,6 +592,18 @@ onBeforeUnmount(() => {
       <p class="empty-state__title">会话不存在</p>
       <p class="empty-state__copy">这个会话可能已被移除，或没有访问权限。</p>
     </div>
+
+    <div v-if="dragActive" class="chat-drop-overlay" role="status">
+      <div class="chat-drop-overlay__inner">
+        <svg viewBox="0 0 24 24" class="chat-drop-overlay__icon" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+          <rect x="3" y="3" width="18" height="18" rx="3" />
+          <path stroke-linecap="round" stroke-linejoin="round" d="m4 16 4.5-4.5a2 2 0 0 1 2.8 0L15 15m-2.5-2.5L15 10l5 5" />
+          <circle cx="9" cy="8" r="1.5" />
+        </svg>
+        <p class="chat-drop-overlay__title">松开即可发送图片</p>
+        <p class="chat-drop-overlay__hint">支持 jpg、png、gif、webp，单张不超过 10MB</p>
+      </div>
+    </div>
   </section>
 </template>
 
@@ -503,5 +621,55 @@ onBeforeUnmount(() => {
   flex-wrap: nowrap;
   padding-left: 1rem;
   padding-right: 1rem;
+}
+
+/* 拖入图片时盖住整个聊天面板，明确告诉用户可以松手发送。
+   pointer-events: none 保证 drop 事件仍落在 chat-shell 上。 */
+.chat-drop-overlay {
+  position: absolute;
+  inset: 8px;
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  border: 2px dashed var(--primary);
+  border-radius: 18px;
+  background: var(--primary-soft);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  pointer-events: none;
+  text-align: center;
+}
+
+.chat-drop-overlay__inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 18px 24px;
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
+  color: var(--primary);
+}
+
+.chat-drop-overlay__icon {
+  width: 44px;
+  height: 44px;
+  margin-bottom: 4px;
+}
+
+.chat-drop-overlay__title {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--text-1);
+}
+
+.chat-drop-overlay__hint {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-2);
 }
 </style>

@@ -47,6 +47,9 @@ const emit = defineEmits(['load-more', 'recall'])
 const containerRef = ref(null)
 const shouldRestoreScroll = ref(false)
 const previousScrollHeight = ref(0)
+// 图片消息的宽度能立刻确定、高度要等资源加载完。发送/收到图片后先贴底，
+// 图片真正撑开气泡时再补一次贴底，否则最新图片会被输入框裁掉一截。
+let followMediaLoad = false
 
 function isNearBottom() {
   const element = containerRef.value
@@ -68,6 +71,8 @@ function scrollToBottom(force = false) {
   }
 
   element.scrollTop = element.scrollHeight
+  // 贴底动作可能发生在图片加载前；等图片撑开气泡后再补一次。
+  followMediaLoad = true
 }
 
 function scrollToMessage(messageId) {
@@ -89,7 +94,16 @@ function scrollToMessage(messageId) {
 
 function handleScroll() {
   const element = containerRef.value
-  if (!element || props.loadingMore || !props.hasMore) {
+  if (!element) {
+    return
+  }
+
+  // 用户主动离开底部后，不再因为后到的图片加载把视口拉回底部。
+  if (!isNearBottom()) {
+    followMediaLoad = false
+  }
+
+  if (props.loadingMore || !props.hasMore) {
     return
   }
 
@@ -98,6 +112,16 @@ function handleScroll() {
     previousScrollHeight.value = element.scrollHeight
     emit('load-more')
   }
+}
+
+async function handleMediaLoad(event) {
+  if (event.target?.tagName !== 'IMG' || !followMediaLoad) {
+    return
+  }
+
+  // 等 Vue/浏览器把图片的新高度写进布局后再贴底。
+  await nextTick()
+  scrollToBottom(true)
 }
 
 watch(
@@ -160,6 +184,7 @@ defineExpose({
     ref="containerRef"
     class="chat-message-list"
     @scroll="handleScroll"
+    @load.capture="handleMediaLoad"
   >
     <div
       v-if="hasMore"
