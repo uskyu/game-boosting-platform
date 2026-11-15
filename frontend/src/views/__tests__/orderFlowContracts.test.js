@@ -94,6 +94,12 @@ describe('order-flow view contracts', () => {
     expect(detailSource).toMatch(/<ChatFloatingWindow[\s\S]{0,260}:open="chatFloatingOpen"/)
     expect(detailSource).toMatch(/class="order-chat-fab"/)
     expect(detailSource).toMatch(/v-if="order && canStartChat && !chatFloatingOpen"/)
+    // 桌面端同样要有可见入口：挂到 body 避免路由过渡的 transform 把 fixed
+    // 变成随页面滚动；>=1280px 显示文字并从纯圆钮升级为胶囊。
+    expect(detailSource).toMatch(/<Teleport to="body">[\s\S]{0,900}class="order-chat-fab"/)
+    expect(detailSource).toMatch(/order-chat-fab__label/)
+    expect(detailSource).toMatch(/@media \(min-width: 1280px\)[\s\S]{0,600}\.order-chat-fab__label\s*\{[\s\S]{0,80}display: inline/)
+    expect(detailSource).not.toMatch(/@media \(min-width: 1280px\)[\s\S]{0,600}\.order-chat-fab\s*\{[\s\S]{0,80}display: none/)
   })
 
   it('silently hydrates order details after successful accept and always clears action loading', () => {

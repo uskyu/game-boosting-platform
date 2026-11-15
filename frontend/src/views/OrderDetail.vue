@@ -2624,22 +2624,27 @@ onUnmounted(() => {
     />
 
     <!-- 订单悬浮入口：只对当前订单有明确聊天对象的人显示，避免把 409 暴露给所有人。 -->
-    <button
-      v-if="order && canStartChat && !chatFloatingOpen"
-      type="button"
-      class="order-chat-fab"
-      :class="{ 'order-chat-fab--loading': chatLoading }"
-      :disabled="chatLoading"
-      :aria-label="isOwner ? '联系打手' : '联系老板'"
-      @click="handleStartConversation"
-    >
-      <svg viewBox="0 0 24 24" class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
-      </svg>
-      <span v-if="orderChatUnread > 0" class="order-chat-fab__badge">
-        {{ orderChatUnread > 99 ? '99+' : orderChatUnread }}
-      </span>
-    </button>
+    <!-- Teleport 到 body：页面根节点在路由切换时有 translateY 过渡，祖先的
+         transform 会把 position: fixed 变成相对页面定位，按钮会跟着内容滚动。 -->
+    <Teleport to="body">
+      <button
+        v-if="order && canStartChat && !chatFloatingOpen"
+        type="button"
+        class="order-chat-fab"
+        :class="{ 'order-chat-fab--loading': chatLoading }"
+        :disabled="chatLoading"
+        :aria-label="isOwner ? '联系打手' : '联系老板'"
+        @click="handleStartConversation"
+      >
+        <svg viewBox="0 0 24 24" class="h-6 w-6 shrink-0" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+        </svg>
+        <span class="order-chat-fab__label">{{ isOwner ? '联系打手' : '联系老板' }}</span>
+        <span v-if="orderChatUnread > 0" class="order-chat-fab__badge">
+          {{ orderChatUnread > 99 ? '99+' : orderChatUnread }}
+        </span>
+      </button>
+    </Teleport>
   </div>
 </template>
 
@@ -2663,12 +2668,13 @@ onUnmounted(() => {
 }
 
 .order-chat-fab:hover {
-  transform: translateY(-1px);
+  /* 不位移：这是贴着屏幕边缘的常驻入口，悬停时挪 1px 会让鼠标命中点抖动。 */
   box-shadow: 0 16px 32px rgba(var(--brand-rgb), 0.34);
+  filter: brightness(1.05);
 }
 
 .order-chat-fab:active {
-  transform: translateY(0) scale(0.98);
+  transform: scale(0.98);
 }
 
 .order-chat-fab:focus-visible {
@@ -2699,6 +2705,10 @@ onUnmounted(() => {
   font-variant-numeric: tabular-nums;
 }
 
+.order-chat-fab__label {
+  display: none;
+}
+
 /* 768–1279 有固定订单操作栏（约 64px）；<768 再叠 56px TabBar。 */
 @media (max-width: 1279px) {
   .order-chat-fab {
@@ -2713,11 +2723,32 @@ onUnmounted(() => {
   }
 }
 
-/* 桌面右栏已有固定的「联系打手/联系老板」按钮，悬浮球只在移动端补入口，
-   避免遮挡右栏操作卡。 */
+/* 桌面端：视口右下角固定胶囊入口（与常见桌面聊天组件一致）。
+   左右栏在 1280–1599px 时没有足够侧边留白，按钮会轻压在右侧卡片边缘；
+   1600px 以上则完全落在内容栏外的右侧留白里。带文字后比移动端圆形
+   按钮更大、更容易发现。 */
 @media (min-width: 1280px) {
   .order-chat-fab {
-    display: none;
+    right: 24px;
+    bottom: 32px;
+    width: auto;
+    min-width: 56px;
+    height: 56px;
+    padding: 0 20px;
+    gap: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    white-space: nowrap;
+  }
+
+  .order-chat-fab__label {
+    display: inline;
+  }
+
+  .order-chat-fab__badge {
+    top: -5px;
+    right: -5px;
   }
 }
 </style>
