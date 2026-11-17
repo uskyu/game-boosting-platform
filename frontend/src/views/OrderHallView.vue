@@ -97,6 +97,17 @@ const canPublish = computed(() => authStore.canPublish)
 const publishApplyEnabled = computed(() => siteStore.settings.publish_permission_apply_enabled !== false)
 const isAdmin = computed(() => authStore.isAdmin)
 
+// 指定单徽标：目标本人看到「指定给我」，发布人/管理员（及其他可见者）看到「指定单」。
+// 只比较订单上的指定人 id，不展示任何账号信息。
+const currentUserId = computed(() => authStore.user?.id ?? null)
+
+function getDesignationBadgeLabel(order) {
+  if (order?.designated_booster_id == null) return ''
+  const isForCurrentUser = currentUserId.value != null
+    && Number(order.designated_booster_id) === Number(currentUserId.value)
+  return isForCurrentUser ? '指定给我' : '指定单'
+}
+
 // ── 今日已接单（大厅底部区块） ──
 // 全站开关：管理员在站点设置里控制所有人可见性（默认开）；开关关闭或未登录时不渲染。
 // 数据：GET /orders/recent-claims（登录可用），挂载拉一次 + silentRefresh 节流兜底。
@@ -765,6 +776,11 @@ onUnmounted(() => {
 
         <!-- 标题 -->
         <p v-if="order.title" class="mt-3 truncate text-[15px] font-semibold text-ink-1">{{ order.title }}</p>
+
+        <!-- 指定单徽标：目标本人「指定给我」，其余可见者「指定单」；不占价格/状态行 -->
+        <div v-if="getDesignationBadgeLabel(order)" class="mt-2 flex flex-wrap items-center gap-2">
+          <span class="tag !bg-primary-soft !text-primary">{{ getDesignationBadgeLabel(order) }}</span>
+        </div>
 
         <!-- 炸单赔偿 / 到账时效 / 当前情况收敛为一行 13px 小字 -->
         <p v-if="getMetaLine(order)" class="mt-1.5 truncate text-[13px] tabular-nums text-ink-2">{{ getMetaLine(order) }}</p>

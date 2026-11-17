@@ -1029,6 +1029,16 @@ class ChatService:
         # 继续沟通（_assert_order_contactable 对 PAUSED/CLOSED 已拦，
         # FULL 需要在这里按 claim_status 再拦一次）。
         if order.status == OrderStatus.PENDING and order.claim_status == ClaimStatus.OPEN:
+            # 指定派单：非指定人不能在接单前咨询发布人，避免其他用户
+            # 把已点名订单当作普通大厅单骚扰发布人。
+            if (
+                order.designated_booster_id is not None
+                and order.designated_booster_id != non_publisher.id
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="该订单已指定给其他用户，暂无法发起订单咨询",
+                )
             if not non_publisher.can_accept:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,

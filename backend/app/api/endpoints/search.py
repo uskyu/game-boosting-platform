@@ -25,12 +25,14 @@ def _build_order_response(
     page_size: int,
 ) -> OrderListResponse:
     pages = (total + page_size - 1) // page_size if total > 0 else 0
-    # Search is public (no auth). Never expose game_account to anonymous
-    # viewers — only the owner, assigned booster, or admin may see it
-    # via the authenticated /orders endpoints.
+    # Search is public (no auth). Never expose game_account or boss_contact
+    # to anonymous viewers — only the owner, assigned booster, or admin may
+    # see them via the authenticated /orders endpoints.
     def _to_public(item: Order) -> OrderResponse:
         response = OrderResponse.model_validate(item)
-        return response.model_copy(update={"game_account": None})
+        return response.model_copy(
+            update={"game_account": None, "boss_contact": None}
+        )
 
     return OrderListResponse(
         items=[_to_public(item) for item in items],
@@ -78,7 +80,12 @@ async def search(
     service_results: BoosterServiceListResponse | None = None
 
     if type in (SearchType.ORDERS, SearchType.ALL):
-        order_filters = [Order.status == OrderStatus.PENDING]
+        # 匿名公开搜索只展示大厅公开单：指定派单只对指定人可见，
+        # 不得通过搜索泄漏。
+        order_filters = [
+            Order.status == OrderStatus.PENDING,
+            Order.designated_booster_id.is_(None),
+        ]
         order_stmt = select(Order)
         order_count_stmt = select(func.count(Order.id))
 

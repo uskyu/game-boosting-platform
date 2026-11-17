@@ -8,6 +8,7 @@ import { useOrderTemplatesStore } from '@/stores/orderTemplates'
 import { useServiceFeeStore } from '@/stores/serviceFee'
 import { useAuthStore } from '@/stores/auth'
 import { useSiteStore } from '@/stores/site'
+import DesignationPicker from '@/components/order/DesignationPicker.vue'
 import api from '@/utils/api'
 import { DEFAULT_PAYOUT_DELAY_DAYS, formatFeeRate, formatMoneyFixed, parsePayoutDelay, serviceFeeBreakdown } from '@/utils/display'
 import { getPublishButtonLabel } from '@/utils/humanCopy'
@@ -58,6 +59,10 @@ function applyTemplate(template) {
     attachments: formData.value.attachments,
   }, template)
   handleGameChange()
+  // 指定人独立于 formData、不进模板；模板可能带别的 max_claims，指定模式下强制回 1
+  if (claimMode.value === 'designated') {
+    formData.value.max_claims = 1
+  }
   if (individualServiceFeeEnabled.value && globalServiceFeeRate.value > 0) {
     formData.value.service_fee_enabled = true
   }
@@ -193,12 +198,32 @@ const escrowHint = computed(() => {
   return '发布后将冻结 ¥发单价格 × 接单人数 的托管金额，完结后结算给打手'
 })
 
+// 接单方式：公开（默认）/ 指定（只有一名指定打手可见可接）。
+// 指定人状态独立于 formData，避免被模板/租户字段影响；max_claims 在指定模式下锁定为 1。
+const claimMode = ref('public')
+const designatedUser = ref(null)
+
+function setClaimMode(mode) {
+  claimMode.value = mode === 'designated' ? 'designated' : 'public'
+  if (claimMode.value === 'designated') {
+    formData.value.max_claims = 1
+  }
+}
+
+// 指定模式下无论模板/预填把 max_claims 写成多少，都强制回 1（输入框同时 disabled）
+watch(() => formData.value.max_claims, (value) => {
+  if (claimMode.value === 'designated' && Number(value) !== 1) {
+    formData.value.max_claims = 1
+  }
+})
+
 const canPublish = computed(() => {
   return Boolean(
     selectedGame.value
     && !gameOffline.value
     && formData.value.title.trim()
     && Number(formData.value.price) > 0
+    && (claimMode.value !== 'designated' || Boolean(designatedUser.value))
   )
 })
 
@@ -261,6 +286,27 @@ async function prefillFromOrder(orderId, mode) {
       // 用户仍可继续选新图一起发布
       attachments: Array.isArray(order.attachments) ? [...order.attachments] : [],
     }
+    // 指定接单预填：
+    // - 原单本身指定了打手：重建/续单都沿用该指定人；
+    // - 普通续单：把原单打手作为指定人，让「续单」真正只给他；
+    // - 普通重建：保持公开模式，不擅自指定原打手。
+    const designatedPrefill = order.designated_booster
+      || (mode === 'repeat' ? order.booster : null)
+    if (designatedPrefill?.id != null) {
+      claimMode.value = 'designated'
+      designatedUser.value = {
+        id: designatedPrefill.id,
+        username: designatedPrefill.username,
+        avatar_url: designatedPrefill.avatar_url ?? null,
+        ...(designatedPrefill.deposit_balance != null
+          ? { deposit_balance: designatedPrefill.deposit_balance }
+          : {}),
+      }
+      formData.value.max_claims = 1
+    } else {
+      claimMode.value = 'public'
+      designatedUser.value = null
+    }
     if (individualServiceFeeEnabled.value) {
       const feeRate = Number(order.service_fee_rate || 0)
       formData.value.service_fee_enabled = feeRate > 0
@@ -278,6 +324,10 @@ async function prefillFromOrder(orderId, mode) {
 
 async function publishOrder() {
   if (submitting.value) return
+  if (claimMode.value === 'designated' && !designatedUser.value) {
+    errorMessage.value = '请选择指定打手'
+    return
+  }
   if (!canPublish.value) {
     errorMessage.value = '游戏、标题和价格都是必填项。'
     return
@@ -323,7 +373,10 @@ async function publishOrder() {
         return
       }
 
-      const maxClaims = Number(formData.value.max_claims)
+      // 指定单只能 1 人接：即使 formData 被模板/旧值污染，也按 1 提交
+      const maxClaims = claimMode.value === 'designated'
+        ? 1
+        : Number(formData.value.max_claims)
       if (!Number.isInteger(maxClaims) || maxClaims < 1 || maxClaims > 100) {
         errorMessage.value = '最大接单人数需为 1-100 的整数'
         return
@@ -356,6 +409,10 @@ async function publishOrder() {
         notes: formData.value.notes.trim() || null,
         boss_contact: bossContact || null,
         max_claims: maxClaims,
+        // 指定模式带指定人 id；公开模式显式传 null，避免旧值残留
+        designated_booster_id: claimMode.value === 'designated'
+          ? (designatedUser.value?.id ?? null)
+          : null,
         payout_delay_days: payoutDelay.days,
         payout_delay_hours: payoutDelay.hours,
         require_delivery_image: formData.value.require_delivery_image,
@@ -535,7 +592,48 @@ onMounted(async () => {
         </div>
         <div>
           <label class="label" for="create-max-claims">最大接单人数</label>
-          <input id="create-max-claims" v-model="formData.max_claims" type="number" min="1" max="100" step="1" class="input" placeholder="例如：1" />
+          <input
+            id="create-max-claims"
+            v-model="formData.max_claims"
+            type="number"
+            min="1"
+            max="100"
+            step="1"
+            class="input"
+            placeholder="例如：1"
+            :disabled="claimMode === 'designated'"
+          />
+          <p v-if="claimMode === 'designated'" class="helper-text">指定单固定 1 人接单</p>
+        </div>
+
+        <!-- 接单方式：公开 → 全大厅可接；指定 → 仅指定打手可见可接（固定 1 人） -->
+        <div class="sm:col-span-2 rounded-tile border border-line-1 p-4">
+          <p class="label">接单方式</p>
+          <div class="flex flex-wrap gap-2">
+            <button
+              type="button"
+              :class="claimMode === 'public' ? 'filter-pill-active' : 'filter-pill'"
+              :aria-pressed="claimMode === 'public'"
+              @click="setClaimMode('public')"
+            >
+              公开接单
+            </button>
+            <button
+              type="button"
+              :class="claimMode === 'designated' ? 'filter-pill-active' : 'filter-pill'"
+              :aria-pressed="claimMode === 'designated'"
+              @click="setClaimMode('designated')"
+            >
+              指定接单
+            </button>
+          </div>
+          <p class="mt-1 text-xs leading-5 text-ink-3">公开接单：大厅所有打手可见可接；指定接单：只有你指定的打手能看到并接单。</p>
+          <template v-if="claimMode === 'designated'">
+            <p class="mt-2 text-xs font-semibold leading-5 text-primary">指定单仅 1 人接单，其他打手看不到也接不了</p>
+            <div class="mt-3">
+              <DesignationPicker v-model="designatedUser" />
+            </div>
+          </template>
         </div>
 
         <div>

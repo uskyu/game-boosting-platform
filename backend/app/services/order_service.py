@@ -42,7 +42,7 @@ from app.models.publisher_blacklist import PublisherBlacklist
 from app.models.user import User, UserRole
 from app.models.wallet import Wallet, WalletTransaction, WalletTransactionType
 from app.schemas.booster_service import BoosterServiceOrderCreate
-from app.schemas.order import OrderCreate, OrderUpdate
+from app.schemas.order import DesignatedBoosterBrief, OrderCreate, OrderUpdate
 from app.services.ai_service import LLMService
 from app.services import platform_income_service
 from app.services.blacklist_service import ACCEPT_BLOCKED_DETAIL, is_user_blacklisted
@@ -59,6 +59,48 @@ from app.services.wallet_service import calculate_order_income, get_wallet_servi
 logger = logging.getLogger(__name__)
 
 _ZERO = Decimal("0.00")
+
+# 指定派单：接单被拒文案（与订单详情/大厅拦截共用同一文案）。
+ACCEPT_DESIGNATED_OTHER_DETAIL = "该订单已指定给其他用户，无法接单"
+
+
+async def attach_designated_booster_briefs(
+    db: AsyncSession,
+    responses: list[Any],
+) -> list[Any]:
+    """按页批量回填指定接单人的展示信息（一次 SELECT，零 N+1）。
+
+    只取 id/username/avatar_url；绝不加载 email。调用方可用同一 helper 处理
+    单个响应（传 ``[response]``）。未指定或目标用户已被删除时 brief 保持 None。
+    """
+    if not responses:
+        return responses
+    designated_ids = {
+        int(response.designated_booster_id)
+        for response in responses
+        if getattr(response, "designated_booster_id", None) is not None
+    }
+    if not designated_ids:
+        return responses
+    result = await db.execute(
+        select(User.id, User.username, User.avatar_url).where(
+            User.id.in_(designated_ids)
+        )
+    )
+    briefs = {
+        int(user_id): DesignatedBoosterBrief(
+            id=int(user_id),
+            username=username,
+            avatar_url=avatar_url,
+        )
+        for user_id, username, avatar_url in result.all()
+    }
+    for response in responses:
+        designated_id = getattr(response, "designated_booster_id", None)
+        if designated_id is None:
+            continue
+        response.designated_booster = briefs.get(int(designated_id))
+    return responses
 
 
 def _to_decimal(value: Decimal | int | str | None) -> Decimal:
@@ -93,6 +135,11 @@ def build_hall_visibility_scope(user: User):
         & (Order.is_archived.is_(False))
         & (or_(Order.deadline.is_(None), Order.deadline > now))
         & (Order.claimed_count < Order.max_claims)
+        # 指定派单只对指定人可抢：未指定（NULL）保持原大厅语义。
+        & (
+            Order.designated_booster_id.is_(None)
+            | (Order.designated_booster_id == user.id)
+        )
     )
     my_claim_exists = exists(
         select(OrderClaim.id).where(
@@ -247,6 +294,47 @@ class OrderService:
             requirements=self._extract_ai_detail_requirements(order_data.ai_tags),
         )
 
+        # 指定派单：扣托管（或落单）前先确认目标用户当前真的能接这一单。
+        # 任何一条不满足都直接 400，不产生订单与资金流水残留。
+        designated_booster_id = order_data.designated_booster_id
+        if designated_booster_id is not None:
+            designated_result = await self._db.execute(
+                select(User).where(User.id == designated_booster_id)
+            )
+            designated_booster = designated_result.scalar_one_or_none()
+            if designated_booster is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="指定用户不存在",
+                )
+            if designated_booster.id == user.id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="不能指定自己",
+                )
+            if designated_booster.role == UserRole.ADMIN:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="不能指定管理员",
+                )
+            if not designated_booster.is_active:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="该用户已被停用",
+                )
+            if not designated_booster.can_accept:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="该用户当前不可接单",
+                )
+            if await is_user_blacklisted(
+                self._db, user.id, designated_booster.id
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="该用户在你的黑名单中",
+                )
+
         # 非管理员发单需托管 price × max_claims；先校验余额再落单，
         # 不足直接 400（不产生订单残留）。
         escrow_required: Decimal | None = None
@@ -279,6 +367,7 @@ class OrderService:
                 (order_data.description or order_data.intro or "").strip() or None
             ),
             max_claims=order_data.max_claims,
+            designated_booster_id=designated_booster_id,
             claim_status=ClaimStatus.OPEN,
             deadline=order_data.deadline,
             attachments=order_data.attachments,
@@ -508,6 +597,12 @@ class OrderService:
                 order.status in (OrderStatus.PENDING, OrderStatus.LOCKED)
                 and order.claim_status == ClaimStatus.OPEN
                 and not order.is_archived
+                # 指定单只对指定人开放大厅可见性；发布人/管理员/已有 claim
+                # 仍走各自原有的可见路径。
+                and (
+                    order.designated_booster_id is None
+                    or order.designated_booster_id == user.id
+                )
             )
             can_view = (
                 order.user_id == user.id
@@ -1172,6 +1267,9 @@ class OrderService:
         deadline: datetime | None,
         order_user_id: int,
         booster_id: int,
+        # 可选默认 None 保持旧调用方（既有单元测试）兼容；两条真实接单路径
+        # 均显式传入订单上的指定人。
+        designated_booster_id: int | None = None,
         now: datetime,
         is_blacklisted: bool = False,
     ) -> tuple[str, ClaimStatus | None] | None:
@@ -1217,6 +1315,12 @@ class OrderService:
             return "订单接单人数已满", ClaimStatus.FULL
         if order_user_id == booster_id:
             return "不能接取自己的订单", None
+        # 指定派单：只有被指定的用户可以接；其他人一律 403。
+        if (
+            designated_booster_id is not None
+            and designated_booster_id != booster_id
+        ):
+            return ACCEPT_DESIGNATED_OTHER_DETAIL, None
         if is_blacklisted:
             # 发单人已拉黑该用户：403（唯一走 403 的接单拒绝分支）
             return ACCEPT_BLOCKED_DETAIL, None
@@ -1224,8 +1328,8 @@ class OrderService:
 
     @classmethod
     def _accept_rejection_status(cls, reason: str) -> int:
-        """接单拒绝的 HTTP 状态：发单人黑名单 403，其余沿用历史 400。"""
-        if reason == ACCEPT_BLOCKED_DETAIL:
+        """接单拒绝的 HTTP 状态：黑名单/指定派单 403，其余沿用历史 400。"""
+        if reason in (ACCEPT_BLOCKED_DETAIL, ACCEPT_DESIGNATED_OTHER_DETAIL):
             return status.HTTP_403_FORBIDDEN
         return status.HTTP_400_BAD_REQUEST
 
@@ -1299,6 +1403,7 @@ class OrderService:
                     Order.max_claims,
                     Order.deadline,
                     Order.is_archived,
+                    Order.designated_booster_id,
                     Order.created_at,
                     # 发单人黑名单判断折进同一条预检查询：不增加额外往返，
                     # 命中时在每日/保证金闸门之前快速失败。
@@ -1325,6 +1430,7 @@ class OrderService:
             deadline=preflight.deadline,
             order_user_id=preflight.user_id,
             booster_id=booster.id,
+            designated_booster_id=preflight.designated_booster_id,
             now=now,
             is_blacklisted=bool(preflight.is_blacklisted),
         )
@@ -1408,6 +1514,7 @@ class OrderService:
             deadline=order.deadline,
             order_user_id=order.user_id,
             booster_id=booster.id,
+            designated_booster_id=order.designated_booster_id,
             now=now,
             is_blacklisted=is_blacklisted,
         )
@@ -2151,6 +2258,10 @@ class OrderService:
         )
 
         order.booster_id = locked_booster.id
+        # 指定派单被管理员改派时同步指定人：保持「指定人 = 实际归属人」，
+        # 否则原指定人仍会在大厅看到一张已被别人接走的指定单。
+        if order.designated_booster_id is not None:
+            order.designated_booster_id = locked_booster.id
         order.status = OrderStatus.LOCKED
         order.locked_at = datetime.now(timezone.utc)
 
@@ -4146,6 +4257,17 @@ class OrderService:
 
         # Update fields
         update_data = order_data.model_dump(exclude_unset=True)
+        # 指定派单单人单：v1 不支持改派，也不允许把名额改回多人（含显式 None，
+        # 它会被下游 setattr 成 NULL 触发 CHECK 约束）。
+        if (
+            order.designated_booster_id is not None
+            and "max_claims" in update_data
+            and update_data["max_claims"] != 1
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="指定派单只能保留 1 个接单名额",
+            )
         if "game_password" in update_data:
             update_data["game_password"] = encrypt_text(update_data["game_password"])
         if "description" in update_data and "intro" not in update_data:

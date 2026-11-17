@@ -8,7 +8,17 @@ from decimal import Decimal
 from enum import Enum as PyEnum
 from typing import TYPE_CHECKING, Any, Optional
 
-from sqlalchemy import JSON, Boolean, Enum, ForeignKey, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    CheckConstraint,
+    Enum,
+    ForeignKey,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -82,6 +92,14 @@ class Order(Base):
     """
 
     __tablename__ = "orders"
+    __table_args__ = (
+        # 指定派单只允许 1 个名额：指定人与「唯一接单人」的语义绑定，
+        # 数据库中同时兜底，防止绕过 API 的多名额指定组合。
+        CheckConstraint(
+            "designated_booster_id IS NULL OR max_claims = 1",
+            name="ck_orders_designated_single_slot",
+        ),
+    )
 
     # Primary key
     id: Mapped[int] = mapped_column(
@@ -99,6 +117,20 @@ class Order(Base):
 
     booster_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    # 指定派单目标用户（可空）：发布时点名的接单人。不建 relationship：
+    # 大厅列表高频轮询，避免每行额外 join user 表；展示用 brief 由
+    # order_service.attach_designated_booster_briefs 按页批量回填。
+    #
+    # 注意：MySQL 8.0 不允许 CHECK 约束引用带 ON DELETE SET NULL 动作的
+    # 外键列（错误 3823），而本表需要对 designated_booster_id 做表级 CHECK。
+    # 因此外键使用 NO ACTION（默认行为）：应用层不做用户物理删除，
+    # 停用走 is_active，指定单不会因删除被截断。
+    designated_booster_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="NO ACTION"),
         nullable=True,
         index=True,
     )

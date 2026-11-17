@@ -243,6 +243,16 @@ function getMetaLine(order) {
   return pieces.join(' · ')
 }
 
+// 指定单标签：昵称只取 designated_booster.username，缺失时回退到用户编号，
+// 不展示任何账号信息。
+function getDesignationMeta(order) {
+  if (order?.designated_booster_id == null) return ''
+  const username = order.designated_booster?.username
+  return username
+    ? `指定：@${username}`
+    : `指定：用户 #${order.designated_booster_id}`
+}
+
 // 派单卡片meta 行的接单打手段：老板ID 旁边显示哪一个打手接了单
 // （发布人视角 booster 不脱敏；多人接单时为首抢打手 + 总人数）
 function getBoosterMetaText(order) {
@@ -797,6 +807,7 @@ onUnmounted(() => {
               <div class="min-w-0">
                 <div class="flex flex-wrap items-center gap-2">
                   <span :class="getPublisherStatusMeta(order).badgeClass">{{ getPublisherStatusMeta(order).label }}</span>
+                  <span v-if="getDesignationMeta(order)" class="tag !bg-primary-soft !text-primary">{{ getDesignationMeta(order) }}</span>
                   <!-- 售后处理中（只读标记）：申请/查看入口已迁到订单详情页操作卡，
                        列表只留状态可发现性，避免老板在列表里看不出哪单被发起了售后 -->
                   <span v-if="order.after_sale_pending" class="tag !bg-warning-soft !text-warning">售后处理中</span>

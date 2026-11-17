@@ -158,6 +158,12 @@ class OrderCreate(BaseModel):
 
     description_raw: str | None = Field(default=None, max_length=2000, description="原始需求描述")
     max_claims: int = Field(default=1, ge=1, le=100)
+    # 指定派单（v1）：点名一个接单人，且必须只有 1 个名额。
+    designated_booster_id: int | None = Field(
+        default=None,
+        ge=1,
+        description="指定接单用户ID（仅支持 1 个接单名额）",
+    )
     deadline: datetime | None = None
     attachments: AttachmentList | None = Field(default=None, max_length=5)
 
@@ -319,6 +325,13 @@ class OrderCreate(BaseModel):
     def validate_game_reference(self) -> "OrderCreate":
         if self.game_id is None and not self.game_name:
             raise ValueError("game_id 和 game_name 至少需要提供一个")
+        return self
+
+    @model_validator(mode="after")
+    def validate_designated_single_slot(self) -> "OrderCreate":
+        """指定派单是「单人单」语义：指定人与多名额互斥。"""
+        if self.designated_booster_id is not None and self.max_claims != 1:
+            raise ValueError("指定派单只能设置 1 个接单名额")
         return self
 
 
@@ -585,6 +598,19 @@ class UserBrief(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class DesignatedBoosterBrief(BaseModel):
+    """指定派单目标用户的展示信息。
+
+    只暴露 id/用户名/头像：大厅与详情都会下发该字段，绝不包含登录邮箱。
+    """
+
+    id: int
+    username: str
+    avatar_url: str | None = Field(default=None, description="头像地址")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class OrderResponse(BaseModel):
     """Complete order response schema."""
 
@@ -604,6 +630,9 @@ class OrderResponse(BaseModel):
     delivery_note: str | None = Field(default=None, max_length=2000, description="打手结束订单时提交的汇报说明")
     user_id: int = Field(description="用户ID")
     booster_id: int | None = Field(default=None, description="代练ID")
+    designated_booster_id: int | None = Field(
+        default=None, description="指定接单用户ID（指定派单；未指定为 null）"
+    )
     game_id: int | None = Field(default=None, description="游戏ID")
     service_id: int | None = Field(default=None, description="服务ID")
     game_name: str = Field(description="游戏名称")
@@ -697,6 +726,10 @@ class OrderResponse(BaseModel):
     # Nested user information
     user: UserBrief | None = Field(default=None, description="下单用户")
     booster: UserBrief | None = Field(default=None, description="接单代练")
+    # 指定派单目标用户的展示信息（按页批量回填，绝不含 email）
+    designated_booster: DesignatedBoosterBrief | None = Field(
+        default=None, description="指定接单用户（id/用户名/头像）"
+    )
 
     # Claim-aware extras (populated by the endpoints for the current viewer)
     my_claim: "OrderClaimItem | None" = Field(default=None, description="当前用户在此订单的报名记录（未报名时为 null）")

@@ -202,6 +202,8 @@ export const useOrdersStore = defineStore('orders', () => {
       order.after_sale_pending ?? '',
       order.my_claim?.cancel_pending ?? '',
       order.compensation_amount ?? '',
+      // 指定单徽标/标签依赖该字段，变化时必须触发卡片重渲
+      order.designated_booster_id ?? '',
       order.title || '',
       order.intro || '',
     ].join('|')
@@ -648,6 +650,21 @@ export const useOrdersStore = defineStore('orders', () => {
     if (bossContact && bossContact.trim()) params.boss_contact = bossContact.trim()
     const key = JSON.stringify(Object.keys(params).sort().map((name) => [name, params[name]]))
     return Boolean(myClaimsCache.value[key])
+  }
+
+  // 指定接单候选：GET /orders/designation-candidates?q=
+  // q 为空返回最近指派的候选（recent），q ≥ 2 个字符返回搜索结果（results）。
+  // 只读查询，不写共享 loading/error，也不碰列表缓存与分页。
+  async function fetchDesignationCandidates(q = '') {
+    const query = String(q ?? '').trim()
+    try {
+      const response = query
+        ? await api.get('/orders/designation-candidates', { params: { q: query } })
+        : await api.get('/orders/designation-candidates')
+      return { success: true, data: response.data }
+    } catch (err) {
+      return { success: false, error: err.message }
+    }
   }
 
   // 审核/驳回交付（发布人或管理员）：payload { action: 'approve' | 'reject', amount?, note?, deduction?, reason? }
@@ -1153,6 +1170,7 @@ export const useOrdersStore = defineStore('orders', () => {
     fetchClaims,
     fetchMyClaims,
     hasMyClaimsCache,
+    fetchDesignationCandidates,
     reviewClaim,
     acceptOrder,
     applyOrderStateChange,

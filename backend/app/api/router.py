@@ -48,6 +48,7 @@ from app.api.endpoints import (
 
 # 直连模块导入：endpoints/__init__.py 未导出该 router（该文件不在本次改动范围内）
 from app.api.endpoints.admin_order_dispute import admin_order_dispute_router
+from app.api.endpoints.designation import router as designation_router
 
 # Create main API router
 api_router = APIRouter()
@@ -58,6 +59,8 @@ api_router.include_router(announcements_router)
 # order_hall_router 必须早于 orders_router 注册：/orders/recent-claims
 # 否则会被 /orders/{order_id}（int 路径参数）先行匹配成 422
 api_router.include_router(order_hall_router)
+# 指定派单候选人 /orders/designation-candidates 同理，必须先于 orders_router
+api_router.include_router(designation_router)
 api_router.include_router(orders_router)
 api_router.include_router(order_templates_router)
 # 售后：订单维度（/orders/{id}/after-sales）+ 个人维度（/after-sales/mine）

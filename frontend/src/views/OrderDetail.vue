@@ -209,6 +209,29 @@ const isBooster = computed(() => authStore.isBooster)
 const isOwner = computed(() => order.value?.user_id === currentUser.value?.id)
 const isAssignedBooster = computed(() => order.value?.booster_id === currentUser.value?.id)
 const isAdmin = computed(() => authStore.isAdmin)
+
+// ── 指定接单 ──
+// 目标本人看到「指定给你」；发布人/管理员看到「指定给 @昵称」；其余可见者只看到「指定单」。
+// 昵称缺失时回退用户编号，全程不展示账号信息。
+const hasDesignatedBooster = computed(() => order.value?.designated_booster_id != null)
+const isDesignatedBooster = computed(() => (
+  hasDesignatedBooster.value
+  && currentUser.value?.id != null
+  && Number(order.value.designated_booster_id) === Number(currentUser.value.id)
+))
+const designatedBoosterName = computed(() => {
+  if (!hasDesignatedBooster.value) return ''
+  return order.value?.designated_booster?.username
+    || `用户 #${order.value.designated_booster_id}`
+})
+const designationLabel = computed(() => {
+  if (!hasDesignatedBooster.value) return '公开接单'
+  if (isDesignatedBooster.value) return '指定给你'
+  if ((isOwner.value || isAdmin.value) && designatedBoosterName.value) {
+    return `指定给 @${designatedBoosterName.value}`
+  }
+  return '指定单'
+})
 const chatTargetUserId = computed(() => {
   if (!order.value || !currentUser.value) {
     return null
@@ -1700,6 +1723,17 @@ onUnmounted(() => {
             <p class="info-tile__value">
               {{ formatPayoutDelay(order) }}<span v-if="payoutDelayIsDefault(order)" class="text-ink-3">（默认）</span>
             </p>
+          </div>
+          <!-- 接单方式：公开单可照常显示；指定单明确说明仅该指定用户可见可接 -->
+          <div class="od-key__item">
+            <p class="info-tile__label">接单方式</p>
+            <p v-if="!hasDesignatedBooster" class="info-tile__value">公开接单</p>
+            <template v-else>
+              <p class="info-tile__value">
+                <span class="tag !bg-primary-soft !text-primary">{{ designationLabel }}</span>
+              </p>
+              <p class="mt-1 text-xs font-semibold text-primary">仅该指定用户可见和可接</p>
+            </template>
           </div>
           <div v-if="order.require_delivery_image" class="od-key__item">
             <p class="info-tile__label">结单要求</p>

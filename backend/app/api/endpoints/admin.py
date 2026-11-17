@@ -45,7 +45,10 @@ from app.schemas.wallet import (
     WithdrawalResponse,
 )
 from app.services.dashboard_service import get_dashboard_service
-from app.services.order_service import get_order_service
+from app.services.order_service import (
+    attach_designated_booster_briefs,
+    get_order_service,
+)
 from app.services.user_service import get_user_service
 from app.services.wallet_service import get_wallet_service
 
@@ -144,6 +147,8 @@ async def list_all_orders_for_admin(
     pages = (total + page_size - 1) // page_size if total > 0 else 0
 
     responses = [OrderResponse.model_validate(order) for order in orders]
+    # 后台派单列表同样展示指定接单人（按页一次 SELECT，避免 N+1）。
+    await attach_designated_booster_briefs(db, responses)
     # Per-order claim counters for the admin review workflow.
     status_counts = await order_service.claim_status_counts([order.id for order in orders])
     pending_cancel_ids = await order_service.pending_cancel_order_ids(

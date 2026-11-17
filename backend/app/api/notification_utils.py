@@ -94,6 +94,9 @@ async def notify_boosters_new_order(
     """
     管理员（老板）发布订单后，向所有活跃非管理员用户发送"新订单"通知。
 
+    指定派单（``order.designated_booster_id`` 非空）时只向该目标用户发送，
+    其他可接单用户一条都不发；公开单仍按原规则全员扇出。
+
     收件人和偏好通过集合查询，通知使用单条多值 INSERT 写入当前事务；
     在线 WebSocket 推送仍在事务提交后尽力执行。
 
@@ -106,6 +109,8 @@ async def notify_boosters_new_order(
     Returns:
         实际写入的通知条数。
     """
+    designated_booster_id = order.designated_booster_id
+
     async def measured(stage_name: str, operation):
         if request is None:
             return await operation()
@@ -126,20 +131,24 @@ async def notify_boosters_new_order(
     # 推送无法执行的抢单入口。
     # 发单人黑名单：被本单发布人拉黑的用户不发「新订单」通知（大厅仍可见），
     # 避免无效点击；用 NOT EXISTS 一次排除，不逐用户查询。
+    # 指定派单：在原有资格条件之上叠加 User.id == designated_booster_id，
+    # 只给目标用户发 DB 通知与 WS 卡片；目标本身仍须满足活跃/可接单/未被
+    # 拉黑/未关闭偏好等既有条件。
     async def select_recipients():
-        result = await db.execute(
-            select(User.id).where(
-                User.role != UserRole.ADMIN,
-                User.is_active.is_(True),
-                User.can_accept.is_(True),
-                ~exists(
-                    select(PublisherBlacklist.id).where(
-                        PublisherBlacklist.publisher_id == order.user_id,
-                        PublisherBlacklist.blocked_user_id == User.id,
-                    )
-                ),
-            )
-        )
+        filters = [
+            User.role != UserRole.ADMIN,
+            User.is_active.is_(True),
+            User.can_accept.is_(True),
+            ~exists(
+                select(PublisherBlacklist.id).where(
+                    PublisherBlacklist.publisher_id == order.user_id,
+                    PublisherBlacklist.blocked_user_id == User.id,
+                )
+            ),
+        ]
+        if designated_booster_id is not None:
+            filters.append(User.id == designated_booster_id)
+        result = await db.execute(select(User.id).where(*filters))
         recipient_ids = [int(uid) for uid in result.scalars().all()]
         if exclude_user_id is not None:
             recipient_ids = [uid for uid in recipient_ids if uid != exclude_user_id]
@@ -164,7 +173,10 @@ async def notify_boosters_new_order(
     record_count("preference_count", len(settings))
 
     title = "新订单发布"
-    content = f"管理员发布了新订单「{order.game_name}」，请前往抢单"
+    if designated_booster_id is not None:
+        content = f"有一张指定给你的新订单「{order.game_name}」，请前往接单"
+    else:
+        content = f"管理员发布了新订单「{order.game_name}」，请前往抢单"
     link = f"/orders/{order.id}"
 
     async def prepare_notification_values():

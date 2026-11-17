@@ -73,7 +73,11 @@ from app.services.blacklist_service import (
 )
 from app.services.credit_service import get_credit_service
 from app.services.file_service import save_image_bytes, validate_image_upload
-from app.services.order_service import get_order_service
+from app.services.order_service import (
+    ACCEPT_DESIGNATED_OTHER_DETAIL,
+    attach_designated_booster_briefs,
+    get_order_service,
+)
 from app.services.site_setting_service import get_or_create_site_setting
 
 router = APIRouter(prefix="/orders", tags=["订单"])
@@ -390,6 +394,7 @@ async def _enrich_order_response(db, response: OrderResponse, order, viewer: Use
     after_sale_ids = await order_service.pending_after_sale_order_ids([order.id])
     response.after_sale_pending = order.id in after_sale_ids
     await _apply_accept_window(db, [response], [order], viewer)
+    await attach_designated_booster_briefs(db, [response])
     return response
 
 
@@ -442,6 +447,8 @@ async def _enrich_order_responses(
     for response in responses:
         response.after_sale_pending = response.id in after_sale_ids
     await _apply_accept_window(db, responses, orders, viewer)
+    # 整页一次 SELECT 回填指定接单人展示信息（绝不 N+1 查 user 表）。
+    await attach_designated_booster_briefs(db, responses)
     return responses
 
 
@@ -541,6 +548,8 @@ async def create_order(
             "accept_available_at": None,
         }
     )
+    # 指定派单的卡片也要带上指定人 brief（只含 id/用户名/头像）。
+    await attach_designated_booster_briefs(db, [card_response])
     order_card = _apply_slim_list_payload(card_response).model_dump(mode="json")
 
     async with measure_stage(request, STAGE_ORDER_NOTIFICATIONS):
@@ -552,7 +561,9 @@ async def create_order(
             order_card=order_card,
         )
 
-    return OrderResponse.model_validate(order)
+    response = OrderResponse.model_validate(order)
+    await attach_designated_booster_briefs(db, [response])
+    return response
 
 
 @router.get(
@@ -837,6 +848,16 @@ async def get_accept_captcha(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="不能接自己的订单",
+        )
+    # 指定派单：非指定人连验证码都不签发（与接单接口同一 403 文案），
+    # 避免脚本为非指定单预取验证码。
+    if (
+        order.designated_booster_id is not None
+        and order.designated_booster_id != current_user.id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=ACCEPT_DESIGNATED_OTHER_DETAIL,
         )
     now = datetime.now(timezone.utc)
     deadline = order.deadline
@@ -1503,8 +1524,13 @@ async def cancel_order(
             "operator_id": current_user.id,
         },
     )
-    # Notify the other party
-    target_id = order.booster_id if current_user.id == order.user_id else order.user_id
+    # Notify the other party：发布人取消时优先通知实际接单人，指定单尚未
+    # 被接时通知指定人（否则取消通知会落空）。
+    target_id = (
+        (order.booster_id or order.designated_booster_id)
+        if current_user.id == order.user_id
+        else order.user_id
+    )
     if target_id:
         await notify_user(
             db,
