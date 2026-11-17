@@ -874,7 +874,10 @@ onUnmounted(() => {
         >
           <div class="flex items-start justify-between gap-3">
             <div class="min-w-0 flex-1">
-              <p class="truncate text-[15px] font-semibold text-ink-1">{{ claim.order.title || `订单 #${claim.order.id}` }}</p>
+              <div class="flex min-w-0 items-center gap-2">
+                <p class="truncate text-[15px] font-semibold text-ink-1">{{ claim.order.title || `订单 #${claim.order.id}` }}</p>
+                <span v-if="claim.order.is_designated" class="tag shrink-0 !bg-primary-soft !text-primary">指定单</span>
+              </div>
               <p class="mt-1 truncate text-[13px] text-ink-2">{{ getRecentClaimMeta(claim) }}</p>
             </div>
             <div class="shrink-0 text-right">

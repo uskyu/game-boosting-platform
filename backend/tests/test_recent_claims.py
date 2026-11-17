@@ -110,6 +110,7 @@ async def test_recent_claims_fields_and_newest_first(
     assert latest["order"]["title"] == "王者荣耀 钻石上王者"
     assert latest["order"]["intro"] == "微信区，三天内完成，包售后"
     assert Decimal(str(latest["order"]["price"])) == Decimal("200.00")
+    assert latest["order"]["is_designated"] is False
 
     # 接单时间：ISO 8601 UTC 字符串
     assert isinstance(latest["created_at"], str)
@@ -118,6 +119,41 @@ async def test_recent_claims_fields_and_newest_first(
     # 另一条是 A
     earlier = data["items"][1]
     assert earlier["booster"]["username"] == "ClaimerA"
+
+
+async def test_recent_claims_marks_designated_order(
+    client: AsyncClient, admin_user: dict
+):
+    """今日已接单：指定派单的订单摘要带 is_designated=True。"""
+    target = await _register(client, "rcdesignated@example.com", "DesignatedClaimer")
+    resp = await client.post(
+        "/orders/create",
+        json={
+            "game_name": "王者荣耀",
+            "current_rank": "钻石",
+            "target_rank": "王者",
+            "title": "指定单 今日已接单标识",
+            "intro": "指定接单测试",
+            "price": "200.00",
+            "max_claims": 1,
+            "designated_booster_id": target["user"]["id"],
+        },
+        headers=auth_header(admin_user),
+    )
+    assert resp.status_code == 201, resp.text
+    order = resp.json()
+
+    resp = await client.put(
+        f"/orders/{order['id']}/accept", headers=auth_header(target)
+    )
+    assert resp.status_code == 200, resp.text
+
+    resp = await client.get("/orders/recent-claims", headers=auth_header(admin_user))
+    assert resp.status_code == 200
+    data = resp.json()
+    item = next(item for item in data["items"] if item["order"]["id"] == order["id"])
+    assert item["order"]["is_designated"] is True
+    assert item["booster"]["id"] == target["user"]["id"]
 
 
 async def test_recent_claims_limit_and_paging(client: AsyncClient, admin_user: dict):

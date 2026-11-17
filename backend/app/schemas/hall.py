@@ -20,6 +20,10 @@ class RecentClaimOrder(BaseModel):
     title: str | None = Field(default=None, description="订单标题")
     intro: str | None = Field(default=None, description="订单简介/需求摘要")
     price: Decimal = Field(description="订单金额")
+    is_designated: bool = Field(
+        default=False,
+        description="是否为指定派单（该订单发布时点名了接单人）",
+    )
 
 
 class RecentClaimBooster(BaseModel):
@@ -67,6 +71,7 @@ class RecentClaimsResponse(BaseModel):
                             "title": "王者荣耀 钻石上王者",
                             "intro": "微信区，三天内完成",
                             "price": "200.00",
+                            "is_designated": False,
                         },
                         "booster": {"id": 3, "username": "打手小李", "total_completed": 42},
                         "deposit_balance": "500.00",

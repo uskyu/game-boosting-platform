@@ -80,6 +80,7 @@ class RecentClaimsService:
                 Order.title.label("order_title"),
                 Order.intro.label("order_intro"),
                 Order.price.label("order_price"),
+                Order.designated_booster_id.label("order_designated_booster_id"),
                 User.id.label("booster_id"),
                 User.username.label("booster_username"),
                 func.coalesce(
@@ -107,6 +108,7 @@ class RecentClaimsService:
                     "title": row.order_title,
                     "intro": row.order_intro,
                     "price": row.order_price,
+                    "is_designated": bool(row.order_designated_booster_id),
                 },
                 "booster": {
                     "id": row.booster_id,

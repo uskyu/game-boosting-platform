@@ -78,6 +78,12 @@ describe('指定接单：发单页 / 大厅 / 我的派单 / 详情页契约', (
       expect(hallSource).toContain("'指定单'")
       expect(hallSource).toMatch(/getDesignationBadgeLabel\(order\)[\s\S]{0,200}!bg-primary-soft/)
     })
+
+    it('今日已接单给指定单加标识，样式与续单徽标一致', () => {
+      const recent = slice(hallSource, 'v-for="claim in visibleRecentClaims"', '</article>')
+      expect(recent).toContain('claim.order.is_designated')
+      expect(recent).toMatch(/tag shrink-0 !bg-primary-soft !text-primary">指定单/)
+    })
   })
 
   describe('OrderList', () => {
