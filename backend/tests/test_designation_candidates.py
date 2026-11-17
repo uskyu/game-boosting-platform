@@ -24,6 +24,8 @@ CANDIDATE_KEYS = {
     "deposit_balance",
     "can_accept",
     "selected_times",
+    "is_self",
+    "is_blacklisted",
 }
 
 
@@ -185,7 +187,7 @@ async def test_search_matches_username_and_email_without_email_and_balances(
     assert resp.json()["results"] == []
 
 
-async def test_search_excludes_self_admin_inactive_and_blacklisted(
+async def test_search_marks_self_and_blacklisted_but_excludes_admin_inactive(
     client: AsyncClient, db_session, make_captcha
 ):
     viewer = await _register(
@@ -208,14 +210,20 @@ async def test_search_excludes_self_admin_inactive_and_blacklisted(
     items = resp.json()["results"]
     ids = [item["id"] for item in items]
 
-    assert {eligible.id, stopped.id} == set(ids)
-    assert len(ids) == 2
-    assert viewer["user"]["id"] not in ids
+    # 自己和黑名单用户仍然返回并打标，由前端禁用；管理员/停用账号不返回。
+    assert {eligible.id, stopped.id, blocked.id, viewer["user"]["id"]} == set(ids)
+    assert len(ids) == 4
     assert admin.id not in ids
     assert inactive.id not in ids
-    assert blocked.id not in ids
     stopped_item = next(item for item in items if item["id"] == stopped.id)
     assert stopped_item["can_accept"] is False
+    viewer_item = next(item for item in items if item["id"] == viewer["user"]["id"])
+    assert viewer_item["is_self"] is True
+    assert viewer_item["is_blacklisted"] is False
+    blocked_item = next(item for item in items if item["id"] == blocked.id)
+    assert blocked_item["is_blacklisted"] is True
+    assert blocked_item["is_self"] is False
+    assert all(set(item) == CANDIDATE_KEYS for item in items)
 
 
 async def test_search_ranks_exact_then_prefix_then_nickname_order(
@@ -305,13 +313,13 @@ async def test_recent_designations_order_by_count_then_latest_and_limit_six(
     assert all(set(item) == CANDIDATE_KEYS for item in body["recent"])
 
     # q 非空时 recent 为空数组，由前端继续使用缓存的最近列表。
-    resp = await _get_candidates(client, viewer, "Recent")
+    resp = await _get_candidates(client, viewer, "Recent0")
     assert resp.status_code == 200, resp.text
     assert resp.json()["recent"] == []
-    assert len(resp.json()["results"]) == 7
+    assert len(resp.json()["results"]) == 1
 
 
-async def test_recent_designations_exclude_self_admin_inactive_blacklisted_and_stale(
+async def test_recent_designations_include_self_and_blacklisted_but_exclude_admin_inactive_and_stale(
     client: AsyncClient, db_session, make_captcha
 ):
     viewer = await _register(
@@ -353,7 +361,7 @@ async def test_recent_designations_exclude_self_admin_inactive_blacklisted_and_s
                 booster_id=booster.id,
                 created_at=now - offset,
             )
-    # 自己指定自己：不应出现在候选里。
+    # 自己指定自己：仍然返回并标记 is_self，前端禁用选择。
     for offset in (timedelta(hours=1), timedelta(hours=2), timedelta(hours=3)):
         await _designate(
             db_session,
@@ -380,10 +388,19 @@ async def test_recent_designations_exclude_self_admin_inactive_blacklisted_and_s
     resp = await _get_candidates(client, viewer)
     assert resp.status_code == 200, resp.text
     recent = resp.json()["recent"]
-    assert [item["id"] for item in recent] == [eligible.id, stopped.id]
-    assert [item["selected_times"] for item in recent] == [2, 1]
-    assert recent[1]["can_accept"] is False
-    for filtered_id in (admin.id, inactive.id, blocked.id, stale.id, viewer["user"]["id"]):
+    # 次数优先、最近时间其次：self(3,-1h)、blocked(3,-3h)、eligible(2)、stopped(1)。
+    assert [item["id"] for item in recent] == [
+        viewer["user"]["id"],
+        blocked.id,
+        eligible.id,
+        stopped.id,
+    ]
+    assert [item["selected_times"] for item in recent] == [3, 3, 2, 1]
+    assert recent[0]["is_self"] is True
+    assert recent[1]["is_blacklisted"] is True
+    assert recent[3]["can_accept"] is False
+    assert all(set(item) == CANDIDATE_KEYS for item in recent)
+    for filtered_id in (admin.id, inactive.id, stale.id):
         assert filtered_id not in {item["id"] for item in recent}
 
 

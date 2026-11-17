@@ -49,18 +49,25 @@ async def ensure_can_designate(db: AsyncSession, user: User) -> None:
     )
 
 
-def _candidate_filters(viewer_id: int) -> tuple:
-    """候选账号的公共过滤条件（搜索与最近指定共用）。"""
+def _candidate_filters() -> tuple:
+    """候选账号的公共过滤条件（搜索与最近指定共用）。
+
+    自己/黑名单不再静默排除：命中时仍返回，由 ``is_self``/``is_blacklisted``
+    标记并由前端禁用选择，避免「明明有这个人却提示没找到」。
+    """
     return (
         User.is_active.is_(True),
         User.role != UserRole.ADMIN,
-        User.id != viewer_id,
-        ~exists(
-            select(PublisherBlacklist.id).where(
-                PublisherBlacklist.publisher_id == viewer_id,
-                PublisherBlacklist.blocked_user_id == User.id,
-            )
-        ),
+    )
+
+
+def _blacklisted_expr(viewer_id: int):
+    """当前发布人是否拉黑了该候选（用于候选人标记，不做静默过滤）。"""
+    return exists(
+        select(PublisherBlacklist.id).where(
+            PublisherBlacklist.publisher_id == viewer_id,
+            PublisherBlacklist.blocked_user_id == User.id,
+        )
     )
 
 
@@ -82,7 +89,7 @@ def _designation_counts_subquery(viewer_id: int, cutoff: datetime):
     )
 
 
-def _row_to_candidate(row) -> DesignationCandidate:
+def _row_to_candidate(row, viewer_id: int) -> DesignationCandidate:
     balance = getattr(row, "deposit_balance", None)
     return DesignationCandidate(
         id=int(row.user_id),
@@ -91,6 +98,8 @@ def _row_to_candidate(row) -> DesignationCandidate:
         deposit_balance=balance if balance is not None else Decimal("0.00"),
         can_accept=bool(row.can_accept),
         selected_times=int(row.selected_times or 0),
+        is_self=int(row.user_id) == int(viewer_id),
+        is_blacklisted=bool(getattr(row, "is_blacklisted", False)),
     )
 
 
@@ -112,11 +121,12 @@ async def list_recent_candidates(
             ),
             User.can_accept.label("can_accept"),
             counts.c.selected_times.label("selected_times"),
+            _blacklisted_expr(viewer.id).label("is_blacklisted"),
         )
         .select_from(User)
         .join(counts, counts.c.user_id == User.id)
         .outerjoin(Wallet, Wallet.user_id == User.id)
-        .where(*_candidate_filters(viewer.id))
+        .where(*_candidate_filters())
         .order_by(
             counts.c.selected_times.desc(),
             counts.c.last_selected_at.desc(),
@@ -125,7 +135,7 @@ async def list_recent_candidates(
         )
         .limit(RECENT_DESIGNATION_LIMIT)
     )
-    return [_row_to_candidate(row) for row in result.all()]
+    return [_row_to_candidate(row, viewer.id) for row in result.all()]
 
 
 async def search_candidates(
@@ -168,6 +178,7 @@ async def search_candidates(
             ),
             User.can_accept.label("can_accept"),
             func.coalesce(counts.c.selected_times, 0).label("selected_times"),
+            _blacklisted_expr(viewer.id).label("is_blacklisted"),
         )
         .select_from(User)
         .outerjoin(counts, counts.c.user_id == User.id)
@@ -177,9 +188,9 @@ async def search_candidates(
                 User.username.ilike(contains_pattern),
                 User.email.ilike(contains_pattern),
             ),
-            *_candidate_filters(viewer.id),
+            *_candidate_filters(),
         )
         .order_by(match_rank.asc(), User.username.asc(), User.id.asc())
         .limit(CANDIDATE_SEARCH_LIMIT)
     )
-    return [_row_to_candidate(row) for row in result.all()]
+    return [_row_to_candidate(row, viewer.id) for row in result.all()]

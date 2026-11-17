@@ -26,6 +26,14 @@ class DesignationCandidate(BaseModel):
         default=0,
         description="当前发布人最近 90 天内指定该打手的次数",
     )
+    is_self: bool = Field(
+        default=False,
+        description="是否为当前发布人自己；true 时前端标记「本人」并禁止选择",
+    )
+    is_blacklisted: bool = Field(
+        default=False,
+        description="是否被当前发布人拉黑；true 时前端标记「已拉黑」并提示先解除",
+    )
 
 
 class DesignationCandidatesResponse(BaseModel):
@@ -53,6 +61,8 @@ class DesignationCandidatesResponse(BaseModel):
                         "deposit_balance": "500.00",
                         "can_accept": True,
                         "selected_times": 3,
+                        "is_self": False,
+                        "is_blacklisted": False,
                     }
                 ],
                 "results": [],

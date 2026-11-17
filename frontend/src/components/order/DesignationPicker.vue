@@ -53,6 +53,22 @@ const activeEmptyText = computed(() => (
 const activeLoadingText = computed(() => (
   isSearching.value ? '正在搜索…' : '正在加载最近指定…'
 ))
+// 搜索结果里有本人/已拉黑/已停接的候选时，明确说明为什么不能选，
+// 避免出现「明明有这个人却提示没找到」的误导。
+const blockedHint = computed(() => {
+  const candidates = activeCandidates.value
+  if (!candidates.length || candidates.some((item) => isAcceptable(item))) return ''
+  if (candidates.some((item) => item.is_self)) {
+    return '这是你自己，不能指定自己。'
+  }
+  if (candidates.some((item) => item.is_blacklisted)) {
+    return '该用户在你的黑名单中，请先在黑名单页解除后再指定。'
+  }
+  if (candidates.some((item) => item.can_accept === false)) {
+    return '该用户当前已停接，暂不能指定。'
+  }
+  return ''
+})
 
 function displayName(candidate) {
   if (candidate?.username) return candidate.username
@@ -66,6 +82,8 @@ function userInitial(candidate) {
 
 function isAcceptable(candidate) {
   return candidate?.can_accept !== false
+    && !candidate?.is_self
+    && !candidate?.is_blacklisted
 }
 
 function hasDeposit(candidate) {
@@ -301,7 +319,9 @@ onBeforeUnmount(() => {
             <span class="min-w-0 flex-1">
               <span class="flex flex-wrap items-center gap-1.5">
                 <span class="truncate text-sm font-semibold text-ink-1">{{ displayName(candidate) }}</span>
-                <span v-if="candidate.can_accept === false" class="tag !bg-surface-3 !text-ink-2">已停接</span>
+                <span v-if="candidate.is_self" class="tag !bg-surface-3 !text-ink-2">本人</span>
+                <span v-else-if="candidate.is_blacklisted" class="tag !bg-danger-soft !text-danger">已拉黑</span>
+                <span v-else-if="candidate.can_accept === false" class="tag !bg-surface-3 !text-ink-2">已停接</span>
               </span>
               <span
                 v-if="hasDeposit(candidate)"
@@ -311,6 +331,9 @@ onBeforeUnmount(() => {
             <span v-if="isAcceptable(candidate)" class="shrink-0 text-xs font-medium text-primary">选择</span>
           </button>
         </div>
+        <p v-if="blockedHint" class="border-t border-line-1 px-3 py-2 text-xs leading-5 text-ink-2">
+          {{ blockedHint }}
+        </p>
       </div>
     </template>
   </div>

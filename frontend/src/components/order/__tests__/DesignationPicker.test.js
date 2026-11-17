@@ -52,14 +52,26 @@ describe('DesignationPicker：指定打手选择器契约', () => {
     expect(source).toMatch(/watch\(searchQuery,[\s\S]{0,260}searchSeq \+= 1/)
   })
 
-  it('候选行包含头像/首字母、已停接标签与不可选状态', () => {
+  it('候选行包含头像/首字母、已停接/本人/已拉黑标签与不可选状态', () => {
     expect(source).toContain('userInitial(candidate)')
     expect(source).toMatch(/v-if="!candidate\.avatar_url"/)
     expect(source).toMatch(/:src="candidate\.avatar_url"/)
     expect(source).toContain('已停接')
-    expect(source).toMatch(/v-if="candidate\.can_accept === false"/)
+    expect(source).toContain('已拉黑')
+    expect(source).toContain('本人')
+    expect(source).toMatch(/v-if="candidate\.is_self"/)
+    expect(source).toMatch(/v-else-if="candidate\.is_blacklisted"/)
+    expect(source).toMatch(/v-else-if="candidate\.can_accept === false"/)
     expect(source).toMatch(/:disabled="!isAcceptable\(candidate\)"/)
-    expect(source).toMatch(/function isAcceptable\(candidate\) \{\s*return candidate\?\.can_accept !== false/)
+    expect(source).toMatch(/function isAcceptable\(candidate\) \{\s*return candidate\?\.can_accept !== false\s*&& !candidate\?\.is_self\s*&& !candidate\?\.is_blacklisted/)
+  })
+
+  it('本人/黑名单/停接结果给出明确原因，不再显示成“没找到”', () => {
+    expect(source).toMatch(/const blockedHint = computed/)
+    expect(source).toMatch(/v-if="blockedHint"/)
+    expect(source).toContain('这是你自己，不能指定自己。')
+    expect(source).toContain('该用户在你的黑名单中，请先在黑名单页解除后再指定。')
+    expect(source).toContain('该用户当前已停接，暂不能指定。')
   })
 
   it('结果使用内联可滚动面板，不是 absolute 下拉', () => {
