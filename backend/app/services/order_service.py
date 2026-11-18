@@ -3904,6 +3904,7 @@ class OrderService:
         claim.settlement_due_at = None
         if int(order.max_claims or 1) <= 1:
             order.status = OrderStatus.CANCELLED
+            order.cancelled_at = order.cancelled_at or now
             order.claim_status = ClaimStatus.CLOSED
         else:
             order.claimed_count = max(int(order.claimed_count or 0) - 1, 0)
@@ -3938,6 +3939,7 @@ class OrderService:
                     order.completed_at = now
                 else:
                     order.status = OrderStatus.CANCELLED
+                    order.cancelled_at = order.cancelled_at or now
             elif order.status not in (OrderStatus.CANCELLED, OrderStatus.COMPLETED):
                 order.status = OrderStatus.LOCKED
 
@@ -3991,6 +3993,7 @@ class OrderService:
             )
 
         order.status = OrderStatus.CANCELLED
+        order.cancelled_at = order.cancelled_at or datetime.now(timezone.utc)
         # 取消订单：未结算的报名名额一并终止，打手端不再显示"进行中"；
         # 已结算（SETTLED）名额保留原状，钱已入账不受取消影响。
         for claim in claims_needing_cleanup:

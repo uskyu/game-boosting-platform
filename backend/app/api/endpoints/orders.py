@@ -359,6 +359,7 @@ def _serialize_order(order, viewer: User) -> OrderResponse:
     已报名打手的可见性由 _enrich_* 依据 my_claim 回填。
     """
     response = OrderResponse.model_validate(order)
+    response.publisher_nickname = order.user.username if order.user is not None else None
     if viewer.role == UserRole.ADMIN:
         return response
     if viewer.id == order.user_id:

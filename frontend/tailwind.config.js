@@ -80,6 +80,8 @@ export default {
       },
       borderRadius: {
         // 文档第 4 节圆角体系（保留旧类名，改数值）
+        action: '8px', // 普通按钮
+        control: '6px', // 紧凑按钮与表格操作
         field: '10px',   // 输入框
         tile: '14px',    // 小卡
         card: '18px',    // 卡片

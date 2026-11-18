@@ -346,7 +346,7 @@
   .hall-summary__item span { @apply whitespace-nowrap text-xs text-ink-2; }
 
   .filter-check {
-    @apply inline-flex min-h-[44px] items-center gap-2 whitespace-nowrap rounded-full px-3 text-sm text-ink-2;
+    @apply inline-flex min-h-[36px] items-center gap-2 whitespace-nowrap rounded-full px-3 text-sm text-ink-2;
     background: var(--surface-3);
   }
 
@@ -368,6 +368,8 @@
     .order-hall-shell .catalog-card { @apply p-4; }
     .order-hall-shell .btn-primary,
     .order-hall-shell .btn-secondary { min-height: 44px; }
+    /* 详情按钮桌面可紧凑，移动端扩大热区；覆盖模板里的桌面 36px 例外。 */
+    .order-hall-shell .btn-ghost { min-height: 44px !important; }
   }
 
   /* ──────────────────────────────
@@ -393,10 +395,11 @@
   }
 
   /* ──────────────────────────────
-     按钮：主 / 次 / 幽灵 / 危险（文档 5 节，胶囊 44px）
+     按钮：主操作 40px，次操作 36px，紧凑操作 34px。
+     移动端继续保留至少 44px 触控高度。
   ────────────────────────────── */
   .btn {
-    @apply inline-flex min-h-[44px] select-none items-center justify-center gap-2 rounded-full px-5 py-3 text-sm font-semibold transition-all duration-base ease-smooth focus:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:pointer-events-none disabled:opacity-40;
+    @apply inline-flex min-h-[40px] select-none items-center justify-center gap-2 rounded-action px-4 py-2 text-sm font-semibold transition-all duration-base ease-smooth focus:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:pointer-events-none disabled:opacity-40;
   }
 
   .btn-primary {
@@ -459,11 +462,27 @@
     transform: scale(0.97);
   }
 
+  .btn-primary,
+  .btn-success,
+  .btn-danger {
+    @apply min-h-[40px];
+  }
+
+  .btn-secondary,
+  .btn-ghost {
+    @apply min-h-[36px] rounded-action px-3.5 py-1.5;
+  }
+
+  /* 工具栏、表格行与卡片内的次要操作；由调用方按需叠加。 */
+  .btn-compact {
+    @apply min-h-[34px] rounded-control px-3 py-1.5 text-[13px] font-medium;
+  }
+
   /* ──────────────────────────────
      输入框 / 下拉（--surface-3 底、无边框、focus 2px primary 外圈）
   ────────────────────────────── */
   .input {
-    @apply min-h-[44px] w-full rounded-field px-3.5 py-2.5 text-sm text-ink-1 transition-all duration-base ease-smooth;
+    @apply min-h-[38px] w-full rounded-field px-3.5 py-2 text-sm text-ink-1 transition-all duration-base ease-smooth;
     background: var(--surface-3);
     border: none;
   }
@@ -521,12 +540,12 @@
      标签 / 过滤胶囊 / tab（胶囊、语义 10–16% 透明底、无边框）
   ────────────────────────────── */
   .tag {
-    @apply inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium text-ink-2;
+    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium text-ink-2;
     background: var(--surface-3);
   }
 
   .filter-pill {
-    @apply inline-flex select-none items-center rounded-full px-3.5 py-2 text-sm font-medium transition-colors duration-base ease-smooth;
+    @apply inline-flex min-h-[34px] select-none items-center rounded-full px-3 py-1.5 text-sm font-medium transition-colors duration-base ease-smooth;
     background: var(--surface-3);
     color: var(--text-2);
   }
@@ -542,7 +561,7 @@
   }
 
   .tab-pill {
-    @apply inline-flex select-none items-center justify-center rounded-full px-4 py-2 text-sm font-semibold transition-colors duration-base ease-smooth;
+    @apply inline-flex min-h-[34px] select-none items-center justify-center rounded-full px-3 py-1.5 text-sm font-semibold transition-colors duration-base ease-smooth;
     background: var(--surface-3);
     color: var(--text-2);
   }
@@ -565,7 +584,7 @@
 
   .tab-bar .tab-pill,
   .tab-bar .tab-pill-active {
-    @apply border-0 bg-transparent px-4 py-2 shadow-none;
+    @apply border-0 bg-transparent px-3 py-1.5 shadow-none;
   }
 
   .tab-bar .tab-pill:hover {
@@ -576,6 +595,25 @@
     background: var(--surface);
     color: var(--text-1);
     box-shadow: var(--shadow-card);
+  }
+
+  /* 手机端触控区保持44px；仅收紧按钮内部留白，不缩小点击范围。 */
+  @media (max-width: 767px) {
+    .btn,
+    .btn-primary,
+    .btn-secondary,
+    .btn-ghost,
+    .btn-success,
+    .btn-danger,
+    .btn-compact,
+    .filter-check,
+    .filter-pill,
+    .filter-pill-active,
+    .tab-pill,
+    .tab-pill-active,
+    .input {
+      min-height: 44px;
+    }
   }
 
   /* ──────────────────────────────
@@ -1147,7 +1185,7 @@
      徽章（状态胶囊：语义色透明底 + 同色文字，无边框）
   ────────────────────────────── */
   .badge {
-    @apply inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold;
+    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-semibold;
   }
 
   .badge::before {
@@ -1733,4 +1771,22 @@
 
 .game-mode-enter {
   animation: fadeInUp 0.2s ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn,
+  .btn-compact,
+  .input,
+  .filter-pill,
+  .filter-pill-active,
+  .tab-pill,
+  .tab-pill-active,
+  .admin-order-thumb {
+    transition-duration: 0.01ms !important;
+  }
+
+  .btn:active:not(:disabled),
+  .admin-order-thumb:active {
+    transform: none !important;
+  }
 }

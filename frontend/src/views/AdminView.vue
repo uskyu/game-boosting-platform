@@ -10,6 +10,7 @@ import {
   getAfterSaleStatusTagClass,
 } from '@/stores/afterSales'
 import AdminDashboard from '@/components/admin/AdminDashboard.vue'
+import AdminOrderAnalytics from '@/components/admin/AdminOrderAnalytics.vue'
 import AdminUserList from '@/components/admin/AdminUserList.vue'
 import AdminSiteSettings from '@/components/admin/AdminSiteSettings.vue'
 import AdminPaymentSettings from '@/components/admin/AdminPaymentSettings.vue'
@@ -64,7 +65,7 @@ const walletStore = useWalletStore()
 const afterSalesStore = useAfterSalesStore()
 const withdrawalPayoutStore = useWithdrawalPayoutStore()
 
-const TAB_KEYS = ['dashboard', 'orders', 'withdrawals', 'afterSales', 'wallet-adjust', 'games', 'users', 'site', 'payment', 'recharges', 'service-fee', 'withdrawal-rule', 'withdrawal-category', 'payout-batches', 'deposit', 'depositLedger', 'announcements', 'publishRequests']
+const TAB_KEYS = ['dashboard', 'orders', 'order-analytics', 'withdrawals', 'afterSales', 'wallet-adjust', 'games', 'users', 'site', 'payment', 'recharges', 'service-fee', 'withdrawal-rule', 'withdrawal-category', 'payout-batches', 'deposit', 'depositLedger', 'announcements', 'publishRequests']
 
 function normalizeTab(tab) {
   const value = Array.isArray(tab) ? tab[0] : tab
@@ -1247,6 +1248,7 @@ onMounted(async () => {
         <nav class="tab-bar flex-1" aria-label="管理台模块">
           <button type="button" :class="activeTab === 'dashboard' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'dashboard'">数据看板</button>
           <button type="button" :class="activeTab === 'orders' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'orders'">派单管理</button>
+          <button v-if="isAdmin" type="button" :class="activeTab === 'order-analytics' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'order-analytics'">发单数据</button>
           <button type="button" :class="activeTab === 'withdrawals' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'withdrawals'">提现处理</button>
           <button type="button" :class="activeTab === 'afterSales' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'afterSales'">售后管理</button>
           <button type="button" :class="activeTab === 'wallet-adjust' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'wallet-adjust'">钱包调账</button>
@@ -1269,6 +1271,7 @@ onMounted(async () => {
     </section>
 
     <AdminDashboard v-if="activeTab === 'dashboard'" />
+    <AdminOrderAnalytics v-else-if="activeTab === 'order-analytics'" />
     <AdminUserList v-else-if="activeTab === 'users'" />
     <AdminSiteSettings v-else-if="activeTab === 'site'" />
     <AdminPaymentSettings v-else-if="activeTab === 'payment'" />

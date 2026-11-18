@@ -725,6 +725,10 @@ class OrderResponse(BaseModel):
 
     # Nested user information
     user: UserBrief | None = Field(default=None, description="下单用户")
+    publisher_nickname: str | None = Field(
+        default=None,
+        description="发单人展示名（当前使用账号用户名；无需依赖完整 user 对象）",
+    )
     booster: UserBrief | None = Field(default=None, description="接单代练")
     # 指定派单目标用户的展示信息（按页批量回填，绝不含 email）
     designated_booster: DesignatedBoosterBrief | None = Field(

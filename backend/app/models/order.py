@@ -299,6 +299,14 @@ class Order(Base):
         nullable=True,
     )
 
+    # Cancel event timestamp for admin reporting. ``updated_at`` is not a safe
+    # substitute: an order can be edited after cancellation by repair/admin
+    # flows, which would move it into the wrong reporting period.
+    cancelled_at: Mapped[datetime | None] = mapped_column(
+        nullable=True,
+        index=True,
+    )
+
     payment_status: Mapped[PaymentStatus] = mapped_column(
         Enum(
             PaymentStatus,

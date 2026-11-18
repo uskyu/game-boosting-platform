@@ -12,6 +12,7 @@ from app.api.endpoints.admin_service_fee import router as admin_service_fee_rout
 from app.api.endpoints import (
     admin_after_sales_router,
     admin_deposit_router,
+    admin_order_analytics_router,
     admin_announcements_router,
     admin_payment_router,
     admin_platform_income_router,
@@ -48,6 +49,9 @@ from app.api.endpoints import (
 
 # 直连模块导入：endpoints/__init__.py 未导出该 router（该文件不在本次改动范围内）
 from app.api.endpoints.admin_order_dispute import admin_order_dispute_router
+from app.api.endpoints.admin_order_analytics import (
+    publisher_router as publisher_order_analytics_router,
+)
 from app.api.endpoints.designation import router as designation_router
 
 # Create main API router
@@ -61,6 +65,7 @@ api_router.include_router(announcements_router)
 api_router.include_router(order_hall_router)
 # 指定派单候选人 /orders/designation-candidates 同理，必须先于 orders_router
 api_router.include_router(designation_router)
+api_router.include_router(publisher_order_analytics_router)
 api_router.include_router(orders_router)
 api_router.include_router(order_templates_router)
 # 售后：订单维度（/orders/{id}/after-sales）+ 个人维度（/after-sales/mine）
@@ -73,6 +78,7 @@ api_router.include_router(blacklist_router)
 api_router.include_router(admin_router)
 api_router.include_router(admin_after_sales_router)
 api_router.include_router(admin_order_dispute_router)
+api_router.include_router(admin_order_analytics_router)
 api_router.include_router(admin_announcements_router)
 api_router.include_router(admin_site_router)
 api_router.include_router(admin_payment_router)
