@@ -89,6 +89,10 @@ function getOrderDisplayStatus(order) {
 function getOrderDisplayBadgeClass(order) {
   return getHallOrderDisplayBadgeClass(order)
 }
+
+function getPublisherNickname(order) {
+  return order?.publisher_nickname || order?.user?.username || ''
+}
 const loading = computed(() => ordersStore.loading)
 const error = computed(() => ordersStore.error)
 const isAuthenticated = computed(() => authStore.isAuthenticated)
@@ -743,8 +747,12 @@ onUnmounted(() => {
 
     <div v-if="error" class="message-error">{{ error }}</div>
 
-    <!-- 订单卡网格：桌面 2 列、移动 1 列 -->
-    <section v-if="loading && isAuthenticated && !hasHallOrders" class="grid gap-4 md:grid-cols-2" aria-busy="true">
+    <!-- 订单卡网格：桌面宽屏 3 列、中等屏幕 2 列、移动 1 列 -->
+    <section
+      v-if="loading && isAuthenticated && !hasHallOrders"
+      class="grid grid-cols-1 gap-4 md:gap-3 md:grid-cols-2 xl:grid-cols-3"
+      aria-busy="true"
+    >
       <div v-for="n in 4" :key="`hall-skeleton-${n}`" class="skeleton-row">
         <div class="flex-1 space-y-3">
           <div class="skeleton-line h-6 w-28"></div>
@@ -758,11 +766,15 @@ onUnmounted(() => {
       </div>
     </section>
 
-    <section v-else-if="isAuthenticated && visibleOrders.length" class="grid grid-cols-1 gap-4 md:grid-cols-2" :aria-busy="loading">
+    <section
+      v-else-if="isAuthenticated && visibleOrders.length"
+      class="grid grid-cols-1 gap-4 md:gap-3 md:grid-cols-2 xl:grid-cols-3"
+      :aria-busy="loading"
+    >
       <article
         v-for="order in visibleOrders"
         :key="order.id"
-        :class="['catalog-card cursor-pointer hall-order-card', { 'hall-order-card--full': isFullOrder(order) }]"
+        :class="['catalog-card cursor-pointer hall-order-card !rounded-[12px] !p-4', { 'hall-order-card--full': isFullOrder(order) }]"
         @click="goToOrder(order.id)"
       >
         <!-- 层级：价格最大红字 → 标题 → 一行小字元信息 → 底部次要行 -->
@@ -774,8 +786,13 @@ onUnmounted(() => {
           <span v-else-if="!isOrderClaimable(order)" :class="[getOrderDisplayBadgeClass(order), 'shrink-0']">{{ getOrderDisplayStatus(order) }}</span>
         </div>
 
-        <!-- 标题 -->
-        <p v-if="order.title" class="mt-3 truncate text-[15px] font-semibold text-ink-1">{{ order.title }}</p>
+        <!-- 标题与醒目的发单人昵称分层展示；兼容旧响应字段 -->
+        <div v-if="order.title || getPublisherNickname(order)" class="mt-3 flex min-w-0 items-start justify-between gap-2 md:mt-2">
+          <p v-if="order.title" class="min-w-0 flex-1 truncate text-[15px] font-semibold text-ink-1">{{ order.title }}</p>
+          <span v-if="getPublisherNickname(order)" class="tag max-w-[45%] shrink-0 truncate !bg-info-soft !text-info md:hidden">
+            发单人 · {{ getPublisherNickname(order) }}
+          </span>
+        </div>
 
         <!-- 指定单徽标：目标本人「指定给我」，其余可见者「指定单」；不占价格/状态行 -->
         <div v-if="getDesignationBadgeLabel(order)" class="mt-2 flex flex-wrap items-center gap-2">
@@ -796,21 +813,26 @@ onUnmounted(() => {
 
         <div v-if="getAttachment(order)" class="mt-3 overflow-hidden rounded-tile"><img :src="getAttachment(order)" alt="订单附件" loading="lazy" class="max-h-40 w-full rounded object-cover" /></div>
 
-        <!-- 层级 3：底部次要信息行（需求摘要 + 游戏名 + 时间）与「查看详情 →」入口 -->
-        <div class="mt-4 border-t border-line-1 pt-3.5 text-[13px]">
+        <!-- 底栏元信息可换行，作者标签和详情操作保持独立区域 -->
+        <div class="mt-4 border-t border-line-1 pt-3.5 text-[13px] md:mt-3 md:pt-3">
           <p v-if="buildSummary(order)" class="truncate text-ink-2">{{ buildSummary(order) }}</p>
-          <div class="mt-2 flex items-center justify-between gap-3">
-            <div class="flex min-w-0 items-center gap-2 text-ink-2">
-              <span class="truncate font-medium">{{ order.game_name }}</span>
+          <div class="mt-2 flex items-center justify-between gap-3 md:flex-col md:items-stretch md:gap-2">
+            <div class="flex min-w-0 items-center gap-2 text-ink-2 md:flex-wrap md:gap-x-2 md:gap-y-1">
+              <span class="max-w-full truncate font-medium">{{ order.game_name }}</span>
+              <span
+                v-if="getPublisherNickname(order)"
+                class="tag hidden min-w-0 max-w-full truncate !bg-info-soft !text-info md:inline-flex"
+                :title="`发单人 · ${getPublisherNickname(order)}`"
+              >发单人 · {{ getPublisherNickname(order) }}</span>
               <span v-if="getOrderUnreadCount(order.id)" class="tag shrink-0 !bg-warning-soft !text-warning">
                 消息 {{ getOrderUnreadCount(order.id) }}
               </span>
-              <span class="shrink-0 text-ink-3">发布于 {{ formatShortDate(order.created_at) }}</span>
+              <span class="text-ink-3">发布于 {{ formatShortDate(order.created_at) }}</span>
               <span class="shrink-0 tabular-nums text-ink-3">#{{ order.id }}</span>
             </div>
             <button
               type="button"
-              class="btn-ghost shrink-0 !min-h-[36px] !px-4 !py-1.5"
+              class="btn-ghost shrink-0 !min-h-[36px] !px-4 !py-1.5 md:self-end"
               @click.stop="goToOrder(order.id)"
             >
               查看详情 →

@@ -39,6 +39,12 @@ const routes = [
     meta: { title: '我的订单', requiresAuth: true },
   },
   {
+    path: '/my-order-analytics',
+    name: 'my-order-analytics',
+    component: () => import('@/views/MyOrderAnalyticsView.vue'),
+    meta: { title: '我的发单数据', requiresAuth: true },
+  },
+  {
     // 发单人黑名单（入口只对 canPublish 用户显示；后端同样按权限 403 兜底）
     path: '/blacklist',
     name: 'blacklist',

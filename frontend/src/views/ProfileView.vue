@@ -144,8 +144,9 @@ onMounted(async () => {
             </div>
           </div>
 
-          <!-- “我的”页快捷入口：订单/钱包已在主导航，这里只保留黑名单等次要入口 -->
+          <!-- “我的”页快捷入口：个人发单数据和发单辅助功能 -->
           <nav class="profile-shortcuts" aria-label="快捷入口">
+            <router-link v-if="user?.role === 'USER'" to="/my-order-analytics" class="btn-secondary !px-4">发单数据</router-link>
             <!-- 黑名单仅发单用户（管理员也算）可用，后端同样按权限 403 兜底 -->
             <router-link v-if="authStore.canPublish" to="/blacklist" class="btn-secondary !px-4">黑名单</router-link>
             <router-link v-if="user?.role === 'ADMIN'" to="/admin" class="btn-secondary !px-4">管理后台</router-link>

@@ -6,6 +6,7 @@ Contains all API route handlers organized by resource.
 from app.api.endpoints.admin import router as admin_router
 from app.api.endpoints.admin_announcements import router as admin_announcements_router
 from app.api.endpoints.admin_deposit import router as admin_deposit_router
+from app.api.endpoints.admin_order_analytics import router as admin_order_analytics_router
 from app.api.endpoints.admin_payment import router as admin_payment_router
 from app.api.endpoints.admin_platform_income import (
     router as admin_platform_income_router,
@@ -53,6 +54,7 @@ from app.api.endpoints.wallet import router as wallet_router, withdrawals_router
 __all__ = [
     "admin_after_sales_router",
     "admin_deposit_router",
+    "admin_order_analytics_router",
     "admin_payment_router",
     "admin_platform_income_router",
     "admin_publish_permission_router",
