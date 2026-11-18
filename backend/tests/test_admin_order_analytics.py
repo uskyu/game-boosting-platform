@@ -4,7 +4,6 @@ from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 
 from httpx import AsyncClient
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.product_time import PRODUCT_TIMEZONE
@@ -309,10 +308,11 @@ async def test_admin_intervention_sets_order_cancelled_at(
     )
     assert response.status_code == 200, response.text
 
-    cancelled = await db_session.scalar(select(Order).where(Order.id == order.id))
-    assert cancelled is not None
-    assert cancelled.status == OrderStatus.CANCELLED
-    assert cancelled.cancelled_at is not None
+    # The request commits through its own session. Refresh the fixture's
+    # identity-mapped row before checking persisted state.
+    await db_session.refresh(order)
+    assert order.status == OrderStatus.CANCELLED
+    assert order.cancelled_at is not None
 
 
 async def test_order_analytics_requires_admin_and_valid_period_details(
