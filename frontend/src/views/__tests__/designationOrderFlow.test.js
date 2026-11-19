@@ -68,6 +68,8 @@ describe('指定接单：发单页 / 大厅 / 我的派单 / 详情页契约', (
       expect(createSource).toMatch(/const designatedPrefill = order\.designated_booster\s*\|\|\s*\(mode === 'repeat' \? order\.booster : null\)/)
       expect(createSource).toMatch(/if \(designatedPrefill\?\.id != null\) \{\s*claimMode\.value = 'designated'/)
       expect(createSource).toMatch(/designatedBoosterName|designatedPrefill\.username/)
+      expect(createSource).toContain('本次续单按公开单发布，所有符合条件的打手都可以看见并接单。')
+      expect(createSource).toContain('仅该打手可见并可接单。')
     })
   })
 

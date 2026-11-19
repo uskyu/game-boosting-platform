@@ -242,6 +242,17 @@ const publishApplyEnabled = computed(() => siteStore.settings.publish_permission
 // 原游戏已下架时保留 game_id/game_name 并告警，发布被 canPublish 拦截
 const recycleOrderId = ref(null)
 const recycleMode = ref('')
+const repeatDispatchHint = computed(() => {
+  if (recycleMode.value !== 'repeat') return ''
+  if (claimMode.value !== 'designated') {
+    return '本次续单按公开单发布，所有符合条件的打手都可以看见并接单。'
+  }
+  if (!designatedUser.value) {
+    return '本次续单为指定接单，请先选择打手；发布后仅指定打手可见并可接单。'
+  }
+  const username = designatedUser.value.username || '原接单打手'
+  return `本次续单指定给 ${username}，仅该打手可见并可接单。`
+})
 // 预填原单期间的页面本地锁：详情请求现在不写 store 的全局 loading（它归列表
 // 请求所有），预填要不要禁用发布栏由本页自己的请求状态决定，互不牵连。
 const recycleLoading = ref(false)
@@ -522,7 +533,8 @@ onMounted(async () => {
 
     <!-- 重建 / 续单：按原单预填后的提示横幅 -->
     <div v-if="recycleOrderId" class="message-info">
-      已根据订单 #{{ recycleOrderId }} 预填（{{ recycleMode === 'repeat' ? '续单' : '重建' }}），可修改后发布
+      <p>已根据订单 #{{ recycleOrderId }} 预填（{{ recycleMode === 'repeat' ? '续单' : '重建' }}），可修改后发布</p>
+      <p v-if="repeatDispatchHint" class="mt-1 text-sm leading-5">{{ repeatDispatchHint }}</p>
     </div>
 
     <div v-if="errorMessage" class="message-error">{{ errorMessage }}</div>
