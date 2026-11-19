@@ -132,6 +132,20 @@ describe('order-flow view contracts', () => {
     expect(fetchIndex).toBeGreaterThan(lockIndex)
     expect(unlockIndex).toBeGreaterThan(fetchIndex)
   })
+
+  it('never silently publishes a repeat as a public order', () => {
+    expect(createSource).toMatch(/const recyclePrefillFailed = ref\(false\)/)
+    expect(createSource).toMatch(/const repeatSourceTargetId = ref\(null\)/)
+    expect(createSource).toMatch(/recyclePrefillFailed\.value = true\s*\n\s*errorMessage\.value = result\?\.error/)
+    expect(createSource).toMatch(/catch \(err\) \{\s*\n\s*recyclePrefillFailed\.value = true/)
+
+    const publishStart = createSource.indexOf('async function publishOrder(')
+    expect(publishStart).toBeGreaterThan(-1)
+    const publishHead = createSource.slice(publishStart, publishStart + 1200)
+    expect(publishHead).toMatch(/appUpdateStore\.available/)
+    expect(publishHead).toMatch(/recycleMode\.value === 'repeat' && recyclePrefillFailed\.value/)
+    expect(publishHead).toMatch(/recycleMode\.value === 'repeat' && repeatSourceTargetId\.value && claimMode\.value !== 'designated'/)
+  })
 })
 
 // 与上面「order-flow view contracts」隔离：只覆盖管理员身份晚到时的默认 tab 契约。

@@ -7,6 +7,7 @@ import { useOrdersStore } from '@/stores/orders'
 import { useOrderTemplatesStore } from '@/stores/orderTemplates'
 import { useServiceFeeStore } from '@/stores/serviceFee'
 import { useAuthStore } from '@/stores/auth'
+import { useAppUpdateStore } from '@/stores/appUpdate'
 import { useSiteStore } from '@/stores/site'
 import DesignationPicker from '@/components/order/DesignationPicker.vue'
 import api from '@/utils/api'
@@ -22,6 +23,7 @@ const ordersStore = useOrdersStore()
 const templatesStore = useOrderTemplatesStore()
 const serviceFeeStore = useServiceFeeStore()
 const authStore = useAuthStore()
+const appUpdateStore = useAppUpdateStore()
 const siteStore = useSiteStore()
 // 全局服务费设置与逐单开关对任何发布者生效（2026-10-11 修复：此前按管理员
 // 身份门禁，普通用户发单既没有逐单选项、也不按全局费率收服务费）
@@ -242,6 +244,9 @@ const publishApplyEnabled = computed(() => siteStore.settings.publish_permission
 // 原游戏已下架时保留 game_id/game_name 并告警，发布被 canPublish 拦截
 const recycleOrderId = ref(null)
 const recycleMode = ref('')
+// 预填是否失败/原单是否有可指定打手：续单失败时绝不能悄悄按公开单发布。
+const recyclePrefillFailed = ref(false)
+const repeatSourceTargetId = ref(null)
 const repeatDispatchHint = computed(() => {
   if (recycleMode.value !== 'repeat') return ''
   if (claimMode.value !== 'designated') {
@@ -264,11 +269,14 @@ const gameOffline = computed(() => (
 async function prefillFromOrder(orderId, mode) {
   recycleOrderId.value = orderId
   recycleMode.value = mode
+  recyclePrefillFailed.value = false
+  repeatSourceTargetId.value = null
   recycleLoading.value = true
   try {
     const result = await ordersStore.fetchOrder(orderId)
     const order = result?.data || ordersStore.currentOrder
     if (!order) {
+      recyclePrefillFailed.value = true
       errorMessage.value = result?.error || '原订单读取失败，请手动填写后发布'
       return
     }
@@ -305,6 +313,7 @@ async function prefillFromOrder(orderId, mode) {
       || (mode === 'repeat' ? order.booster : null)
     if (designatedPrefill?.id != null) {
       claimMode.value = 'designated'
+      repeatSourceTargetId.value = mode === 'repeat' ? Number(designatedPrefill.id) : null
       designatedUser.value = {
         id: designatedPrefill.id,
         username: designatedPrefill.username,
@@ -327,6 +336,9 @@ async function prefillFromOrder(orderId, mode) {
     if (selectedGame.value) {
       handleGameChange()
     }
+  } catch (err) {
+    recyclePrefillFailed.value = true
+    errorMessage.value = err?.message || '原订单读取失败，请稍后重试或改用重建订单'
   } finally {
     // 预填结束（成功、失败、原单不存在）都要解锁发布栏
     recycleLoading.value = false
@@ -335,6 +347,20 @@ async function prefillFromOrder(orderId, mode) {
 
 async function publishOrder() {
   if (submitting.value) return
+  // 发版后长驻旧页面的入口：旧代码可能不认识指定派单，先要求刷新再发单。
+  if (appUpdateStore.available) {
+    errorMessage.value = '系统已更新，请刷新页面后再发布订单'
+    return
+  }
+  // 续单必须确认原单/指定人：预填失败时默认 public 会悄悄把指定单发成公开单。
+  if (recycleMode.value === 'repeat' && recyclePrefillFailed.value) {
+    errorMessage.value = '原订单读取失败，无法确认指定打手；请重新打开续单或改用重建订单'
+    return
+  }
+  if (recycleMode.value === 'repeat' && repeatSourceTargetId.value && claimMode.value !== 'designated') {
+    errorMessage.value = '原单有接单打手，续单默认指定该打手；如确需公开，请改用「重建订单」'
+    return
+  }
   if (claimMode.value === 'designated' && !designatedUser.value) {
     errorMessage.value = '请选择指定打手'
     return

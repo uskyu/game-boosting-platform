@@ -5,6 +5,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useSiteStore } from '@/stores/site'
+import { isChunkLoadError } from '@/utils/appVersion'
 
 const routes = [
   {
@@ -272,6 +273,23 @@ router.beforeEach(async (to, from, next) => {
   }
 
   next()
+})
+
+// 懒加载 chunk 404：旧 index.html 引用了已不存在的旧 chunk（发版后客户端仍
+// 停留在旧页面）。页面已无法继续工作，直接强制重载一次拿到新入口；用
+// sessionStorage 做 30 秒防抖，避免异常情况下反复刷新。
+router.onError((error) => {
+  if (!isChunkLoadError(error)) return
+  try {
+    const key = 'chunk_reload_at'
+    const now = Date.now()
+    const last = Number(window.sessionStorage.getItem(key) || 0)
+    if (now - last < 30_000) return
+    window.sessionStorage.setItem(key, String(now))
+  } catch {
+    // sessionStorage 不可用（隐私模式）时仍然刷新，但无法防抖
+  }
+  window.location.reload()
 })
 
 export default router

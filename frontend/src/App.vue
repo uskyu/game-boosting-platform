@@ -4,10 +4,12 @@ import { useRoute, useRouter } from 'vue-router'
 
 import AppNavIcon from '@/components/AppNavIcon.vue'
 import AnnouncementModal from '@/components/AnnouncementModal.vue'
+import AppUpdateBanner from '@/components/AppUpdateBanner.vue'
 import ChatUnreadBadge from '@/components/chat/ChatUnreadBadge.vue'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useAnnouncementsStore } from '@/stores/announcements'
+import { useAppUpdateStore } from '@/stores/appUpdate'
 import { useChatStore } from '@/stores/chat'
 import { useNotificationsStore } from '@/stores/notifications'
 import { useSettingsStore } from '@/stores/settings'
@@ -26,6 +28,7 @@ const notificationsStore = useNotificationsStore()
 const settingsStore = useSettingsStore()
 const siteStore = useSiteStore()
 const toastsStore = useToastsStore()
+const appUpdateStore = useAppUpdateStore()
 
 // 点击网页内推送 toast：跳转目标页（如聊天会话）并消失
 function handleToastClick(toast) {
@@ -440,6 +443,9 @@ onMounted(() => {
   document.addEventListener('visibilitychange', handleAppVisibility)
   window.addEventListener('focus', handleAppVisibility)
   window.addEventListener('online', handleNetworkOnline)
+  // 长驻页面（微信 XWEB 等）不会主动刷新 index.html：定期比对服务器入口，
+  // 发版后提示用户刷新，避免旧前端继续按旧规则发单。
+  appUpdateStore.start()
 })
 
 function handleNetworkOnline() {
@@ -464,6 +470,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', handleAppVisibility)
   window.removeEventListener('focus', handleAppVisibility)
   window.removeEventListener('online', handleNetworkOnline)
+  appUpdateStore.stop()
   chatStore.disconnectWebSocket()
 })
 </script>
@@ -685,5 +692,7 @@ onBeforeUnmount(() => {
         <span class="app-tabbar__label">{{ item.label }}</span>
       </router-link>
     </nav>
+
+    <AppUpdateBanner />
   </div>
 </template>
