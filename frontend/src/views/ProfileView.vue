@@ -13,7 +13,7 @@ const authStore = useAuthStore()
 const walletStore = useWalletStore()
 
 const user = computed(() => authStore.user)
-const roleMeta = computed(() => getUserRoleMeta(user.value?.role === 'ADMIN' ? 'ADMIN' : 'BOOSTER'))
+const roleMeta = computed(() => getUserRoleMeta(user.value?.role || 'USER'))
 const avatarText = computed(() => user.value?.username?.slice(0, 1)?.toUpperCase() || 'U')
 // 保证金余额：管理员接口返回 403，仅普通用户拉取，失败静默（不阻断个人中心）
 const depositBalance = computed(() => walletStore.depositOverview?.deposit_balance ?? 0)
@@ -146,7 +146,7 @@ onMounted(async () => {
 
           <!-- “我的”页快捷入口：个人发单数据和发单辅助功能 -->
           <nav class="profile-shortcuts" aria-label="快捷入口">
-            <router-link v-if="user?.role === 'USER'" to="/my-order-analytics" class="btn-secondary !px-4">发单数据</router-link>
+            <router-link v-if="user && user.role !== 'ADMIN'" to="/my-order-analytics" class="btn-secondary !px-4">我的发单数据</router-link>
             <!-- 黑名单仅发单用户（管理员也算）可用，后端同样按权限 403 兜底 -->
             <router-link v-if="authStore.canPublish" to="/blacklist" class="btn-secondary !px-4">黑名单</router-link>
             <router-link v-if="user?.role === 'ADMIN'" to="/admin" class="btn-secondary !px-4">管理后台</router-link>
