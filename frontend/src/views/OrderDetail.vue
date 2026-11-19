@@ -2438,6 +2438,13 @@ onUnmounted(() => {
             <p class="mt-3 text-sm leading-6 text-ink-2">
               您当前权益等级的每日接单量已用完，每日 0:00 刷新后即可继续接单。
             </p>
+            <p class="mt-2 text-sm leading-6 text-ink-2">
+              如需提升每日接单量，可前往
+              <router-link :to="{ name: 'deposit' }" class="font-medium text-primary underline-offset-4 hover:underline">
+                我的 → 保证金权益
+              </router-link>
+              查看并提升。
+            </p>
             <dl class="mt-4 space-y-2 rounded-xl bg-surface-2 p-4 text-sm">
               <div class="flex items-center justify-between gap-3">
                 <dt class="text-ink-2">你的权益</dt>
