@@ -13,6 +13,11 @@ const MODULE_SCRIPT_PATTERNS = [
   /<script[^>]*src="([^"]+)"[^>]*type="module"/i,
 ]
 
+const BUILD_STAMP_PATTERNS = [
+  /<meta[^>]*name="app-build"[^>]*content="([^"]+)"/i,
+  /<meta[^>]*content="([^"]+)"[^>]*name="app-build"/i,
+]
+
 const CHUNK_ERROR_PATTERNS = [
   /Failed to fetch dynamically imported module/i,
   /Importing a module script failed/i,
@@ -23,6 +28,15 @@ const CHUNK_ERROR_PATTERNS = [
 export function extractModuleEntry(html) {
   if (!html) return ''
   for (const pattern of MODULE_SCRIPT_PATTERNS) {
+    const match = html.match(pattern)
+    if (match?.[1]) return match[1]
+  }
+  return ''
+}
+
+export function extractBuildStamp(html) {
+  if (!html) return ''
+  for (const pattern of BUILD_STAMP_PATTERNS) {
     const match = html.match(pattern)
     if (match?.[1]) return match[1]
   }

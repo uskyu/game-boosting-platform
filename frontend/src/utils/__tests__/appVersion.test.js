@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { extractModuleEntry, isChunkLoadError } from '../appVersion'
+import { extractBuildStamp, extractModuleEntry, isChunkLoadError } from '../appVersion'
 
 describe('appVersion', () => {
   it('extracts the Vite module entry from index.html', () => {
@@ -16,6 +16,12 @@ describe('appVersion', () => {
   it('returns an empty string when there is no module entry', () => {
     expect(extractModuleEntry('')).toBe('')
     expect(extractModuleEntry('<html><body>no script</body></html>')).toBe('')
+  })
+
+  it('extracts the build stamp injected at build time', () => {
+    expect(extractBuildStamp('<meta name="app-build" content="2026-11-19T12:30:00.000Z" />')).toBe('2026-11-19T12:30:00.000Z')
+    expect(extractBuildStamp('<meta content="2026-11-19T12:31:00.000Z" name="app-build" />')).toBe('2026-11-19T12:31:00.000Z')
+    expect(extractBuildStamp('<meta name="theme-color" content="#fff" />')).toBe('')
   })
 
   it('detects chunk load failures from browser error messages', () => {
