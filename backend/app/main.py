@@ -23,6 +23,7 @@ from app.api.router import api_router
 from app.core.config import settings
 from app.core.request_timing import RequestTimingMiddleware
 from app.db.session import async_session_factory, close_db, engine, init_db
+from app.middleware_uploads import UploadsStorageMiddleware
 from app.services.site_setting_service import ensure_site_settings
 from app.services.user_service import get_user_service
 
@@ -214,6 +215,11 @@ app = FastAPI(
     redoc_url=f"{settings.API_V1_PREFIX}/redoc",
     lifespan=lifespan,
 )
+
+# /uploads 回源：COS 模式下从对象存储读取并在本地磁盘兜底；LOCAL 模式不介入，
+# 完全保持 StaticFiles 的原行为。注册在 CORS 之前，让 CORS 处在外层，
+# 这样 COS 代理响应同样带跨域头；它先于 mount 所在的 router 执行。
+app.add_middleware(UploadsStorageMiddleware)
 
 # Configure CORS – only allow the methods and headers actually used by the
 # frontend.  Avoid wildcards so the browser enforces a stricter policy.

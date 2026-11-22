@@ -82,6 +82,8 @@ from app.services.site_setting_service import (
     get_hall_sort_mode,
     get_or_create_site_setting,
 )
+# COS 托管图片的预签名改写（LOCAL 模式零行为变化）
+from app.services.url_signing import sign_urls_in_payload
 
 router = APIRouter(prefix="/orders", tags=["订单"])
 logger = logging.getLogger(__name__)
@@ -399,7 +401,9 @@ async def _enrich_order_response(db, response: OrderResponse, order, viewer: Use
     response.after_sale_pending = order.id in after_sale_ids
     await _apply_accept_window(db, [response], [order], viewer)
     await attach_designated_booster_briefs(db, [response])
-    return response
+    # COS 模式下把附件/交付附件的 /uploads 路径改写成 7 天预签名 URL。
+    # 与 brief 回填同一个收尾位置，保证每个响应路径只有一处改写钩子。
+    return await sign_urls_in_payload(db, response)
 
 
 async def _enrich_order_responses(
@@ -453,7 +457,9 @@ async def _enrich_order_responses(
     await _apply_accept_window(db, responses, orders, viewer)
     # 整页一次 SELECT 回填指定接单人展示信息（绝不 N+1 查 user 表）。
     await attach_designated_booster_briefs(db, responses)
-    return responses
+    # COS 模式：整页所有附件/交付附件统一改写为预签名 URL（一次批量签名，
+    # 与上面的 brief 回填同一收尾位置，列表路径只有这一处钩子）。
+    return await sign_urls_in_payload(db, responses)
 
 
 @router.post(
@@ -554,6 +560,9 @@ async def create_order(
     )
     # 指定派单的卡片也要带上指定人 brief（只含 id/用户名/头像）。
     await attach_designated_booster_briefs(db, [card_response])
+    # COS 模式：WS 新单卡片里的附件缩略图也要签名（所有可接单用户都能看
+    # 公开单的附件，签名一次全站复用同一串 URL）。
+    card_response = await sign_urls_in_payload(db, card_response)
     order_card = _apply_slim_list_payload(card_response).model_dump(mode="json")
 
     async with measure_stage(request, STAGE_ORDER_NOTIFICATIONS):
@@ -567,7 +576,7 @@ async def create_order(
 
     response = OrderResponse.model_validate(order)
     await attach_designated_booster_briefs(db, [response])
-    return response
+    return await sign_urls_in_payload(db, response)
 
 
 @router.get(
@@ -618,8 +627,10 @@ async def list_orders(
     """
     List orders with filtering and pagination.
 
-    - Non-admin users see claimable pending orders and their own/assigned orders
-    - Admins see all orders
+    - Public hall (without ``mine_published``) lists ONLY claimable orders, for
+      every role including admins; the viewer's own/claimed history lives in
+      「我的订单」/「我的派单」and the admin dispatch list
+    - ``mine_published=true`` lists orders published by the current user
 
     Filters:
     - **game_name**: Filter by game name (partial match)
@@ -674,6 +685,9 @@ async def list_orders(
         after_sale_only=after_sale_only,
         # 大厅口径（含管理员浏览大厅）跟随站点排序设置；「我的派单」不受影响。
         apply_hall_sort=not mine_published,
+        # 公开大厅只要「可抢」订单：查看者自己的历史单（含 COMPLETED）不进大厅，
+        # 否则 OLDEST 排序下会被老单填满第一页（2026-11-22 线上事故）。
+        public_hall=not mine_published,
     )
 
     # Calculate total pages
@@ -726,9 +740,10 @@ async def get_hall_digest(
     ``include_stats`` 缺省 true 保持原有响应；false 时只做轻量对账，跳过
     顶部统计聚合，供客户端 2 秒兜底轮询使用。
 
-    过滤条件与 list_orders 的 booster_scope 完全一致（非管理员只看可接/自己
-    相关的订单，管理员不加过滤）：口径不同会让客户端「摘要没变就不拉全量」的
-    判断失效（摘要不变但列表实际已变）。
+    过滤条件与 list_orders(public_hall=True) 的 build_public_hall_scope 完全一致
+    （**所有角色**只看可抢订单，管理员也一样）：口径不同会让客户端「摘要没变
+    就不拉全量」的判断失效（摘要不变但列表实际已变）。管理员的完整订单视图
+    由后台派单管理（``GET /admin/orders``）提供。
     """
     # 摘要也是脚本的高频探测通道：正常前端 2 秒一轮，脚本 0.25-0.4 秒一轮。
     if current_user.role != UserRole.ADMIN:
@@ -935,7 +950,7 @@ async def upload_order_attachment(
     attachment_name = Path(attachment.filename or "attachment").name
     if not attachment_name or len(attachment_name) > 255:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="附件文件名无效")
-    url = save_image_bytes(data, suffix, "orders")
+    url = await save_image_bytes(data, suffix, "orders", db, content_type=content_type)
     item = OrderAttachment(
         url=url,
         name=attachment_name,
@@ -1012,7 +1027,9 @@ async def upload_deliver_attachment(
     attachment_name = Path(attachment.filename or "attachment").name
     if not attachment_name or len(attachment_name) > 255:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="附件文件名无效")
-    url = save_image_bytes(data_bytes, suffix, "deliveries")
+    url = await save_image_bytes(
+        data_bytes, suffix, "deliveries", db, content_type=content_type
+    )
     item = OrderDeliveryAttachment(
         url=url,
         name=attachment_name,
@@ -1124,13 +1141,15 @@ async def list_my_claims(
         after_sale_only=after_sale_only,
     )
     pages = (total + page_size - 1) // page_size if total > 0 else 0
-    return MyOrderClaimListResponse(
+    response = MyOrderClaimListResponse(
         items=[MyOrderClaimItem.model_validate(item) for item in items],
         total=total,
         page=page,
         page_size=page_size,
         pages=pages,
     )
+    # COS 模式：报名列表里的订单缩略图与交付截图统一改写为预签名 URL。
+    return await sign_urls_in_payload(db, response)
 
 
 @router.get(
@@ -1201,10 +1220,12 @@ async def list_order_claims(
 
     claims = await order_service.list_order_claims(order_id)
 
-    return OrderClaimListResponse(
+    response = OrderClaimListResponse(
         items=[OrderClaimItem.model_validate(claim) for claim in claims],
         total=len(claims),
     )
+    # COS 模式：报名名单里的交付截图统一改写为预签名 URL。
+    return await sign_urls_in_payload(db, response)
 
 
 @router.put(
@@ -1257,7 +1278,9 @@ async def review_order_claim(
             link=f"/orders/{order_id}",
             ref_id=order_id,
         )
-    return OrderClaimItem.model_validate(claim)
+    response = OrderClaimItem.model_validate(claim)
+    # COS 模式：审核回显里的交付截图统一改写为预签名 URL。
+    return await sign_urls_in_payload(db, response)
 
 
 @router.put(

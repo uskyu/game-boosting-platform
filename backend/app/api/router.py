@@ -53,6 +53,11 @@ from app.api.endpoints.admin_order_analytics import (
     publisher_router as publisher_order_analytics_router,
 )
 from app.api.endpoints.designation import router as designation_router
+from app.api.endpoints.admin_storage import router as admin_storage_router
+# 登录用户的图片重新签发：预签名 URL 过期（403）后由前端 SignedImage 调用
+from app.api.endpoints.storage import router as storage_router
+# 通知音频自定义（四个槽位：来单/被接手/取消申请/聊天）
+from app.api.endpoints.admin_sounds import router as admin_sounds_router
 
 # Create main API router
 api_router = APIRouter()
@@ -81,6 +86,12 @@ api_router.include_router(admin_order_dispute_router)
 api_router.include_router(admin_order_analytics_router)
 api_router.include_router(admin_announcements_router)
 api_router.include_router(admin_site_router)
+# 对象存储设置 + 历史文件迁移/清理（仅管理员）
+api_router.include_router(admin_storage_router)
+# 预签名 URL 重新签发（登录用户；权限在签发时由服务端判定）
+api_router.include_router(storage_router)
+# 通知音频自定义（上传/试听/静音/音量）
+api_router.include_router(admin_sounds_router)
 api_router.include_router(admin_payment_router)
 api_router.include_router(admin_deposit_router)
 api_router.include_router(admin_service_fee_router)

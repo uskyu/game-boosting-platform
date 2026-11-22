@@ -126,6 +126,10 @@ def build_hall_visibility_scope(user: User):
     摘要端点必须与 list_orders 用完全相同的过滤条件：客户端「摘要无变化就
     不拉全量列表」的前提是二者同源，口径不一致会出现摘要未变但列表实际
     已变（漏刷新）或反之的假阴性。
+
+    注意：公开大厅（``GET /orders/`` 不带 mine_published）用的是
+    ``build_public_hall_scope``（只含可抢订单）。本函数保留「可抢 + 自己
+    发布/已接/已报名」的历史语义，供仍需要该口径的调用方使用。
     """
     if user.role == UserRole.ADMIN:
         return None
@@ -153,6 +157,36 @@ def build_hall_visibility_scope(user: User):
         | (Order.user_id == user.id)
         | (Order.booster_id == user.id)
         | my_claim_exists
+    )
+
+
+def build_public_hall_scope(user: User):
+    """Public hall list/digest scope: ONLY orders the viewer can actually claim.
+
+    The hall is a "grab orders" view; the frontend drops everything that is not
+    claimable. Including the viewer's own/claimed history here used to be
+    harmless while the hall was sorted newest-first, but with OLDEST sorting a
+    publisher with thousands of archived orders filled page 1 entirely with
+    old COMPLETED rows, so the filtered hall rendered empty (production
+    incident 2026-11-22). Keep the hall scope claimable-only; personal history
+    lives in 「我的订单」 and the admin dispatch list.
+
+    与 ``build_hall_visibility_scope`` 不同，本函数**不对管理员特判**：管理员
+    浏览公开大厅时同样只看可抢订单（否则管理员的大厅也会被历史单填满）。
+    管理员的全量订单视图由后台派单管理（``GET /admin/orders``）提供。
+    """
+    now = datetime.now(timezone.utc)
+    return (
+        Order.status.in_((OrderStatus.PENDING, OrderStatus.LOCKED))
+        & (Order.claim_status == ClaimStatus.OPEN)
+        & (Order.is_archived.is_(False))
+        & (or_(Order.deadline.is_(None), Order.deadline > now))
+        & (Order.claimed_count < Order.max_claims)
+        # 指定派单只对指定人可抢：未指定（NULL）保持原大厅语义。
+        & (
+            Order.designated_booster_id.is_(None)
+            | (Order.designated_booster_id == user.id)
+        )
     )
 
 
@@ -632,6 +666,7 @@ class OrderService:
         cancel_pending_only: bool = False,
         after_sale_only: bool = False,
         apply_hall_sort: bool = False,
+        public_hall: bool = False,
     ) -> tuple[list[Order], int, datetime | None, datetime | None]:
         """
         List orders with filtering and pagination.
@@ -640,6 +675,11 @@ class OrderService:
             user: Optional user for filtering (customers see own, boosters see available).
             mine_published: When true, return only orders published by ``user``;
                 this scope takes precedence over the hall/assigned-order scope.
+            public_hall: When true, return only orders the viewer can actually
+                claim (``build_public_hall_scope``), for every role including
+                admins. Takes precedence over the legacy role-based scope but
+                yields to ``mine_published``. Used by the public hall list, whose
+                client-side filter drops anything non-claimable.
             game_name: Optional game name filter.
             status_filter: Optional status filter.
             boss_contact: Optional boss-contact fuzzy filter (ilike); typically
@@ -743,6 +783,13 @@ class OrderService:
             publisher_scope = Order.user_id == user.id
             query = query.where(publisher_scope)
             count_query = count_query.where(publisher_scope)
+        elif public_hall and user is not None:
+            # 公开大厅：只含可抢订单，所有角色（含管理员）一律如此。前端大厅
+            # 会丢弃所有不可抢的条目，历史上把查看者自己的 COMPLETED 单混进来
+            # 在 OLDEST 排序下会把第一页彻底填满（2026-11-22 线上事故）。
+            hall_scope = build_public_hall_scope(user)
+            query = query.where(hall_scope)
+            count_query = count_query.where(hall_scope)
         elif user is not None:
             if user.role != UserRole.ADMIN:
                 # Every non-admin account can act as a booster. The hall keeps
@@ -910,19 +957,22 @@ class OrderService:
     async def hall_digest(
         self, user: User
     ) -> tuple[int, datetime | None, datetime | None]:
-        """大厅对账摘要：一条聚合查询取 (可见订单数, 最近更新, 最近截止)。
+        """大厅对账摘要：一条聚合查询取 (可抢订单数, 最近更新, 最近截止)。
 
-        过滤条件复用 build_hall_visibility_scope，与 list_orders 完全同口径
-        （管理员不加过滤），保证客户端「摘要没变就不拉全量」的判断可靠。
+        过滤条件复用 build_public_hall_scope，与 list_orders(public_hall=True)
+        完全同口径（管理员同样只看可抢订单），保证客户端「摘要没变就不拉
+        全量」的判断可靠。
+
+        此前这里用的是 build_hall_visibility_scope（含自己的历史订单，
+        管理员不加过滤），摘要计数远大于大厅实际能渲染的条目；2026-11-22
+        起大厅只下发可抢订单，摘要必须同步收窄。
         """
         query = select(
             func.count(Order.id),
             func.max(Order.updated_at),
             func.min(Order.deadline),
         )
-        scope = build_hall_visibility_scope(user)
-        if scope is not None:
-            query = query.where(scope)
+        query = query.where(build_public_hall_scope(user))
         row = (await self._db.execute(query)).one()
         return int(row[0] or 0), _ensure_utc(row[1]), _ensure_utc(row[2])
 

@@ -74,11 +74,31 @@ class SiteSetting(Base):
     hall_sort_mode: Mapped[str] = mapped_column(
         String(16), nullable=False, default="NEWEST", server_default="NEWEST"
     )
+    # 文件存储方式（2026-11-22）：LOCAL=本地磁盘（默认，与历史行为一致），
+    # COS=腾讯云对象存储。上传写入与读取路径由 storage_service 按此开关分流；
+    # 切换前后台会先做连通性测试，失败不允许落库。
+    storage_mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="LOCAL", server_default="LOCAL"
+    )
+    # COS 凭据：存的是 encrypt_text 的密文，任何接口都不下发明文
+    # （后台只回「前 4 位 + **** + 后 2 位」的掩码）。
+    cos_secret_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cos_secret_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 非敏感配置：桶名、地域、可选 CDN 域名。
+    cos_bucket: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    cos_region: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    cos_cdn_domain: Mapped[str | None] = mapped_column(String(200), nullable=True)
     updated_by: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(), default=func.now(), server_default=func.now(), onupdate=func.now(), nullable=False
     )
+    # 可自定义通知提示音（2026-11-22）：JSON，四个固定槽位
+    # （new_order / claimed / cancel_requested / chat_message），每个槽位
+    # {"url": str|None, "volume": int 0-100, "enabled": bool}。url=None 表示
+    # 使用内置默认音频（/sounds/*.wav 或 WebAudio 合成音）；NULL 整列表示
+    # 四个槽位全部默认。由 /admin/sounds 专用端点读写，站点设置保存接口不碰它。
+    notification_sounds: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     updater: Mapped["User | None"] = relationship("User", foreign_keys=[updated_by], lazy="noload")

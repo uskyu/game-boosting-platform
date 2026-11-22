@@ -38,11 +38,29 @@ from app.services.after_sale_service import (
     withdraw_after_sale,
 )
 from app.services.file_service import save_image_bytes, validate_image_upload
+# COS 托管图片的预签名改写（LOCAL 模式零行为变化）
+from app.services.url_signing import sign_urls_in_payload
 
 logger = logging.getLogger(__name__)
 
 after_sales_router = APIRouter(tags=["售后"])
 admin_after_sales_router = APIRouter(prefix="/admin/after-sales", tags=["售后管理"])
+
+
+async def _sign_item_image(db, item: AfterSaleItem) -> AfterSaleItem:
+    """单条售后记录的凭证图片改写（创建/撤回/认栽/审阅的回显路径）。"""
+    signed = await sign_urls_in_payload(db, [item])
+    return signed[0]
+
+
+async def _sign_item_images(db, items: list[AfterSaleItem]) -> list[AfterSaleItem]:
+    """COS 模式下把售后凭证图片改写成 7 天预签名 URL。
+
+    售后凭证存放在 ``/uploads/aftersales/{提交人id}/``，只有提交人本人与
+    管理员能拿到签名（见 ``url_signing.authorize_url``）；LOCAL 模式保持原
+    路径，历史静态直读行为不变。所有返回售后记录的端点共用这一处 hook。
+    """
+    return await sign_urls_in_payload(db, items)
 
 
 def _is_order_participant(order: Order, user: User) -> bool:
@@ -85,7 +103,7 @@ async def create_order_after_sale(
         images=payload.images,
     )
     item = await get_after_sale_item(db, after_sale.id)
-    return AfterSaleItem.model_validate(item)
+    return await _sign_item_image(db, AfterSaleItem.model_validate(item))
 
 
 @after_sales_router.get(
@@ -106,7 +124,9 @@ async def list_order_after_sale_records(
             detail="只有订单发布者、接单打手或管理员可以查看售后记录",
         )
     items = await list_order_after_sales(db, order_id)
-    return [AfterSaleItem.model_validate(item) for item in items]
+    return await _sign_item_images(
+        db, [AfterSaleItem.model_validate(item) for item in items]
+    )
 
 
 @after_sales_router.post(
@@ -142,7 +162,9 @@ async def upload_after_sale_image(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="凭证文件名无效"
         )
-    url = save_image_bytes(data_bytes, suffix, f"aftersales/{current_user.id}")
+    url = await save_image_bytes(
+        data_bytes, suffix, f"aftersales/{current_user.id}", db, content_type=content_type
+    )
     return AfterSaleImageOut(
         url=url,
         name=attachment_name,
@@ -172,7 +194,9 @@ async def list_my_after_sale_records(
     items = await list_my_after_sales(
         db, current_user.id, role=role, status=status_filter
     )
-    return [AfterSaleItem.model_validate(item) for item in items]
+    return await _sign_item_images(
+        db, [AfterSaleItem.model_validate(item) for item in items]
+    )
 
 
 @admin_after_sales_router.get(
@@ -206,7 +230,9 @@ async def list_after_sales_for_admin(
     )
     pages = (total + page_size - 1) // page_size if total > 0 else 0
     return AdminAfterSaleListResponse(
-        items=[AdminAfterSaleItem.model_validate(item) for item in items],
+        items=await _sign_item_images(
+            db, [AdminAfterSaleItem.model_validate(item) for item in items]
+        ),
         total=total,
         page=page,
         page_size=page_size,
@@ -242,7 +268,7 @@ async def withdraw_order_after_sale(
         )
     await withdraw_after_sale(db, after_sale=after_sale, user=current_user)
     item = await get_after_sale_item(db, after_sale.id)
-    return AfterSaleItem.model_validate(item)
+    return await _sign_item_image(db, AfterSaleItem.model_validate(item))
 
 
 @after_sales_router.post(
@@ -278,7 +304,7 @@ async def accept_order_after_sale(
         )
     await accept_after_sale_as_booster(db, after_sale=after_sale, booster=current_user)
     item = await get_after_sale_item(db, after_sale.id)
-    return AfterSaleItem.model_validate(item)
+    return await _sign_item_image(db, AfterSaleItem.model_validate(item))
 
 
 @admin_after_sales_router.post(
@@ -314,4 +340,4 @@ async def review_after_sale_record(
         amount=payload.amount,
     )
     item = await get_after_sale_item(db, after_sale.id)
-    return AfterSaleItem.model_validate(item)
+    return await _sign_item_image(db, AfterSaleItem.model_validate(item))

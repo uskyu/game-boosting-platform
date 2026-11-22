@@ -202,6 +202,7 @@ async def test_publisher_sees_claim_counts_in_detail_and_list(
         json={
             "game_name": "王者荣耀",
             "price": "100.00",
+            "max_claims": 2,  # 接掉 1 个名额后仍有空位 → 公开大厅里仍可抢
             "boss_contact": "admin-boss-contact",
         },
         headers=auth_header(admin_user),
@@ -251,15 +252,26 @@ async def test_publisher_sees_claim_counts_in_detail_and_list(
     assert listed[order_id]["pending_review_count"] == 1
     assert listed[order_id]["settled_count"] == 0
 
+    # 公开大厅（2026-11-22 起 claimable-only）：自己的满员单（order_id）不进大厅，
+    # 但仍可抢的 claim_order_id 进大厅并带上 my_claim。
     all_orders = await client.get(
         "/orders/?page=1&page_size=100", headers=auth_header(publisher)
     )
     assert all_orders.status_code == 200
     listed = {item["id"]: item for item in all_orders.json()["items"]}
-    assert listed[order_id]["pending_review_count"] == 1
+    assert order_id not in listed
     assert listed[claim_order_id]["my_claim"] is not None
     assert listed[claim_order_id]["my_claim"]["booster_id"] == publisher["user"]["id"]
     assert listed[claim_order_id]["boss_contact"] == "admin-boss-contact"
+
+    # 自己的满员单在自己的「我的派单」里仍能看到，并带 pending_review_count
+    own_list = await client.get(
+        "/orders/?mine_published=true&page=1&page_size=100",
+        headers=auth_header(publisher),
+    )
+    assert own_list.status_code == 200
+    listed = {item["id"]: item for item in own_list.json()["items"]}
+    assert listed[order_id]["pending_review_count"] == 1
 
     combined_detail = await client.get(
         f"/orders/{claim_order_id}", headers=auth_header(publisher)

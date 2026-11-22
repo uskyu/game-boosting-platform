@@ -82,7 +82,9 @@ async def upload_game_logo(
 ) -> GameResponse:
     # 管理操作：需管理员token，允许操作下架游戏
     game = await _get_game_or_404(db, game_id, include_inactive=True)
-    logo_url = await save_image_upload(logo, "games", max_size_bytes=10 * 1024 * 1024)
+    logo_url = await save_image_upload(
+        logo, "games", max_size_bytes=10 * 1024 * 1024, db=db
+    )
     game.logo_url = logo_url
     await db.flush()
     await db.refresh(game)

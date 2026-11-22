@@ -231,11 +231,12 @@ async def test_designated_visibility_for_target_third_party_publisher_admin(
     await _fund(client, admin_user, publisher)
     order = await _create_designated(client, publisher, target_id)
 
-    # 大厅列表
+    # 大厅列表：只有指定人能看到这单（2026-11-22 起大厅为 claimable-only，
+    # 发布人/管理员的大厅不再因为「自己的单 / 不过滤」而列出指定单）
     assert order["id"] in await _list_ids(client, target)
     assert order["id"] not in await _list_ids(client, third)
-    assert order["id"] in await _list_ids(client, publisher)
-    assert order["id"] in await _list_ids(client, admin_user)
+    assert order["id"] not in await _list_ids(client, publisher)
+    assert order["id"] not in await _list_ids(client, admin_user)
 
     # 大厅摘要（含顶部统计：只有目标能把这单算进自己的「待接单」）
     target_digest = await _digest(client, target)
@@ -246,8 +247,9 @@ async def test_designated_visibility_for_target_third_party_publisher_admin(
     assert target_digest["pending_count"] == 1
     assert third_digest["count"] == 0
     assert third_digest["pending_count"] == 0
-    assert publisher_digest["count"] == 1
-    assert admin_digest["count"] == 1
+    # 指定单对发布人/管理员同样不可抢 → 不进他们的大厅口径
+    assert publisher_digest["count"] == 0
+    assert admin_digest["count"] == 0
 
     # 详情
     detail = f"/orders/{order['id']}"

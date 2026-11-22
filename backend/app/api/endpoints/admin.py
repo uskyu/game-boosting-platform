@@ -50,6 +50,8 @@ from app.services.order_service import (
     get_order_service,
 )
 from app.services.user_service import get_user_service
+# COS 托管图片的预签名改写（LOCAL 模式零行为变化）
+from app.services.url_signing import sign_urls_in_payload
 from app.services.wallet_service import get_wallet_service
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -507,6 +509,18 @@ def _map_admin_withdrawal(withdrawal) -> AdminWithdrawalResponse:
     return AdminWithdrawalResponse(**data, username=username, user_email=user_email)
 
 
+async def _map_admin_withdrawals_for_view(db, withdrawals) -> list[AdminWithdrawalResponse]:
+    """后台提现记录统一映射 + COS 模式下收款二维码的预签名改写。
+
+    后台打款需要看用户的收款二维码，所以管理员视角必须能拿到签名 URL
+    （管理员在 ``url_signing.authorize_url`` 始终放行）。LOCAL 模式原样返回，
+    历史 ``/uploads`` 直读行为不变；列表与单条回显共用这一处 hook。
+    """
+    return await sign_urls_in_payload(
+        db, [_map_admin_withdrawal(w) for w in withdrawals]
+    )
+
+
 @router.get("/withdrawals", response_model=AdminWithdrawalListResponse, summary="提现申请列表")
 async def list_withdrawals_for_admin(
     db: DatabaseSession,
@@ -526,7 +540,7 @@ async def list_withdrawals_for_admin(
     )
     pages = (total + page_size - 1) // page_size if total > 0 else 0
     return AdminWithdrawalListResponse(
-        items=[_map_admin_withdrawal(w) for w in withdrawals],
+        items=await _map_admin_withdrawals_for_view(db, withdrawals),
         total=total,
         page=page,
         page_size=page_size,
@@ -560,7 +574,7 @@ async def review_withdrawal(
         approve=payload.action == "approve",
         reason=payload.reason,
     )
-    return _map_admin_withdrawal(withdrawal)
+    return (await _map_admin_withdrawals_for_view(db, [withdrawal]))[0]
 
 
 @router.post("/withdrawals/{withdrawal_id}/mark-paid", response_model=AdminWithdrawalResponse, summary="标记提现已打款")
@@ -582,7 +596,7 @@ async def mark_withdrawal_paid(
         current_admin,
         payment_reference=payload.payment_reference,
     )
-    return _map_admin_withdrawal(withdrawal)
+    return (await _map_admin_withdrawals_for_view(db, [withdrawal]))[0]
 
 
 @router.post("/wallets/{user_id}/adjust", response_model=WalletResponse, summary="管理员调账")

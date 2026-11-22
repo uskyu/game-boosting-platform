@@ -39,6 +39,9 @@ from app.models.recharge import RechargeOrder, RechargeStatus
 from app.models.review import Review
 from app.models.service_fee import ServiceFeeSetting
 from app.models.site_setting import SiteSetting
+from app.models.storage_migration import StorageMigration
+# 预签名 URL 复用台账：必须在 Base.metadata 里注册，测试库 create_all 才会建表
+from app.models.signed_url_cache import SignedUrlCache
 from app.models.user import BoosterApplicationStatus, User, UserRole
 from app.models.user_session import UserSession
 from app.models.wallet import Wallet, WalletTransaction, WalletTransactionType
@@ -89,6 +92,8 @@ __all__ = [
     "Review",
     "ServiceFeeSetting",
     "SiteSetting",
+    "SignedUrlCache",
+    "StorageMigration",
     "TimestampMixin",
     "User",
     "UserPreference",

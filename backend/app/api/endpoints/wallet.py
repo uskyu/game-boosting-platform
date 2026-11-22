@@ -25,6 +25,8 @@ from app.schemas.withdrawal_payout import (
     WithdrawalChannelOptionsResponse,
 )
 from app.services.file_service import save_image_bytes, validate_image_upload
+# COS 托管图片的预签名改写（LOCAL 模式零行为变化）
+from app.services.url_signing import sign_urls_in_payload
 from app.services.wallet_service import get_wallet_service
 from app.services.withdrawal_channel_service import get_channel_options
 
@@ -88,6 +90,7 @@ async def list_my_transactions(
 )
 async def upload_withdrawal_qrcode(
     current_user: CurrentUser,
+    db: DatabaseSession,
     file: UploadFile = File(..., description="二维码图片"),
 ) -> WithdrawalQrcodeUploadResponse:
     """
@@ -112,7 +115,9 @@ async def upload_withdrawal_qrcode(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="文件名无效",
         )
-    url = save_image_bytes(data, suffix, f"withdrawals/{current_user.id}")
+    url = await save_image_bytes(
+        data, suffix, f"withdrawals/{current_user.id}", db, content_type=content_type
+    )
     return WithdrawalQrcodeUploadResponse(
         url=url,
         name=name,
@@ -163,7 +168,10 @@ async def create_withdrawal(
         account_no=payload.account_no,
         qrcode_url=qrcode_url,
     )
-    return WithdrawalResponse.model_validate(withdrawal)
+    # COS 模式：收款二维码改写成预签名 URL（LOCAL 模式原样返回）。
+    return (
+        await sign_urls_in_payload(db, [WithdrawalResponse.model_validate(withdrawal)])
+    )[0]
 
 
 @withdrawals_router.get(
@@ -225,7 +233,10 @@ async def list_my_withdrawals(
         page_size=page_size,
     )
     return WithdrawalListResponse(
-        items=[WithdrawalResponse.model_validate(w) for w in withdrawals],
+        # COS 模式：本次本人的收款二维码改写成预签名 URL。
+        items=await sign_urls_in_payload(
+            db, [WithdrawalResponse.model_validate(w) for w in withdrawals]
+        ),
         total=total,
         page=page,
         page_size=page_size,

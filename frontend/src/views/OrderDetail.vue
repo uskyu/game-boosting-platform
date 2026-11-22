@@ -8,6 +8,8 @@ import BlacklistConfirmModal from '@/components/BlacklistConfirmModal.vue'
 import ChatFloatingWindow from '@/components/chat/ChatFloatingWindow.vue'
 import OrderDeliverModal from '@/components/OrderDeliverModal.vue'
 import OrderTimeline from '@/components/OrderTimeline.vue'
+// 带签名 URL 解析与过期重试的图片组件（COS 私有读图片直连对象存储）
+import SignedImage from '@/components/SignedImage.vue'
 import { useAfterSalesStore } from '@/stores/afterSales'
 import { useAuthStore } from '@/stores/auth'
 import { useBlacklistStore } from '@/stores/blacklist'
@@ -1923,7 +1925,7 @@ onUnmounted(() => {
               <p v-if="claim.status !== 'CLAIMED'" class="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-ink-2">汇报：{{ claim.delivery_note || '未填写文字汇报' }}</p>
               <div v-if="claim.status !== 'CLAIMED' && claim.delivery_attachments?.length" class="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
                 <button v-for="(image, index) in claim.delivery_attachments" :key="image.url" type="button" class="overflow-hidden rounded-tile border border-line-1" @click="openClaimPreview(claim, index)">
-                  <img :src="image.url" :alt="image.name || '交付截图'" class="h-28 w-full object-cover" loading="lazy" />
+                  <SignedImage :raw-url="image.url" :alt="image.name || '交付截图'" class="h-28 w-full object-cover" />
                   <span class="block px-2 py-1 text-xs text-primary">查看原图 {{ index + 1 }}</span>
                 </button>
               </div>
@@ -1976,7 +1978,7 @@ onUnmounted(() => {
             class="group relative overflow-hidden rounded-tile border border-line-1 bg-surface-2"
             @click="openOrderLightbox(idx)"
           >
-            <img :src="attachmentUrl(att)" :alt="attachmentName(att) || '订单图片'" class="h-24 w-full object-cover transition group-hover:opacity-90" loading="lazy" />
+            <SignedImage :raw-url="attachmentUrl(att)" :alt="attachmentName(att) || '订单图片'" class="h-24 w-full object-cover transition group-hover:opacity-90" />
           </button>
         </div>
       </section>
@@ -1997,7 +1999,7 @@ onUnmounted(() => {
             class="group relative overflow-hidden rounded-tile border border-line-1 bg-surface-2"
             @click="openDeliveryLightbox(idx)"
           >
-            <img :src="att.url" :alt="att.name || '结束汇报截图'" class="h-24 w-full object-cover transition group-hover:opacity-90" loading="lazy" />
+            <SignedImage :raw-url="att.url" :alt="att.name || '结束汇报截图'" class="h-24 w-full object-cover transition group-hover:opacity-90" />
           </button>
         </div>
         <p v-if="myClaim?.status === 'DELIVERED' && !isOwner" class="message-info mt-4 text-xs leading-6">

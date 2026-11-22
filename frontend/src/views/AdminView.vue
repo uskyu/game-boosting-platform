@@ -13,6 +13,8 @@ import AdminDashboard from '@/components/admin/AdminDashboard.vue'
 import AdminOrderAnalytics from '@/components/admin/AdminOrderAnalytics.vue'
 import AdminUserList from '@/components/admin/AdminUserList.vue'
 import AdminSiteSettings from '@/components/admin/AdminSiteSettings.vue'
+import AdminStorageSettings from '@/components/admin/AdminStorageSettings.vue'
+import AdminNotificationSounds from '@/components/admin/AdminNotificationSounds.vue'
 import AdminPaymentSettings from '@/components/admin/AdminPaymentSettings.vue'
 import AdminRechargeRecords from '@/components/admin/AdminRechargeRecords.vue'
 import AdminServiceFeeSettings from '@/components/admin/AdminServiceFeeSettings.vue'
@@ -65,7 +67,7 @@ const walletStore = useWalletStore()
 const afterSalesStore = useAfterSalesStore()
 const withdrawalPayoutStore = useWithdrawalPayoutStore()
 
-const TAB_KEYS = ['dashboard', 'orders', 'order-analytics', 'withdrawals', 'afterSales', 'wallet-adjust', 'games', 'users', 'site', 'payment', 'recharges', 'service-fee', 'withdrawal-rule', 'withdrawal-category', 'payout-batches', 'deposit', 'depositLedger', 'announcements', 'publishRequests']
+const TAB_KEYS = ['dashboard', 'orders', 'order-analytics', 'withdrawals', 'afterSales', 'wallet-adjust', 'games', 'users', 'site', 'sounds', 'storage', 'payment', 'recharges', 'service-fee', 'withdrawal-rule', 'withdrawal-category', 'payout-batches', 'deposit', 'depositLedger', 'announcements', 'publishRequests']
 
 function normalizeTab(tab) {
   const value = Array.isArray(tab) ? tab[0] : tab
@@ -1255,6 +1257,8 @@ onMounted(async () => {
           <button type="button" :class="activeTab === 'games' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'games'">游戏管理</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'users' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'users'">用户管理</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'site' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'site'">站点管理</button>
+          <button v-if="isAdmin" type="button" :class="activeTab === 'sounds' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'sounds'">通知音频</button>
+          <button v-if="isAdmin" type="button" :class="activeTab === 'storage' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'storage'">对象存储</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'payment' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'payment'">支付设置</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'recharges' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'recharges'">支付记录</button>
           <button v-if="isAdmin" type="button" :class="activeTab === 'service-fee' ? 'tab-pill-active' : 'tab-pill'" @click="activeTab = 'service-fee'">服务费设置</button>
@@ -1274,6 +1278,8 @@ onMounted(async () => {
     <AdminOrderAnalytics v-else-if="activeTab === 'order-analytics'" />
     <AdminUserList v-else-if="activeTab === 'users'" />
     <AdminSiteSettings v-else-if="activeTab === 'site'" />
+    <AdminStorageSettings v-else-if="activeTab === 'storage'" />
+    <AdminNotificationSounds v-else-if="activeTab === 'sounds'" />
     <AdminPaymentSettings v-else-if="activeTab === 'payment'" />
     <AdminRechargeRecords v-else-if="activeTab === 'recharges'" />
     <AdminServiceFeeSettings v-else-if="activeTab === 'service-fee'" />

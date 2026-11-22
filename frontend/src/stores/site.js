@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import api from '@/utils/api'
+import { configureSounds } from '@/utils/sound'
 
 export const useSiteStore = defineStore('site', () => {
   // 安全设置由后端公开下发：注册/接单验证码开关与同时在线设备上限。
@@ -30,15 +31,29 @@ export const useSiteStore = defineStore('site', () => {
     ],
     // 页脚最底部自定义 HTML（备案号）；空串表示不显示
     footer_html: '',
+    // 通知提示音配置：后台按槽位下发（url=null 表示使用内置默认音频）。
+    // 空对象=尚未拉到配置，sound.js 按内置默认播放。
+    notification_sounds: {},
   })
   const loading = ref(false)
   const fetched = ref(false)
   // force=true 绕过已拉取缓存：站点设置可能在后台被改（验证码开关），
   // 注册页挂载时必须重新确认一次，不能沿用启动时缓存的旧值。
   async function fetchSettings(force = false) {
-    if (fetched.value && !force) return { success: true, data: settings.value }
+    if (fetched.value && !force) {
+      // 已拉过也要保证音效配置生效（首次挂载可能在本 store 之外先读 settings）
+      configureSounds(settings.value.notification_sounds)
+      return { success: true, data: settings.value }
+    }
     loading.value = true
-    try { const r = await api.get('/site/settings'); settings.value = { ...settings.value, ...(r.data || {}) }; fetched.value = true; return { success: true, data: settings.value } }
+    try {
+      const r = await api.get('/site/settings')
+      settings.value = { ...settings.value, ...(r.data || {}) }
+      // 站点设置里带通知提示音配置：交给 sound.js 合并（缺字段按默认补齐）
+      configureSounds(settings.value.notification_sounds)
+      fetched.value = true
+      return { success: true, data: settings.value }
+    }
     catch (e) { return { success: false, error: e.message || '加载站点设置失败' } }
     finally { loading.value = false }
   }

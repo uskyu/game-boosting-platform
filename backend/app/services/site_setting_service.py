@@ -11,12 +11,16 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.core.title_rules import normalize_rules
 from app.models.site_setting import SiteSetting
+from app.schemas.notification_sound import normalize_sounds
 
-# 大厅排序模式的进程内短缓存（15s）。大厅每个客户端每 2-10 秒就会拉一次
+# 大厅排序模式的进程内短缓存（2s）。大厅每个客户端每 2-10 秒就会拉一次
 # 列表/摘要，如果每次都回表读这一行设置，等于把一条静态配置变成高频查询。
-# 管理员保存时由 admin 端点主动 invalidate；即使漏掉，最坏 15 秒后自愈。
+# 管理员保存时由 admin 端点主动 invalidate_hall_sort_cache()，同一进程内
+# 立即生效；这个 2 秒 TTL 只兜住「假设存在多个进程」时其他进程的可见窗口，
+# 避免老板反馈的「改了排序要等 1-2 分钟才看到」（旧值 15s 叠加客户端轮询
+# 间隔，体感上是分钟级）。
 _HALL_SORT_CACHE = {"value": "NEWEST", "expires_at": 0.0}
-_HALL_SORT_TTL_SECONDS = 15.0
+_HALL_SORT_TTL_SECONDS = 2.0
 
 
 async def ensure_site_settings(db) -> SiteSetting:
@@ -57,11 +61,11 @@ async def get_order_title_replacements(db) -> list[dict[str, str]]:
 
 
 async def get_hall_sort_mode(db) -> str:
-    """返回站点大厅排序模式（"NEWEST" / "OLDEST"），带 15 秒进程内缓存。
+    """返回站点大厅排序模式（"NEWEST" / "OLDEST"），带 2 秒进程内缓存。
 
     大厅每个客户端每 2-10 秒拉一次列表/摘要，为一行静态配置每次都回表
     是纯浪费；这里只读单个标量列，命中缓存时零 DB 往返。管理员保存设置
-    会调用 invalidate_hall_sort_cache() 立即失效。
+    会调用 invalidate_hall_sort_cache() 立即失效，同进程内不必等 TTL。
 
     设置行缺失（首启尚未懒创建）时返回 "NEWEST"，与列默认值一致。
     迁移在应用启动前执行，因此不需要处理「列不存在」的情况。
@@ -85,3 +89,9 @@ async def get_hall_sort_mode(db) -> str:
 def invalidate_hall_sort_cache() -> None:
     """立即让大厅排序模式缓存失效（管理员保存设置后调用）。"""
     _HALL_SORT_CACHE["expires_at"] = 0.0
+
+
+async def get_notification_sounds(db) -> dict:
+    """返回归一化后的通知音频配置（缺失槽位用内置默认）。"""
+    setting = await get_or_create_site_setting(db)
+    return normalize_sounds(setting.notification_sounds)

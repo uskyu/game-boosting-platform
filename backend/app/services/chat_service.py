@@ -5,7 +5,7 @@ Handles conversation and message related business logic.
 
 import logging
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException, UploadFile, status
@@ -15,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, joinedload, selectinload
 
 from app.api.rate_limit import enforce_user_limit
-from app.core.config import settings
 from app.core.security import escape_like
 from app.core.title_rules import apply_title_replacements
 from app.models.chat import (
@@ -29,6 +28,7 @@ from app.models.chat import (
 from app.models.order import ClaimStatus, Order, OrderClaim, OrderStatus
 from app.models.user import User, UserRole
 from app.services.site_setting_service import get_order_title_replacements
+from app.services.url_signing import sign_urls_in_payload
 
 logger = logging.getLogger(__name__)
 
@@ -555,7 +555,11 @@ class ChatService:
         current_user: User,
         file: UploadFile,
     ) -> Message:
-        """发送图片消息。"""
+        """发送图片消息。
+
+        图片按当前站点存储模式落盘（本地磁盘或 COS），消息里保存的仍是
+        ``/uploads/chat/<file>`` 相对 URL，与历史消息完全一致。
+        """
         await self._get_participant_or_403(
             conversation_id=conversation_id,
             user_id=current_user.id,
@@ -588,13 +592,11 @@ class ChatService:
                 detail="图片大小不能超过10MB",
             )
 
-        upload_dir = Path(settings.UPLOAD_DIR) / "chat"
-        upload_dir.mkdir(parents=True, exist_ok=True)
-
         suffix = allowed_types[file.content_type]
         file_name = f"{uuid4().hex}{suffix}"
-        file_path = upload_dir / file_name
-        file_path.write_bytes(file_bytes)
+        await storage_service.save_bytes(
+            file_bytes, f"chat/{file_name}", file.content_type, self._db
+        )
 
         now = datetime.now(timezone.utc)
         message = Message(
@@ -1333,3 +1335,23 @@ class ChatService:
 def get_chat_service(db: AsyncSession) -> ChatService:
     """创建聊天服务实例。"""
     return ChatService(db)
+
+
+async def sign_chat_message_payloads(db, responses: list[Any]) -> list[Any]:
+    """COS 模式下把聊天消息里的 ``/uploads/chat/...`` 改写为预签名 URL。
+
+    消息历史 / 搜索 / 发送回显 / WS 新消息共用一个 hook：图片地址在序列化时
+    统一改写，数据库里仍保存 ``/uploads/chat/<file>`` 相对路径（历史消息与
+    切换存储模式前的旧消息都不受影响）。LOCAL 模式原样返回，零行为变化。
+
+    调用点本身已完成会话参与者校验（``get_participant_or_403``），因此这里
+    直接签发；需要独立鉴权的路径（前端过期重签）走 ``url_signing.authorize_url``。
+
+    Args:
+        db: 请求会话（签名台账的读写与 COS 调用都走它）。
+        responses: 已序列化的消息列表（``ChatMessageResponse`` 实例）。
+
+    Returns:
+        改写后的消息列表（可能是新对象，调用方必须使用返回值）。
+    """
+    return await sign_urls_in_payload(db, responses)

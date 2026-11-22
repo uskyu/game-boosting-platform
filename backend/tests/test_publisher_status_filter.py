@@ -134,13 +134,25 @@ async def test_mine_published_delivered_matches_legacy_delivered_order(
 async def test_hall_scope_status_filter_is_literal(
     client: AsyncClient, admin_user: dict, db_session
 ):
-    """hall 作用域（非 mine_published）保持字面状态匹配：有待审核 claim 的
-    LOCKED 单不会被当成 DELIVERED，遗留 DELIVERED 单也不会被当成 LOCKED。"""
+    """hall 作用域（非 mine_published）仍保持字面状态匹配：仍可抢的多名额单
+    挂着一个 DELIVERED claim 时，status=LOCKED 命中它、status=DELIVERED 不命中；
+    而同一张单在 mine_published 口径下会命中「待确认」（口径差异的核心断言）。
+
+    2026-11-22 起大厅口径收窄为 claimable-only：不可抢的历史单（含遗留
+    DELIVERED 单）不再出现在公开大厅列表里——这里同时断言这一点。
+    """
     publisher = await _publisher_with_balance(client, admin_user, "hall")
     booster = await _register(client, "pub.hall.booster@example.com", "HallBooster")
 
-    pending_review_order = await _create_order(client, publisher)
-    await _accept_and_deliver(client, pending_review_order["id"], booster)
+    # 两个名额：一人交付后订单仍 LOCKED 且仍有空位 → 依旧可抢
+    multi = await client.post(
+        "/orders/create",
+        json={"game_name": "王者荣耀", "price": "100.00", "max_claims": 2},
+        headers=auth_header(publisher),
+    )
+    assert multi.status_code == 201, multi.text
+    multi_order = multi.json()
+    await _accept_and_deliver(client, multi_order["id"], booster)
 
     legacy_delivered = await _create_order(client, publisher)
     result = await db_session.execute(select(Order).where(Order.id == legacy_delivered["id"]))
@@ -148,11 +160,22 @@ async def test_hall_scope_status_filter_is_literal(
     legacy_row.status = OrderStatus.DELIVERED
     await db_session.commit()
 
-    # 发布人不带 mine_published 拉自己的单：字面匹配
+    # 发布人不带 mine_published 拉大厅：可抢单按字面状态匹配
     data = await _list(client, publisher, status="LOCKED", page_size=100)
     assert data["total"] == 1
-    assert _ids(data) == {pending_review_order["id"]}
+    assert _ids(data) == {multi_order["id"]}
 
+    # 字面匹配：这张单本身是 LOCKED，不是 DELIVERED
     data = await _list(client, publisher, status="DELIVERED", page_size=100)
-    assert data["total"] == 1
-    assert _ids(data) == {legacy_delivered["id"]}
+    assert data["total"] == 0
+    assert _ids(data) == set()
+
+    # 不可抢的历史单（遗留 DELIVERED）不进公开大厅（大厅是「抢单」视图）
+    data = await _list(client, publisher, page_size=100)
+    assert legacy_delivered["id"] not in _ids(data)
+
+    # 同一张单在「我的派单」口径下命中「待确认」——两种口径刻意不同
+    # （遗留 DELIVERED 单同样命中，因此共 2 条）
+    data = await _list(client, publisher, mine_published="true", status="DELIVERED", page_size=100)
+    assert data["total"] == 2
+    assert _ids(data) == {multi_order["id"], legacy_delivered["id"]}

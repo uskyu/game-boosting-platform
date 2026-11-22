@@ -9,7 +9,7 @@ import anyio
 from fastapi import HTTPException, UploadFile, status
 from PIL import Image, UnidentifiedImageError
 
-from app.core.config import settings
+from app.services import storage_service
 
 _ALLOWED_TYPES = {
     "image/png": {".png"},
@@ -104,16 +104,34 @@ def _validate_and_normalize_image(data: bytes, content_type: str, suffix: str) -
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="图片内容无效")
 
 
-def save_image_bytes(data: bytes, suffix: str, subdirectory: str = "") -> str:
-    """Save already validated image bytes and return a relative URL."""
+async def save_image_bytes(
+    data: bytes,
+    suffix: str,
+    subdirectory: str = "",
+    db=None,
+    *,
+    content_type: str | None = None,
+) -> str:
+    """Save already validated image bytes and return a relative /uploads URL.
+
+    存储位置由站点设置决定（LOCAL 本地磁盘 / COS 对象存储）；返回值始终是
+    ``/uploads/<key>`` 相对 URL，与历史数据完全一致，前端与数据库契约不变。
+
+    ``db`` 用于读取存储配置（异步会话）；调用方必须传入，否则一律按 LOCAL。
+    """
     relative_dir = Path(subdirectory)
     if relative_dir.is_absolute() or ".." in relative_dir.parts:
         raise ValueError("invalid upload subdirectory")
-    target_dir = Path(settings.UPLOAD_DIR) / relative_dir
-    target_dir.mkdir(parents=True, exist_ok=True)
     filename = f"{uuid4().hex}{suffix}"
-    (target_dir / filename).write_bytes(data)
-    url_path = "/uploads/" + "/".join(part for part in relative_dir.parts if part) if relative_dir.parts else "/uploads"
+    parts = [part for part in relative_dir.parts if part]
+    key = "/".join([*parts, filename])
+    await storage_service.save_bytes(
+        data,
+        key,
+        content_type or storage_service.guess_content_type(filename),
+        db,
+    )
+    url_path = "/uploads/" + "/".join(parts) if parts else "/uploads"
     return f"{url_path}/{filename}"
 
 
@@ -122,7 +140,12 @@ async def save_image_upload(
     subdirectory: str = "",
     *,
     max_size_bytes: int = 10 * 1024 * 1024,
+    db=None,
 ) -> str:
     """Validate and save an image, returning a relative /uploads URL."""
-    data, suffix, _ = await validate_image_upload(file, max_size_bytes=max_size_bytes)
-    return save_image_bytes(data, suffix, subdirectory)
+    data, suffix, content_type = await validate_image_upload(
+        file, max_size_bytes=max_size_bytes
+    )
+    return await save_image_bytes(
+        data, suffix, subdirectory, db, content_type=content_type
+    )

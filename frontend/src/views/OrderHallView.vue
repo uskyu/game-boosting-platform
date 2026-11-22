@@ -8,6 +8,8 @@ import { useNotificationsStore } from '@/stores/notifications'
 import { useOrdersStore } from '@/stores/orders'
 import { useSiteStore } from '@/stores/site'
 import LeaderboardWidget from '@/components/leaderboard/LeaderboardWidget.vue'
+// 带签名 URL 解析与过期重试的图片组件（COS 私有读图片直连对象存储）
+import SignedImage from '@/components/SignedImage.vue'
 import { formatCount, formatPayoutDelay, formatPrice, formatShortDate, getAcceptWaitMeta, serverNow } from '@/utils/display'
 import { getHallOrderDisplayBadgeClass, getHallOrderDisplayStatus } from '@/utils/order'
 import api from '@/utils/api'
@@ -18,8 +20,9 @@ import { measureOrderFlowStage } from '@/utils/orderFlowTiming'
  * 顶部统计条（待接单 / 进行中 / 今日完成，大数字）
  * → 订单卡网格（桌面 2 列、移动 1 列）→ 空态 → 今日已接单区块。
  * 大厅固定只展示「可抢」订单：历史/已完结订单不再出现在大厅，请到「我的订单」查看。
- * 卡片信息层级（减法）：价格最大最显眼 → 当前情况 X/Y
- * → 炸单赔偿 / 到账时效 chips → 底部次要信息行（需求摘要 · 游戏名 · 时间 · #id）+「查看详情 →」。
+ * 卡片信息层级：价格 + 状态徽标 → 标题（最多 2 行）→ 需求摘要（2 行）
+ * → 炸单赔偿 / 到账时效 / 当前情况 chips → 分隔线 → 归属 chips（游戏 / 发单人 / 未读）
+ * → 编号 · 发布时间 +「查看详情 →」。
  * 接单两步走：整卡点击进详情，详情页内确认接单。
  * 挂载后静默刷新当前页（页面可见时），检测到新订单弹轻提示。
  */
@@ -233,14 +236,32 @@ function getAttachment(order) {
   return typeof url === 'string' && url.startsWith('/uploads/orders/') ? url : ''
 }
 
-function getMetaLine(order) {
-  const pieces = []
-  if (order.compensation_amount) pieces.push(`炸单赔偿 ${formatPrice(order.compensation_amount)}`)
+// 元信息拆成独立 chip：炸单赔偿 / 到账时效 / 当前情况各自换行也不互相截断。
+// tone 只影响底色，文案与卡片原先单行拼接的片段一一对应。
+function getMetaChips(order) {
+  const chips = []
+  if (order.compensation_amount) {
+    chips.push({
+      key: 'compensation',
+      label: `炸单赔偿 ${formatPrice(order.compensation_amount)}`,
+      tone: 'compensation',
+    })
+  }
   const payoutText = formatPayoutDelay(order)
-  if (payoutText) pieces.push(`${payoutText}到账`)
+  if (payoutText) {
+    chips.push({ key: 'payout', label: `${payoutText}到账`, tone: 'payout' })
+  }
   const { claimed, max } = getClaimMeta(order)
-  if (max > 0) pieces.push(`当前情况 ${claimed}/${max}`)
-  return pieces.join(' · ')
+  if (max > 0) {
+    chips.push({ key: 'claims', label: `当前情况 ${claimed}/${max}`, tone: 'claims' })
+  }
+  return chips
+}
+
+function getMetaChipClass(chip) {
+  // 当前情况是接单决策的关键数字，用更实的底色；其余两条保持中性，避免卡片内颜色过多。
+  if (chip?.tone === 'claims') return 'tag tabular-nums !bg-surface-3 !text-ink-1'
+  return 'tag tabular-nums !bg-surface-3 !text-ink-2'
 }
 
 function isFullOrder(order) {
@@ -250,9 +271,20 @@ function isFullOrder(order) {
   return false
 }
 
+// 摘要块：多行描述压成一行规范空白，超长按字符截断补「…」。
+// 卡片上再用 2 行 line-clamp 收尾，保证摘要最多占两行、不与相邻元素相挤。
+const SUMMARY_MAX_CHARS = 88
+
+function clampSummary(text) {
+  const normalized = String(text || '').replace(/\s+/g, ' ').trim()
+  if (!normalized) return ''
+  if (normalized.length <= SUMMARY_MAX_CHARS) return normalized
+  return `${normalized.slice(0, SUMMARY_MAX_CHARS).trimEnd()}…`
+}
+
 function buildSummary(order) {
   if (order.intro) {
-    return order.intro.length > 28 ? `${order.intro.slice(0, 28)}...` : order.intro
+    return clampSummary(order.intro)
   }
   const detail = order.ai_tags?.detail || {}
   const requirements = Array.isArray(detail.requirements) ? detail.requirements.filter(Boolean) : []
@@ -262,11 +294,10 @@ function buildSummary(order) {
   ].filter(Boolean)
 
   if (pieces.length) {
-    return pieces.join(' · ')
+    return clampSummary(pieces.join(' · '))
   }
 
-  const raw = order.description_raw || ''
-  return raw.length > 28 ? `${raw.slice(0, 28)}...` : raw
+  return clampSummary(order.description_raw)
 }
 
 async function fetchOrders() {
@@ -795,30 +826,29 @@ onUnmounted(() => {
         :class="['catalog-card cursor-pointer hall-order-card !rounded-[12px] !p-4', { 'hall-order-card--full': isFullOrder(order) }]"
         @click="goToOrder(order.id)"
       >
-        <!-- 层级：价格最大红字 → 标题 → 一行小字元信息 → 底部次要行 -->
-        <div class="flex items-start justify-between gap-2">
+        <!-- 层级：价格 + 状态徽标 → 标题（最多 2 行）→ 摘要 → 元信息 chips → 分隔线 → 归属与操作 -->
+        <div class="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
           <p class="shrink-0 text-2xl font-semibold tabular-nums leading-7 text-price">{{ getPriceLabel(order) }}</p>
-          <span v-if="isFullOrder(order)" class="badge-cancelled shrink-0">已抢空</span>
-          <!-- 被发单人拉黑：订单仍可点进详情，但不能接单 -->
-          <span v-else-if="order.accept_blocked" class="tag shrink-0 !bg-danger-soft !text-danger">发单人已限制</span>
-          <span v-else-if="!isOrderClaimable(order)" :class="[getOrderDisplayBadgeClass(order), 'shrink-0']">{{ getOrderDisplayStatus(order) }}</span>
+          <!-- 徽标组可换行：已抢空 / 拉黑限制 / 指定单 与价格并列时不互相挤 -->
+          <div class="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
+            <span v-if="getDesignationBadgeLabel(order)" class="tag !bg-primary-soft !text-primary">{{ getDesignationBadgeLabel(order) }}</span>
+            <span v-if="isFullOrder(order)" class="badge-cancelled shrink-0">已抢空</span>
+            <!-- 被发单人拉黑：订单仍可点进详情，但不能接单 -->
+            <span v-else-if="order.accept_blocked" class="tag shrink-0 !bg-danger-soft !text-danger">发单人已限制</span>
+            <span v-else-if="!isOrderClaimable(order)" :class="[getOrderDisplayBadgeClass(order), 'shrink-0']">{{ getOrderDisplayStatus(order) }}</span>
+          </div>
         </div>
 
-        <!-- 标题与醒目的发单人昵称分层展示；兼容旧响应字段 -->
-        <div v-if="order.title || getPublisherNickname(order)" class="mt-3 flex min-w-0 items-start justify-between gap-2 md:mt-2">
-          <p v-if="order.title" class="min-w-0 flex-1 truncate text-[15px] font-semibold text-ink-1">{{ order.title }}</p>
-          <span v-if="getPublisherNickname(order)" class="tag max-w-[45%] shrink-0 truncate !bg-info-soft !text-info md:hidden">
-            发单人 · {{ getPublisherNickname(order) }}
-          </span>
-        </div>
+        <!-- 标题：最多 2 行；发单人统一放到卡片底部 chip 区，避免同一信息出现两次 -->
+        <p v-if="order.title" class="mt-3 line-clamp-2 break-words text-base font-semibold leading-6 text-ink-1">{{ order.title }}</p>
 
-        <!-- 指定单徽标：目标本人「指定给我」，其余可见者「指定单」；不占价格/状态行 -->
-        <div v-if="getDesignationBadgeLabel(order)" class="mt-2 flex flex-wrap items-center gap-2">
-          <span class="tag !bg-primary-soft !text-primary">{{ getDesignationBadgeLabel(order) }}</span>
-        </div>
+        <!-- 摘要：2 行 line-clamp，13px 次要色，不截字导致句子断在半截 -->
+        <p v-if="buildSummary(order)" class="mt-3 line-clamp-2 break-words text-[13px] leading-5 text-ink-2">{{ buildSummary(order) }}</p>
 
-        <!-- 炸单赔偿 / 到账时效 / 当前情况收敛为一行 13px 小字 -->
-        <p v-if="getMetaLine(order)" class="mt-1.5 truncate text-[13px] tabular-nums text-ink-2">{{ getMetaLine(order) }}</p>
+        <!-- 炸单赔偿 / 到账时效 / 当前情况：独立 chip 自动换行 -->
+        <div v-if="getMetaChips(order).length" class="mt-3 flex flex-wrap items-center gap-1.5">
+          <span v-for="chip in getMetaChips(order)" :key="chip.key" :class="getMetaChipClass(chip)">{{ chip.label }}</span>
+        </div>
 
         <!-- 抢单倒计时：pending 显示「加载中」（服务端下一轮对账补精确倒计时），
              有剩余秒数时明确区分当前剩余与配置的总等待时长 -->
@@ -829,28 +859,30 @@ onUnmounted(() => {
           <span class="tag !bg-warning-soft !text-warning tabular-nums">{{ getAcceptWaitView(order).label }}</span>
         </div>
 
-        <div v-if="getAttachment(order)" class="mt-3 overflow-hidden rounded-tile"><img :src="getAttachment(order)" alt="订单附件" loading="lazy" class="max-h-40 w-full rounded object-cover" /></div>
+        <div v-if="getAttachment(order)" class="mt-3 overflow-hidden rounded-tile"><SignedImage :raw-url="getAttachment(order)" alt="订单附件" class="max-h-40 w-full rounded object-cover" /></div>
 
-        <!-- 底栏元信息可换行，作者标签和详情操作保持独立区域 -->
-        <div class="mt-4 border-t border-line-1 pt-3.5 text-[13px] md:mt-3 md:pt-3">
-          <p v-if="buildSummary(order)" class="truncate text-ink-2">{{ buildSummary(order) }}</p>
-          <div class="mt-2 flex items-center justify-between gap-3 md:flex-col md:items-stretch md:gap-2">
-            <div class="flex min-w-0 items-center gap-2 text-ink-2 md:flex-wrap md:gap-x-2 md:gap-y-1">
-              <span class="max-w-full truncate font-medium">{{ order.game_name }}</span>
-              <span
-                v-if="getPublisherNickname(order)"
-                class="tag hidden min-w-0 max-w-full truncate !bg-info-soft !text-info md:inline-flex"
-                :title="`发单人 · ${getPublisherNickname(order)}`"
-              >发单人 · {{ getPublisherNickname(order) }}</span>
-              <span v-if="getOrderUnreadCount(order.id)" class="tag shrink-0 !bg-warning-soft !text-warning">
-                消息 {{ getOrderUnreadCount(order.id) }}
-              </span>
-              <span class="text-ink-3">发布于 {{ formatShortDate(order.created_at) }}</span>
-              <span class="shrink-0 tabular-nums text-ink-3">#{{ order.id }}</span>
+        <!-- 底栏：分隔线以上是订单主体信息，以下拆成「归属 chips」与「编号 + 时间 + 操作」两行 -->
+        <div class="mt-4 border-t border-line-1 pt-3">
+          <div class="flex flex-wrap items-center gap-2 text-[13px]">
+            <span class="tag min-w-0 max-w-full !bg-surface-3 font-medium !text-ink-1 truncate">{{ order.game_name }}</span>
+            <span
+              v-if="getPublisherNickname(order)"
+              class="tag min-w-0 max-w-full truncate !bg-info-soft !text-info"
+              :title="getPublisherNickname(order)"
+            >发单人 · {{ getPublisherNickname(order) }}</span>
+            <span v-if="getOrderUnreadCount(order.id)" class="tag shrink-0 !bg-warning-soft !text-warning">
+              消息 {{ getOrderUnreadCount(order.id) }}
+            </span>
+          </div>
+          <div class="mt-3 flex items-center justify-between gap-3">
+            <div class="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[12px] tabular-nums text-ink-3">
+              <span class="shrink-0 whitespace-nowrap">#{{ order.id }}</span>
+              <span class="shrink-0" aria-hidden="true">·</span>
+              <span class="shrink-0 whitespace-nowrap">发布于 {{ formatShortDate(order.created_at) }}</span>
             </div>
             <button
               type="button"
-              class="btn-ghost shrink-0 !min-h-[36px] !px-4 !py-1.5 md:self-end"
+              class="btn-ghost shrink-0 !min-h-[36px] !px-4 !py-1.5"
               @click.stop="goToOrder(order.id)"
             >
               查看详情 →

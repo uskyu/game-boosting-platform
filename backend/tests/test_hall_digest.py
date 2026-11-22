@@ -2,12 +2,17 @@
 
 背景：线上单 worker 被大厅全量轮询打满，新增轻量摘要端点让客户端断线兜底
 轮询先拉摘要、无变化则跳过全量列表。核心契约：
-- 摘要过滤口径与列表 booster_scope 完全一致（非管理员只算可接/自己相关的单，
-  管理员不加过滤）；
-- 任何会改变「可见集合或其内容」的操作都必须让摘要变化，否则客户端会漏刷新；
+- 摘要过滤口径与列表 ``public_hall`` 口径完全一致（``build_public_hall_scope``：
+  只算可抢订单，**所有角色包括管理员**都一样；管理员的全量订单视图在
+  ``GET /admin/orders``）；
+- 任何会改变「大厅可见集合或其内容」的操作都必须让摘要变化，否则客户端会漏刷新；
 - 与查看者无关（不可见）的订单变化不得影响其摘要；
 - 列表响应携带同一摘要基线（hall_count / hall_max_updated_at /
   hall_earliest_deadline），与摘要端点返回值一致。
+
+2026-11-22 线上事故后口径收窄：摘要此前含「自己发布/已接/已报名」的历史单
+（管理员完全不过滤），count 远大于大厅实际能渲染的条目，OLDEST 排序下发布者
+的旧 COMPLETED 单填满第一页、前端过滤后大厅为空。
 """
 
 from datetime import datetime, timedelta, timezone
@@ -230,8 +235,12 @@ async def test_archived_order_changes_count(
 async def test_deadline_in_past_changes_count_and_earliest_deadline(
     client: AsyncClient, admin_user: dict, booster_user: dict
 ):
-    """截止时间设为过去：对其他查看者 count 减少；发布人自己仍可见且
-    earliest_deadline 变为该过去时间（摘要必须能反映这种「可见但已过期」的单）。"""
+    """截止时间设为过去：该单不再可抢，对**所有角色**（含发布人自己、管理员）
+    都退出大厅口径——摘要 count 归零、earliest_deadline 归 None。
+
+    2026-11-22：大厅口径收窄为 claimable-only 后，「自己的单无论状态如何都
+    可见」不再成立；过期单属于个人历史，走「我的派单」而非大厅摘要。
+    """
     order = await _make_order(client, admin_user)
     assert (await _digest(client, booster_user))["count"] == 1
 
@@ -248,15 +257,15 @@ async def test_deadline_in_past_changes_count_and_earliest_deadline(
     assert after_viewer["earliest_deadline"] is None
 
     after_owner = await _digest(client, admin_user)
-    assert after_owner["count"] == 1  # 自己的单无论状态如何都可见
-    assert _parse(after_owner["earliest_deadline"]) == past
+    assert after_owner["count"] == 0  # 已过期 → 不再可抢，不进大厅摘要
+    assert after_owner["earliest_deadline"] is None
 
 
 async def test_viewer_own_order_status_change_updates_max_updated_at(
     client: AsyncClient, admin_user: dict, booster_user: dict, db_session
 ):
-    """查看者自己的订单状态变化：count 不变（自己的单始终可见），
-    max_updated_at 必须跟着变。"""
+    """查看者自己发布的可抢订单被取消：它退出大厅口径，摘要 max_updated_at
+    回落为 None（大厅里已没有可抢订单）。"""
     await _fund(client, admin_user, booster_user)
     order = await _make_order(client, booster_user)
     await _age_order(db_session, order["id"])
@@ -270,9 +279,11 @@ async def test_viewer_own_order_status_change_updates_max_updated_at(
     )
     assert resp.status_code == 200, resp.text
 
+    # 取消后不再是可抢订单 → 大厅口径为空（历史单走「我的派单」）
     after = await _digest(client, booster_user)
-    assert after["count"] == before["count"]
-    assert _parse(after["max_updated_at"]) > _parse(before["max_updated_at"])
+    assert after["count"] == 0
+    assert after["max_updated_at"] is None
+    assert after["earliest_deadline"] is None
 
 
 async def test_invisible_order_changes_do_not_affect_viewer(
@@ -342,10 +353,15 @@ async def test_list_response_carries_same_digest(
     assert body["page"] == 1 and body["page_size"] == 20
 
 
-async def test_admin_digest_has_no_scope_filter(
+async def test_admin_digest_is_claimable_only_too(
     client: AsyncClient, admin_user: dict, booster_user: dict, registered_user: dict
 ):
-    """管理员视角不加过滤：不同发布者的单全部计入（含普通查看者看不到的暂停单）。"""
+    """管理员的大厅摘要同样只算可抢订单（不再「不加过滤」）。
+
+    2026-11-22：大厅口径对**所有角色**收窄为 claimable-only。暂停单（含管理员
+    自己发的）都不可抢，因此不进任何人的大厅摘要；管理员的全量订单视图在
+    ``GET /admin/orders``（另有专项用例覆盖）。
+    """
     await _fund(client, admin_user, booster_user)
     await _fund(client, admin_user, registered_user)
 
@@ -362,7 +378,8 @@ async def test_admin_digest_has_no_scope_filter(
 
     admin_digest = await _digest(client, admin_user)
     booster_digest = await _digest(client, booster_user)
-    assert admin_digest["count"] == 3  # 全部订单，含暂停单
-    # 打手 B 只看到：自己的单 + 他人可接的单（暂停的管理员单不可见）
+    # 暂停单不可抢 → 管理员也看不到它；剩下两张他人发的可抢单
+    assert admin_digest["count"] == 2
+    # 打手 B 自己的单此时已被暂停（不可抢），只剩他人两张可抢单 → 2
     assert booster_digest["count"] == 2
-    assert admin_digest["count"] > booster_digest["count"]
+    assert admin_digest["count"] == booster_digest["count"]

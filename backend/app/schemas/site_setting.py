@@ -6,6 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, field_serializer
 from app.core.title_rules import normalize_rules
+from app.schemas.notification_sound import normalize_sounds
 from app.schemas.serializers import serialize_datetime_utc
 
 # 页脚 HTML 里绝不能出现的片段：脚本、内嵌框架、伪协议。
@@ -169,6 +170,14 @@ class SiteSettingResponse(BaseModel):
     publish_permission_required: bool = True
     # 大厅排序模式（公开可读：大厅据此判断服务端排序方向并决定轮询/滚动策略）
     hall_sort_mode: Literal["NEWEST", "OLDEST"] = "NEWEST"
+    # 通知提示音配置（公开可读：前端播放提示音时据此选择音频与音量）；
+    # 始终归一化为四个槽位的完整配置，NULL 列值 = 全部使用内置默认音频。
+    # default_factory 也返回归一化结果：默认值不会经过 before 校验器，
+    # 若缺字段仍要保证是四个槽位而不是空 dict。
+    notification_sounds: dict = Field(
+        default_factory=lambda: normalize_sounds(None),
+        description="四个通知槽位的音频配置（url/volume/enabled；url=None 为内置默认）",
+    )
     updated_by: int | None
     updated_at: datetime
     logo_recommendation: str = "建议使用 512×512 以上的 PNG、JPEG 或 WebP 图片，文件不超过 10MB。"
@@ -177,6 +186,11 @@ class SiteSettingResponse(BaseModel):
     @classmethod
     def fill_default_replacements(cls, value):
         return normalize_rules(value)
+
+    @field_validator("notification_sounds", mode="before")
+    @classmethod
+    def fill_default_notification_sounds(cls, value):
+        return normalize_sounds(value)
 
     @field_serializer("updated_at")
     def serialize_dt(self, value: datetime | None) -> str | None:

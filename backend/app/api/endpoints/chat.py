@@ -29,7 +29,7 @@ from app.schemas.chat import (
     UnreadSummaryResponse,
 )
 from app.schemas.user import MessageResponse
-from app.services.chat_service import get_chat_service
+from app.services.chat_service import get_chat_service, sign_chat_message_payloads
 from app.services.connection_manager import get_connection_manager
 from app.services.user_session_service import get_valid_session
 
@@ -214,6 +214,16 @@ def _serialize_message(message: Message) -> ChatMessageResponse:
     )
 
 
+async def _serialize_messages_for_client(db, messages: list[Message]) -> list[ChatMessageResponse]:
+    """序列化消息并在 COS 模式下把聊天图片改写成预签名 URL。
+
+    这是消息历史 / 搜索 / 发送回显 / WS 推送唯一共用的序列化入口，因此签名
+    hook 只有这一处：LOCAL 模式返回内容与历史完全一致（``/uploads/chat/...``）。
+    """
+    responses = [_serialize_message(message) for message in messages]
+    return await sign_chat_message_payloads(db, responses)
+
+
 def _build_ws_event(event: str, data: dict[str, Any]) -> dict[str, Any]:
     """构造统一的 WebSocket 事件格式。"""
     return {
@@ -223,17 +233,19 @@ def _build_ws_event(event: str, data: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _broadcast_new_message(
+    db,
     message: Message,
     exclude_user_id: int | None = None,
 ) -> None:
-    """广播新消息事件。"""
+    """广播新消息事件（COS 模式下图片地址已改写为预签名 URL）。"""
+    signed_messages = await _serialize_messages_for_client(db, [message])
     await get_connection_manager().send_to_conversation(
         conversation_id=message.conversation_id,
         data=_build_ws_event(
             "new_message",
             {
                 "conversation_id": message.conversation_id,
-                "message": _serialize_message(message).model_dump(mode="json"),
+                "message": signed_messages[0].model_dump(mode="json"),
             },
         ),
         exclude_user_id=exclude_user_id,
@@ -653,7 +665,7 @@ async def list_messages(
         before_id=before_id,
         limit=limit,
     )
-    return [_serialize_message(message) for message in messages]
+    return await _serialize_messages_for_client(db, messages)
 
 
 @router.get(
@@ -676,7 +688,7 @@ async def search_messages(
         query_text=q,
         limit=limit,
     )
-    return [_serialize_message(message) for message in messages]
+    return await _serialize_messages_for_client(db, messages)
 
 
 @router.post(
@@ -699,10 +711,11 @@ async def send_message(
         content=payload.content,
     )
     await _broadcast_new_message(
+        db,
         message=message,
         exclude_user_id=current_user.id,
     )
-    return _serialize_message(message)
+    return (await _serialize_messages_for_client(db, [message]))[0]
 
 
 @router.post(
@@ -725,10 +738,11 @@ async def upload_image(
         file=file,
     )
     await _broadcast_new_message(
+        db,
         message=message,
         exclude_user_id=current_user.id,
     )
-    return _serialize_message(message)
+    return (await _serialize_messages_for_client(db, [message]))[0]
 
 
 @router.post(
@@ -852,7 +866,7 @@ async def invite_admin(
         conversation_id=conversation_id,
         data=admin_joined_event,
     )
-    await _broadcast_new_message(system_message)
+    await _broadcast_new_message(db, system_message)
     return InviteAdminResponse(
         message="管理员已加入会话",
         success=True,

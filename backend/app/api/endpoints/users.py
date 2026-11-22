@@ -7,12 +7,12 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 from sqlalchemy import select
 
 from app.api.deps import CurrentUser, DatabaseSession
-from app.core.config import settings
 from app.models.booster_service import BoosterService
 from app.models.user import BoosterApplicationStatus, User, UserRole
 from app.schemas.admin import BoosterApplicationResponse
 from app.schemas.booster_service import BoosterServiceResponse
 from app.schemas.user import BoosterProfileResponse
+from app.services import storage_service
 from app.services.credit_service import get_credit_service
 from app.services.user_service import get_user_service
 
@@ -96,11 +96,12 @@ async def submit_booster_application(
             detail="图片内容为空",
         )
 
-    upload_dir = Path(settings.UPLOAD_DIR)
-    upload_dir.mkdir(parents=True, exist_ok=True)
     file_name = f"booster-proof-{current_user.id}-{uuid4().hex}{raw_suffix}"
-    file_path = upload_dir / file_name
-    file_path.write_bytes(image_bytes)
+    # 根级 key：与历史 /uploads/<file> URL 完全一致。存储落点由站点设置决定
+    # （本地磁盘或 COS），URL 契约不变。
+    await storage_service.save_bytes(
+        image_bytes, file_name, proof_image.content_type or "", db
+    )
     proof_url = f"/uploads/{file_name}"
 
     user_service = get_user_service(db)

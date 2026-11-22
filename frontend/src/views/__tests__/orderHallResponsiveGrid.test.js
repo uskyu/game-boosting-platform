@@ -12,12 +12,13 @@ describe('order hall responsive cards', () => {
     expect(hallSource).toContain('grid grid-cols-1 gap-4 md:gap-3 md:grid-cols-2 xl:grid-cols-3')
   })
 
-  it('tightens only hall cards and lets desktop metadata wrap without squeezing title or details action', () => {
+  it('tightens only hall cards and keeps the footer on one consistent, wrapping layout', () => {
     expect(hallSource).toContain('hall-order-card !rounded-[12px] !p-4')
-    expect(hallSource).toContain('md:flex-col md:items-stretch md:gap-2')
-    expect(hallSource).toContain('md:flex-wrap md:gap-x-2 md:gap-y-1')
-    expect(hallSource).toContain('class="tag max-w-[45%] shrink-0 truncate !bg-info-soft !text-info md:hidden"')
-    expect(hallSource).toContain('class="tag hidden min-w-0 max-w-full truncate !bg-info-soft !text-info md:inline-flex"')
-    expect(hallSource).toContain('md:self-end')
+    // 底栏不再在桌面切列：两种断点同一套换行布局
+    expect(hallSource).not.toContain('md:flex-col md:items-stretch md:gap-2')
+    expect(hallSource).toContain('flex flex-wrap items-center gap-2 text-[13px]')
+    expect(hallSource).toContain('class="tag min-w-0 max-w-full truncate !bg-info-soft !text-info"')
+    // 发单人昵称只在底栏出现一次
+    expect(hallSource.match(/发单人 ·/g)).toHaveLength(1)
   })
 })
