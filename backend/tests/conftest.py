@@ -125,6 +125,11 @@ async def reset_database() -> AsyncGenerator[None, None]:
             )
         )
         await session.commit()
+    # 大厅排序模式是进程内缓存（跨用例存活）：每轮数据重置后必须让它失效，
+    # 否则上个用例改成 OLDEST 会让下个用例读到过期值（DB 里其实已是 NEWEST）。
+    from app.services.site_setting_service import invalidate_hall_sort_cache
+
+    invalidate_hall_sort_cache()
     yield
 
 

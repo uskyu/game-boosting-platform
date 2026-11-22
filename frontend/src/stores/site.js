@@ -20,6 +20,9 @@ export const useSiteStore = defineStore('site', () => {
     // 全站发单权限管控总开关：true=按个人发单权限管控；false=全站开放
     // （个人封禁仍然生效）。默认与后端一致，未拉到设置时按管控开启处理。
     publish_permission_required: true,
+    // 大厅排序模式：NEWEST=最新发布优先（默认），OLDEST=最早发布优先。
+    // 仅影响公开大厅的订单排序，不改变「我的派单」「我的接单」和后台派单管理。
+    hall_sort_mode: 'NEWEST',
     max_online_devices: 2,
     order_title_replacements: [
       { original: '名牌', replacement: '【MP】' },

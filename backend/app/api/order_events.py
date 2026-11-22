@@ -45,3 +45,14 @@ async def broadcast_order_state_changed(
         await connection_manager.broadcast(payload)
 
     await run_after_commit(_broadcast)
+
+
+async def broadcast_hall_sort_changed(*, sort_mode: str) -> None:
+    """Notify connected clients that the public hall ordering mode changed."""
+    payload = {"event": "hall_sort_changed", "data": {"sort_mode": sort_mode}}
+    connection_manager = get_connection_manager()
+
+    async def _broadcast() -> None:
+        await connection_manager.broadcast(payload)
+
+    await run_after_commit(_broadcast)

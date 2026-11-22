@@ -2,6 +2,7 @@
 
 import re
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, field_serializer
 from app.core.title_rules import normalize_rules
@@ -97,6 +98,11 @@ class SiteSettingUpdate(BaseModel):
             "false=全站开放（仅封禁发单的用户仍被拦截）"
         ),
     )
+    # 大厅排序模式：不传（None）=保持不变，仅当显式传入时才覆盖
+    hall_sort_mode: Literal["NEWEST", "OLDEST"] | None = Field(
+        default=None,
+        description="大厅公共列表排序：NEWEST=最新在前，OLDEST=最早在前",
+    )
 
     model_config = ConfigDict(extra="forbid")
 
@@ -161,6 +167,8 @@ class SiteSettingResponse(BaseModel):
     publish_permission_apply_enabled: bool = True
     # 全站发单权限总开关（公开可读：申请页/发单入口据此提示）
     publish_permission_required: bool = True
+    # 大厅排序模式（公开可读：大厅据此判断服务端排序方向并决定轮询/滚动策略）
+    hall_sort_mode: Literal["NEWEST", "OLDEST"] = "NEWEST"
     updated_by: int | None
     updated_at: datetime
     logo_recommendation: str = "建议使用 512×512 以上的 PNG、JPEG 或 WebP 图片，文件不超过 10MB。"

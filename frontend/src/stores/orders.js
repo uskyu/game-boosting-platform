@@ -73,6 +73,10 @@ export const useOrdersStore = defineStore('orders', () => {
   // 由 hall-digest 接口下发（服务端按全量口径算），**不再**在当页列表上 filter。
   // 与 hallDigest 分开存：摘要基线有自己的"只由列表写入"约束，统计数字没有。
   const hallStats = ref(null)
+  // 大厅排序模式（站点设置 hall_sort_mode）：NEWEST=最新发布优先（默认），
+  // OLDEST=最早发布优先。列表/摘要响应都会随带真实值，WS hall_sort_changed
+  // 事件也会同步；大厅摘要基线与本地插卡方向都必须跟随它。
+  const hallSortMode = ref('NEWEST')
 
   // Getters
   const hasOrders = computed(() => orders.value.length > 0)
@@ -306,6 +310,11 @@ export const useOrdersStore = defineStore('orders', () => {
       // 只认大厅口径：mine_published（我的派单）后端不下发这些字段，其计数
       // 范围也与大厅不同，不能拿来做基线。字段缺失时保持原值不动（null），
       // 视图会走探测兜底。
+      // 大厅排序模式也只有 hall 范围下发；mine_published 恒为 null，不能拿它
+      // 覆盖当前模式（否则从「我的派单」回来会把排序模式误判成默认）。
+      if (context === 'hall' && response.data.hall_sort_mode != null) {
+        setHallSortMode(response.data.hall_sort_mode)
+      }
       if (
         context === 'hall'
         && (
@@ -398,11 +407,19 @@ export const useOrdersStore = defineStore('orders', () => {
   // 保存列表响应随带的大厅摘要；缺字段用空值占位，保证"同一份摘要 → 同一个键"。
   function setHallDigest(digest) {
     if (!digest) return
+    // 摘要若带排序模式（hall-digest），先同步模式：大厅摘要基线键包含模式，
+    // 模式变更会让基线失配并触发全量对账。
+    if (digest.hall_sort_mode != null) setHallSortMode(digest.hall_sort_mode)
     hallDigest.value = {
       count: Number(digest.count ?? 0),
       max_updated_at: digest.max_updated_at ?? null,
       earliest_deadline: digest.earliest_deadline ?? null,
     }
+  }
+
+  // 大厅排序模式只认 NEWEST/OLDEST，其它值（缺字段/脏数据）一律回落默认。
+  function setHallSortMode(mode) {
+    hallSortMode.value = mode === 'OLDEST' ? 'OLDEST' : 'NEWEST'
   }
 
   // 保存顶部统计条数字（只由 hall-digest 接口写入；字段缺失时保持 null，
@@ -448,6 +465,9 @@ export const useOrdersStore = defineStore('orders', () => {
       // 统计条数字随摘要一起回来：成功一次即刷新（视图顶部不再依赖列表分页）；
       // setHallStats 自己会忽略 stats_included !== true 的轮询响应。
       setHallStats(response.data)
+      // 摘要若随带排序模式，先落库再返回：调用方的摘要基线键包含模式，
+      // 模式变更必须体现在同一轮键计算里，否则会拿旧键误判「摘要没变」。
+      if (response.data?.hall_sort_mode != null) setHallSortMode(response.data.hall_sort_mode)
       return {
         success: true,
         data: response.data,
@@ -740,7 +760,9 @@ export const useOrdersStore = defineStore('orders', () => {
     const orderId = Number(card.id)
     // 按 id 去重：已加载过的订单（重复通知/已在对账结果里）不再插入。
     if (cache.items.some((item) => Number(item.id) === orderId)) return false
-    const items = [card, ...cache.items]
+    // 本地插入方向必须与服务端排序一致：OLDEST（最早发布优先）时新单排在
+    // 列表末尾，否则卡片会先跳到第一行、下一轮全量对账又跳回末尾（明显闪动）。
+    const items = hallSortMode.value === 'OLDEST' ? [...cache.items, card] : [card, ...cache.items]
     // 只抬 total（新单确实让大厅多了一条）；items 可能比 pageSize 多一条，
     // 属于可接受的最小不一致，下一轮全量对账会自然收敛。
     const nextPagination = {
@@ -1148,6 +1170,7 @@ export const useOrdersStore = defineStore('orders', () => {
     cancelRequestsLoading,
     hallDigest,
     hallStats,
+    hallSortMode,
     // Getters
     hasOrders,
     pendingOrders,
@@ -1161,6 +1184,7 @@ export const useOrdersStore = defineStore('orders', () => {
     fetchHallDigest,
     setHallDigest,
     setHallStats,
+    setHallSortMode,
     setOrdersContext,
     hasOrdersForContext,
     refreshOrdersContext,

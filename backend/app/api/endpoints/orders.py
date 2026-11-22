@@ -78,7 +78,10 @@ from app.services.order_service import (
     attach_designated_booster_briefs,
     get_order_service,
 )
-from app.services.site_setting_service import get_or_create_site_setting
+from app.services.site_setting_service import (
+    get_hall_sort_mode,
+    get_or_create_site_setting,
+)
 
 router = APIRouter(prefix="/orders", tags=["订单"])
 logger = logging.getLogger(__name__)
@@ -669,6 +672,8 @@ async def list_orders(
         q=q,
         cancel_pending_only=cancel_pending_only,
         after_sale_only=after_sale_only,
+        # 大厅口径（含管理员浏览大厅）跟随站点排序设置；「我的派单」不受影响。
+        apply_hall_sort=not mine_published,
     )
 
     # Calculate total pages
@@ -691,6 +696,10 @@ async def list_orders(
         hall_count=total if not mine_published else None,
         hall_max_updated_at=hall_max_updated_at if not mine_published else None,
         hall_earliest_deadline=hall_earliest_deadline if not mine_published else None,
+        # 排序模式只对大厅口径有意义：客户端把它并入对账键，切换排序后必然刷新。
+        hall_sort_mode=(
+            await get_hall_sort_mode(db) if not mine_published else None
+        ),
     )
 
 
@@ -732,6 +741,9 @@ async def get_hall_digest(
         )
     order_service = get_order_service(db)
     count, max_updated_at, earliest_deadline = await order_service.hall_digest(current_user)
+    # 排序模式并入摘要：管理员切换 NEWEST/OLDEST 后，即使可见订单集合与
+    # 时间戳都没变，客户端也必须重新拉全量（否则大厅顺序停留在旧方向）。
+    hall_sort_mode = await get_hall_sort_mode(db)
     # 顶部统计条的全量数字（2026-10-19 老板反馈「进行中 19 不准」）：
     # 前端以前在当页 20 条上 filter，翻页会变、也把待审核混进了进行中。
     #
@@ -745,6 +757,7 @@ async def get_hall_digest(
             max_updated_at=max_updated_at,
             earliest_deadline=earliest_deadline,
             stats_included=False,
+            hall_sort_mode=hall_sort_mode,
         )
     stats = await order_service.hall_stats(current_user)
     return HallDigestResponse(
@@ -756,6 +769,7 @@ async def get_hall_digest(
         pending_review_count=stats["pending_review"],
         completed_today=stats["completed_today"],
         stats_included=True,
+        hall_sort_mode=hall_sort_mode,
     )
 
 

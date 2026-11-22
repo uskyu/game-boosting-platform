@@ -89,6 +89,8 @@ async def test_hall_digest_requires_auth_and_returns_shape(
         "completed_today": 0,
         # 默认调用（不传 include_stats）与旧行为一致：统计参与计算
         "stats_included": True,
+        # 大厅排序模式（2026-11-22 新增）：默认最新在前
+        "hall_sort_mode": "NEWEST",
     }
 
 

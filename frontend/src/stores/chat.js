@@ -1311,6 +1311,18 @@ export const useChatStore = defineStore('chat', () => {
         break
       }
 
+      case 'hall_sort_changed': {
+        // 管理员切换大厅排序（NEWEST/OLDEST）：同步订单 store 的模式，并复用
+        // 已有的订单状态变化机制让大厅视图刷新（摘要键含模式，会触发全量对账）。
+        const mode = data.sort_mode === 'OLDEST' ? 'OLDEST' : 'NEWEST'
+        const { useOrdersStore } = await import('@/stores/orders')
+        const ordersStore = useOrdersStore()
+        ordersStore.setHallSortMode(mode)
+        lastOrderStateChange.value = { ...data, sort_mode: mode, hall_sort_changed: true }
+        orderStateChangeVersion.value += 1
+        break
+      }
+
       case 'notification': {
         // 与全站轮询共用通知偏好和 toast 去重；真人聊天仍走 new_message。
         if (!isCurrentAuthContext(authContext)) return

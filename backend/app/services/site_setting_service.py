@@ -4,11 +4,19 @@
 导入 API 端点模块（``app.api.endpoints.site``）。
 """
 
+import time
+
 from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.title_rules import normalize_rules
 from app.models.site_setting import SiteSetting
+
+# 大厅排序模式的进程内短缓存（15s）。大厅每个客户端每 2-10 秒就会拉一次
+# 列表/摘要，如果每次都回表读这一行设置，等于把一条静态配置变成高频查询。
+# 管理员保存时由 admin 端点主动 invalidate；即使漏掉，最坏 15 秒后自愈。
+_HALL_SORT_CACHE = {"value": "NEWEST", "expires_at": 0.0}
+_HALL_SORT_TTL_SECONDS = 15.0
 
 
 async def ensure_site_settings(db) -> SiteSetting:
@@ -46,3 +54,34 @@ async def get_order_title_replacements(db) -> list[dict[str, str]]:
     """读取后台配置的订单标题替换规则（NULL → 默认规则）。"""
     setting = await get_or_create_site_setting(db)
     return normalize_rules(setting.order_title_replacements)
+
+
+async def get_hall_sort_mode(db) -> str:
+    """返回站点大厅排序模式（"NEWEST" / "OLDEST"），带 15 秒进程内缓存。
+
+    大厅每个客户端每 2-10 秒拉一次列表/摘要，为一行静态配置每次都回表
+    是纯浪费；这里只读单个标量列，命中缓存时零 DB 往返。管理员保存设置
+    会调用 invalidate_hall_sort_cache() 立即失效。
+
+    设置行缺失（首启尚未懒创建）时返回 "NEWEST"，与列默认值一致。
+    迁移在应用启动前执行，因此不需要处理「列不存在」的情况。
+    """
+    now = time.monotonic()
+    if now < _HALL_SORT_CACHE["expires_at"]:
+        return _HALL_SORT_CACHE["value"]
+
+    value = (
+        await db.execute(
+            select(SiteSetting.hall_sort_mode).where(SiteSetting.id == 1)
+        )
+    ).scalar_one_or_none()
+    if value not in ("NEWEST", "OLDEST"):
+        value = "NEWEST"
+    _HALL_SORT_CACHE["value"] = value
+    _HALL_SORT_CACHE["expires_at"] = now + _HALL_SORT_TTL_SECONDS
+    return value
+
+
+def invalidate_hall_sort_cache() -> None:
+    """立即让大厅排序模式缓存失效（管理员保存设置后调用）。"""
+    _HALL_SORT_CACHE["expires_at"] = 0.0

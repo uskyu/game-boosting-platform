@@ -9,6 +9,8 @@ const form = reactive({
   site_name: '',
   site_description: '',
   hall_recent_claims_enabled: true,
+  // 大厅排序：NEWEST=最新发布优先（默认），OLDEST=最早发布优先；只影响大厅公开展示
+  hall_sort_mode: 'NEWEST',
   registration_captcha_enabled: true,
   accept_captcha_enabled: false,
   registration_default_can_publish: true,
@@ -28,6 +30,8 @@ function sync() {
   form.site_name = store.settings.site_name
   form.site_description = store.settings.site_description || ''
   form.hall_recent_claims_enabled = store.settings.hall_recent_claims_enabled !== false
+  // 大厅排序只认两个已知值，其余（老后端缺字段/脏数据）一律按默认 NEWEST
+  form.hall_sort_mode = store.settings.hall_sort_mode === 'OLDEST' ? 'OLDEST' : 'NEWEST'
   // 注册验证码默认开、接单验证码默认关（与后端 SiteSettingResponse 一致）
   form.registration_captcha_enabled = store.settings.registration_captcha_enabled !== false
   form.accept_captcha_enabled = store.settings.accept_captcha_enabled === true
@@ -99,6 +103,7 @@ async function save() {
     site_name: form.site_name.trim(),
     site_description: form.site_description.trim() || null,
     hall_recent_claims_enabled: form.hall_recent_claims_enabled,
+    hall_sort_mode: form.hall_sort_mode,
     registration_captcha_enabled: form.registration_captcha_enabled,
     accept_captcha_enabled: form.accept_captcha_enabled,
     // 布尔值必须显式发送（包括 false），后端按全量表单保存
@@ -230,6 +235,38 @@ onMounted(async () => {
             {{ form.hall_recent_claims_enabled ? '开启' : '已关闭' }}
           </button>
         </div>
+      </div>
+
+      <!-- 大厅排序：只影响公开大厅的订单排序，其它列表与后台派单管理不受影响 -->
+      <div class="rounded-tile border border-line-1 p-4">
+        <p class="text-sm font-semibold text-ink-1">大厅排序</p>
+        <p class="mt-1 text-xs leading-5 text-ink-3">控制公开大厅里可抢订单的排列顺序，保存后立即全站生效。</p>
+
+        <div class="mt-4 grid gap-2 sm:grid-cols-2">
+          <button
+            type="button"
+            :class="form.hall_sort_mode === 'NEWEST' ? 'filter-pill-active' : 'filter-pill'"
+            :aria-pressed="form.hall_sort_mode === 'NEWEST'"
+            @click="form.hall_sort_mode = 'NEWEST'"
+          >
+            最新发布优先
+          </button>
+          <button
+            type="button"
+            :class="form.hall_sort_mode === 'OLDEST' ? 'filter-pill-active' : 'filter-pill'"
+            :aria-pressed="form.hall_sort_mode === 'OLDEST'"
+            @click="form.hall_sort_mode = 'OLDEST'"
+          >
+            最早发布优先
+          </button>
+        </div>
+        <div class="mt-3 grid gap-2 text-xs leading-5 text-ink-3 sm:grid-cols-2">
+          <p>最新发布优先：新单排最前（当前默认）。</p>
+          <p>最早发布优先：先发布的排最前；续单、重发会排到后面，可压制刷屏。</p>
+        </div>
+        <p class="mt-3 text-xs leading-5 text-ink-3">
+          仅影响大厅公开展示；「我的派单」「我的接单」和后台派单管理不受影响。
+        </p>
       </div>
 
       <div class="rounded-tile border border-line-1 p-4">

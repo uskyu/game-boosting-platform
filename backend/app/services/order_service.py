@@ -51,6 +51,7 @@ from app.services.publish_permission_service import (
     publish_forbidden_detail,
 )
 from app.services.site_setting_service import (
+    get_hall_sort_mode,
     get_or_create_site_setting,
     get_order_title_replacements,
 )
@@ -630,6 +631,7 @@ class OrderService:
         q: str | None = None,
         cancel_pending_only: bool = False,
         after_sale_only: bool = False,
+        apply_hall_sort: bool = False,
     ) -> tuple[list[Order], int, datetime | None, datetime | None]:
         """
         List orders with filtering and pagination.
@@ -647,6 +649,10 @@ class OrderService:
                 cancellation negotiation (「申请取消中」筛选).
             after_sale_only: When true, return only orders with a pending
                 after-sale request (「售后中」筛选)；与订单状态正交。
+            apply_hall_sort: When true, the public-hall ordering setting
+                (site_settings.hall_sort_mode) decides the time direction.
+                Callers must pass True only for the public hall scope; 「我的派单」
+                and the admin dispatch list keep the fixed newest-first order.
             page: Page number (1-indexed).
             page_size: Items per page.
 
@@ -869,12 +875,19 @@ class OrderService:
                 "wait_seconds": int(count_row[7] or 0),
             }
 
-        # Apply pagination and ordering (综合搜索时按相关度排序，否则按发布时间倒序)
+        # Apply pagination and ordering (综合搜索时按相关度排序，否则按发布时间排序)
         offset = (page - 1) * page_size
-        if rank_clauses:
-            query = query.order_by(*rank_clauses, Order.created_at.desc())
+        # 大厅公共列表可由管理员切换为 OLDEST（老单优先）；「我的派单」与后台
+        # 派单管理走 apply_hall_sort=False，始终维持发布时间倒序。id 作为同秒
+        # 时间戳的次级键，避免 MySQL 秒级精度下分页出现同一行跨页重复/漏页。
+        if apply_hall_sort and await get_hall_sort_mode(self._db) == "OLDEST":
+            time_clauses = (Order.created_at.asc(), Order.id.asc())
         else:
-            query = query.order_by(Order.created_at.desc())
+            time_clauses = (Order.created_at.desc(), Order.id.desc())
+        if rank_clauses:
+            query = query.order_by(*rank_clauses, *time_clauses)
+        else:
+            query = query.order_by(*time_clauses)
         query = query.offset(offset).limit(page_size)
 
         # Execute query

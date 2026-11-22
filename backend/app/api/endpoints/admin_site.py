@@ -7,12 +7,14 @@ from fastapi import APIRouter, Depends, File, UploadFile, status
 
 from app.api.deps import DatabaseSession, get_current_admin
 from app.api.endpoints.site import get_or_create_site_setting
+from app.api.order_events import broadcast_hall_sort_changed
 from app.core.config import settings
 from app.models.site_setting import SiteSetting
 from app.models.user import User
 from app.schemas.site_setting import SiteSettingResponse, SiteSettingUpdate
 from app.schemas.user import MessageResponse
 from app.services.file_service import save_image_upload
+from app.services.site_setting_service import invalidate_hall_sort_cache
 
 router = APIRouter(prefix="/admin/site", tags=["admin-site"])
 
@@ -63,9 +65,22 @@ async def update_site_settings(
     # 全站发单权限总开关：同样必须用 is not None 判断，显式 False 要生效
     if payload.publish_permission_required is not None:
         setting.publish_permission_required = payload.publish_permission_required
+    # 大厅排序模式：None=不改动；只有真正变化时才让在线大厅刷新。
+    # 懒创建的新行在 flush 前该属性尚未赋值（Python default 在 INSERT 时生效），
+    # 因此旧值按列默认 NEWEST 归一化，避免「本来就是默认值」被误判为变化。
+    old_hall_sort_mode = setting.hall_sort_mode or "NEWEST"
+    if payload.hall_sort_mode is not None:
+        setting.hall_sort_mode = payload.hall_sort_mode
     setting.updated_by = current_admin.id
     await db.flush()
     await db.refresh(setting)
+    # 进程内缓存失效：放在 refresh 之后、事务 commit 之前。极端情况下另一个
+    # 工作进程/请求可能在本事务提交前的一瞬读到旧值，但缓存 15 秒内自愈，
+    # 这个窗口可以接受，且不必为此引入跨进程失效机制。
+    invalidate_hall_sort_cache()
+    if setting.hall_sort_mode != old_hall_sort_mode:
+        # 排序方向变了：广播给在线大厅（post-commit 注册，回滚时自动作废）
+        await broadcast_hall_sort_changed(sort_mode=setting.hall_sort_mode)
     return setting
 
 

@@ -406,9 +406,11 @@ function restartHallTimer() {
 }
 
 // 摘要 → 基线键。缺字段用空串占位，保证同一份摘要永远得到同一个键。
+// 排序模式必须计入：管理员切换 NEWEST/OLDEST 后订单顺序整批变化，但摘要
+// 三个聚合数字可能完全一致；不带模式的键会让「摘要没变」误判跳过全量对账。
 function hallDigestKey(digest) {
   if (!digest) return null
-  return `${digest.count ?? ''}|${digest.max_updated_at ?? ''}|${digest.earliest_deadline ?? ''}`
+  return `${digest.count ?? ''}|${digest.max_updated_at ?? ''}|${digest.earliest_deadline ?? ''}|${ordersStore.hallSortMode}`
 }
 
 // 429 的 Retry-After → 退避毫秒数；缺失/非法时用保守默认值，绝不立即重试。
@@ -608,6 +610,15 @@ async function silentRefresh() {
   }
 }
 
+// 管理员切换大厅排序（WS hall_sort_changed）：整批顺序已失效，但摘要聚合
+// 数字可能完全没变，必须先作废旧基线再做一次全量对账；同时强制重拉站点设置，
+// 让后台设置卡片和其它依赖设置的界面立即反映新值。
+function refreshHallAfterSortChange() {
+  hallDigestBaseline = null
+  silentRefresh().catch(() => {})
+  siteStore.fetchSettings(true)
+}
+
 // 新订单通知到达时立即更新可见大厅；若已有刷新在飞，排队补一次。
 watch(() => notificationsStore.newOrderNotificationVersion, () => {
   silentRefresh().catch(() => {})
@@ -622,6 +633,13 @@ watch(() => notificationsStore.newOrderNotificationVersion, () => {
 // 保留 silentRefresh 兜底，避免漏掉新出现的可抢订单。
 watch(() => chatStore.lastOrderStateChange, (change) => {
   if (!change) return
+  // 大厅排序模式被管理员改动（WS hall_sort_changed）：本地缓存里的整批顺序
+  // 已经失效，摘要聚合数字却可能毫无变化，必须作废旧基线并强制一次全量列表；
+  // 同时强制刷新站点设置，保证后台设置卡片（以及其它可见开关）拿到最新值。
+  if (change.hall_sort_changed) {
+    refreshHallAfterSortChange()
+    return
+  }
   const knownInHall = orders.value.some((order) => Number(order.id) === Number(change.order_id))
   ordersStore.applyOrderStateChange(change)
   if (knownInHall) return

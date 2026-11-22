@@ -68,6 +68,12 @@ class SiteSetting(Base):
     publish_permission_required: Mapped[bool] = mapped_column(
         Boolean(), nullable=False, default=True, server_default="1"
     )
+    # 大厅公共列表排序模式（2026-11-22）：NEWEST=发布时间倒序（原有行为），
+    # OLDEST=发布时间正序（老单优先）。只作用于公开大厅列表；「我的派单」
+    # 与后台派单管理列表始终按发布时间倒序，不受该设置影响。
+    hall_sort_mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="NEWEST", server_default="NEWEST"
+    )
     updated_by: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

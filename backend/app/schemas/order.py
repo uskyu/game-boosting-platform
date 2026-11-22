@@ -833,6 +833,12 @@ class OrderListResponse(BaseModel):
     hall_earliest_deadline: datetime | None = Field(
         default=None, description="大厅可见订单最早截止时间（摘要基线）"
     )
+    # 大厅排序模式（仅大厅口径下发）：客户端据此决定刷新后游标方向，并把
+    # 它并入对账基线——排序方向切换不能被误判成「摘要没变」。
+    hall_sort_mode: Literal["NEWEST", "OLDEST"] | None = Field(
+        default=None,
+        description="大厅列表排序模式；仅大厅口径返回（我的派单为 null）",
+    )
 
     @field_serializer("hall_max_updated_at", "hall_earliest_deadline")
     def _serialize_hall_datetimes(self, value: datetime | None, _info) -> str | None:
@@ -849,6 +855,7 @@ class OrderListResponse(BaseModel):
                 "hall_count": 0,
                 "hall_max_updated_at": None,
                 "hall_earliest_deadline": None,
+                "hall_sort_mode": "NEWEST",
             }
         }
     )
@@ -878,6 +885,11 @@ class HallDigestResponse(BaseModel):
         default=False,
         description="本次响应是否包含上方四个统计数字（include_stats=false 时为 false，字段保持 0）",
     )
+    # 大厅排序模式：客户端把它并入对账基线，管理员切换排序时摘要必然变化，
+    # 避免「摘要没变就跳过全量刷新」导致排序切换后大厅仍显示旧顺序。
+    hall_sort_mode: Literal["NEWEST", "OLDEST"] = Field(
+        default="NEWEST", description="当前大厅列表排序模式"
+    )
 
     @field_serializer("max_updated_at", "earliest_deadline")
     def _serialize_datetimes(self, value: datetime | None, _info) -> str | None:
@@ -894,6 +906,7 @@ class HallDigestResponse(BaseModel):
                 "pending_review_count": 2,
                 "completed_today": 4,
                 "stats_included": True,
+                "hall_sort_mode": "NEWEST",
             }
         }
     )
