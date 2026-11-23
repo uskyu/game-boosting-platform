@@ -323,6 +323,15 @@ async function prefillFromOrder(orderId, mode) {
           : {}),
       }
       formData.value.max_claims = 1
+    } else if (mode === 'repeat' && order.booster_id != null) {
+      // 原单确实有接单打手，详情却没能给出可指定的目标信息：这是数据/接口
+      // 异常，绝不能悄悄按公开单发布（否则全站打手都可见，正是 2026-11-24
+      // 反馈的 bug）。直接阻断，让用户重试或改用重建。
+      recyclePrefillFailed.value = true
+      errorMessage.value = '无法读取原单的接单打手信息，续单可能变成公开单；请重新打开续单或改用「重建订单」'
+      claimMode.value = 'public'
+      designatedUser.value = null
+      return
     } else {
       claimMode.value = 'public'
       designatedUser.value = null
@@ -530,9 +539,20 @@ onMounted(async () => {
       formData.value.service_fee_enabled = true
     }
   }
-  // 重建 / 续单：等 catalog 就绪后再拉原单，避免游戏下拉还没渲染
+  // 续单/重建前主动核对一次构建版本：长驻旧页面（微信 XWEB）里跑的旧代码
+  // 不认识指定派单，会把续单发成公开单（2026-11-24 线上反馈）。
   const recycleId = Number(route.query.recycle)
-  if (Number.isInteger(recycleId) && recycleId > 0) {
+  const wantsRecycle = Number.isInteger(recycleId) && recycleId > 0
+  if (wantsRecycle) {
+    await appUpdateStore.checkNow()
+    if (appUpdateStore.available) {
+      recyclePrefillFailed.value = true
+      errorMessage.value = '系统已更新，请刷新页面后再续单（当前页面运行的是旧版本）'
+      return
+    }
+  }
+  // 重建 / 续单：等 catalog 就绪后再拉原单，避免游戏下拉还没渲染
+  if (wantsRecycle) {
     const mode = route.query.mode === 'repeat' ? 'repeat' : 'rebuild'
     await prefillFromOrder(recycleId, mode)
     if (mode === 'rebuild' && !errorMessage.value) {

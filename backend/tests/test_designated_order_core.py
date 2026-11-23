@@ -536,3 +536,106 @@ async def test_chat_third_user_cannot_consult_designated_order(
         headers=auth_header(target),
     )
     assert resp.status_code == 200, resp.text
+
+
+# ---------------------------------------------------------------------------
+# 续单兜底：标题「指定<昵称>」但没带 designated_booster_id
+#
+# 2026-11-24 线上反馈：有些发单人点了续单，订单却没有变成指定单。
+# 根因是续单自 2026-10-04（311596e）起就会把标题改成「指定<原打手昵称>」，
+# 但指定派单字段到 2026-11-17（ddfa754）才有；跑着旧 chunk 的客户端
+# （微信 XWEB 长驻页面）继续发单时，标题说指定、实际是公开单。
+# 服务端因此按标题兜底：名字精确命中就打上指定人，命中但对方不能接就报错，
+# 绝不静默变成公开单。
+# ---------------------------------------------------------------------------
+
+
+async def test_title_only_repeat_becomes_designated(
+    client: AsyncClient,
+    admin_user: dict,
+    registered_user: dict,
+    booster_user: dict,
+):
+    """旧客户端只把标题改成「指定<昵称>」时，服务端补上指定人。"""
+    publisher = registered_user
+    target = booster_user
+    target_id = target["user"]["id"]
+    target_name = target["user"]["username"]
+    await _fund(client, admin_user, publisher)
+
+    result = await _create_order(
+        client, publisher, title=f"指定{target_name}", designated_booster_id=None
+    )
+    assert result["status"] == 201, result["text"]
+    body = result["body"]
+    assert body["designated_booster_id"] == target_id
+    # 推断路径必须把名额锁成 1，否则触发 ck_orders_designated_single_slot
+    assert body["max_claims"] == 1
+    assert body["designated_booster"]["username"] == target_name
+
+
+async def test_title_only_repeat_forces_single_slot(
+    client: AsyncClient,
+    admin_user: dict,
+    registered_user: dict,
+    booster_user: dict,
+):
+    """旧客户端可能把 max_claims 填成多人；推断成指定单后仍须落成 1 人。"""
+    publisher = registered_user
+    target_name = booster_user["user"]["username"]
+    await _fund(client, admin_user, publisher)
+
+    result = await _create_order(
+        client, publisher, title=f"指定{target_name}", max_claims=3
+    )
+    assert result["status"] == 201, result["text"]
+    assert result["body"]["max_claims"] == 1
+    assert result["body"]["designated_booster_id"] == booster_user["user"]["id"]
+
+
+async def test_title_without_matching_username_stays_public(
+    client: AsyncClient,
+    admin_user: dict,
+    registered_user: dict,
+    booster_user: dict,
+):
+    """标题里不是某个用户的完整昵称时保持公开单，不擅自指派。"""
+    publisher = registered_user
+    await _fund(client, admin_user, publisher)
+
+    result = await _create_order(
+        client, publisher, title="指定派单测试订单", designated_booster_id=None
+    )
+    assert result["status"] == 201, result["text"]
+    assert result["body"]["designated_booster_id"] is None
+
+    # 前缀匹配也不算命中：必须是完整昵称
+    partial = booster_user["user"]["username"][:2]
+    result = await _create_order(client, publisher, title=f"指定{partial}")
+    assert result["status"] == 201, result["text"]
+    assert result["body"]["designated_booster_id"] is None
+
+
+async def test_title_only_repeat_rejects_unavailable_target(
+    client: AsyncClient,
+    db_session,
+    admin_user: dict,
+    registered_user: dict,
+    booster_user: dict,
+):
+    """标题命中一个当前不可接单的打手时明确报错，不能悄悄发成公开单。"""
+    publisher = registered_user
+    target_id = booster_user["user"]["id"]
+    target_name = booster_user["user"]["username"]
+    await _fund(client, admin_user, publisher)
+
+    await _set_user(db_session, target_id, can_accept=False)
+    result = await _create_order(client, publisher, title=f"指定{target_name}")
+    assert result["status"] == 400, result["text"]
+    assert result["body"]["detail"] == "标题指定的用户当前不可接单"
+    await _set_user(db_session, target_id, can_accept=True)
+
+    await _set_user(db_session, target_id, is_active=False)
+    result = await _create_order(client, publisher, title=f"指定{target_name}")
+    assert result["status"] == 400, result["text"]
+    assert result["body"]["detail"] == "标题指定的用户已被停用"

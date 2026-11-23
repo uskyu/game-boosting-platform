@@ -254,6 +254,71 @@ class OrderService:
             "is_risky": result.get("is_risky", False),
         }
 
+    async def _infer_designated_from_title(
+        self, title: str | None, publisher: User
+    ) -> int | None:
+        """旧客户端兜底：标题写成「指定<打手昵称>」却没带 designated_booster_id。
+
+        背景（2026-11-24）：续单自 2026-10-04（``311596e``）起就会把标题改成
+        「指定<原打手昵称>」，但指定派单字段要到 2026-11-17（``ddfa754``）才有。
+        跑着旧 chunk 的客户端（微信 XWEB 长驻页面）继续发单时，标题说「指定某某」，
+        实际却是公开单，全站打手都能看见并接单。生产实测 11-14~11-16 的「指定X」
+        标题单 100% 漏指定（144/144、157/157、133/133）。
+
+        判据刻意收得很紧，避免误伤正常标题（如「指定派单测试订单」）：
+        - 只认「指定」二字开头的标题，且「指定」后面的部分**完整等于**某个用户名；
+        - ``users.username`` 唯一，所以不存在歧义；
+        - 名字对上了但对方不能接（自己/管理员/停用/停接/被拉黑）时**直接 400**，
+          绝不静默退回公开单——那样等于让「指定单」变成全站可见，正是要修的 bug。
+        """
+        if not title:
+            return None
+        stripped = title.strip()
+        if not stripped.startswith("指定"):
+            return None
+        candidate_name = stripped[len("指定"):].strip()
+        if not candidate_name:
+            return None
+        result = await self._db.execute(
+            select(User).where(User.username == candidate_name)
+        )
+        candidate = result.scalar_one_or_none()
+        if candidate is None:
+            # 标题里的名字不对应任何账号：保持公开单行为（可能是手写标题）。
+            return None
+        if candidate.id == publisher.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="订单标题指定了自己，请改用「指定接单」选择其他打手",
+            )
+        if candidate.role == UserRole.ADMIN:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="订单标题不能指定管理员，请选择普通打手",
+            )
+        if not candidate.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="标题指定的用户已被停用",
+            )
+        if not candidate.can_accept:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="标题指定的用户当前不可接单",
+            )
+        if await is_user_blacklisted(self._db, publisher.id, candidate.id):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="标题指定的用户在你的黑名单中",
+            )
+        logger.info(
+            "inferred designated booster from title: title=%r publisher=%s target=%s",
+            stripped,
+            publisher.id,
+            candidate.id,
+        )
+        return int(candidate.id)
+
     async def create_order(
         self,
         order_data: OrderCreate,
@@ -332,6 +397,14 @@ class OrderService:
         # 指定派单：扣托管（或落单）前先确认目标用户当前真的能接这一单。
         # 任何一条不满足都直接 400，不产生订单与资金流水残留。
         designated_booster_id = order_data.designated_booster_id
+        inferred_designation = False
+        if designated_booster_id is None:
+            designated_booster_id = await self._infer_designated_from_title(
+                order_data.title, user
+            )
+            # 标题推断出来的指定单一律按单人名额处理：旧客户端可能把
+            # max_claims 填成多人，而 orders 表有 CHECK 约束保证指定单只有 1 人。
+            inferred_designation = designated_booster_id is not None
         if designated_booster_id is not None:
             designated_result = await self._db.execute(
                 select(User).where(User.id == designated_booster_id)
@@ -370,12 +443,16 @@ class OrderService:
                     detail="该用户在你的黑名单中",
                 )
 
+        # 指定派单固定 1 个名额：显式指定时 schema 已校验，标题推断出来的这
+        # 条路径没有经过 schema，这里补一道，避免撞 CHECK 约束直接 500。
+        max_claims = 1 if inferred_designation else order_data.max_claims
+
         # 非管理员发单需托管 price × max_claims；先校验余额再落单，
         # 不足直接 400（不产生订单残留）。
         escrow_required: Decimal | None = None
         publisher_wallet = None
         if user.role != UserRole.ADMIN:
-            escrow_required = _to_decimal(order_data.price) * int(order_data.max_claims)
+            escrow_required = _to_decimal(order_data.price) * int(max_claims)
             wallet_service = get_wallet_service(self._db)
             publisher_wallet = await wallet_service.get_or_create_wallet(user.id)
             if _to_decimal(publisher_wallet.available_balance) < escrow_required:
@@ -401,7 +478,7 @@ class OrderService:
             description=(
                 (order_data.description or order_data.intro or "").strip() or None
             ),
-            max_claims=order_data.max_claims,
+            max_claims=max_claims,
             designated_booster_id=designated_booster_id,
             claim_status=ClaimStatus.OPEN,
             deadline=order_data.deadline,

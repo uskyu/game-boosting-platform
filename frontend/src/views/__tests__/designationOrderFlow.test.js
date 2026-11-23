@@ -71,6 +71,27 @@ describe('指定接单：发单页 / 大厅 / 我的派单 / 详情页契约', (
       expect(createSource).toContain('本次续单按公开单发布，所有符合条件的打手都可以看见并接单。')
       expect(createSource).toContain('仅该打手可见并可接单。')
     })
+
+    it('续单拿不到打手信息时阻断，绝不静默发成公开单', () => {
+      // 原单 booster_id 有值、详情却没给出可指定的目标：视为数据异常直接拦截
+      const prefill = slice(createSource, 'const designatedPrefill = order.designated_booster', 'if (individualServiceFeeEnabled.value)')
+      expect(prefill).toMatch(/else if \(mode === 'repeat' && order\.booster_id != null\)/)
+      expect(prefill).toMatch(/recyclePrefillFailed\.value = true/)
+      expect(prefill).toContain('无法读取原单的接单打手信息')
+      expect(prefill).toMatch(/errorMessage\.value = '无法读取原单的接单打手信息[\s\S]{0,160}return/)
+    })
+
+    it('续单入口先校验构建版本，旧页面不允许进入续单流程', () => {
+      const mounted = slice(createSource, 'onMounted(async () =>', '</script>')
+      expect(mounted).toMatch(/if \(wantsRecycle\) \{\s*await appUpdateStore\.checkNow\(\)/)
+      expect(mounted).toMatch(/if \(appUpdateStore\.available\)[\s\S]{0,200}return/)
+      expect(mounted).toContain('系统已更新，请刷新页面后再续单')
+      // 版本校验必须发生在 prefillFromOrder 之前
+      const checkIdx = mounted.indexOf('appUpdateStore.checkNow()')
+      const prefillIdx = mounted.indexOf('await prefillFromOrder(')
+      expect(checkIdx).toBeGreaterThan(-1)
+      expect(prefillIdx).toBeGreaterThan(checkIdx)
+    })
   })
 
   describe('OrderHallView', () => {
