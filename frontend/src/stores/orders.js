@@ -6,6 +6,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import api from '@/utils/api'
+import { tryDirectImageUpload } from '@/utils/directImageUpload'
 
 export const useOrdersStore = defineStore('orders', () => {
   // State
@@ -855,19 +856,28 @@ export const useOrdersStore = defineStore('orders', () => {
   async function uploadDeliverAttachment(orderId, file) {
     error.value = null
     try {
-      const form = new FormData()
-      form.append('attachment', file)
-      const response = await api.post(`/orders/${orderId}/deliver-attachments`, form, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-        timeout: 120000,
+      // 优先 COS 直传（不经服务器带宽）；未启用或失败则回退 multipart。
+      const direct = await tryDirectImageUpload(file, {
+        scope: 'delivery_attachment',
+        orderId,
       })
+      let saved = direct
+      if (!saved) {
+        const form = new FormData()
+        form.append('attachment', file)
+        const response = await api.post(`/orders/${orderId}/deliver-attachments`, form, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          timeout: 120000,
+        })
+        saved = response.data
+      }
       if (Number(currentOrder.value?.id) === Number(orderId)) {
         const claim = currentOrder.value.my_claim
         const savedAttachments = claim
           ? claim.delivery_attachments
           : currentOrder.value.delivery_attachments
         const existing = Array.isArray(savedAttachments) ? [...savedAttachments] : []
-        existing.push(response.data)
+        existing.push(saved)
         const updated = { ...currentOrder.value, delivery_attachments: existing }
         if (claim) {
           updated.my_claim = { ...claim, delivery_attachments: [...existing] }
@@ -875,7 +885,7 @@ export const useOrdersStore = defineStore('orders', () => {
         currentOrder.value = updated
         syncOrderListDeliveryAttachments(orderId, existing)
       }
-      return { success: true, data: response.data }
+      return { success: true, data: saved }
     } catch (err) {
       error.value = err.message
       return { success: false, error: err.message, status: err.status }

@@ -15,6 +15,7 @@ import { DEFAULT_PAYOUT_DELAY_DAYS, formatFeeRate, formatMoneyFixed, parsePayout
 import { getPublishButtonLabel } from '@/utils/humanCopy'
 import { cleanTemplatePayload, resetOrderForm } from '@/utils/orderTemplates'
 import { measureOrderFlowStage } from '@/utils/orderFlowTiming'
+import { tryDirectImageUpload } from '@/utils/directImageUpload'
 
 const router = useRouter()
 const route = useRoute()
@@ -108,10 +109,21 @@ function carriedAttachments() {
 async function uploadAttachments(orderId, files) {
   const selected = Array.from(files || []).filter(isUploadFile)
   for (let index = 0; index < selected.length; index += 1) {
-    const body = new FormData()
-    body.append('attachment', selected[index])
+    const file = selected[index]
     submitStage.value = `图片上传中 ${index + 1}/${selected.length}`
     uploadProgress.value = `${index + 1}/${selected.length}（0%）`
+    // 优先走 COS 直传（浏览器 -> 对象存储，不经服务器带宽）；
+    // 未启用对象存储或直传失败时回退到原来的 multipart 上传。
+    const direct = await tryDirectImageUpload(file, {
+      scope: 'order_attachment',
+      orderId,
+      onProgress: (percent) => {
+        uploadProgress.value = `${index + 1}/${selected.length}（${percent}%）`
+      },
+    })
+    if (direct) continue
+    const body = new FormData()
+    body.append('attachment', file)
     await api.post(`/orders/${orderId}/attachments`, body, {
       headers: { 'Content-Type': 'multipart/form-data' },
       onUploadProgress: (event) => {

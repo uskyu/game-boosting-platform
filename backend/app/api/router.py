@@ -58,6 +58,8 @@ from app.api.endpoints.admin_storage import router as admin_storage_router
 from app.api.endpoints.storage import router as storage_router
 # 通知音频自定义（四个槽位：来单/被接手/取消申请/聊天）
 from app.api.endpoints.admin_sounds import router as admin_sounds_router
+# 图片直传（浏览器 -> COS 预签名 PUT + 落地提交）
+from app.api.endpoints.uploads import router as direct_uploads_router
 
 # Create main API router
 api_router = APIRouter()
@@ -90,6 +92,8 @@ api_router.include_router(admin_site_router)
 api_router.include_router(admin_storage_router)
 # 预签名 URL 重新签发（登录用户；权限在签发时由服务端判定）
 api_router.include_router(storage_router)
+# 图片直传：浏览器 -> CORS 预签名 PUT + 落地提交；LOCAL 模式前端回退
+api_router.include_router(direct_uploads_router)
 # 通知音频自定义（上传/试听/静音/音量）
 api_router.include_router(admin_sounds_router)
 api_router.include_router(admin_payment_router)

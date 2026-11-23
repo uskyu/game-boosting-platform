@@ -495,6 +495,143 @@ def _cos_probe(client, bucket: str, key: str) -> None:
 
 
 # =============================================================================
+# 直传（浏览器 -> COS）：只签 PUT，图片不经服务器中转
+# =============================================================================
+
+
+def _cos_presign_put(
+    client, bucket: str, key: str, content_type: str, expires: int
+) -> str:
+    """生成 PUT 预签名 URL（纯本地 HMAC 计算，不发网络请求）。"""
+    return client.get_presigned_url(
+        Bucket=bucket,
+        Key=key,
+        Method="PUT",
+        Expired=max(60, int(expires)),
+        Headers={"Content-Type": content_type} if content_type else {},
+    )
+
+
+def _cos_head_info(client, bucket: str, key: str) -> tuple[int, str] | None:
+    """HEAD 取对象大小与内容类型；对象不存在返回 None。"""
+    _, _, _, CosServiceError = _cos_sdk()
+    try:
+        response = client.head_object(Bucket=bucket, Key=key)
+    except CosServiceError as exc:
+        try:
+            status = exc.get_status_code()
+        except Exception:  # noqa: BLE001
+            status = 500
+        if status == 404:
+            return None
+        raise
+
+    size = 0
+    try:
+        size = int(
+            response.get("Content-Length") or response.get("content-length") or 0
+        )
+    except (TypeError, ValueError):
+        size = 0
+    content_type = ""
+    for header_name, header_value in response.items():
+        if str(header_name).lower() == "content-type":
+            content_type = str(header_value)
+            break
+    return size, content_type or guess_content_type(key)
+
+
+async def presign_put(
+    key: str, content_type: str, db, *, expires: int = 600
+) -> str | None:
+    """给浏览器直传用的 PUT 预签名 URL。
+
+    COS 模式返回签名 URL；LOCAL 模式（或凭据不全）返回 ``None``，调用方
+    必须回退到原有的「multipart 上传到服务器」路径。直传只省带宽：
+    文件真实性与大小仍在 commit 阶段核对（HEAD 对象）。
+    """
+    normalized = normalize_key(key)
+    config = await get_storage_config(db)
+    if config.mode != _COS_MODE:
+        return None
+    if not (config.bucket and config.secret_id and config.secret_key):
+        return None
+    client = _cos_client(config)
+    return await anyio.to_thread.run_sync(
+        _cos_presign_put, client, config.bucket, normalized, content_type, expires
+    )
+
+
+async def object_info(key: str, db) -> tuple[int, str] | None:
+    """返回对象实际大小与内容类型；不存在返回 None。
+
+    commit 阶段用它确认「浏览器确实把文件传到了 COS」，同时兜住预签名 PUT
+    无法限制体积的缺口（上传后仍按 10MB 上限校验）。
+    """
+    normalized = normalize_key(key)
+    config = await get_storage_config(db)
+    if config.mode != _COS_MODE:
+        return None
+    if not (config.bucket and config.secret_id and config.secret_key):
+        return None
+    client = _cos_client(config)
+    return await anyio.to_thread.run_sync(
+        _cos_head_info, client, config.bucket, normalized
+    )
+
+
+def _cos_read_prefix(client, bucket: str, key: str, length: int) -> bytes:
+    """范围读取对象开头若干字节（用于魔数校验）。"""
+    _, _, _, CosServiceError = _cos_sdk()
+    try:
+        response = client.get_object(
+            Bucket=bucket, Key=key, Range=f"bytes=0-{max(0, length - 1)}"
+        )
+    except CosServiceError as exc:
+        try:
+            status = exc.get_status_code()
+        except Exception:  # noqa: BLE001
+            status = 500
+        if status == 404:
+            raise _ObjectMissing from exc
+        raise
+    body = response.get("Body")
+    if body is None:
+        return b""
+    try:
+        return body.read(1024) or b""
+    finally:
+        raw = getattr(body, "_rt", None)
+        closer = getattr(raw, "close", None)
+        if callable(closer):
+            try:
+                closer()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+async def read_prefix(key: str, db, *, length: int = 32) -> bytes | None:
+    """读取对象开头字节；对象不存在返回 None。
+
+    直传路径没有经过 PIL 解码，commit 时用魔数确认「确实是图片」，
+    避免把任意字节挂成 image/png 后由浏览器/第三方渲染。
+    """
+    normalized = normalize_key(key)
+    config = await get_storage_config(db)
+    if config.mode != _COS_MODE:
+        return None
+    if not (config.bucket and config.secret_id and config.secret_key):
+        return None
+    client = _cos_client(config)
+    try:
+        return await anyio.to_thread.run_sync(
+            _cos_read_prefix, client, config.bucket, normalized, length
+        )
+    except _ObjectMissing:
+        return None
+
+
+# =============================================================================
 # 对外门面
 # =============================================================================
 
