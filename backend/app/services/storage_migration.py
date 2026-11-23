@@ -48,6 +48,21 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def _invalidate_signing_exists_cache() -> None:
+    """让签名层的「对象是否在 COS」缓存失效。
+
+    迁移/清理刚改变了 COS 里的对象集合，签名层若还缓存着旧结论（尤其是
+    「不在 COS」），新迁移的图会继续被当作本地图处理，最多迟滞一个缓存 TTL。
+    这里延迟 import：签名模块与迁移模块互不依赖，避免顶层循环引用。
+    """
+    try:
+        from app.services import url_signing
+
+        url_signing.invalidate_exists_cache()
+    except Exception:  # noqa: BLE001 - 缓存失效失败不应影响迁移结果
+        logger.warning("invalidate signing exists cache failed", exc_info=True)
+
+
 def _local_path(rel_path: str) -> Path:
     return Path(settings.UPLOAD_DIR) / rel_path
 
@@ -374,6 +389,9 @@ async def run_migration(app_db_factory) -> None:
     finally:
         migration_progress.running = False
         migration_progress.current_path = None
+        # 刚才可能有一批对象刚写进 COS，签名层缓存里还记着「不存在」。
+        # 不清掉的话这些图要等满 2 分钟缓存 TTL 才会变成 COS 直链。
+        _invalidate_signing_exists_cache()
 
 
 # =============================================================================
@@ -458,3 +476,4 @@ async def run_cleanup(app_db_factory) -> None:
         except OSError:  # pragma: no cover - 极端的目录不可读
             pass
         cleanup_progress.running = False
+        _invalidate_signing_exists_cache()

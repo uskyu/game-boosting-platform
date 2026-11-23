@@ -71,6 +71,15 @@ class _FakePresignClient:
         )
 
 
+class _COSExistsState:
+    """控制「对象是否真的在 COS 里」的开关（默认 True = 已迁移完成）。"""
+
+    value: bool = True
+
+
+_COS_EXISTS_STATE = _COSExistsState()
+
+
 class _FakeConfig:
     """``storage_service.StorageConfig`` 的等价替身（字段名与真实 dataclass 一致）。"""
 
@@ -111,6 +120,19 @@ def patch_storage_config(monkeypatch):
         return _FakeConfig("COS" if str(mode).upper() == "COS" else "LOCAL")
 
     monkeypatch.setattr(url_signing, "_load_config", _load_config)
+
+    # 签名前会 HEAD 校验「对象是否真在 COS」。单元测试默认全部存在（等价于
+    # 已迁移完成）；需要验证「未迁移」路径的用例改写 _COS_EXISTS_STATE.value。
+    _COS_EXISTS_STATE.value = True
+
+    async def _exists_for_config(key, config):
+        return _COS_EXISTS_STATE.value
+
+    from app.services import storage_service as _storage_service
+
+    monkeypatch.setattr(_storage_service, "exists_for_config", _exists_for_config)
+    # 存在性缓存是进程内全局字典，用例之间必须复位，否则上一个用例的结论会泄漏。
+    monkeypatch.setattr(url_signing, "_EXISTS_CACHE", {})
 
 
 async def _set_storage_mode(db, mode: str) -> None:
@@ -687,3 +709,78 @@ async def test_resign_endpoint_rejects_non_managed_url(
         headers={"Authorization": f"Bearer {_token_for(owner)}"},
     )
     assert response.status_code == 403
+
+
+# =============================================================================
+# 回归：未迁移到 COS 的历史图，绝不能签成 COS 直链
+# =============================================================================
+#
+# 2026-11-23 线上事故：签名只看「模式是 COS + 凭据齐」，不看对象是否真的
+# 上传过。历史图全在本地磁盘，一开 COS 就被签成 COS 直链，浏览器绕过
+# /uploads 回源中间件直连 COS → 所有历史图片 404。下面两条用例守住这个边界。
+
+
+async def test_unmigrated_object_is_not_signed(db_session, cos_mode, fake_cos, monkeypatch):
+    """COS 里没有该对象时，必须保留 /uploads 相对路径（不签名）。"""
+    _COS_EXISTS_STATE.value = False
+    try:
+        url = await url_signing.sign_url(db_session, "orders/legacy.png")
+        assert url is None, "未迁移对象不得签成 COS 直链"
+        assert fake_cos.calls == [], "不应发起签名（对象不存在）"
+    finally:
+        _COS_EXISTS_STATE.value = True
+
+
+async def test_payload_keeps_local_urls_when_object_missing(
+    db_session, cos_mode, fake_cos
+):
+    """整份响应体：未迁移的图保持 /uploads，已迁移的图才换成 COS 直链。"""
+    payload = {
+        "attachments": [
+            {"url": "/uploads/orders/legacy.png", "name": "a.png"},
+            {"url": "/uploads/orders/migrated.png", "name": "b.png"},
+        ],
+        "other": "https://cdn/x.jpg",
+    }
+
+    original_exists = _COS_EXISTS_STATE.value
+
+    async def _per_key_exists(key, config):
+        # 只有 migrated.png 存在于 COS
+        return "migrated" in key
+
+    from app.services import storage_service as _storage_service
+    import pytest as _pytest
+
+    monkeypatch = _pytest.MonkeyPatch()
+    monkeypatch.setattr(_storage_service, "exists_for_config", _per_key_exists)
+    monkeypatch.setattr(url_signing, "_EXISTS_CACHE", {})
+    try:
+        result = await url_signing.sign_urls_in_payload(db_session, payload)
+    finally:
+        monkeypatch.undo()
+        _COS_EXISTS_STATE.value = original_exists
+
+    legacy = result["attachments"][0]["url"]
+    migrated = result["attachments"][1]["url"]
+    assert legacy == "/uploads/orders/legacy.png", "未迁移图必须保持相对路径"
+    assert migrated.startswith("https://"), "已迁移图应签成 COS 直链"
+    assert result["other"] == "https://cdn/x.jpg", "外部 URL 不得改写"
+
+
+async def test_head_failure_falls_back_to_local_url(db_session, cos_mode, fake_cos):
+    """COS HEAD 异常（网络/鉴权抖动）时保守不签名，宁可走本地回源。"""
+    from app.services import storage_service as _storage_service
+
+    async def _boom(key, config):
+        raise RuntimeError("cos network down")
+
+    url_signing._EXISTS_CACHE.clear()
+    original = _storage_service.exists_for_config
+    _storage_service.exists_for_config = _boom
+    try:
+        url = await url_signing.sign_url(db_session, "orders/whatever.png")
+        assert url is None, "HEAD 失败时必须回落到本地路径，绝不能让图片 404"
+    finally:
+        _storage_service.exists_for_config = original
+        url_signing._EXISTS_CACHE.clear()

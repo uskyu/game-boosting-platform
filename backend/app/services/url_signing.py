@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -205,6 +206,87 @@ def _now_dt(now: int) -> datetime:
 
 
 # =============================================================================
+# 「对象真的在 COS 里吗」校验
+# =============================================================================
+#
+# 为什么必须有这一层（2026-11-23 线上事故）：
+#   历史图片全部落在本地磁盘，数据库里也是 ``/uploads/<key>``。切到 COS 后
+#   如果无脑把每个 /uploads 都签成 COS 直链，浏览器就会绕过 /uploads 回源
+#   中间件直接打 COS —— 而这些对象根本还没迁移，结果**所有历史图片都打不开**
+#   （实测生产订单附件在 COS 里是 MISSING，接口却返回了签名 URL）。
+#
+# 正确语义是：**只有确认存在于 COS 的对象才直连 COS，否则保留 /uploads 相对
+# 路径**，让中间件自己按 COS → 本地磁盘的顺序回源。这样部分迁移期间两种图
+# 都能打开，也符合「本地历史图保持匿名可读」的产品决定。
+#
+# 代价：每次签发多一次 HEAD 往返。因此结果进进程内缓存（含「不存在」的否定
+# 结果），TTL 远短于签名窗口：迁移完成后最多等待一个 TTL 就会自动变为直连。
+
+# key -> (是否存在, 缓存到期时刻 monotonic)
+_EXISTS_CACHE: dict[str, tuple[bool, float]] = {}
+_EXISTS_CACHE_TTL_SECONDS = 120.0
+# 单次 HEAD 的并发上限：一次请求可能带几十张图，全打并发会把 COS 打爆。
+_EXISTS_CONCURRENCY = 8
+
+
+def _prune_exists_cache(now_monotonic: float) -> None:
+    """清掉过期的存在性缓存条目（低频、便宜，避免无界增长）。"""
+    stale = [k for k, (_, exp) in _EXISTS_CACHE.items() if exp <= now_monotonic]
+    for key in stale:
+        _EXISTS_CACHE.pop(key, None)
+
+
+async def _filter_existing_in_cos(config: Any, keys: list[str]) -> list[str]:
+    """返回确实存在于 COS 的 key 子集；HEAD 失败/网络异常一律按「不存在」处理。
+
+    失败时保守地不签名，让浏览器走 ``/uploads`` 回源中间件：图片最多慢一点，
+    绝不会因为 COS 抖动而整批开不出图。
+    """
+    if not keys:
+        return []
+
+    from app.services import storage_service
+
+    now_monotonic = time.monotonic()
+    pending: list[str] = []
+    confirmed: list[str] = []
+    for key in keys:
+        entry = _EXISTS_CACHE.get(key)
+        if entry is not None and entry[1] > now_monotonic:
+            if entry[0]:
+                confirmed.append(key)
+            continue
+        pending.append(key)
+
+    if pending:
+        _prune_exists_cache(now_monotonic)
+        semaphore = asyncio.Semaphore(_EXISTS_CONCURRENCY)
+
+        async def probe(key: str) -> tuple[str, bool]:
+            async with semaphore:
+                try:
+                    exists = await storage_service.exists_for_config(key, config)
+                except Exception:  # noqa: BLE001 - HEAD 失败按「不在 COS」处理
+                    logger.warning("cos head failed key=%s; treat as missing", key)
+                    exists = False
+            return key, bool(exists)
+
+        results = await asyncio.gather(*(probe(key) for key in pending))
+        expires = time.monotonic() + _EXISTS_CACHE_TTL_SECONDS
+        for key, exists in results:
+            _EXISTS_CACHE[key] = (exists, expires)
+            if exists:
+                confirmed.append(key)
+
+    return confirmed
+
+
+def invalidate_exists_cache() -> None:
+    """清空存在性缓存（迁移/清理任务结束时调用，让新状态立刻生效）。"""
+    _EXISTS_CACHE.clear()
+
+
+# =============================================================================
 # 批量签发（带台账复用）
 # =============================================================================
 
@@ -227,6 +309,12 @@ async def _sign_keys(db, keys: list[str]) -> dict[str, str]:
         for field in ("bucket", "region", "secret_id", "secret_key")
     ):
         # 后台选了 COS 但凭据不全（storage_service 通常会回退 LOCAL，这里兜底）
+        return {}
+
+    # 关键一步：只签「确实存在于 COS」的对象。未迁移的历史图留在 /uploads，
+    # 由回源中间件按 COS → 本地顺序提供服务（否则浏览器直连 COS 会 404）。
+    unique_keys = await _filter_existing_in_cos(config, unique_keys)
+    if not unique_keys:
         return {}
 
     now = int(time.time())
