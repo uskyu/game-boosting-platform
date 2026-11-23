@@ -594,6 +594,10 @@ class ChatService:
 
         suffix = allowed_types[file.content_type]
         file_name = f"{uuid4().hex}{suffix}"
+        # 延迟导入：chat_service 会被 app.services.__init__ 提前加载，包级
+        # ``from app.services import storage_service`` 会形成循环导入。
+        from app.services import storage_service
+
         await storage_service.save_bytes(
             file_bytes, f"chat/{file_name}", file.content_type, self._db
         )
