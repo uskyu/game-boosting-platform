@@ -14,6 +14,7 @@ from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
 from app.core.post_commit import drain_registry, start_registry, stop_registry
+from app.db import session as db_session_module
 from app.db.session import get_async_session
 from app.main import app
 from app.models.base import Base
@@ -37,6 +38,20 @@ _admin_url = _parsed_url.set(
 
 _engine = create_async_engine(_test_url, echo=False, poolclass=NullPool)
 _session_factory = async_sessionmaker(bind=_engine, class_=AsyncSession, expire_on_commit=False)
+
+
+@pytest.fixture(autouse=True)
+def override_async_session_factory(monkeypatch) -> None:
+    """后台任务自行开 session 时也统一落到测试库。
+
+    新单通知已移到 post-commit 后台任务，任务内用
+    ``from app.db.session import async_session_factory`` 开新 session。
+    本 fixture 把该模块属性指向测试库，避免测试期间把通知写进 .env 里
+    配置的非测试库（deliver 内部是调用时导入，能拿到这里的替换值）。
+    """
+    monkeypatch.setattr(
+        db_session_module, "async_session_factory", _session_factory
+    )
 
 
 @pytest.fixture(scope="session")
@@ -99,6 +114,19 @@ async def reset_database() -> AsyncGenerator[None, None]:
     Measured: full suite 28min -> ~15min.
     """
     tables = list(Base.metadata.tables.keys())
+    # 上一用例登记的新单通知是 post-commit 后台任务，可能仍在写测试库；
+    # 先等这些任务落地，避免 DELETE/自增重置与后台 INSERT 交错。
+    # 只等本链路（notify_boosters_new_order 的 _hook），不碰其他后台任务。
+    current = asyncio.current_task()
+    pending = [
+        task for task in asyncio.all_tasks()
+        if task is not current
+        and not task.done()
+        and "notify_boosters_new_order"
+        in getattr(task.get_coro(), "__qualname__", "")
+    ]
+    if pending:
+        await asyncio.wait(pending, timeout=5)
     async with _engine.begin() as conn:
         await conn.execute(text("SET FOREIGN_KEY_CHECKS=0"))
         for table in tables:

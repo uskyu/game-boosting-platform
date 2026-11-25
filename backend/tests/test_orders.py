@@ -1,12 +1,46 @@
 """Order lifecycle and payment tests."""
 
+import asyncio
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from app.main import app
+from app.models.notification import Notification, NotificationType
 from app.models.user import User
+from app.services.connection_manager import connection_manager
 from tests.conftest import auth_header
+
+
+def _set_online_users(monkeypatch, *user_ids: int) -> None:
+    online_ids = {int(user_id) for user_id in user_ids}
+
+    async def _online_user_ids() -> set[int]:
+        return set(online_ids)
+
+    monkeypatch.setattr(connection_manager, "online_user_ids", _online_user_ids)
+
+
+async def _wait_for_notification_rows(
+    db_session, order_id: int, expected: int
+) -> list[Notification]:
+    """后台通知任务不阻塞发单响应：轮询到后台提交后再断言。"""
+    rows: list[Notification] = []
+    for _ in range(100):
+        result = await db_session.execute(
+            select(Notification).where(
+                Notification.ref_id == order_id,
+                Notification.type == NotificationType.SYSTEM_ANNOUNCEMENT,
+            )
+        )
+        rows = list(result.scalars().all())
+        if len(rows) >= expected:
+            return rows
+        # 结束当前只读事务，下一轮查询才能看到后台任务新提交的行
+        await db_session.rollback()
+        await asyncio.sleep(0.02)
+    return rows
 
 
 async def _create_order(client: AsyncClient, user_data: dict) -> dict:
@@ -606,6 +640,7 @@ async def test_admin_create_order_notifies_active_non_admin_users(
     booster_user: dict,
     registered_user: dict,
     db_session,
+    monkeypatch,
 ):
     """发单给默认开启的非管理员发通知，尊重关闭偏好并排除发布者。"""
     from sqlalchemy import select
@@ -636,6 +671,21 @@ async def test_admin_create_order_notifies_active_non_admin_users(
     ))
     await db_session.commit()
 
+    # _wait_for_notification_rows 每轮 rollback 会 expire ORM 对象；先取纯 id，
+    # 避免断言时访问已过期属性触发惰性 IO（MissingGreenlet）。
+    booster_id = booster.id
+    opt_out_id = ordinary_opt_out.id
+    inactive_id = inactive_user.id
+
+    # 公开单只写在线用户：候选全部在线，验证偏好/停用/发布人排除
+    _set_online_users(
+        monkeypatch,
+        booster_id,
+        opt_out_id,
+        inactive_id,
+        registered_user["user"]["id"],
+    )
+
     resp = await client.post(
         "/orders/create",
         json={
@@ -649,15 +699,10 @@ async def test_admin_create_order_notifies_active_non_admin_users(
     assert resp.status_code == 201
     order = resp.json()
 
-    rows = list((await db_session.execute(
-        select(Notification).where(
-            Notification.ref_id == order["id"],
-            Notification.type == NotificationType.SYSTEM_ANNOUNCEMENT,
-        )
-    )).scalars().all())
+    rows = await _wait_for_notification_rows(db_session, order["id"], 2)
     recipient_ids = {row.user_id for row in rows}
-    assert recipient_ids == {booster.id, registered_user["user"]["id"]}
-    assert inactive_user.id not in recipient_ids
+    assert recipient_ids == {booster_id, registered_user["user"]["id"]}
+    assert inactive_id not in recipient_ids
     assert all(row.created_at is not None for row in rows)
     assert all(row.title == "新订单发布" for row in rows)
     assert all(row.link == f"/orders/{order['id']}" for row in rows)
@@ -672,7 +717,7 @@ async def test_create_order_notifications_chunk_large_insert_batches(
     monkeypatch,
 ):
     from app.api import notification_utils
-    from app.models.user import User
+    from app.models.user import User, UserRole
 
     db_session.add_all([
         User(
@@ -683,6 +728,12 @@ async def test_create_order_notifications_chunk_large_insert_batches(
         for index in range(501)
     ])
     await db_session.commit()
+
+    # 公开单只写在线用户：把除管理员外的候选全部置为在线
+    online_result = await db_session.execute(
+        select(User.id).where(User.role != UserRole.ADMIN)
+    )
+    _set_online_users(monkeypatch, *online_result.scalars().all())
 
     executed_inserts = []
     original_execute = notification_utils.AsyncSession.execute
@@ -705,14 +756,11 @@ async def test_create_order_notifications_chunk_large_insert_batches(
         headers=auth_header(admin_user),
     )
     assert resp.status_code == 201, resp.text
+
+    rows = await _wait_for_notification_rows(db_session, resp.json()["id"], 503)
     assert len(executed_inserts) == 2
     assert all(statement.table.name == "notifications" for statement in executed_inserts)
 
-    rows = list((await db_session.execute(
-        select(notification_utils.Notification).where(
-            notification_utils.Notification.ref_id == resp.json()["id"],
-        )
-    )).scalars().all())
     notified_ids = {row.user_id for row in rows}
     assert {booster_user["user"]["id"], registered_user["user"]["id"]} <= notified_ids
     assert len(notified_ids) == 503

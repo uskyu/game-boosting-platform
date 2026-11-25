@@ -9,6 +9,22 @@ from app.models.notification import Notification, NotificationType, UserPreferen
 from app.models.order import Order
 from app.models.publisher_blacklist import PublisherBlacklist
 from app.models.user import User, UserRole
+from app.services.connection_manager import connection_manager
+
+
+def _set_online_users(monkeypatch, *user_ids: int) -> None:
+    """把连接管理器的在线快照固定为本用例的候选集合。
+
+    公开单现在只给在线用户写通知；本文件验证的是「在线之后」的资格过滤，
+    因此把候选全部置为在线，离线不发由 test_new_order_notification_pipeline
+    单独覆盖。
+    """
+    online_ids = {int(user_id) for user_id in user_ids}
+
+    async def _online_user_ids() -> set[int]:
+        return set(online_ids)
+
+    monkeypatch.setattr(connection_manager, "online_user_ids", _online_user_ids)
 
 
 async def _make_user(
@@ -44,6 +60,9 @@ async def _make_order(db_session, publisher_id: int) -> Order:
     )
     db_session.add(order)
     await db_session.commit()
+    # created_at 是 server_default：commit 后属性未加载，直接读取会触发异步
+    # 惰性 IO（MissingGreenlet）。notify 需要快照该字段，测试里显式回填。
+    await db_session.refresh(order)
     return order
 
 
@@ -57,7 +76,9 @@ async def _notified_user_ids(db_session, order_id: int) -> list[int]:
     return [int(user_id) for user_id in result.scalars().all()]
 
 
-async def test_active_non_admin_with_can_accept_receives_new_order(db_session):
+async def test_active_non_admin_with_can_accept_receives_new_order(
+    db_session, monkeypatch
+):
     """can_accept=True（含未显式赋值走默认值）的活跃非管理员都收到通知。"""
     publisher = await _make_user(
         db_session, name="notif-allow-publisher", role=UserRole.ADMIN
@@ -69,19 +90,26 @@ async def test_active_non_admin_with_can_accept_receives_new_order(db_session):
         db_session, name="notif-allow-ineligible", can_accept=False
     )
     order = await _make_order(db_session, publisher.id)
+    # 候选全部在线：验证 can_accept 过滤，而不是在线裁剪
+    _set_online_users(
+        monkeypatch, publisher.id, explicit.id, defaulted.id, ineligible.id
+    )
 
     count = await notify_boosters_new_order(
         db_session, order=order, exclude_user_id=publisher.id
     )
 
     assert count == 2
+    # notify 走独立后台 session 并已 commit；先结束本会话的只读事务，
+    # 否则 REPEATABLE READ 快照看不到新提交的行。
+    await db_session.commit()
     notified = await _notified_user_ids(db_session, order.id)
     assert set(notified) == {explicit.id, defaulted.id}
     assert len(notified) == 2
     assert ineligible.id not in notified
 
 
-async def test_new_order_notifications_keep_other_exclusions(db_session):
+async def test_new_order_notifications_keep_other_exclusions(db_session, monkeypatch):
     """inactive / ADMIN / 黑名单 / 偏好关闭 / exclude_user_id 仍然排除。"""
     publisher = await _make_user(
         db_session, name="notif-excl-publisher", role=UserRole.ADMIN
@@ -108,12 +136,25 @@ async def test_new_order_notifications_keep_other_exclusions(db_session):
     )
     await db_session.flush()
     order = await _make_order(db_session, publisher.id)
+    # 候选全部在线：验证其余资格过滤仍生效
+    _set_online_users(
+        monkeypatch,
+        publisher.id,
+        eligible.id,
+        inactive.id,
+        admin.id,
+        blacklisted.id,
+        pref_off.id,
+        excluded.id,
+    )
 
     count = await notify_boosters_new_order(
         db_session, order=order, exclude_user_id=excluded.id
     )
 
     assert count == 1
+    # 同上：后台 session 已提交，先结束本会话只读事务再查询。
+    await db_session.commit()
     notified = await _notified_user_ids(db_session, order.id)
     assert set(notified) == {eligible.id}
     assert len(notified) == 1

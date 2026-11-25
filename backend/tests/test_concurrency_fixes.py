@@ -177,6 +177,12 @@ async def test_publish_broadcasts_only_after_commit(
 ):
     """发单成功：通知落库 + WS 广播在响应返回时已完成（依赖 teardown 已 drain）。"""
     recorded = await _record_ws_sends(monkeypatch)
+    booster_id = booster_user["user"]["id"]
+
+    async def _online_user_ids() -> set[int]:
+        return {booster_id}
+
+    monkeypatch.setattr(connection_manager, "online_user_ids", _online_user_ids)
 
     resp = await client.post(
         "/orders/create",
@@ -198,6 +204,8 @@ async def test_publish_broadcasts_only_after_commit(
     assert len(recorded) == 1
     assert recorded[0]["user_id"] == booster_user["user"]["id"]
 
+    # 结束测试会话可能残留的只读事务，确保看到后台任务新提交的行
+    await db_session.rollback()
     rows = (
         await db_session.execute(
             select(Notification).where(Notification.ref_id == resp.json()["id"])

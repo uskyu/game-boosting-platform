@@ -10,6 +10,7 @@
 执行，因此调用返回后即可断言。
 """
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -17,6 +18,7 @@ from sqlalchemy import select
 
 from app.api.notification_utils import notify_boosters_new_order
 from app.models.deposit import DepositSetting, DepositTier
+from app.models.notification import Notification, NotificationType
 from app.models.order import Order
 from app.models.user import User, UserRole
 from app.models.wallet import Wallet
@@ -75,6 +77,8 @@ async def _seed(db_session, recipient_count: int = 3):
     )
     db_session.add(order)
     await db_session.commit()
+    # created_at 是 server_default，commit 后需显式刷新才能被通知快照读取
+    await db_session.refresh(order)
     return order, {user.id for user in recipients}
 
 
@@ -88,10 +92,39 @@ def _record_ws_sends(monkeypatch) -> list[dict]:
     return recorded
 
 
+def _set_online_users(monkeypatch, *user_ids: int) -> None:
+    online_ids = {int(user_id) for user_id in user_ids}
+
+    async def _online_user_ids() -> set[int]:
+        return set(online_ids)
+
+    monkeypatch.setattr(connection_manager, "online_user_ids", _online_user_ids)
+
+
+def _no_tier_waits(monkeypatch) -> None:
+    """让卡片回落到基础 pending 卡，便于断言 order_card 原样透传。"""
+
+    async def _no_waits(*args, **kwargs):
+        return {}
+
+    monkeypatch.setattr(deposit_service, "get_many_tier_wait_seconds", _no_waits)
+
+
+async def _wait_for_ws_sends(recorded: list[dict], count: int = 1) -> None:
+    """后台通知任务不阻塞响应：轮询等待 WS 扇出落地。"""
+    for _ in range(100):
+        if len(recorded) >= count:
+            return
+        await asyncio.sleep(0.02)
+    raise AssertionError(f"expected at least {count} WS sends, got {len(recorded)}")
+
+
 async def test_order_card_attached_to_every_broadcast(db_session, monkeypatch):
     """传入 order_card：每条 post-commit 广播 payload 都带同一份卡片。"""
     order, recipient_ids = await _seed(db_session)
     recorded = _record_ws_sends(monkeypatch)
+    _set_online_users(monkeypatch, *recipient_ids)
+    _no_tier_waits(monkeypatch)
 
     count = await notify_boosters_new_order(
         db_session, order=order, order_card=ORDER_CARD
@@ -113,6 +146,7 @@ async def test_order_card_absent_when_not_provided(db_session, monkeypatch):
     """不传 order_card：payload 中无 order_card 键，行为与历史一致。"""
     order, recipient_ids = await _seed(db_session)
     recorded = _record_ws_sends(monkeypatch)
+    _set_online_users(monkeypatch, *recipient_ids)
 
     count = await notify_boosters_new_order(db_session, order=order)
 
@@ -129,6 +163,9 @@ async def test_create_order_broadcasts_pending_base_card(
 ):
     """create_order 构建的 WS 基础卡片必须标记等待时间未计算。"""
     recorded = _record_ws_sends(monkeypatch)
+    _set_online_users(monkeypatch, booster_user["user"]["id"])
+    # 档位查询无结果时回落 create_order 传入的基础 pending 卡
+    _no_tier_waits(monkeypatch)
     resp = await client.post(
         "/orders/create",
         json={
@@ -142,7 +179,7 @@ async def test_create_order_broadcasts_pending_base_card(
         headers=auth_header(admin_user),
     )
     assert resp.status_code == 201, resp.text
-    assert recorded, "新单广播应至少产生一条 WS payload"
+    await _wait_for_ws_sends(recorded)
     card = recorded[0]["payload"]["order_card"]
     assert card["accept_window_pending"] is True
     assert card["accept_wait_seconds"] is None
@@ -267,7 +304,7 @@ async def test_ws_cards_grouped_by_tier_for_online_recipients(
     finally:
         await _disconnect_all(sockets)
 
-    assert count == len(recipients)
+    assert count == 4
     by_user = {item["user_id"]: item["payload"]["order_card"] for item in recorded}
 
     expected = {
@@ -288,9 +325,16 @@ async def test_ws_cards_grouped_by_tier_for_online_recipients(
     assert by_user[users[0].id] is by_user[users[4].id]
     assert by_user[users[0].id] is not by_user[users[1].id]
 
-    # 离线用户保留基础 pending 卡片（不会通过 WS 收到，仅保持结构不报错）
-    assert by_user[users[3].id] is BASE_PENDING_CARD
-    assert by_user[users[3].id]["accept_window_pending"] is True
+    # 离线用户不写通知行、不推送 WS（大厅仍能看到订单）
+    rows = list((await db_session.execute(
+        select(Notification).where(
+            Notification.ref_id == order.id,
+            Notification.type == NotificationType.SYSTEM_ANNOUNCEMENT,
+        )
+    )).scalars().all())
+    assert len(rows) == 4
+    assert users[3].id not in {row.user_id for row in rows}
+    assert users[3].id not in by_user
 
 
 async def test_ws_cards_zero_wait_when_deposit_disabled(db_session, monkeypatch):

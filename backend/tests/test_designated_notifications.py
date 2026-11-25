@@ -16,6 +16,7 @@ from app.api.notification_utils import notify_boosters_new_order
 from app.models.notification import Notification, NotificationType, UserPreference
 from app.models.order import Order
 from app.models.user import User, UserRole
+from app.schemas.serializers import serialize_datetime_utc
 from app.services.connection_manager import connection_manager
 
 DESIGNATED_CONTENT = "有一张指定给你的新订单「{game_name}」，请前往接单"
@@ -73,6 +74,16 @@ def _record_ws_sends(monkeypatch) -> list[dict]:
     return recorded
 
 
+def _set_online_users(monkeypatch, *user_ids: int) -> None:
+    """固定公开单的在线快照；指定单不查在线集合，无需调用。"""
+    online_ids = {int(user_id) for user_id in user_ids}
+
+    async def _online_user_ids() -> set[int]:
+        return set(online_ids)
+
+    monkeypatch.setattr(connection_manager, "online_user_ids", _online_user_ids)
+
+
 async def _notifications(db_session, order_id: int) -> list[Notification]:
     result = await db_session.execute(
         select(Notification).where(
@@ -124,7 +135,16 @@ async def test_designated_order_notifies_only_target_with_db_and_ws(
     assert payload["title"] == "新订单发布"
     assert payload["content"] == DESIGNATED_CONTENT.format(game_name=order.game_name)
     assert payload["link"] == f"/orders/{order.id}"
-    assert payload["order_card"] == order_card
+    # 指定单不查在线集合，收件人按保证金档位（测试库默认关闭 → 0 秒）
+    # 生成卡片变体；同档位共享同一份只读 dict。
+    assert payload["order_card"] == {
+        **order_card,
+        "accept_wait_seconds": 0,
+        "accept_available_at": serialize_datetime_utc(
+            order.created_at.replace(tzinfo=timezone.utc)
+        ),
+        "accept_window_pending": False,
+    }
 
 
 async def test_public_order_still_broadcasts_to_all_eligible_users(
@@ -143,6 +163,8 @@ async def test_public_order_still_broadcasts_to_all_eligible_users(
 
     order = await _make_order(db_session, publisher.id)
     recorded = _record_ws_sends(monkeypatch)
+    # 公开单只写在线用户：候选全部在线，验证资格过滤与扇出
+    _set_online_users(monkeypatch, *(user.id for user in recipients))
 
     count = await notify_boosters_new_order(db_session, order=order)
 

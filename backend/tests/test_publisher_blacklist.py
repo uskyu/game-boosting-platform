@@ -28,6 +28,7 @@ from app.services.blacklist_service import (
     TARGET_NOT_FOUND_DETAIL,
 )
 from app.services import captcha_service
+from app.services.connection_manager import connection_manager
 from tests.conftest import auth_header
 
 PASSWORD = "BlacklistPass1"
@@ -500,7 +501,7 @@ async def test_list_and_detail_mark_accept_blocked(
 
 
 async def test_new_order_notifications_exclude_blacklisted(
-    client: AsyncClient, db_session, make_captcha
+    client: AsyncClient, db_session, make_captcha, monkeypatch
 ):
     publisher = await _register(client, make_captcha, "notif.pub@example.com", "NotifPub")
     blocked = await _register(client, make_captcha, "notif.blocked@example.com", "NotifBlocked")
@@ -522,6 +523,18 @@ async def test_new_order_notifications_exclude_blacklisted(
     )
     db_session.add(order)
     await db_session.commit()
+
+    # 公开单只写在线用户：候选全部置为在线，验证黑名单/发布人排除仍生效
+    online_ids = {
+        publisher["user"]["id"],
+        blocked["user"]["id"],
+        allowed["user"]["id"],
+    }
+
+    async def _online_user_ids() -> set[int]:
+        return set(online_ids)
+
+    monkeypatch.setattr(connection_manager, "online_user_ids", _online_user_ids)
 
     count = await notify_boosters_new_order(
         db_session, order=order, exclude_user_id=publisher["user"]["id"]

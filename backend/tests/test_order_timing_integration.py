@@ -70,13 +70,8 @@ async def test_create_endpoint_exposes_fixed_timing_only(
     assert response.status_code == 201, response.text
     _assert_has_stage(response, "order_service")
     _assert_has_stage(response, "order_notifications")
-    for stage in (
-        "notification_recipients",
-        "notification_prepare",
-        "notification_insert",
-        "notification_payloads",
-    ):
-        _assert_has_stage(response, stage)
+    # 通知落库/取值/推送自 2026-11 起移入 post-commit 后台任务，请求内不再
+    # 有 notification_recipients/prepare/insert/payloads 这些子阶段与计数。
 
     timing_records = [
         record for record in caplog.records
@@ -89,10 +84,6 @@ async def test_create_endpoint_exposes_fixed_timing_only(
     assert "order_id=" not in message
     assert registered_user["user"]["email"] not in message
     assert "timing integration order" not in message
-    timing_record = timing_records[-1]
-    assert timing_record.counts["recipient_count"] == 1
-    assert timing_record.counts["preference_count"] == 0
-    assert timing_record.counts["notification_count"] == 1
 
 
 async def test_accept_endpoint_exposes_fixed_timing_without_order_id_label(
