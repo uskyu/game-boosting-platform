@@ -437,12 +437,45 @@ def _write_mysql_defaults_file() -> Path:
         raise
 
 
+_MYSQLDUMP_TLS_ARGS_CACHE: dict[str, tuple[str, ...]] = {}
+
+
+def _mysqldump_tls_args(binary: str) -> list[str]:
+    """按客户端类型决定是否关闭 TLS。
+
+    Debian 镜像里的 default-mysql-client 是 MariaDB 客户端，连接 MySQL 8
+    自签证书时默认会做证书校验，直接报
+    "TLS/SSL error: Certificate verification failure"；备份走 Docker 内网
+    （db 不暴露公网端口），因此显式 --skip-ssl。MySQL 8 客户端没有
+    --skip-ssl 选项，保持默认 PREFERRED 即可（不校验证书）。
+    """
+    cached = _MYSQLDUMP_TLS_ARGS_CACHE.get(binary)
+    if cached is not None:
+        return list(cached)
+    args: tuple[str, ...] = ()
+    try:
+        result = subprocess.run(
+            [binary, "--version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=10,
+        )
+        if "MariaDB" in (result.stdout or ""):
+            args = ("--skip-ssl",)
+    except Exception:  # noqa: BLE001 - 版本探测失败时按 MySQL 客户端处理
+        logger.debug("mysqldump version probe failed", exc_info=True)
+    _MYSQLDUMP_TLS_ARGS_CACHE[binary] = args
+    return list(args)
+
+
 def _mysqldump_base_args(defaults_path: Path) -> list[str]:
     binary = (settings.MYSQLDUMP_BIN or "").strip() or "mysqldump"
     # --defaults-extra-file 必须是 mysqldump 的第一个参数，密码才能从文件读取。
     return [
         binary,
         f"--defaults-extra-file={defaults_path}",
+        *_mysqldump_tls_args(binary),
         "--single-transaction",
         "--quick",
         "--no-tablespaces",
@@ -469,7 +502,10 @@ def _append_mysqldump_output(gz_file, command: list[str]) -> None:
     stderr 重定向到临时文件，避免子进程写满管道阻塞；失败时只取第一行。
     """
     try:
-        with tempfile.TemporaryFile(mode="wb") as stderr_file:
+        # 必须是可读写模式：子进程把 stderr 写进来，失败后还要 seek(0) 读出来。
+        # 原先 mode="wb" 是只写，mysqldump 真失败时 read() 会抛
+        # io.UnsupportedOperation: read，把原始错误吞成毫无意义的 "read"。
+        with tempfile.TemporaryFile(mode="w+b") as stderr_file:
             try:
                 process = subprocess.Popen(
                     command,

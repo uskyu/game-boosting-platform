@@ -7,7 +7,9 @@
 """
 
 import gzip
+import types
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 from sqlalchemy import select
@@ -357,3 +359,25 @@ async def test_run_backup_failure_records_failed_and_resets_running(db_session, 
     assert record.error_message is not None and record.error_message.strip()
     assert "模拟 mysqldump 导出失败" in record.error_message
     assert db_backup_service.is_running() is False
+
+
+def test_mysqldump_tls_args_follow_client_type(monkeypatch):
+    """MariaDB 客户端连 MySQL 自签证书会校验证书失败，必须加 --skip-ssl；
+    MySQL 8 客户端没有该选项，不能加。"""
+    db_backup_service._MYSQLDUMP_TLS_ARGS_CACHE.clear()
+
+    def _fake_version(command, **kwargs):
+        binary = command[0] if isinstance(command, (list, tuple)) else command
+        if binary == "mariadb-dump":
+            return types.SimpleNamespace(stdout="mysqldump from 11.8.9-MariaDB")
+        return types.SimpleNamespace(stdout="mysqldump Ver 8.0.43 for Win64 (MySQL)")
+
+    monkeypatch.setattr(db_backup_service.subprocess, "run", _fake_version)
+    monkeypatch.setattr(db_backup_service.settings, "MYSQLDUMP_BIN", "mariadb-dump")
+    args = db_backup_service._mysqldump_base_args(Path("/tmp/x.cnf"))
+    assert "--skip-ssl" in args
+
+    db_backup_service._MYSQLDUMP_TLS_ARGS_CACHE.clear()
+    monkeypatch.setattr(db_backup_service.settings, "MYSQLDUMP_BIN", "mysqldump")
+    args = db_backup_service._mysqldump_base_args(Path("/tmp/x.cnf"))
+    assert "--skip-ssl" not in args
