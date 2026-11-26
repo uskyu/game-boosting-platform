@@ -106,7 +106,9 @@ services:
     pull_policy: always
     restart: unless-stopped
     ports:
-      - "${FRONTEND_PORT:-80}:80"
+      # 只绑定宿主机回环：生产必须经已备案域名的宿主 nginx 反代访问。
+      # 公网 IP+端口直连会被机房按“未备案/IP 端口建站”拦截并封禁。
+      - "127.0.0.1:${FRONTEND_PORT:-80}:80"
     networks:
       - game-boosting-network
     depends_on:
