@@ -6,6 +6,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import api, { refreshAccessToken } from '@/utils/api'
+import { normalizeLogoutReason, reasonFromError } from '@/utils/authReason'
 import { beginSessionRotation, resetSessionRotation } from '@/utils/sessionRotation'
 
 const DEVICE_ID_STORAGE_KEY = 'device_id'
@@ -48,11 +49,12 @@ export const useAuthStore = defineStore('auth', () => {
   // Monotonic session generation invalidates in-flight requests when the
   // authenticated account changes or the current session is logged out.
   const sessionGeneration = ref(0)
-  // 最近一次退出的原因（null = 用户主动登出）。被服务端踢下线时置
-  // 'session-expired'（密码变更/会话作废）或 'device-limit'（同时在线设备
-  // 超限），让登录页能解释"为什么突然回到这里"，而不是让用户一脸茫然地
-  // 重新输入密码。持久化到 sessionStorage：被踢后整页刷新/重开标签页也能
-  // 保留原因（内存里的 ref 会随刷新丢失）。
+  // 最近一次退出的原因（null = 用户主动登出）。被服务端踢下线时写入
+  // device-limit / password-changed / password-reset / account-disabled /
+  // session-expired / session-invalidated（映射见 utils/authReason.js），
+  // 让登录页能解释"为什么突然回到这里"，而不是让用户一脸茫然地重新输入
+  // 密码。持久化到 sessionStorage：被踢后整页刷新/重开标签页也能保留原因
+  // （内存里的 ref 会随刷新丢失）。
   const readStoredLogoutReason = () => {
     try {
       return sessionStorage.getItem('logout_reason') || null
@@ -209,7 +211,11 @@ export const useAuthStore = defineStore('auth', () => {
           return { success: false, stale: true, error: err.message }
         }
         if (err.status === 401) {
-          logout()
+          // 拦截器可能刚按结构化 detail.code 写入精确原因（改密码/设备超限/
+          // 管理员重置/停用/过期）；已有原因时不能再用无参 logout 清掉它。
+          const reason = normalizeLogoutReason(lastLogoutReason.value)
+            || reasonFromError(err)
+          logout(reason)
         } else {
           error.value = err.message
         }
@@ -279,15 +285,16 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   function logout(reason = null) {
+    const normalizedReason = normalizeLogoutReason(reason)
     authRequestSeq += 1
     meInFlight = null
     meInFlightToken = null
     meInFlightGeneration = null
     sessionGeneration.value += 1
     resetSessionRotation()
-    lastLogoutReason.value = reason
+    lastLogoutReason.value = normalizedReason
     try {
-      if (reason) sessionStorage.setItem('logout_reason', reason)
+      if (normalizedReason) sessionStorage.setItem('logout_reason', normalizedReason)
       else sessionStorage.removeItem('logout_reason')
     } catch { /* 隐私模式下不可用，忽略 */ }
     clearTokens()
@@ -332,8 +339,12 @@ export const useAuthStore = defineStore('auth', () => {
       try {
         await refreshAccessToken({ refreshToken: refreshToken.value, setTokens })
         await fetchCurrentUser()
-      } catch {
-        clearTokens()
+      } catch (error) {
+        // 刷新失败：先按结构化的 detail.code 记下原因，再清令牌/用户。
+        // 已有精确原因（例如并发 WS 4002 已写入 device-limit）时不覆盖。
+        const reason = normalizeLogoutReason(lastLogoutReason.value)
+          || reasonFromError(error)
+        logout(reason)
       }
     }
   }

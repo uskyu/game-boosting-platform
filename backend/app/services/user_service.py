@@ -18,13 +18,14 @@ from app.core.security import (
     averify_password,
     create_access_token,
     create_refresh_token,
+    is_token_expired,
     token_session_version,
     verify_token,
 )
 from app.models.user import BoosterApplicationStatus, User, UserRole
-from app.models.user_session import UserSession
 from app.schemas.user import UserRegister, UserUpdate
 from app.services import user_session_service
+from app.services.site_setting_service import get_login_session_days
 
 logger = logging.getLogger(__name__)
 
@@ -253,7 +254,12 @@ class UserService:
         )
         return result.scalar_one_or_none()
 
-    def create_tokens(self, user: User, sid: str | None = None) -> dict[str, Any]:
+    def create_tokens(
+        self,
+        user: User,
+        sid: str | None = None,
+        refresh_expires_days: int | None = None,
+    ) -> dict[str, Any]:
         """
         Create access and refresh tokens for user.
 
@@ -261,6 +267,8 @@ class UserService:
             user: User to create tokens for.
             sid: 设备会话 ID（``user_sessions.sid``）。鉴权时校验该会话仍
                 有效，被踢设备立即 401。
+            refresh_expires_days: 刷新令牌有效天数（后台「登录保持天数」）。
+                None 时沿用 ``settings.REFRESH_TOKEN_EXPIRE_DAYS``。
 
         Returns:
             Dictionary containing tokens and metadata.
@@ -275,8 +283,14 @@ class UserService:
             session_id=sid,
         )
 
+        refresh_delta = (
+            timedelta(days=refresh_expires_days)
+            if refresh_expires_days is not None
+            else None
+        )
         refresh_token = create_refresh_token(
             subject=user.id,
+            expires_delta=refresh_delta,
             session_version=user.token_version,
             session_id=sid,
         )
@@ -307,16 +321,23 @@ class UserService:
         payload = verify_token(refresh_token, token_type="refresh")
 
         if payload is None:
+            # 签名有效但已过期 = 登录自然到期；其他（伪造/类型不符）按会话失效，
+            # 两者文案不同，前端据此准确提示。
+            detail = (
+                user_session_service.session_expired_detail()
+                if is_token_expired(refresh_token, token_type="refresh")
+                else user_session_service.session_invalidated_detail()
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="无效或过期的刷新令牌",
+                detail=detail,
             )
 
         user_id_str = payload.get("sub")
         if user_id_str is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="无效的令牌内容",
+                detail=user_session_service.session_invalidated_detail(),
             )
 
         try:
@@ -324,7 +345,7 @@ class UserService:
         except ValueError as err:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="无效的用户标识",
+                detail=user_session_service.session_invalidated_detail(),
             ) from err
 
         user = await self.get_user_by_id(user_id)
@@ -332,7 +353,25 @@ class UserService:
         if user is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="用户不存在",
+                detail=user_session_service.session_invalidated_detail(),
+            )
+
+        # 设备会话校验：被踢下线/已登出/被管理员重置或停用的设备即使
+        # refresh 未过期也不能续期。先查会话再比版本，才能让
+        # admin_reset/disabled/device_limit 的精确原因不被「版本不符」
+        # 统一改写成 password_changed。
+        sid = payload.get("sid")
+        session = await user_session_service.get_valid_session(
+            self._db, sid, user.id
+        )
+        if session is None:
+            detail = await user_session_service.get_session_invalidation_detail(
+                self._db, sid, user.id
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=detail
+                or user_session_service.session_invalidated_detail(),
             )
 
         # 会话版本比对：改密码后旧 refresh 令牌不能再换出新 access，
@@ -340,7 +379,7 @@ class UserService:
         if token_session_version(payload) != user.token_version:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="登录状态已失效，请重新登录",
+                detail=user_session_service.password_changed_detail(),
             )
 
         if not user.is_active:
@@ -349,32 +388,14 @@ class UserService:
                 detail="账户已被禁用",
             )
 
-        # 设备会话校验：被踢下线/已登出的设备即使 refresh 未过期也不能续期。
-        sid = payload.get("sid")
-        session = await user_session_service.get_valid_session(
-            self._db, sid, user.id
+        # 续签也按当前站点设置：后台调整「登录保持天数」后，新换出的
+        # refresh 令牌立即使用新值；已有会话的 user_sessions.expires_at
+        # 不受影响，仍按登录时的绝对有效期执行。
+        return self.create_tokens(
+            user,
+            sid,
+            refresh_expires_days=await get_login_session_days(self._db),
         )
-        if session is None:
-            reason_row = await self._db.execute(
-                select(UserSession.revoked_reason).where(
-                    UserSession.sid == sid,
-                    UserSession.user_id == user.id,
-                )
-            )
-            if reason_row.scalar_one_or_none() == "device_limit":
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail={
-                        "code": "device_limit",
-                        "message": "账号已在其他设备登录，当前设备已下线",
-                    },
-                )
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="登录状态已失效，请重新登录",
-            )
-
-        return self.create_tokens(user, sid)
 
     async def update_user(
         self,

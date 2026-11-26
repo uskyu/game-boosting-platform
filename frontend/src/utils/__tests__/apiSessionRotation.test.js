@@ -12,6 +12,8 @@ const storeState = {
     storeState.refreshToken = refresh
   }),
   logout: vi.fn(),
+  // 由 WS 或其他并发请求写入的退出原因：刷新失败时不能被笼统原因覆盖
+  lastLogoutReason: null,
 }
 
 vi.mock('@/stores/auth', () => ({
@@ -47,14 +49,18 @@ function ok(config, data) {
 // adapter：resolve 时返回一对新令牌，reject 时模拟"刷新令牌也失效了"。
 let refreshShouldFail = false
 let refreshCalls = 0
+// refresh 失败的响应 detail：默认是普通失效字符串，可替换为结构化 code
+let refreshErrorDetail = { code: 'session_invalidated', message: '登录状态已失效，请重新登录' }
 
 beforeEach(() => {
   storeState.accessToken = 'old-access'
   storeState.refreshToken = 'old-refresh'
+  storeState.lastLogoutReason = null
   storeState.setTokens.mockClear()
   storeState.logout.mockReset()
   refreshShouldFail = false
   refreshCalls = 0
+  refreshErrorDetail = { code: 'session_invalidated', message: '登录状态已失效，请重新登录' }
   resetSessionRotation()
 
   axios.defaults.adapter = async (config) => {
@@ -62,7 +68,7 @@ beforeEach(() => {
     if (refreshShouldFail) {
       const err = new Error('Request failed with status code 401')
       err.config = config
-      err.response = { status: 401, data: { detail: '登录状态已失效' }, headers: {}, config }
+      err.response = { status: 401, data: { detail: refreshErrorDetail }, headers: {}, config }
       throw err
     }
     return ok(config, { access_token: 'refreshed-access', refresh_token: 'refreshed-refresh' })
@@ -114,7 +120,7 @@ describe('api interceptor: 改密码期间的 401 不能把自己踢下线', () 
     expect(storeState.logout).not.toHaveBeenCalled()
   }, 10000)
 
-  it('刷新失败时登出并标记 session-expired（登录页要能解释原因）', async () => {
+  it('刷新失败的普通 401 映射为 session-invalidated（不再一律说成过期）', async () => {
     refreshShouldFail = true
     api.defaults.adapter = async (config) => {
       throw unauthorized(config)
@@ -122,7 +128,31 @@ describe('api interceptor: 改密码期间的 401 不能把自己踢下线', () 
 
     await expect(api.get('/orders/hall-digest')).rejects.toBeTruthy()
 
-    expect(storeState.logout).toHaveBeenCalledWith('session-expired')
+    expect(storeState.logout).toHaveBeenCalledWith('session-invalidated')
+  }, 10000)
+
+  it('刷新失败返回 password_changed 时保留改密码原因', async () => {
+    refreshShouldFail = true
+    refreshErrorDetail = { code: 'password_changed', message: '密码已修改，请重新登录' }
+    api.defaults.adapter = async (config) => {
+      throw unauthorized(config)
+    }
+
+    await expect(api.get('/orders/hall-digest')).rejects.toBeTruthy()
+
+    expect(storeState.logout).toHaveBeenCalledWith('password-changed')
+  }, 10000)
+
+  it('并发 401 不得把 WS 已写入的 device-limit 改写成普通失效', async () => {
+    storeState.lastLogoutReason = 'device-limit'
+    refreshShouldFail = true
+    api.defaults.adapter = async (config) => {
+      throw unauthorized(config)
+    }
+
+    await expect(api.get('/orders/hall-digest')).rejects.toBeTruthy()
+
+    expect(storeState.logout).toHaveBeenCalledWith('device-limit')
   }, 10000)
 
   it('改密码请求自身带 skipSessionRotationWait，不等待闸门（否则自己等自己）', async () => {

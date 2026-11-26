@@ -26,7 +26,11 @@ from app.schemas.user import (
 from app.services import captcha_service, user_session_service
 from app.services.connection_manager import get_connection_manager
 from app.services.publish_permission_service import can_publish_effective
-from app.services.site_setting_service import get_or_create_site_setting
+from app.services.site_setting_service import (
+    get_login_session_days,
+    get_or_create_site_setting,
+    normalize_login_session_days,
+)
 from app.services.user_service import get_user_service
 
 router = APIRouter(prefix="/auth", tags=["认证"])
@@ -53,19 +57,24 @@ class CaptchaResponse(BaseModel):
     image: str = Field(description="base64 data URI 图片")
 
 
-async def _close_revoked_sessions(user_id: int, sids: list[str]) -> None:
-    """超限被淘汰/改密码被踢的设备：事务提交后关闭其 WebSocket（4002）。"""
+async def _close_revoked_sessions(
+    user_id: int,
+    sids: list[str],
+    *,
+    code: int = user_session_service.WS_CLOSE_DEVICE_LIMIT,
+    reason: str = "device limit",
+) -> None:
+    """被吊销会话的设备：事务提交后关闭其 WebSocket。
+
+    默认 4002/device limit（登录淘汰）；改密码等账号级失效传 4001
+    + "password changed"，客户端据此先验证会话再决定是否重连。
+    """
     if not sids:
         return
     manager = get_connection_manager()
     for sid in sids:
         await run_after_commit(
-            lambda s=sid: manager.close_session(
-                user_id,
-                s,
-                user_session_service.WS_CLOSE_DEVICE_LIMIT,
-                "device limit",
-            )
+            lambda s=sid: manager.close_session(user_id, s, code, reason)
         )
 
 
@@ -178,8 +187,14 @@ async def register(
     )
     await _close_revoked_sessions(user.id, revoked_sids)
 
-    # Create tokens
-    tokens = user_service.create_tokens(user, session.sid)
+    # Create tokens；注册流程已读取过站点设置，直接复用，避免多查一次
+    tokens = user_service.create_tokens(
+        user,
+        session.sid,
+        refresh_expires_days=normalize_login_session_days(
+            setting.login_session_days
+        ),
+    )
 
     return TokenResponse(
         access_token=tokens["access_token"],
@@ -225,8 +240,12 @@ async def login(
     )
     await _close_revoked_sessions(user.id, revoked_sids)
 
-    # Create tokens
-    tokens = user_service.create_tokens(user, session.sid)
+    # Create tokens：按后台当前「登录保持天数」签发
+    tokens = user_service.create_tokens(
+        user,
+        session.sid,
+        refresh_expires_days=await get_login_session_days(db),
+    )
 
     return TokenResponse(
         access_token=tokens["access_token"],
@@ -349,9 +368,20 @@ async def change_password(
     revoked_sids = await user_session_service.revoke_others(
         db, user.id, keep_sid=current_sid, reason="password_changed"
     )
-    await _close_revoked_sessions(user.id, revoked_sids)
+    # 改密码不是「设备超限」：用 4001 + password changed 关闭其他设备，
+    # 客户端收到后按账号级会话失效处理（不要显示「账号在其他设备登录」）。
+    await _close_revoked_sessions(
+        user.id,
+        revoked_sids,
+        code=user_session_service.WS_CLOSE_SESSION_INVALIDATED,
+        reason="password changed",
+    )
 
-    tokens = user_service.create_tokens(user, current_sid)
+    tokens = user_service.create_tokens(
+        user,
+        current_sid,
+        refresh_expires_days=await get_login_session_days(db),
+    )
 
     return TokenResponse(
         access_token=tokens["access_token"],

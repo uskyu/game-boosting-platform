@@ -31,6 +31,21 @@ const afterSalesStore = useAfterSalesStore()
 const chatStore = useChatStore()
 const withdrawalSettings = useWithdrawalSettingsStore()
 
+// 钱包头部「提现」快捷入口：新用户常常不知道页面下方还有申请提现区，
+// 点按钮直接平滑滚过去，并短暂高亮目标卡片，避免只跳转、找不到落点。
+const withdrawSectionRef = ref(null)
+const withdrawHighlighted = ref(false)
+let withdrawHighlightTimer = null
+
+function scrollToWithdraw() {
+  withdrawSectionRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  withdrawHighlighted.value = true
+  if (withdrawHighlightTimer) window.clearTimeout(withdrawHighlightTimer)
+  withdrawHighlightTimer = window.setTimeout(() => {
+    withdrawHighlighted.value = false
+  }, 1800)
+}
+
 // 到账倒计时按秒跳动：now 用服务器校准时间（设备本地时钟可能偏差数秒）
 const now = ref(serverNow())
 let countdownTimer = null
@@ -546,6 +561,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (countdownTimer) window.clearInterval(countdownTimer)
+  if (withdrawHighlightTimer) window.clearTimeout(withdrawHighlightTimer)
 })
 </script>
 
@@ -556,14 +572,23 @@ onUnmounted(() => {
         <div class="space-y-3">
           <p class="eyebrow">资金中心</p>
           <h1 class="section-title">我的钱包</h1>
-          <button
-            v-if="rechargeConfig.enabled"
-            type="button"
-            class="btn-primary min-h-[44px] !px-6"
-            @click="openRecharge"
-          >
-            充值
-          </button>
+          <div class="flex flex-wrap items-center gap-2.5">
+            <button
+              v-if="rechargeConfig.enabled"
+              type="button"
+              class="btn-primary min-h-[44px] !px-6"
+              @click="openRecharge"
+            >
+              充值
+            </button>
+            <button
+              type="button"
+              class="btn-secondary min-h-[44px] !px-6"
+              @click="scrollToWithdraw"
+            >
+              提现
+            </button>
+          </div>
         </div>
 
         <!-- 手机 2×2 统计卡，桌面端一行四张 -->
@@ -775,7 +800,12 @@ onUnmounted(() => {
       </div>
     </section>
 
-    <section class="surface-card p-4 sm:p-6 lg:p-8">
+    <section
+      id="withdraw-section"
+      ref="withdrawSectionRef"
+      class="surface-card scroll-mt-24 p-4 transition-shadow duration-base sm:p-6 lg:p-8"
+      :class="{ 'ring-2 ring-primary/40': withdrawHighlighted }"
+    >
       <div class="flex items-center justify-between gap-4">
         <h2 class="text-2xl font-semibold text-ink-1">申请提现</h2>
         <button class="btn-secondary !px-4 !py-2" :disabled="walletStore.walletLoading" @click="refreshAll">

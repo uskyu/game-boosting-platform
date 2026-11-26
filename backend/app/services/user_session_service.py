@@ -14,14 +14,95 @@ from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException, status
 from sqlalchemy import select
 
-from app.core.config import settings
 from app.models.user import User
 from app.models.user_session import UserSession
-from app.services.site_setting_service import get_or_create_site_setting
+from app.services.site_setting_service import (
+    get_or_create_site_setting,
+    normalize_login_session_days,
+)
 
 # 被踢设备的 WebSocket 关闭码：与 4001（账号级会话失效，客户端自行验证）
 # 区分开，客户端收到 4002 直接登出，不再重连。
 WS_CLOSE_DEVICE_LIMIT = 4002
+# 账号级会话失效（改密码/管理员重置/登出）：客户端先验证会话，再决定是否重连。
+WS_CLOSE_SESSION_INVALIDATED = 4001
+
+# 401 结构化 detail：revoked_reason 属于内部字段，只映射为固定的
+# code + message 下发，避免把后台处置细节原样暴露给客户端。
+_SESSION_REASON_DETAILS: dict[str, tuple[str, str]] = {
+    "password_changed": ("password_changed", "密码已修改，请重新登录"),
+    "admin_reset": ("admin_reset", "账号密码已被管理员重置，请重新登录"),
+    "disabled": ("disabled", "账号已被停用，请联系管理员"),
+    "device_limit": ("device_limit", "账号已在其他设备登录，当前设备已下线"),
+}
+
+
+def _detail(code: str, message: str) -> dict[str, str]:
+    return {"code": code, "message": message}
+
+
+def session_invalidated_detail() -> dict[str, str]:
+    return _detail("session_invalidated", "登录状态已失效，请重新登录")
+
+
+def session_expired_detail() -> dict[str, str]:
+    return _detail("session_expired", "登录已过期，请重新登录")
+
+
+def password_changed_detail() -> dict[str, str]:
+    return _detail("password_changed", "密码已修改，请重新登录")
+
+
+def session_invalidation_detail(
+    revoked_reason: str | None,
+    expires_at: datetime | None,
+    *,
+    revoked_at: datetime | None = None,
+    now: datetime | None = None,
+) -> dict[str, str]:
+    """把会话记录的吊销原因/到期时间翻译成统一的 401 detail。
+
+    - 有已知吊销原因（改密码/管理员重置/停用/设备超限）→ 对应 code；
+    - 未吊销且 expires_at 已过 → ``session_expired``；
+    - 已登出、无记录、原因未知或其他情况 → ``session_invalidated``。
+    """
+    if revoked_reason in _SESSION_REASON_DETAILS:
+        code, message = _SESSION_REASON_DETAILS[revoked_reason]
+        return _detail(code, message)
+    if revoked_at is None and revoked_reason is None:
+        current = now or _now()
+        if expires_at is not None and expires_at <= current:
+            return session_expired_detail()
+    return session_invalidated_detail()
+
+
+async def get_session_invalidation_detail(
+    db, sid: str | None, user_id: int
+) -> dict[str, str] | None:
+    """按 sid 查询会话记录并返回失效 detail；没有记录时返回 None。
+
+    deps 与 user_service 共用这一份查询/映射，避免两处各写一套原因判断。
+    """
+    if not sid:
+        return None
+    result = await db.execute(
+        select(
+            UserSession.revoked_at,
+            UserSession.revoked_reason,
+            UserSession.expires_at,
+        ).where(
+            UserSession.sid == sid,
+            UserSession.user_id == user_id,
+        )
+    )
+    row = result.one_or_none()
+    if row is None:
+        return None
+    return session_invalidation_detail(
+        revoked_reason=row.revoked_reason,
+        expires_at=row.expires_at,
+        revoked_at=row.revoked_at,
+    )
 
 
 def _now() -> datetime:
@@ -29,12 +110,16 @@ def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-async def get_max_devices(db) -> int:
-    setting = await get_or_create_site_setting(db)
+def _max_devices_from_setting(setting) -> int:
     try:
         return max(int(setting.max_online_devices or 0), 0)
     except (TypeError, ValueError):
         return 0
+
+
+async def get_max_devices(db) -> int:
+    setting = await get_or_create_site_setting(db)
+    return _max_devices_from_setting(setting)
 
 
 async def start_session(
@@ -54,8 +139,14 @@ async def start_session(
     # 同一账号的并发登录串行化：先锁用户行再计数、淘汰、建会话。
     await db.execute(select(User.id).where(User.id == user.id).with_for_update())
 
+    # 一次读取站点设置：登录保持天数与同时在线设备上限来自同一行，
+    # 不要为了两个列各查一遍。
+    setting = await get_or_create_site_setting(db)
+    login_days = normalize_login_session_days(setting.login_session_days)
+    max_devices = _max_devices_from_setting(setting)
+
     now = _now()
-    expires_at = now + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    expires_at = now + timedelta(days=login_days)
     sid = uuid.uuid4().hex
     agent = (user_agent or "")[:255] or None
     device = (device_id or "").strip()[:64] or None
@@ -104,7 +195,6 @@ async def start_session(
     await db.flush()
 
     revoked_sids: list[str] = []
-    max_devices = await get_max_devices(db)
     if max_devices > 0:
         result = await db.execute(
             select(UserSession)

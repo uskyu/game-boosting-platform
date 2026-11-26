@@ -8,6 +8,7 @@ import { useAuthStore } from '@/stores/auth'
 import router from '@/router'
 import { syncServerTime } from '@/utils/display'
 import { getNextRetryDelayMs, shouldRetryRequest } from '@/utils/apiRetry'
+import { normalizeLogoutReason, reasonFromError } from '@/utils/authReason'
 import { pendingSessionRotation } from '@/utils/sessionRotation'
 
 const rawApiBaseURL = import.meta.env.VITE_API_BASE_URL || '/api/v1'
@@ -187,18 +188,18 @@ api.interceptors.response.use(
           originalRequest.headers.Authorization = `Bearer ${newToken}`
           return api(originalRequest)
         } catch (refreshError) {
-          // 若本次下线已由 WS 4002（设备超限）判定，保留该原因：
-          // 并发在飞的 REST 401 不该把"账号在别处登录"改写成"登录过期"。
-          const refreshCode = refreshError?.response?.data?.detail?.code
-          const logoutReason = (refreshCode === 'device_limit' || authStore.lastLogoutReason === 'device-limit')
-            ? 'device-limit'
-            : 'session-expired'
+          // 已由 WS 4002/其他并发 401 写入的精确原因优先，不能被并发请求
+          // 改写成笼统的「登录过期」；没有既有原因时才按刷新失败的 detail
+          // code 映射（session_expired / password_changed / admin_reset...）。
+          const existingReason = normalizeLogoutReason(authStore.lastLogoutReason)
+          const logoutReason = existingReason || reasonFromError(refreshError)
           authStore.logout(logoutReason)
           router.push({ name: 'login', query: { redirect: router.currentRoute.value.fullPath, reason: logoutReason } })
           return Promise.reject(error)
         }
       } else {
-        const logoutReason = authStore.lastLogoutReason === 'device-limit' ? 'device-limit' : 'session-expired'
+        const existingReason = normalizeLogoutReason(authStore.lastLogoutReason)
+        const logoutReason = existingReason || reasonFromError(error)
         authStore.logout(logoutReason)
         router.push({ name: 'login', query: { redirect: router.currentRoute.value.fullPath, reason: logoutReason } })
       }

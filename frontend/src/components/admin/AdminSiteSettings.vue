@@ -18,6 +18,8 @@ const form = reactive({
   publish_permission_apply_enabled: true,
   publish_permission_required: true,
   max_online_devices: 2,
+  // 登录保持天数（刷新令牌/设备会话有效期），保存后只影响之后的新登录
+  login_session_days: 7,
   order_title_replacements: [],
   footer_html: '',
 })
@@ -42,6 +44,7 @@ function sync() {
   // 全站发单管控默认开；只有后端明确 false 才视为全站开放
   form.publish_permission_required = store.settings.publish_permission_required !== false
   form.max_online_devices = Number(store.settings.max_online_devices ?? 2)
+  form.login_session_days = Number(store.settings.login_session_days ?? 7)
   form.order_title_replacements = (store.settings.order_title_replacements || []).map((rule) => ({
     original: rule.original || '',
     replacement: rule.replacement || '',
@@ -69,6 +72,14 @@ function normalizedMaxDevices() {
   const value = raw === '' || raw == null ? 2 : Number(raw)
   if (!Number.isFinite(value)) return 2
   return Math.min(Math.max(Math.trunc(value), 0), 20)
+}
+
+// 后端约束 ge=1 le=365：输入框之外再夹一次，非法值回退默认 7 天
+function normalizedLoginSessionDays() {
+  const raw = form.login_session_days
+  const value = raw === '' || raw == null ? 7 : Number(raw)
+  if (!Number.isFinite(value)) return 7
+  return Math.min(Math.max(Math.trunc(value), 1), 365)
 }
 
 async function save() {
@@ -112,6 +123,7 @@ async function save() {
     publish_permission_apply_enabled: form.publish_permission_apply_enabled,
     publish_permission_required: form.publish_permission_required,
     max_online_devices: normalizedMaxDevices(),
+    login_session_days: normalizedLoginSessionDays(),
     order_title_replacements: replacements,
     footer_html: form.footer_html.trim(),
   })
@@ -271,7 +283,7 @@ onMounted(async () => {
 
       <div class="rounded-tile border border-line-1 p-4">
         <p class="text-sm font-semibold text-ink-1">安全设置</p>
-        <p class="mt-1 text-xs leading-5 text-ink-3">控制注册/接单验证码与同一账号的同时在线设备数。</p>
+        <p class="mt-1 text-xs leading-5 text-ink-3">控制注册/接单验证码、同一账号的同时在线设备数与登录保持时长。</p>
 
         <div class="mt-4 space-y-4">
           <div class="flex flex-wrap items-center justify-between gap-3">
@@ -316,6 +328,20 @@ onMounted(async () => {
               class="input min-h-[44px] max-w-[160px]"
             />
             <p class="mt-1 text-xs leading-5 text-ink-3">0 表示不限制（最大 20）。超出时最早登录的设备会被下线并收到提示。</p>
+          </div>
+
+          <div>
+            <label class="label" for="login-session-days">登录保持天数（天）</label>
+            <input
+              id="login-session-days"
+              v-model.number="form.login_session_days"
+              type="number"
+              min="1"
+              max="365"
+              step="1"
+              class="input min-h-[44px] max-w-[160px]"
+            />
+            <p class="mt-1 text-xs leading-5 text-ink-3">控制登录后保持登录状态的时长（刷新令牌与设备会话有效期）；保存后对新登录生效，已登录用户保持原到期时间。</p>
           </div>
         </div>
       </div>

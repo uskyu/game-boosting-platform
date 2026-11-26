@@ -321,6 +321,25 @@ describe('chat WebSocket recovery', () => {
     expect(auth.accessToken).toBeNull()
   })
 
+  it('close code 4001 preserves a precise reason already written by the interceptor', async () => {
+    const chat = useChatStore()
+    const auth = useAuthStore()
+    const ws = connectAndAuthenticate(chat)
+
+    // 拦截器已经按结构化 detail 写入了 password-changed；4001 的处理不能
+    // 把它覆盖成 session-expired/普通失效。
+    auth.lastLogoutReason = 'password-changed'
+    apiGet.mockRejectedValue({ status: 401, message: '密码已修改，请重新登录' })
+    ws.readyState = FakeWebSocket.CLOSED
+    ws.onclose?.({ code: 4001, reason: 'session invalidated' })
+    await flushMicrotasks()
+    await flushMicrotasks()
+
+    expect(chat.sessionInvalidatedAt).toBeGreaterThan(0)
+    expect(auth.lastLogoutReason).toBe('password-changed')
+    expect(auth.accessToken).toBeNull()
+  })
+
   it('still reconnects on a normal close code (4001 must not affect other codes)', async () => {
     const chat = useChatStore()
     const ws = connectAndAuthenticate(chat)

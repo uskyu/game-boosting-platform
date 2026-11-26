@@ -65,6 +65,12 @@ class SiteSettingUpdate(BaseModel):
         le=20,
         description="同一账号最多同时在线设备数，0 表示不限制",
     )
+    login_session_days: int | None = Field(
+        default=None,
+        ge=1,
+        le=365,
+        description="登录保持天数（刷新令牌/设备会话有效期），1-365 天；不传保持不变",
+    )
     order_title_replacements: list[OrderTitleReplacementRule] | None = Field(
         default=None,
         description=(
@@ -154,6 +160,8 @@ class SiteSettingResponse(BaseModel):
     registration_captcha_enabled: bool = True
     accept_captcha_enabled: bool = False
     max_online_devices: int = 2
+    # 登录保持天数（公开可读：登录/注册页可据此提示会话有效期）
+    login_session_days: int = 7
     order_title_replacements: list[OrderTitleReplacementRule] = Field(
         default_factory=list,
         description="订单标题关键词替换规则（NULL 时返回默认规则）",

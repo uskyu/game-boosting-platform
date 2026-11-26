@@ -25,6 +25,8 @@ export const useSiteStore = defineStore('site', () => {
     // 仅影响公开大厅的订单排序，不改变「我的派单」「我的接单」和后台派单管理。
     hall_sort_mode: 'NEWEST',
     max_online_devices: 2,
+    // 登录保持天数（刷新令牌/设备会话有效期），与后端默认值一致
+    login_session_days: 7,
     order_title_replacements: [
       { original: '名牌', replacement: '【MP】' },
       { original: '明牌', replacement: '【MP】' },

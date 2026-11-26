@@ -95,3 +95,31 @@ async def get_notification_sounds(db) -> dict:
     """返回归一化后的通知音频配置（缺失槽位用内置默认）。"""
     setting = await get_or_create_site_setting(db)
     return normalize_sounds(setting.notification_sounds)
+
+
+LOGIN_SESSION_DAYS_MIN = 1
+LOGIN_SESSION_DAYS_MAX = 365
+
+
+def normalize_login_session_days(value) -> int:
+    """返回合法的「登录保持天数」。
+
+    非法/缺失（None、非数字、<1、>365）回退到 env 默认
+    ``REFRESH_TOKEN_EXPIRE_DAYS``，再夹取到 1..365，保证签发令牌时不会
+    出现 0 天或超长有效期。
+    """
+    try:
+        fallback = int(settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    except (TypeError, ValueError):
+        fallback = 7
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        days = fallback
+    return min(max(days, LOGIN_SESSION_DAYS_MIN), LOGIN_SESSION_DAYS_MAX)
+
+
+async def get_login_session_days(db) -> int:
+    """读取后台配置的登录保持天数（刷新令牌/设备会话有效期）。"""
+    setting = await get_or_create_site_setting(db)
+    return normalize_login_session_days(setting.login_session_days)

@@ -16,6 +16,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { useSiteStore } from '@/stores/site'
 import { useToastsStore } from '@/stores/toasts'
 import api from '@/utils/api'
+import { normalizeLogoutReason } from '@/utils/authReason'
 import { getUserRoleMeta } from '@/utils/order'
 import { restorePushSubscription, unsubscribeFromPush } from '@/services/push'
 
@@ -396,9 +397,10 @@ watch(
   (value, previous) => {
     if (!value || value === previous) return
     if (router.currentRoute.value.name === 'login') return
-    // 设备超限被踢（WS 4002）与普通会话失效（4001/401）要分开说明：
-    // 前者是"账号在别处登录"，后者是"密码变更/登录过期"。
-    const reason = authStore.lastLogoutReason === 'device-limit' ? 'device-limit' : 'session-expired'
+    // 保留全部已知原因（device-limit / password-changed / password-reset /
+    // account-disabled / session-expired / session-invalidated），登录页据此
+    // 显示准确文案；没有可识别原因时才退回 session-expired。
+    const reason = normalizeLogoutReason(authStore.lastLogoutReason) || 'session-expired'
     router.push({
       name: 'login',
       query: { reason },

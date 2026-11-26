@@ -3,9 +3,11 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import ChatConversationList from '@/components/chat/ChatConversationList.vue'
+import ChatUnreadBadge from '@/components/chat/ChatUnreadBadge.vue'
+import CompactPagination from '@/components/CompactPagination.vue'
 import { useChatStore } from '@/stores/chat'
 import { useNotificationsStore } from '@/stores/notifications'
-import { parseDate } from '@/utils/display'
+import { formatCount, parseDate } from '@/utils/display'
 
 const route = useRoute()
 const router = useRouter()
@@ -24,7 +26,22 @@ const notifications = computed(() => notifStore.notifications)
 const notifTotal = computed(() => notifStore.total)
 const notifUnread = computed(() => Number(notifStore.unreadCount || 0))
 const notifLoading = computed(() => notifStore.loading)
-const notifPageCount = computed(() => Math.ceil(notifTotal.value / 20) || 1)
+const notifPageCount = computed(() => {
+  const pageCount = Math.ceil(Number(notifTotal.value) / 20)
+  return Number.isFinite(pageCount) && pageCount > 0 ? pageCount : 1
+})
+
+const totalUnread = computed(() => chatUnread.value + notifUnread.value)
+const unreadSummary = computed(() => (
+  totalUnread.value === 0
+    ? '全部已读'
+    : `${formatCount(totalUnread.value)} 条未读`
+))
+const notifUnreadSummary = computed(() => (
+  notifUnread.value > 0
+    ? `${formatCount(notifUnread.value)} 条未读`
+    : '全部已读'
+))
 
 const NOTIFICATION_TYPE_META = {
   ORDER_ACCEPTED: { icon: '📋', label: '接单通知' },
@@ -108,33 +125,31 @@ onMounted(async () => {
           <p class="eyebrow">消息</p>
           <h1 class="section-title">消息中心</h1>
           <p class="mt-1 text-sm text-ink-2">
-            {{ chatUnread + notifUnread }} 条未读
+            {{ unreadSummary }}
           </p>
         </div>
 
         <!-- Tab switcher -->
-        <div class="flex gap-2">
+        <div class="tab-bar" role="group" aria-label="消息中心分类">
           <button
-            class="filter-pill flex items-center gap-2"
-            :class="activeTab === 'chat' ? 'filter-pill-active' : ''"
+            type="button"
+            class="flex items-center gap-2"
+            :class="activeTab === 'chat' ? 'tab-pill-active' : 'tab-pill'"
+            :aria-pressed="activeTab === 'chat'"
             @click="switchTab('chat')"
           >
             <span>聊天</span>
-            <span
-              v-if="chatUnread > 0"
-              class="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[10px] font-bold text-on-primary"
-            >{{ chatUnread }}</span>
+            <ChatUnreadBadge :count="chatUnread" />
           </button>
           <button
-            class="filter-pill flex items-center gap-2"
-            :class="activeTab === 'notifications' ? 'filter-pill-active' : ''"
+            type="button"
+            class="flex items-center gap-2"
+            :class="activeTab === 'notifications' ? 'tab-pill-active' : 'tab-pill'"
+            :aria-pressed="activeTab === 'notifications'"
             @click="switchTab('notifications')"
           >
             <span>通知</span>
-            <span
-              v-if="notifUnread > 0"
-              class="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[10px] font-bold text-on-primary"
-            >{{ notifUnread }}</span>
+            <ChatUnreadBadge :count="notifUnread" />
           </button>
         </div>
       </div>
@@ -164,7 +179,7 @@ onMounted(async () => {
       <section class="surface-card p-5 sm:p-6">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <p class="text-sm text-ink-2">
-            共 {{ notifTotal }} 条通知，{{ notifUnread }} 条未读
+            共 {{ formatCount(notifTotal) }} 条通知，{{ notifUnreadSummary }}
           </p>
           <div class="flex gap-3">
             <button
@@ -223,17 +238,12 @@ onMounted(async () => {
         </button>
       </section>
 
-      <div v-if="notifPageCount > 1" class="flex items-center justify-center gap-2 py-4">
-        <button
-          v-for="p in notifPageCount"
-          :key="p"
-          class="filter-pill"
-          :class="p === notifPage ? 'filter-pill-active' : ''"
-          @click="loadNotifPage(p)"
-        >
-          {{ p }}
-        </button>
-      </div>
+      <CompactPagination
+        :page="notifPage"
+        :page-count="notifPageCount"
+        :total="notifTotal"
+        @change="loadNotifPage"
+      />
     </template>
   </div>
 </template>

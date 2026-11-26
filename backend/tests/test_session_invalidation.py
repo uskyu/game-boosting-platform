@@ -72,7 +72,10 @@ async def test_old_access_token_rejected_after_password_change(
 
     resp = await client.get("/auth/me", headers=auth_header(registered_user))
     assert resp.status_code == 401
-    assert "登录状态已失效" in resp.json()["detail"]
+    detail = resp.json()["detail"]
+    assert isinstance(detail, dict), detail
+    assert detail["code"] == "password_changed"
+    assert "密码已修改" in detail["message"]
 
 
 async def test_old_refresh_token_rejected_after_password_change(
@@ -86,7 +89,66 @@ async def test_old_refresh_token_rejected_after_password_change(
         "refresh_token": registered_user["refresh_token"],
     })
     assert resp.status_code == 401
-    assert "登录状态已失效" in resp.json()["detail"]
+    detail = resp.json()["detail"]
+    assert isinstance(detail, dict), detail
+    assert detail["code"] == "password_changed"
+    assert "密码已修改" in detail["message"]
+
+
+async def test_expired_refresh_token_returns_session_expired_code(
+    client: AsyncClient, registered_user: dict
+):
+    """签名有效但自然到期的 refresh 令牌：code=session_expired，而非笼统失效。"""
+    from datetime import timedelta
+
+    expired = create_refresh_token(
+        subject=registered_user["user"]["id"],
+        expires_delta=timedelta(seconds=-5),
+        session_version=0,
+    )
+    resp = await client.post("/auth/refresh", json={"refresh_token": expired})
+    assert resp.status_code == 401
+    detail = resp.json()["detail"]
+    assert detail["code"] == "session_expired"
+    assert "登录已过期" in detail["message"]
+
+
+async def test_forged_refresh_token_returns_session_invalidated_code(
+    client: AsyncClient,
+):
+    """签名不合法/乱码的 refresh 令牌：不能误报成「登录过期」。"""
+    resp = await client.post("/auth/refresh", json={"refresh_token": "not-a-jwt"})
+    assert resp.status_code == 401
+    detail = resp.json()["detail"]
+    assert detail["code"] == "session_invalidated"
+    assert "登录状态已失效" in detail["message"]
+
+
+async def test_expired_device_session_returns_session_expired_code(
+    client: AsyncClient, registered_user: dict, db_session
+):
+    """会话行未吊销但 expires_at 已过：401 detail 必须是 session_expired。"""
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import update
+
+    from app.core.security import verify_token
+    from app.models.user_session import UserSession
+
+    sid = verify_token(registered_user["access_token"], token_type="access")["sid"]
+    past = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=5)
+    await db_session.execute(
+        update(UserSession)
+        .where(UserSession.sid == sid)
+        .values(expires_at=past)
+    )
+    await db_session.commit()
+
+    resp = await client.get("/auth/me", headers=auth_header(registered_user))
+    assert resp.status_code == 401
+    detail = resp.json()["detail"]
+    assert detail["code"] == "session_expired"
+    assert "登录已过期" in detail["message"]
 
 
 async def test_password_change_response_returns_usable_new_tokens(
@@ -159,13 +221,16 @@ async def test_other_device_session_invalidated(
     change = await _change_password(client, registered_user)
     assert change.status_code == 200, change.text
 
-    # 设备 B 立刻失效
+    # 设备 B 立刻失效，且原因是「密码已修改」而不是笼统的「会话失效」
     resp = await client.get("/auth/me", headers=auth_header(device_b_tokens))
     assert resp.status_code == 401
+    detail = resp.json()["detail"]
+    assert detail["code"] == "password_changed"
     refresh_b = await client.post("/auth/refresh", json={
         "refresh_token": device_b_tokens["refresh_token"],
     })
     assert refresh_b.status_code == 401
+    assert refresh_b.json()["detail"]["code"] == "password_changed"
 
 
 async def test_other_users_are_unaffected(
@@ -206,10 +271,12 @@ async def test_admin_password_reset_invalidates_user_sessions(
 
     resp = await client.get("/auth/me", headers=auth_header(registered_user))
     assert resp.status_code == 401
+    assert resp.json()["detail"]["code"] == "admin_reset"
     refresh = await client.post("/auth/refresh", json={
         "refresh_token": registered_user["refresh_token"],
     })
     assert refresh.status_code == 401
+    assert refresh.json()["detail"]["code"] == "admin_reset"
 
     # 管理员自己不受影响
     admin_me = await client.get("/auth/me", headers=auth_header(admin_user))

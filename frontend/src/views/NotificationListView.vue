@@ -2,8 +2,9 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
+import CompactPagination from '@/components/CompactPagination.vue'
 import { useNotificationsStore } from '@/stores/notifications'
-import { parseDate } from '@/utils/display'
+import { formatCount, parseDate } from '@/utils/display'
 
 const router = useRouter()
 const store = useNotificationsStore()
@@ -30,7 +31,15 @@ const notifications = computed(() => store.notifications)
 const total = computed(() => store.total)
 const unreadCount = computed(() => store.unreadCount)
 const loading = computed(() => store.loading)
-const pageCount = computed(() => Math.ceil(total.value / 20) || 1)
+const pageCount = computed(() => {
+  const count = Math.ceil(Number(total.value) / 20)
+  return Number.isFinite(count) && count > 0 ? count : 1
+})
+const unreadSummary = computed(() => (
+  unreadCount.value > 0
+    ? `${formatCount(unreadCount.value)} 条未读`
+    : '全部已读'
+))
 
 function typeMeta(type) {
   return NOTIFICATION_TYPE_META[type] || { icon: '🔔', label: '通知' }
@@ -88,7 +97,7 @@ onMounted(() => {
           <p class="eyebrow">消息</p>
           <h1 class="section-title">通知中心</h1>
           <p class="mt-1 text-sm text-ink-2">
-            共 {{ total }} 条通知，{{ unreadCount }} 条未读
+            共 {{ formatCount(total) }} 条通知，{{ unreadSummary }}
           </p>
         </div>
         <div class="flex gap-3">
@@ -148,16 +157,11 @@ onMounted(() => {
       </button>
     </section>
 
-    <div v-if="pageCount > 1" class="flex items-center justify-center gap-2 py-4">
-      <button
-        v-for="p in pageCount"
-        :key="p"
-        class="filter-pill"
-        :class="p === page ? 'filter-pill-active' : ''"
-        @click="loadPage(p)"
-      >
-        {{ p }}
-      </button>
-    </div>
+    <CompactPagination
+      :page="page"
+      :page-count="pageCount"
+      :total="total"
+      @change="loadPage"
+    />
   </div>
 </template>

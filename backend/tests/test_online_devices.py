@@ -25,7 +25,10 @@ from app.models.site_setting import SiteSetting
 from app.models.user_session import UserSession
 from app.services import user_session_service
 from app.services.connection_manager import ConnectionManager
-from app.services.user_session_service import WS_CLOSE_DEVICE_LIMIT
+from app.services.user_session_service import (
+    WS_CLOSE_DEVICE_LIMIT,
+    WS_CLOSE_SESSION_INVALIDATED,
+)
 from tests.conftest import auth_header
 
 PASSWORD = "OnlinePass1"
@@ -313,6 +316,12 @@ def test_ws_close_code_constant_is_4002():
     assert WS_CLOSE_DEVICE_LIMIT == 4002
 
 
+def test_session_invalidated_close_code_constant_is_4001():
+    """设备超限(4002)与账号级会话失效(4001)必须是两个不同 close code。"""
+    assert WS_CLOSE_SESSION_INVALIDATED == 4001
+    assert WS_CLOSE_DEVICE_LIMIT != WS_CLOSE_SESSION_INVALIDATED
+
+
 async def test_close_session_closes_all_tabs_of_the_device_only():
     manager = ConnectionManager()
     tab1, tab2, other_device = _FakeWebSocket(), _FakeWebSocket(), _FakeWebSocket()
@@ -353,6 +362,28 @@ async def test_revoked_sids_are_closed_with_device_limit_code(monkeypatch):
     await auth_module._close_revoked_sessions(42, ["sid-1", "sid-2"])
 
     assert calls == [(42, "sid-1", 4002), (42, "sid-2", 4002)]
+
+
+async def test_password_changed_sids_are_closed_with_4001(monkeypatch):
+    """改密码吊销的其他设备必须以 4001/password changed 关闭，而非 4002。"""
+    calls: list[tuple[int, str, int]] = []
+
+    class _RecordingManager:
+        async def close_session(self, user_id, sid, code=4001, reason="session invalidated"):
+            calls.append((user_id, sid, code))
+
+    monkeypatch.setattr(
+        auth_module, "get_connection_manager", lambda: _RecordingManager()
+    )
+
+    await auth_module._close_revoked_sessions(
+        42,
+        ["sid-1"],
+        code=WS_CLOSE_SESSION_INVALIDATED,
+        reason="password changed",
+    )
+
+    assert calls == [(42, "sid-1", 4001)]
 
 
 # ---------------------------------------------------------------------------
@@ -401,9 +432,16 @@ async def test_admin_disable_account_invalidates_user_tokens(
     )
     assert disabled.status_code == 200, disabled.text
 
-    assert (await _me(client, user)).status_code == 401
-    # 禁用账号在 refresh 路径先命中 is_active → 403（既有语义）；会话也已吊销
-    assert (await _refresh(client, user)).status_code in (401, 403)
+    me = await _me(client, user)
+    assert me.status_code == 401
+    # 会话吊销原因为 disabled：前端据此提示「账号已被停用」，不是笼统会话失效
+    detail = me.json()["detail"]
+    assert detail["code"] == "disabled"
+    assert "账号已被停用" in detail["message"]
+    # refresh 路径同样返回 401 + disabled：会话已吊销，前端据此提示账号停用
+    refresh = await _refresh(client, user)
+    assert refresh.status_code == 401
+    assert refresh.json()["detail"]["code"] == "disabled"
 
     rows = await _sessions(db_session, user_id)
     assert rows and all(row.revoked_at is not None for row in rows)

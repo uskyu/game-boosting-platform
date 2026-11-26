@@ -15,6 +15,7 @@ vi.mock('@/utils/api', () => ({
   refreshAccessToken: (...args) => refreshAccessToken(...args),
 }))
 
+import api from '@/utils/api'
 import { useAuthStore } from '@/stores/auth'
 import { pendingSessionRotation } from '@/utils/sessionRotation'
 
@@ -40,6 +41,7 @@ function deferred() {
 
 beforeEach(() => {
   apiPost.mockReset()
+  api.get.mockReset()
   refreshAccessToken.mockReset()
   storage.clear()
   pinia = createPinia()
@@ -168,6 +170,38 @@ describe('被服务端踢下线时的状态', () => {
 
     store.clearLogoutReason()
     expect(store.lastLogoutReason).toBeNull()
+  })
+
+  it('fetchCurrentUser 401 时保留拦截器已写入的精确原因', async () => {
+    const store = useAuthStore()
+    store.setTokens('a', 'r')
+    // 模拟并发请求（如 WS 4002）先写入了 device-limit
+    store.lastLogoutReason = 'device-limit'
+    api.get.mockRejectedValueOnce({
+      status: 401,
+      message: '登录状态已失效，请重新登录',
+      original: { response: { data: { detail: { code: 'session_invalidated', message: '登录状态已失效，请重新登录' } } } },
+    })
+
+    const result = await store.fetchCurrentUser()
+
+    expect(result.success).toBe(false)
+    expect(store.lastLogoutReason).toBe('device-limit')
+    expect(store.accessToken).toBeNull()
+  })
+
+  it('fetchCurrentUser 401 没有既有原因时按 detail.code 记录（改密码）', async () => {
+    const store = useAuthStore()
+    store.setTokens('a', 'r')
+    api.get.mockRejectedValueOnce({
+      status: 401,
+      message: '密码已修改，请重新登录',
+      original: { response: { data: { detail: { code: 'password_changed', message: '密码已修改，请重新登录' } } } },
+    })
+
+    await store.fetchCurrentUser()
+
+    expect(store.lastLogoutReason).toBe('password-changed')
   })
 
   it('logout 会清掉残留的轮换闸门（否则登出后 401 会卡死）', () => {

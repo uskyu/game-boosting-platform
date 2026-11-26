@@ -235,6 +235,33 @@ def verify_token(token: str, token_type: str = "access") -> dict[str, Any] | Non
     return payload
 
 
+def is_token_expired(token: str, token_type: str = "access") -> bool:
+    """判断令牌是否「签名有效但已过期」。
+
+    ``verify_token`` 对过期与伪造令牌都返回 None。为了让刷新接口把「登录
+    过期」和「令牌无效/被篡改」区分开，这里关闭 exp 校验后只验签名与类型，
+    再检查声明的 exp 是否已经过去。签名错误、类型不符、缺少 exp 一律
+    False（按无效令牌处理）。
+    """
+    try:
+        payload = jwt.decode(
+            token,
+            settings.SECRET_KEY,
+            algorithms=[settings.ALGORITHM],
+            options={"verify_exp": False},
+        )
+    except JWTError:
+        return False
+
+    if payload.get("type") != token_type:
+        return False
+
+    try:
+        return int(payload.get("exp")) <= int(datetime.now(timezone.utc).timestamp())
+    except (TypeError, ValueError):
+        return False
+
+
 def token_session_version(payload: dict[str, Any]) -> int:
     """取令牌里的会话版本号。
 

@@ -15,6 +15,7 @@ from app.core.security import token_session_version, verify_token
 from app.db.session import get_async_session
 from app.models.user import User, UserRole
 from app.models.user_session import UserSession
+from app.services import user_session_service
 
 # HTTP Bearer token security scheme
 security = HTTPBearer(
@@ -91,7 +92,7 @@ async def get_current_user(
     if not sid:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="登录状态已失效，请重新登录",
+            detail=user_session_service.session_invalidated_detail(),
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -110,26 +111,14 @@ async def get_current_user(
     user = result.scalar_one_or_none()
 
     if user is None:
-        # 区分「设备被挤下线」与普通令牌失效：前端据此显示正确文案
-        revoked = await db.execute(
-            select(UserSession.revoked_reason).where(
-                UserSession.sid == sid,
-                UserSession.user_id == user_id,
-            )
+        # 会话记录给出了准确原因（改密码/管理员重置/停用/设备超限/自然过期），
+        # 前端据此显示正确文案；没有记录时退回通用「会话已失效」。
+        detail = await user_session_service.get_session_invalidation_detail(
+            db, sid, user_id
         )
-        reason = revoked.scalar_one_or_none()
-        if reason == "device_limit":
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail={
-                    "code": "device_limit",
-                    "message": "账号已在其他设备登录，当前设备已下线",
-                },
-                headers={"WWW-Authenticate": "Bearer"},
-            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="登录状态已失效，请重新登录",
+            detail=detail or user_session_service.session_invalidated_detail(),
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -139,7 +128,7 @@ async def get_current_user(
     if token_session_version(payload) != user.token_version:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="登录状态已失效，请重新登录",
+            detail=user_session_service.password_changed_detail(),
             headers={"WWW-Authenticate": "Bearer"},
         )
 

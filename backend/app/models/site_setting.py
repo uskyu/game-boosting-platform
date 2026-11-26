@@ -40,6 +40,11 @@ class SiteSetting(Base):
     max_online_devices: Mapped[int] = mapped_column(
         Integer(), nullable=False, default=2, server_default="2"
     )
+    # 登录保持天数（2026-11-26）：刷新令牌与设备会话的绝对有效期，1-365 天。
+    # 后台修改只影响之后建立的登录会话，已在线的会话保持登录时的到期时间。
+    login_session_days: Mapped[int] = mapped_column(
+        Integer(), nullable=False, default=7, server_default="7"
+    )
     # 订单标题关键词替换规则（2026-11-02）：JSON 数组，元素
     # {"original": "名牌", "replacement": "【MP】"}；NULL=默认规则。
     # 发单/改单时由 order_service 按此规则替换标题，聊天订单卡片同步。

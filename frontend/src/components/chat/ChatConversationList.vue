@@ -46,12 +46,32 @@ function getTitle(conversation) {
   return resolveConversationTitle(conversation, currentUserId.value)
 }
 
+const RANK_PLACEHOLDERS = new Set(['未指定', '不限', '—', '-'])
+
+function normalizeRank(value) {
+  const text = String(value ?? '').trim()
+  return RANK_PLACEHOLDERS.has(text) ? '' : text
+}
+
 function getSubtitle(conversation) {
-  if (conversation.order) {
-    return `${conversation.order.game_name} · ${conversation.order.current_rank} → ${conversation.order.target_rank}`
+  const order = conversation?.order
+  if (!order) {
+    return '站内会话'
   }
 
-  return '站内会话'
+  const gameName = String(order.game_name ?? '').trim() || '代练订单'
+  const currentRank = normalizeRank(order.current_rank)
+  const targetRank = normalizeRank(order.target_rank)
+  const rankLabel = currentRank && targetRank
+    ? `${currentRank} → ${targetRank}`
+    : (currentRank || targetRank)
+
+  const parts = [gameName]
+  if (rankLabel) parts.push(rankLabel)
+  if (order.id !== null && order.id !== undefined && order.id !== '') {
+    parts.push(`订单 #${order.id}`)
+  }
+  return parts.join(' · ')
 }
 
 function getPreview(conversation) {
@@ -71,9 +91,27 @@ function getTimestamp(conversation) {
   )
 }
 
+function isCurrentUserParticipant(participant, userId) {
+  if (userId === null || userId === undefined || userId === '') return false
+  const participantUserId = participant?.user?.id ?? participant?.user_id
+  if (
+    participantUserId === null
+    || participantUserId === undefined
+    || participantUserId === ''
+  ) {
+    return false
+  }
+  return String(participantUserId) === String(userId)
+}
+
 function hasAdmin(conversation) {
+  const currentId = currentUserId.value
   return (conversation.participants || [])
-    .some((participant) => participant.user?.role === 'ADMIN' || participant.role_snapshot === 'ADMIN')
+    .some((participant) => {
+      // 当前登录者自己也是管理员时，不能给每条会话都挂“管理员”标签。
+      if (isCurrentUserParticipant(participant, currentId)) return false
+      return participant.user?.role === 'ADMIN' || participant.role_snapshot === 'ADMIN'
+    })
 }
 
 function handleSelect(conversation) {

@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 import api from '@/utils/api'
 import { useAuthStore } from '@/stores/auth'
 import { useToastsStore } from '@/stores/toasts'
+import { normalizeLogoutReason, reasonFromError } from '@/utils/authReason'
 import { pendingSessionRotation } from '@/utils/sessionRotation'
 import { playChatMessage } from '@/utils/sound'
 import {
@@ -1161,10 +1162,17 @@ export const useChatStore = defineStore('chat', () => {
 
     try {
       await api.get('/auth/me')
-    } catch {
-      // 会话确实失效：拦截器已按 401 处理（若刷新也失败则登出并跳登录页）
+    } catch (error) {
+      // 会话确实失效：拦截器已按 401 处理。它可能刚写入更精确的原因
+      // （password-changed / password-reset / account-disabled / device-limit /
+      // session-expired），这里必须保留；只有完全拿不到原因时才按旧行为
+      // fallback 到 session-expired。
       sessionInvalidatedAt.value = Date.now()
-      useAuthStore().logout('session-expired')
+      const authStore = useAuthStore()
+      const mapped = reasonFromError(error)
+      const reason = normalizeLogoutReason(authStore.lastLogoutReason)
+        || (mapped === 'session-invalidated' ? 'session-expired' : mapped)
+      authStore.logout(reason)
       return
     }
 

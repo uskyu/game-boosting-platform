@@ -47,6 +47,9 @@ async def update_site_settings(
         setting.accept_captcha_enabled = payload.accept_captcha_enabled
     if payload.max_online_devices is not None:
         setting.max_online_devices = payload.max_online_devices
+    # 登录保持天数：None=不改动；只影响之后建立的登录会话
+    if payload.login_session_days is not None:
+        setting.login_session_days = payload.login_session_days
     # 标题关键词替换规则：None=不改动；[]=关闭全部替换
     if payload.order_title_replacements is not None:
         setting.order_title_replacements = [
