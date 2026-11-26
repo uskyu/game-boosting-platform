@@ -106,4 +106,28 @@ class SiteSetting(Base):
     # 四个槽位全部默认。由 /admin/sounds 专用端点读写，站点设置保存接口不碰它。
     notification_sounds: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
+    # 数据库容灾备份（2026-11-26）：定时把 MySQL dump 成 gzip 传到腾讯云 COS。
+    # 同一条后台任务每 15 秒轮询一次，是否真正执行由 enabled + 到期时间决定。
+    # interval 的业务范围 5-1440 分钟由 API 层校验，调度器只做兜底夹取。
+    db_backup_enabled: Mapped[bool] = mapped_column(
+        Boolean(), nullable=False, default=False, server_default="0"
+    )
+    db_backup_interval_minutes: Mapped[int] = mapped_column(
+        Integer(), nullable=False, default=60, server_default="60"
+    )
+    db_backup_retention_count: Mapped[int] = mapped_column(
+        Integer(), nullable=False, default=48, server_default="48"
+    )
+    db_backup_prefix: Mapped[str] = mapped_column(
+        String(120), nullable=False, default="db-backups", server_default="db-backups"
+    )
+    db_backup_include_notifications: Mapped[bool] = mapped_column(
+        Boolean(), nullable=False, default=False, server_default="0"
+    )
+    # 管理员手动备份请求时间（naive UTC）。调度器看到非空即消费并强制跑一次，
+    # 即使 db_backup_enabled=false；跑之前清空，避免重启后重复触发。
+    db_backup_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(), nullable=True
+    )
+
     updater: Mapped["User | None"] = relationship("User", foreign_keys=[updated_by], lazy="noload")

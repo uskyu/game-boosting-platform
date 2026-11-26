@@ -20,6 +20,14 @@ from app.models.deposit import (
     DepositSetting,
     DepositTier,
 )
+from app.models.database_backup import (
+    STATUS_FAILED,
+    STATUS_RUNNING,
+    STATUS_SUCCESS,
+    TRIGGER_MANUAL,
+    TRIGGER_SCHEDULED,
+    DatabaseBackup,
+)
 from app.models.game import Game, GameCategory, GamePlatform
 from app.models.notification import Notification, NotificationType, UserPreference
 from app.models.payment_gateway import PaymentGateway
@@ -65,6 +73,7 @@ __all__ = [
     "Conversation",
     "ConversationParticipant",
     "ConversationType",
+    "DatabaseBackup",
     "DEFAULT_DEPOSIT_RETURN_COOLDOWN_DAYS",
     "DEFAULT_DEPOSIT_TIERS",
     "DepositSetting",
@@ -93,8 +102,13 @@ __all__ = [
     "ServiceFeeSetting",
     "SiteSetting",
     "SignedUrlCache",
+    "STATUS_FAILED",
+    "STATUS_RUNNING",
+    "STATUS_SUCCESS",
     "StorageMigration",
     "TimestampMixin",
+    "TRIGGER_MANUAL",
+    "TRIGGER_SCHEDULED",
     "User",
     "UserPreference",
     "UserRole",

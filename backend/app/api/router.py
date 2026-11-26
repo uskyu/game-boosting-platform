@@ -54,6 +54,7 @@ from app.api.endpoints.admin_order_analytics import (
 )
 from app.api.endpoints.designation import router as designation_router
 from app.api.endpoints.admin_storage import router as admin_storage_router
+from app.api.endpoints.admin_backup import router as admin_backup_router
 # 登录用户的图片重新签发：预签名 URL 过期（403）后由前端 SignedImage 调用
 from app.api.endpoints.storage import router as storage_router
 # 通知音频自定义（四个槽位：来单/被接手/取消申请/聊天）
@@ -90,6 +91,8 @@ api_router.include_router(admin_announcements_router)
 api_router.include_router(admin_site_router)
 # 对象存储设置 + 历史文件迁移/清理（仅管理员）
 api_router.include_router(admin_storage_router)
+# 数据库容灾备份设置 / 手动触发 / 历史与下载（仅管理员）
+api_router.include_router(admin_backup_router)
 # 预签名 URL 重新签发（登录用户；权限在签发时由服务端判定）
 api_router.include_router(storage_router)
 # 图片直传：浏览器 -> CORS 预签名 PUT + 落地提交；LOCAL 模式前端回退

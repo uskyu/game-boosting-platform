@@ -21,6 +21,7 @@
  * 不做永久轮询。
  */
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import AdminDatabaseBackup from '@/components/admin/AdminDatabaseBackup.vue'
 import { KEEP_SECRET_PLACEHOLDER, useAdminStorageStore } from '@/stores/adminStorage'
 
 const store = useAdminStorageStore()
@@ -550,5 +551,8 @@ onUnmounted(() => {
       <!-- F. 安全提示 -->
       <p class="mt-4 text-xs leading-5 text-ink-3">密钥加密保存在数据库，页面只显示打码后的尾号。</p>
     </div>
+
+    <!-- G. 数据库容灾备份 -->
+    <AdminDatabaseBackup class="mt-4" />
   </section>
 </template>

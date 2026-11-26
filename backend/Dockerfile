@@ -35,6 +35,15 @@ WORKDIR /app
 # Copy installed packages from builder
 COPY --from=builder /root/.local /root/.local
 
+# 数据库容灾备份需要 mysqldump；gzip 也显式安装，避免依赖基础镜像的偶然预装。
+# 放在 COPY 代码之前，代码改动不会让这一层缓存失效、重复下载 apt 包。
+# Debian 的 default-mysql-client 装的是 MariaDB 客户端；显式补一个
+# mysqldump 命令名，避免基础镜像/包版本差异导致备份时找不到命令。
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends default-mysql-client gzip \
+    && ln -sf /usr/bin/mariadb-dump /usr/bin/mysqldump \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy application code
 COPY . .
 

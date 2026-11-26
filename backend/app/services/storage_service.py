@@ -58,9 +58,9 @@ _COS_TIMEOUT_SECONDS = 15
 
 # 进程内配置缓存（独立于大厅排序缓存）。value=None 表示尚未读取。
 _CONFIG_CACHE: dict[str, Any] = {"value": None, "expires_at": 0.0}
-# CosS3Client 按 (bucket, region, secret_id) 缓存；client 内部自带
+# CosS3Client 按 (bucket, region, secret_id, timeout) 缓存；client 内部自带
 # requests 连接池，重建会丢掉 keep-alive，上传/回源都会明显变慢。
-_CLIENT_CACHE: dict[tuple[str, str, str], Any] = {}
+_CLIENT_CACHE: dict[tuple[str, str, str, float], Any] = {}
 
 
 class StorageError(Exception):
@@ -268,6 +268,41 @@ async def get_storage_config(db) -> StorageConfig:
         return config
 
 
+async def get_cos_config(db) -> StorageConfig | None:
+    """按已保存的 COS 凭据构造**显式 COS 配置**，不跟随 storage_mode。
+
+    数据库备份必须落到对象存储：管理员即使把当前上传模式切回 LOCAL，备份
+    也不该悄悄写到本地磁盘。只要 ``cos_secret_id`` / ``cos_secret_key`` /
+    ``cos_bucket`` / ``cos_region`` 四项齐全且两个密钥都能解密，就返回
+    ``mode="COS"`` 的配置；否则返回 None，由调用方给出「请先配置 COS」的
+    中文错误。
+
+    与 ``get_storage_config`` 的区别：不走 2 秒缓存（备份频率低，但要求
+    读到刚保存的配置），也不做 LOCAL 兜底。密钥只留在进程内，绝不写日志。
+    """
+    try:
+        row = await _load_storage_setting_row(db)
+    except Exception:  # noqa: BLE001 - 配置读取失败等价于 COS 不可用
+        logger.debug("COS backup config read failed", exc_info=True)
+        return None
+
+    secret_id = _decrypt_secret(row.get("cos_secret_id"))
+    secret_key = _decrypt_secret(row.get("cos_secret_key"))
+    bucket = _clean(row.get("cos_bucket"))
+    region = _clean(row.get("cos_region"))
+    if not (secret_id and secret_key and bucket and region):
+        return None
+
+    return StorageConfig(
+        mode=_COS_MODE,
+        secret_id=secret_id,
+        secret_key=secret_key,
+        bucket=bucket,
+        region=region,
+        cdn_domain=_clean_cdn_domain(row.get("cos_cdn_domain")),
+    )
+
+
 def peek_storage_config() -> StorageConfig | None:
     """读取（不刷新）尚未过期的缓存配置；未命中返回 None。
 
@@ -296,13 +331,25 @@ def _cos_sdk():
     return CosConfig, CosS3Client, CosClientError, CosServiceError
 
 
-def _cos_client(cfg: StorageConfig):
-    """按 (bucket, region, secret_id) 懒缓存 CosS3Client。"""
+def _cos_client(cfg: StorageConfig, timeout_seconds: float | None = None):
+    """按 (bucket, region, secret_id, timeout) 懒缓存 CosS3Client。
+
+    ``timeout_seconds`` 默认沿用图片上传的 15s 短超时；数据库备份等大文件
+    上传可由调用方显式传更长超时（例如 300s）。缓存键包含超时值，避免同
+    一组凭据下不同超时的 client 互相串用。
+    """
     if cfg.mode != _COS_MODE:
         raise StorageError("当前存储模式不是 COS")
     if not (cfg.bucket and cfg.region and cfg.secret_id and cfg.secret_key):
         raise StorageError("COS 配置不完整")
-    cache_key = (cfg.bucket, cfg.region, cfg.secret_id)
+    timeout = (
+        float(timeout_seconds)
+        if timeout_seconds is not None
+        else float(_COS_TIMEOUT_SECONDS)
+    )
+    if timeout <= 0:
+        timeout = float(_COS_TIMEOUT_SECONDS)
+    cache_key = (cfg.bucket, cfg.region, cfg.secret_id, timeout)
     client = _CLIENT_CACHE.get(cache_key)
     if client is not None:
         return client
@@ -315,7 +362,8 @@ def _cos_client(cfg: StorageConfig):
             Scheme="https",
             # 有界超时：SDK 默认 30s，COS 抖动时会把线程池占满，进而拖慢
             # 所有上传；15s 足够大图单次上传，且失败能快速报错重试。
-            Timeout=_COS_TIMEOUT_SECONDS,
+            # 数据库备份包可能几十 MB，调用方可显式传 300s。
+            Timeout=timeout,
         )
     )
     _CLIENT_CACHE[cache_key] = client
@@ -654,18 +702,31 @@ async def save_bytes(data: bytes, key: str, content_type: str, db) -> None:
 
 
 async def save_bytes_for_config(
-    data: bytes, key: str, content_type: str, config: StorageConfig
+    data: bytes,
+    key: str,
+    content_type: str,
+    config: StorageConfig,
+    *,
+    timeout_seconds: float | None = None,
 ) -> None:
-    """按**显式指定**的配置写入对象（迁移任务专用）。
+    """按**显式指定**的配置写入对象（迁移任务/数据库备份专用）。
 
     与 ``save_bytes`` 的区别只在于「不读当前站点设置」：迁移历史文件时必须
     落到 COS，哪怕此刻 storage_mode 已被切回 LOCAL。
+
+    ``timeout_seconds`` 只对 COS 生效：默认 None 沿用 15s 图片上传短超时；
+    数据库备份这类几十 MB 的大文件应显式传 300s，避免慢链路上误判超时。
     """
     normalized = normalize_key(key)
     payload = bytes(data)
     try:
         if config.mode == _COS_MODE:
-            client = _cos_client(config)
+            # 默认调用保持旧的单参数形式，兼容既有的 client 替身/测试钩子。
+            client = (
+                _cos_client(config, timeout_seconds=timeout_seconds)
+                if timeout_seconds is not None
+                else _cos_client(config)
+            )
             await anyio.to_thread.run_sync(
                 _cos_put, client, config.bucket, normalized, payload, content_type
             )
@@ -691,18 +752,25 @@ async def read_bytes(key: str, db) -> tuple[bytes, str] | None:
 
 
 async def read_bytes_for_config(
-    key: str, config: StorageConfig
+    key: str, config: StorageConfig, *, timeout_seconds: float | None = None
 ) -> tuple[bytes, str] | None:
     """按已解析好的配置读取对象。
 
     单独暴露是为了让 /uploads 回源中间件能「先开一个短会话取配置、关掉会话
     再做网络 I/O」——否则一张几 MB 的图从 COS 拉回来期间会一直占着一条
     数据库连接，图片并发一高就把连接池吃干。
+
+    ``timeout_seconds`` 默认沿用 15s 图片回源短超时；数据库备份下载这类
+    几十 MB 的对象应显式传更长超时，避免慢链路误判失败。
     """
     normalized = normalize_key(key)
     try:
         if config.mode == _COS_MODE:
-            client = _cos_client(config)
+            client = (
+                _cos_client(config, timeout_seconds=timeout_seconds)
+                if timeout_seconds is not None
+                else _cos_client(config)
+            )
             return await anyio.to_thread.run_sync(
                 _cos_read, client, config.bucket, normalized
             )
@@ -730,6 +798,80 @@ async def exists_for_config(key: str, config: StorageConfig) -> bool:
             _cos_head_exists, client, config.bucket, normalized
         )
     return await anyio.to_thread.run_sync(lambda: _local_path(normalized).is_file())
+
+
+async def head_size_for_config(key: str, config: StorageConfig) -> int | None:
+    """按显式配置读取对象字节数；对象不存在返回 None。
+
+    备份上传后用它核对「写入 COS 的字节数 == 本地 gzip 文件大小」，防止
+    SDK 返回成功但对象实际没有落盘（配置错桶等）。COS 侧复用现成的
+    ``_cos_head_info``；LOCAL 侧等价于文件大小查询。
+    """
+    try:
+        normalized = normalize_key(key)
+    except ValueError as exc:
+        raise StorageError("对象路径不合法") from exc
+
+    try:
+        if config.mode == _COS_MODE:
+            client = _cos_client(config)
+            info = await anyio.to_thread.run_sync(
+                _cos_head_info, client, config.bucket, normalized
+            )
+            if info is None:
+                return None
+            return int(info[0])
+
+        path = _local_path(normalized)
+
+        def _local_size() -> int | None:
+            return path.stat().st_size if path.is_file() else None
+
+        return await anyio.to_thread.run_sync(_local_size)
+    except StorageError:
+        raise
+    except Exception as exc:
+        logger.error(
+            "storage head failed mode=%s key=%s error=%s",
+            config.mode,
+            normalized,
+            type(exc).__name__,
+        )
+        raise StorageError("文件信息读取失败，请稍后重试") from exc
+
+
+async def delete_for_config(key: str, config: StorageConfig) -> None:
+    """按**显式指定**的配置删除对象（幂等，失败抛中文 ``StorageError``）。
+
+    备份保留清理专用：无论当前站点存储模式是什么，都要从备份实际写入的
+    那个 COS 桶里删对象。对象本来就不存在时视为删除成功（COS 404 / 本地
+    missing 都不报错）。
+    """
+    try:
+        normalized = normalize_key(key)
+    except ValueError as exc:
+        raise StorageError("对象路径不合法") from exc
+
+    try:
+        if config.mode == _COS_MODE:
+            client = _cos_client(config)
+            await anyio.to_thread.run_sync(
+                _cos_delete, client, config.bucket, normalized
+            )
+        else:
+            await anyio.to_thread.run_sync(
+                lambda: _local_path(normalized).unlink(missing_ok=True)
+            )
+    except StorageError:
+        raise
+    except Exception as exc:
+        logger.error(
+            "storage delete failed mode=%s key=%s error=%s",
+            config.mode,
+            normalized,
+            type(exc).__name__,
+        )
+        raise StorageError("文件删除失败，请稍后重试") from exc
 
 
 async def read_local_bytes(key: str) -> tuple[bytes, str] | None:

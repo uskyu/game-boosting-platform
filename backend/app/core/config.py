@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     DB_POOL_RECYCLE: int = 1200
     DB_CONNECT_TIMEOUT: int = 5
     DB_HEALTH_TIMEOUT: int = 3
+    # mysqldump 可执行文件路径。生产镜像通过 apt 安装 default-mysql-client，
+    # 命令就在 PATH 里；本地开发可指向具体的 mysqldump.exe 绝对路径。
+    MYSQLDUMP_BIN: str = "mysqldump"
 
     # DeepSeek API Configuration
     DEEPSEEK_API_KEY: str

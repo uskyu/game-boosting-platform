@@ -47,6 +47,40 @@ _notification_cleanup_task: asyncio.Task | None = None
 RECHARGE_SYNC_INTERVAL_SECONDS = 600  # 每 10 分钟扫描一次待支付订单
 _recharge_sync_task: asyncio.Task | None = None
 
+# 数据库容灾备份调度：每 15 秒检查一次是否到点/有手动请求。
+DB_BACKUP_POLL_SECONDS = 15
+_db_backup_task: asyncio.Task | None = None
+
+
+async def _db_backup_loop() -> None:
+    """定时检查数据库备份是否到期，到期则 dump 到 COS。
+
+    启动先清理上次进程遗留的 RUNNING 记录（单 worker 下启动时不可能还有
+    备份在跑，所有 RUNNING 都视为上次进程中断）；之后每 15 秒轮询一次。
+    单次失败只 log，等待下一轮；取消时立即退出。
+    """
+    from app.services.db_backup_service import recover_stale_runs, run_if_due
+
+    try:
+        recovered = await recover_stale_runs()
+        if recovered:
+            logger.warning(
+                "Recovered %s stale database backup run(s) on startup", recovered
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("Database backup stale-run recovery failed")
+
+    while True:
+        await asyncio.sleep(DB_BACKUP_POLL_SECONDS)
+        try:
+            await run_if_due()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Database backup scheduler run failed")
+
 
 async def _payout_scan_loop() -> None:
     """周期扫描到账时效到期的交付名额并自动结算。
@@ -129,6 +163,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     Handles startup and shutdown events.
     """
     global _payout_scan_task, _notification_cleanup_task, _recharge_sync_task
+    global _db_backup_task
     # Startup
     logger.info("Starting Game Boosting Platform API...")
     try:
@@ -173,6 +208,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         "Recharge sync started (interval=%ss)", RECHARGE_SYNC_INTERVAL_SECONDS
     )
 
+    # 数据库容灾备份调度后台任务
+    _db_backup_task = asyncio.create_task(_db_backup_loop())
+    logger.info(
+        "Database backup scheduler started (poll=%ss)", DB_BACKUP_POLL_SECONDS
+    )
+
     yield
 
     # Shutdown
@@ -201,6 +242,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             pass
         _recharge_sync_task = None
         logger.info("Recharge sync stopped")
+    if _db_backup_task is not None:
+        _db_backup_task.cancel()
+        try:
+            await _db_backup_task
+        except asyncio.CancelledError:
+            pass
+        _db_backup_task = None
+        logger.info("Database backup scheduler stopped")
     await close_db()
     logger.info("Database connection closed")
 
