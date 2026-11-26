@@ -21,6 +21,9 @@ const showUnreadOnly = ref(false)
 const conversations = computed(() => chatStore.conversations)
 const chatLoading = computed(() => chatStore.loading)
 const chatUnread = computed(() => Number(chatStore.unreadTotal || 0))
+const chatTotal = computed(() => Number(chatStore.conversationsTotal || 0))
+const chatHasMore = computed(() => Boolean(chatStore.hasMoreConversations))
+const chatLoadingMore = computed(() => Boolean(chatStore.conversationsLoadingMore))
 
 const notifications = computed(() => notifStore.notifications)
 const notifTotal = computed(() => notifStore.total)
@@ -84,6 +87,10 @@ function switchTab(tab) {
 
 function openConversation(conversation) {
   router.push({ name: 'chat-detail', params: { id: conversation.id } })
+}
+
+async function loadMoreChat() {
+  await chatStore.loadMoreConversations()
 }
 
 async function loadNotifPage(p = 1) {
@@ -171,6 +178,21 @@ onMounted(async () => {
           :loading="chatLoading"
           @select="openConversation"
         />
+
+        <div v-if="chatTotal > 0" class="mt-5 flex flex-col items-center gap-2.5">
+          <p class="text-xs text-ink-3">
+            共 {{ formatCount(chatTotal) }} 个对话，已显示 {{ conversations.length }} 个
+          </p>
+          <button
+            v-if="chatHasMore"
+            type="button"
+            class="btn-secondary min-h-[44px] !px-5"
+            :disabled="chatLoadingMore"
+            @click="loadMoreChat"
+          >
+            {{ chatLoadingMore ? '加载中...' : '加载更早的对话' }}
+          </button>
+        </div>
       </section>
     </template>
 

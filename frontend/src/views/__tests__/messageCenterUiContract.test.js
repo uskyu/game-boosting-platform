@@ -143,4 +143,11 @@ describe('conversation list contracts', () => {
     expect(conversationListSource)
       .not.toContain('${conversation.order.current_rank} → ${conversation.order.target_rank}')
   })
+
+  it('offers load more for order conversations beyond the first page', () => {
+    expect(messageCenterSource).toContain('chatStore.loadMoreConversations')
+    expect(messageCenterSource).toContain('chatTotal')
+    expect(messageCenterSource).toContain('已显示')
+    expect(messageCenterSource).toContain('加载更早的对话')
+  })
 })

@@ -18,6 +18,9 @@ import {
 } from '@/utils/websocketRecovery'
 
 const DEFAULT_MESSAGE_LIMIT = 30
+// 会话列表分页：订单会按「订单+对方」各建一条，重度用户可达数百条；
+// 一次只拉 20 条且没有分页会让较早的订单对话完全找不到。
+const DEFAULT_CONVERSATION_PAGE_SIZE = 50
 const TYPING_THROTTLE_MS = 3000
 const TYPING_VISIBLE_MS = 5000
 
@@ -66,6 +69,11 @@ export const useChatStore = defineStore('chat', () => {
   const socketStatus = ref('disconnected')
   const typingUsers = ref({})
   const loading = ref(false)
+  const conversationsLoadingMore = ref(false)
+  const conversationsTotal = ref(0)
+  const conversationsPage = ref(0)
+  const conversationsPageSize = ref(DEFAULT_CONVERSATION_PAGE_SIZE)
+  const conversationsPages = ref(0)
   const hasMore = ref({})
   const error = ref(null)
   const orderStateChangeVersion = ref(0)
@@ -110,6 +118,10 @@ export const useChatStore = defineStore('chat', () => {
 
   const activeConversation = computed(() => (
     conversations.value.find((item) => item.id === activeConversationId.value) || null
+  ))
+
+  const hasMoreConversations = computed(() => (
+    conversationsPage.value > 0 && conversationsPage.value < conversationsPages.value
   ))
 
   const currentMessages = computed(() => (
@@ -386,6 +398,11 @@ export const useChatStore = defineStore('chat', () => {
     typingUsers.value = {}
     hasMore.value = {}
     error.value = null
+    conversationsLoadingMore.value = false
+    conversationsTotal.value = 0
+    conversationsPage.value = 0
+    conversationsPageSize.value = DEFAULT_CONVERSATION_PAGE_SIZE
+    conversationsPages.value = 0
     clearTypingState()
     Object.keys(lastTypingSentAt).forEach((key) => {
       delete lastTypingSentAt[key]
@@ -490,25 +507,49 @@ export const useChatStore = defineStore('chat', () => {
     await ensureAuthReady()
     const authContext = captureAuthContext()
     if (!isCurrentAuthContext(authContext)) return { success: false, stale: true }
-    loading.value = true
+
+    const page = Math.max(1, Number(options.page) || 1)
+    const pageSize = Math.min(
+      100,
+      Math.max(1, Number(options.pageSize) || DEFAULT_CONVERSATION_PAGE_SIZE),
+    )
+    const append = options.append === true
+    if (append) conversationsLoadingMore.value = true
+    else loading.value = true
     error.value = null
 
     const params = {
-      page: options.page || 1,
-      page_size: options.pageSize || 20,
+      page,
+      page_size: pageSize,
     }
 
     try {
       const response = await api.get('/chat/conversations', { params })
       if (!isCurrentAuthContext(authContext)) return { success: true, stale: true }
-      conversations.value = sortConversations(response.data.items || [])
+
+      const fetchedItems = response.data.items || []
+      if (append) {
+        // 翻页追加：按 id 去重，避免两次请求间有新会话插队导致重复行。
+        const existingIds = new Set(conversations.value.map((item) => String(item.id)))
+        const appendedItems = fetchedItems.filter((item) => !existingIds.has(String(item.id)))
+        conversations.value = sortConversations([
+          ...conversations.value,
+          ...appendedItems,
+        ])
+      } else {
+        conversations.value = sortConversations(fetchedItems)
+      }
 
       const nextUnreadMap = {}
       conversations.value.forEach((conversation) => {
         nextUnreadMap[conversation.id] = Number(conversation.unread_count || 0)
       })
       unreadByConversation.value = nextUnreadMap
-      syncUnreadTotal()
+
+      conversationsTotal.value = Number(response.data.total || 0)
+      conversationsPage.value = Number(response.data.page || page)
+      conversationsPageSize.value = Number(response.data.page_size || pageSize)
+      conversationsPages.value = Number(response.data.pages || 0)
 
       return { success: true, data: response.data }
     } catch (err) {
@@ -516,8 +557,25 @@ export const useChatStore = defineStore('chat', () => {
       error.value = err.message
       return { success: false, error: err.message }
     } finally {
-      if (isCurrentAuthContext(authContext)) loading.value = false
+      if (isCurrentAuthContext(authContext)) {
+        if (append) conversationsLoadingMore.value = false
+        else loading.value = false
+      }
     }
+  }
+
+  async function loadMoreConversations() {
+    if (conversationsLoadingMore.value) {
+      return { success: false, busy: true }
+    }
+    if (!hasMoreConversations.value) {
+      return { success: true, noMore: true }
+    }
+    return fetchConversations({
+      page: conversationsPage.value + 1,
+      pageSize: conversationsPageSize.value,
+      append: true,
+    })
   }
 
   async function fetchConversation(conversationId) {
@@ -1097,7 +1155,9 @@ export const useChatStore = defineStore('chat', () => {
         if (conversations.value.length > 0) {
           fetchConversations({
             page: 1,
-            pageSize: Math.max(conversations.value.length, 20),
+            // 后端 page_size 上限 100；重连时刷新已加载的前 100 条，
+            // 更多历史仍可通过“加载更早的对话”继续拉取。
+            pageSize: Math.min(Math.max(conversations.value.length, 20), 100),
           })
         }
         return
@@ -1365,7 +1425,13 @@ export const useChatStore = defineStore('chat', () => {
     socketStatus,
     typingUsers,
     loading,
+    conversationsLoadingMore,
+    conversationsTotal,
+    conversationsPage,
+    conversationsPageSize,
+    conversationsPages,
     hasMore,
+    hasMoreConversations,
     error,
     orderStateChangeVersion,
     lastOrderStateChange,
@@ -1373,6 +1439,7 @@ export const useChatStore = defineStore('chat', () => {
     activeConversation,
     currentMessages,
     fetchConversations,
+    loadMoreConversations,
     fetchConversation,
     fetchMessages,
     searchMessages,
