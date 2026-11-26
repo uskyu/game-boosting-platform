@@ -1,5 +1,7 @@
 """Notification and user preference endpoints."""
 
+import logging
+
 from fastapi import APIRouter, Query, status
 
 from app.api.deps import CurrentUser, DatabaseSession
@@ -10,9 +12,24 @@ from app.schemas.notification import (
     UserPreferenceResponse,
     UserPreferenceUpdate,
 )
+from app.services import active_user_registry
 from app.services.notification_service import get_notification_service
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/notifications", tags=["notifications"])
+
+
+async def _touch_active_user(user_id: int) -> None:
+    """登记本轮通知轮询，供公开新单 fanout 兜底；登记失败不影响接口。"""
+    try:
+        await active_user_registry.touch(user_id)
+    except Exception:
+        logger.debug(
+            "Failed to record active notification poller user_id=%s",
+            user_id,
+            exc_info=True,
+        )
 
 
 @router.get("", response_model=NotificationListResponse)
@@ -24,6 +41,7 @@ async def list_notifications(
     unread_only: bool = Query(default=False),
 ) -> NotificationListResponse:
     """获取当前用户的通知列表。"""
+    await _touch_active_user(current_user.id)
     svc = get_notification_service(db)
     items, total, unread_count = await svc.list_for_user(
         current_user.id,
@@ -44,6 +62,7 @@ async def get_unread_count(
     current_user: CurrentUser,
 ) -> NotificationUnreadCount:
     """获取未读通知数量（用于导航栏徽章）。"""
+    await _touch_active_user(current_user.id)
     svc = get_notification_service(db)
     count = await svc.get_unread_count(current_user.id)
     return NotificationUnreadCount(count=count)

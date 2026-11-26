@@ -1406,6 +1406,18 @@ export const useChatStore = defineStore('chat', () => {
         break
       }
 
+      case 'notification_sounds_changed': {
+        // 后台修改提示音/音量/静音后，在线客户端立即重拉站点设置，避免
+        // 继续用启动时的旧配置（例如换了新订单音频却一直播旧文件）。
+        try {
+          const { useSiteStore } = await import('@/stores/site')
+          useSiteStore().fetchSettings(true)
+        } catch {
+          // site store 未加载时忽略，下次页面初始化会拉到最新配置
+        }
+        break
+      }
+
       case 'pong':
         lastPongAt = Date.now()
         break

@@ -55,14 +55,25 @@ function applyVolume(audio, volume) {
   return audio
 }
 
-function playStaticAudio(src, volume = DEFAULTS.new_order.volume) {
+function playStaticAudio(src, volume = DEFAULTS.new_order.volume, onFailure = null) {
   try {
     const audio = getStaticAudio(src)
     applyVolume(audio, volume)
     audio.currentTime = 0
     const result = audio.play()
-    if (result && typeof result.catch === 'function') {
-      result.catch(() => {})
+    if (result && typeof result.then === 'function') {
+      // 浏览器自动播放策略/设备音频占用会让 play() 返回 rejected Promise。
+      // 旧代码直接吞掉，导致「该响时没声」；现在失败时明确回退 WebAudio。
+      result.then(
+        () => {},
+        () => {
+          try {
+            if (typeof onFailure === 'function') onFailure()
+          } catch {
+            // 兜底失败不影响主流程
+          }
+        },
+      )
     }
     return true
   } catch {
@@ -224,7 +235,7 @@ function playSlot(slotKey, webAudioFallback) {
   if (!slot.enabled) return
   const src = slot.url || DEFAULTS[slotKey].url
   if (src) {
-    if (playStaticAudio(src, slot.volume)) return
+    if (playStaticAudio(src, slot.volume, () => webAudioFallback(slot.volume))) return
   }
   webAudioFallback(slot.volume)
 }
@@ -250,7 +261,11 @@ export function playChatMessage() {
   const slot = soundConfig.chat_message || DEFAULTS.chat_message
   if (!slot.enabled) return
   if (slot.url) {
-    if (playStaticAudio(slot.url, slot.volume)) return
+    if (playStaticAudio(slot.url, slot.volume, () => {
+      const gain = beepGain(slot.volume, 0.12)
+      beep({ frequency: 988, duration: 0.12, type: 'sine', gain }).catch(() => {})
+      beep({ frequency: 1319, duration: 0.2, delay: 0.14, type: 'sine', gain }).catch(() => {})
+    })) return
   }
   const gain = beepGain(slot.volume, 0.12)
   beep({ frequency: 988, duration: 0.12, type: 'sine', gain }).catch(() => {})

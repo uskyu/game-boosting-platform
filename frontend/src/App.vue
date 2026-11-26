@@ -17,6 +17,7 @@ import { useSiteStore } from '@/stores/site'
 import { useToastsStore } from '@/stores/toasts'
 import api from '@/utils/api'
 import { normalizeLogoutReason } from '@/utils/authReason'
+import { resetNewOrderChimeState } from '@/utils/newOrderChime'
 import { getUserRoleMeta } from '@/utils/order'
 import { restorePushSubscription, unsubscribeFromPush } from '@/services/push'
 
@@ -53,8 +54,13 @@ let unreadPollingTimer = null
 // 老板实测的「起码五秒」；2s 把最坏延迟压到 2s。成本是每用户 0.5 QPS 的轻量分页
 // （列表 slim+noload，单次 ~30ms），大厅兜底同步收到 2s。
 const NOTIF_POLL_INTERVAL = 2_000
+// WS 显示 connected 时也每 30 秒做一次通知对账：WebSocket 可能半开（服务端
+// 已写通知但客户端没收到），不能只信 socketStatus；否则用户会看到大厅新单，
+// 却没有来单语音。断线态仍按 2 秒轮询，恢复连接/回前台再立即补一次。
+const NOTIF_CONNECTED_RECONCILE_INTERVAL = 30_000
 let notifPollTimer = null
 let knownNotifIds = null
+let lastNotifReconcileAt = 0
 // 在飞保护：弱网下上一轮没回来就不开新一轮，避免请求堆积。
 // 请求本身有硬超时，故这个锁会由 finally 可靠释放。
 let notifPolling = false
@@ -84,6 +90,7 @@ async function pollOrderNotifications({ baseline = false, generation = authGener
   }
   const requestToken = ++notifRequestSeq
   notifPolling = true
+  lastNotifReconcileAt = Date.now()
   let items = []
   try {
     const response = await api.get('/notifications', {
@@ -141,6 +148,7 @@ function stopNotifPolling() {
   }
   notifRequestSeq += 1
   notifPolling = false
+  lastNotifReconcileAt = 0
 }
 
 async function startNotifPolling(generation = authGeneration) {
@@ -148,9 +156,11 @@ async function startNotifPolling(generation = authGeneration) {
   await pollOrderNotifications({ baseline: true, generation })
   if (!authStore.isAuthenticated || generation !== authGeneration) return
   notifPollTimer = window.setInterval(() => {
-    if (chatStore.socketStatus !== 'connected') {
-      pollOrderNotifications({ generation }).catch(() => {})
+    const connected = chatStore.socketStatus === 'connected'
+    if (connected && Date.now() - lastNotifReconcileAt < NOTIF_CONNECTED_RECONCILE_INTERVAL) {
+      return
     }
+    pollOrderNotifications({ generation }).catch(() => {})
   }, NOTIF_POLL_INTERVAL)
 }
 
@@ -357,6 +367,7 @@ async function syncChatLifecycle(isLoggedIn) {
   notificationsStore.resetState()
   announcementsStore.resetState()
   toastsStore.resetState()
+  resetNewOrderChimeState()
   if (isLoggedIn) {
     const authContext = authStore.getSessionContext()
     // 四个初始化请求互不依赖，并行发出，弱网下省 3 个串行往返
@@ -459,6 +470,9 @@ watch(
   () => chatStore.socketStatus,
   async (status) => {
     if (isAuthenticated.value && status === 'connected') {
+      // 半开/断线期间服务端已写库但 WS 没送达的通知，重连后立即补拉一次。
+      lastNotifReconcileAt = 0
+      pollOrderNotifications({ generation: authGeneration }).catch(() => {})
       await chatStore.fetchUnreadSummary()
     }
   }

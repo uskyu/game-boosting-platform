@@ -7,6 +7,13 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import api from '@/utils/api'
 import { tryDirectImageUpload } from '@/utils/directImageUpload'
+import { useAuthStore } from '@/stores/auth'
+import { useSettingsStore } from '@/stores/settings'
+import { playNewOrderOnceForOrders } from '@/utils/newOrderChime'
+
+// 大厅列表兜底发声只认最近 10 分钟发布的新单；用户切回大厅时不会把积压的
+// 旧单一次性补响。未来时间留 2 分钟容差，避免客户端/服务端时钟偏差误判。
+const HALL_NEW_ORDER_SOUND_WINDOW_MS = 10 * 60 * 1000
 
 export const useOrdersStore = defineStore('orders', () => {
   // State
@@ -333,6 +340,43 @@ export const useOrdersStore = defineStore('orders', () => {
 
       const items = response.data.items
       const previous = ordersCacheByKey.value[cacheKey]?.items ?? []
+      // 大厅对账兜底发声：WS 半开/丢推送时，服务端可能没写通知行，但大厅
+      // 列表仍能拉到新卡片。只对「本次新出现、状态可抢、发布时间在 10 分钟
+      // 内」的订单响一次；首次加载/翻页/筛选切换（previous 为空或 cacheKey
+      // 变化）不会补响旧单。铃声与通知路径共用订单 ID 去重，避免同一单响两次。
+      if (context === 'hall' && silent && previous.length > 0) {
+        const previousIds = new Set(previous.map((order) => String(order?.id)))
+        const nowMs = Date.now()
+        // 自己发布的单服务端不会给自己写通知；大厅兜底同样不应给自己响。
+        // auth store 在 node 单测环境可能没有 localStorage 垫片，读取失败按
+        // 「未知当前用户」处理，不能因此让整个列表刷新失败。
+        let currentUserId = 0
+        try {
+          currentUserId = Number(useAuthStore().user?.id || 0)
+        } catch {
+          currentUserId = 0
+        }
+        const freshOrderIds = items
+          .filter((order) => {
+            if (!order || previousIds.has(String(order.id))) return false
+            if (order.status !== 'PENDING') return false
+            if (currentUserId && Number(order.user_id) === currentUserId) return false
+            const createdAt = Date.parse(order.created_at || '')
+            if (!Number.isFinite(createdAt)) return false
+            return nowMs - createdAt <= HALL_NEW_ORDER_SOUND_WINDOW_MS
+              && createdAt - nowMs <= 2 * 60 * 1000
+          })
+          .map((order) => order.id)
+        const notificationPrefs = useSettingsStore().preferences?.notification_settings || {}
+        // 大厅兜底必须服从用户的通知偏好：关闭新订单通知/全局免打扰时不能响。
+        if (
+          freshOrderIds.length
+          && notificationPrefs.global_dnd !== true
+          && notificationPrefs.SYSTEM_ANNOUNCEMENT !== false
+        ) {
+          playNewOrderOnceForOrders(freshOrderIds)
+        }
+      }
       const nextPagination = {
         page: response.data.page,
         pageSize: response.data.page_size,

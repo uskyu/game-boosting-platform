@@ -164,6 +164,14 @@ export const useNotificationsStore = defineStore('notifications', () => {
     }
   }
 
+  // 通知里的订单 ID：ref_id 是后端关联实体 ID；老数据缺失时从 /orders/{id} 链接兜底。
+  function notificationOrderId(payload) {
+    const refId = Number(payload?.ref_id)
+    if (Number.isFinite(refId) && refId > 0) return refId
+    const match = String(payload?.link || '').match(/\/orders\/(\d+)/)
+    return match ? Number(match[1]) : null
+  }
+
   function announceOrderNotification(payload, options = {}) {
     if (payload?.id == null || !authStore.isAuthenticated) return
     if (typeof options.isCurrent === 'function' && !options.isCurrent()) return
@@ -183,6 +191,8 @@ export const useNotificationsStore = defineStore('notifications', () => {
       body: payload.content || '',
       to: payload.link || null,
       sound,
+      // 新订单用订单 ID 做跨路径去重：WS 通知和大厅列表兜底不能对同一单响两次。
+      soundKey: sound === 'new-order' ? notificationOrderId(payload) : null,
       dedupKey: `notif-${payload.id}`,
     })
   }

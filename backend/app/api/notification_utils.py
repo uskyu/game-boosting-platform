@@ -21,7 +21,7 @@ from app.models.publisher_blacklist import PublisherBlacklist
 from app.models.user import User, UserRole
 from app.schemas.notification import NotificationResponse
 from app.schemas.serializers import serialize_datetime_utc
-from app.services import deposit_service
+from app.services import active_user_registry, deposit_service
 from app.services.connection_manager import get_connection_manager
 from app.services.notification_service import get_notification_service
 from app.services.web_push import push_user_notification
@@ -97,8 +97,9 @@ async def deliver_new_order_notifications(job: NewOrderBroadcast) -> int:
     """后台任务：为新单落库通知并 WS 推送，返回实际写入条数。
 
     指定派单只追一个目标用户，成本极低，因此**不要求在线**：目标可能刚
-    断开 WS，但通知中心仍应留下一条记录。公开单只给「当前在线且满足既有
-    资格」的打手写行，离线用户不落库（大厅列表仍然能看到订单）。
+    断开 WS，但通知中心仍应留下一条记录。公开单给「当前 WS 在线」或
+    「最近仍在轮询通知」且满足既有资格的打手写行；后者用于兜底手机 WS
+    被挂起/半开、服务端误判离线后客户端仍靠轮询对账的场景。
 
     本函数由 post-commit 钩子登记为后台任务，或在无请求上下文时被
     ``run_after_commit`` 直接执行。任何失败都只记日志并返回 0，绝不抛回
@@ -114,9 +115,26 @@ async def deliver_new_order_notifications(job: NewOrderBroadcast) -> int:
 
         online_ids: set[int] = set()
         if job.designated_booster_id is None:
-            online_ids = {int(uid) for uid in await cm.online_user_ids()}
+            ws_online_ids = {int(uid) for uid in await cm.online_user_ids()}
+            try:
+                recent_ids = await active_user_registry.recent_user_ids(
+                    active_user_registry.DEFAULT_ACTIVE_WINDOW_SECONDS
+                )
+            except Exception:
+                # 活跃登记表只是补充来源：任何故障都退回仅 WS 在线集合，
+                # 不允许影响发单或通知落库。
+                logger.warning(
+                    "Active-user registry lookup failed; "
+                    "falling back to WebSocket online users only",
+                    exc_info=True,
+                )
+                recent_ids = set()
+            # 收件人候选 = WS 在线 ∪ 最近 120 秒内仍在轮询通知的用户。
+            # 手机 WS 被系统挂起/半开时服务端可能误判离线，轮询记录是让
+            # 客户端之后能通过通知中心补回这一条的关键兜底。
+            online_ids = ws_online_ids | {int(uid) for uid in recent_ids}
             if not online_ids:
-                # 没有在线打手就不必查候选、写库；大厅仍能看到新单。
+                # 没有在线/近期活跃打手就不必查候选、写库；大厅仍能看到新单。
                 logger.info(
                     "New-order notification skipped order_id=%s "
                     "online_recipients=0 written=0 duration_ms=%.1f",
@@ -131,8 +149,8 @@ async def deliver_new_order_notifications(job: NewOrderBroadcast) -> int:
             # 避免推送无法执行的抢单入口。
             # 发单人黑名单：被本单发布人拉黑的用户不发「新订单」通知（大厅仍
             # 可见），避免无效点击；用 NOT EXISTS 一次排除，不逐用户查询。
-            # 公开单再叠加在线集合；指定单只按 designated_booster_id 定位，
-            # 不走在线集合（离线目标也要有通知行）。
+            # 公开单再叠加「WS 在线 ∪ 近期轮询」候选集合；指定单只按
+            # designated_booster_id 定位，不走候选集合（离线目标也要有通知行）。
             filters = [
                 User.role != UserRole.ADMIN,
                 User.is_active.is_(True),

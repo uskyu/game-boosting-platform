@@ -181,6 +181,21 @@ def _reset_rate_limit_state():
     captcha_service._rate.clear()
 
 
+@pytest.fixture(autouse=True)
+def _reset_active_user_registry():
+    """活跃通知轮询登记表是进程内状态，按用例清空。
+
+    上一个用例调用 /notifications 留下的 user_id 会被下一个用例的新单
+    fanout 当成收件人候选（测试库自增主键每轮重置，ID 会重复），因此必须
+    和 rate limit / captcha 一样做用例级隔离。
+    """
+    from app.services import active_user_registry
+
+    active_user_registry.reset()
+    yield
+    active_user_registry.reset()
+
+
 @pytest.fixture
 def rate_limits_enabled(monkeypatch):
     """显式打开反自动化限流（默认在测试里关闭）。"""

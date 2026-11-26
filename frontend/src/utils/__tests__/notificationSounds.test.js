@@ -9,6 +9,41 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const played = []
 let createdAudios = []
+let rejectStaticPlayback = false
+const webAudioStarts = []
+
+class FakeAudioContext {
+  constructor() {
+    this.state = 'running'
+    this.currentTime = 0
+    this.destination = {}
+  }
+
+  resume() {
+    this.state = 'running'
+    return Promise.resolve()
+  }
+
+  createOscillator() {
+    return {
+      type: 'sine',
+      frequency: { setValueAtTime() {} },
+      connect() {},
+      start() { webAudioStarts.push('start') },
+      stop() {},
+    }
+  }
+
+  createGain() {
+    return {
+      gain: {
+        setValueAtTime() {},
+        exponentialRampToValueAtTime() {},
+      },
+      connect() {},
+    }
+  }
+}
 
 class FakeAudio {
   constructor() {
@@ -29,21 +64,27 @@ class FakeAudio {
 
   play() {
     played.push({ src: this.src, volume: this._volume })
+    if (rejectStaticPlayback) return Promise.reject(new Error('autoplay blocked'))
     return Promise.resolve()
   }
 
   pause() {}
 }
 
-function fakeConfig() {
+function fakeConfig({ withWebAudio = false } = {}) {
   vi.resetModules()
   played.length = 0
   createdAudios = []
+  webAudioStarts.length = 0
+  rejectStaticPlayback = false
   global.Audio = FakeAudio
-  // 不提供 AudioContext：WebAudio 兜底路径自然变成无操作
   global.window = global.window || {}
+  // 默认不提供 AudioContext：WebAudio 兜底路径自然变成无操作
   delete global.window.AudioContext
   delete global.window.webkitAudioContext
+  if (withWebAudio) {
+    global.window.AudioContext = FakeAudioContext
+  }
   return import('../sound')
 }
 
@@ -201,5 +242,18 @@ describe('notification sound configuration', () => {
     expect(sound.getSoundConfig().new_order.volume).toBe(80)
     // 空串 URL 视为「用内置默认」
     expect(sound.getSoundConfig().claimed.url).toBe('/sounds/order-claimed.wav')
+  })
+
+  it('falls back to WebAudio when static audio play() is rejected', async () => {
+    const sound = await fakeConfig({ withWebAudio: true })
+    sound.configureSounds({})
+    rejectStaticPlayback = true
+
+    sound.playNewOrder()
+    // play() 的 rejected Promise 在微任务里处理，等一轮再断言合成音已启动
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(webAudioStarts.length).toBeGreaterThan(0)
   })
 })
