@@ -339,12 +339,14 @@ export const useOrdersStore = defineStore('orders', () => {
       }
 
       const items = response.data.items
-      const previous = ordersCacheByKey.value[cacheKey]?.items ?? []
+      const previousSnapshot = ordersCacheByKey.value[cacheKey]
+      const previous = previousSnapshot?.items ?? []
       // 大厅对账兜底发声：WS 半开/丢推送时，服务端可能没写通知行，但大厅
       // 列表仍能拉到新卡片。只对「本次新出现、状态可抢、发布时间在 10 分钟
-      // 内」的订单响一次；首次加载/翻页/筛选切换（previous 为空或 cacheKey
-      // 变化）不会补响旧单。铃声与通知路径共用订单 ID 去重，避免同一单响两次。
-      if (context === 'hall' && silent && previous.length > 0) {
+      // 内」的订单响一次；必须用「该 cacheKey 之前是否有缓存快照」判断首次
+      // 加载，不能看 previous.length：空大厅缓存（items=[]）后的第一张新单
+      // 正是最需要兜底的场景。翻页/筛选切换会换 cacheKey，没有快照，不补响。
+      if (context === 'hall' && silent && Boolean(previousSnapshot)) {
         const previousIds = new Set(previous.map((order) => String(order?.id)))
         const nowMs = Date.now()
         // 自己发布的单服务端不会给自己写通知；大厅兜底同样不应给自己响。
@@ -360,6 +362,7 @@ export const useOrdersStore = defineStore('orders', () => {
           .filter((order) => {
             if (!order || previousIds.has(String(order.id))) return false
             if (order.status !== 'PENDING') return false
+            if (order.accept_blocked === true) return false
             if (currentUserId && Number(order.user_id) === currentUserId) return false
             const createdAt = Date.parse(order.created_at || '')
             if (!Number.isFinite(createdAt)) return false

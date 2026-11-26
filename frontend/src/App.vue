@@ -60,7 +60,11 @@ const NOTIF_POLL_INTERVAL = 2_000
 const NOTIF_CONNECTED_RECONCILE_INTERVAL = 30_000
 let notifPollTimer = null
 let knownNotifIds = null
+// 最近一次成功对账 / 最近一次尝试的时间：连接态节流用成功时间，失败不会
+// 把 30 秒窗口续期；重连/回前台可以 force 排队补跑一次。
 let lastNotifReconcileAt = 0
+let lastNotifAttemptAt = 0
+let notifReconcileQueued = false
 // 在飞保护：弱网下上一轮没回来就不开新一轮，避免请求堆积。
 // 请求本身有硬超时，故这个锁会由 finally 可靠释放。
 let notifPolling = false
@@ -78,9 +82,13 @@ function isCurrentNotifRequest(generation, requestToken, authContext) {
     && requestToken === notifRequestSeq
 }
 
-async function pollOrderNotifications({ baseline = false, generation = authGeneration } = {}) {
+async function pollOrderNotifications({ baseline = false, generation = authGeneration, force = false } = {}) {
   const authContext = authStore.getSessionContext()
-  if (notifPolling) return
+  if (notifPolling) {
+    // 重连/回前台撞上在飞轮询时不能直接丢：置位后由 finally 补跑一次。
+    if (force) notifReconcileQueued = true
+    return
+  }
   if (
     !authStore.isCurrentSession(authContext)
     || generation !== authGeneration
@@ -90,7 +98,7 @@ async function pollOrderNotifications({ baseline = false, generation = authGener
   }
   const requestToken = ++notifRequestSeq
   notifPolling = true
-  lastNotifReconcileAt = Date.now()
+  lastNotifAttemptAt = Date.now()
   let items = []
   try {
     const response = await api.get('/notifications', {
@@ -107,10 +115,20 @@ async function pollOrderNotifications({ baseline = false, generation = authGener
     if (requestToken === notifRequestSeq) {
       notifPolling = false
     }
+    if (notifReconcileQueued && requestToken === notifRequestSeq) {
+      notifReconcileQueued = false
+      if (authStore.isAuthenticated && generation === authGeneration) {
+        queueMicrotask(() => {
+          pollOrderNotifications({ generation, force: true }).catch(() => {})
+        })
+      }
+    }
   }
   if (!isCurrentNotifRequest(generation, requestToken, authContext)) {
     return
   }
+  // 只有真正拿到并校验过的响应才算成功对账；失败不会续期 30 秒窗口。
+  lastNotifReconcileAt = Date.now()
   if (knownNotifIds === null) {
     knownNotifIds = new Set(items.map((n) => Number(n.id)))
     return
@@ -148,7 +166,9 @@ function stopNotifPolling() {
   }
   notifRequestSeq += 1
   notifPolling = false
+  notifReconcileQueued = false
   lastNotifReconcileAt = 0
+  lastNotifAttemptAt = 0
 }
 
 async function startNotifPolling(generation = authGeneration) {
@@ -157,7 +177,9 @@ async function startNotifPolling(generation = authGeneration) {
   if (!authStore.isAuthenticated || generation !== authGeneration) return
   notifPollTimer = window.setInterval(() => {
     const connected = chatStore.socketStatus === 'connected'
-    if (connected && Date.now() - lastNotifReconcileAt < NOTIF_CONNECTED_RECONCILE_INTERVAL) {
+    // 失败也按尝试时间节流，避免连接态把 30 秒窗口续期；成功则按成功时间。
+    const lastReconcile = Math.max(lastNotifReconcileAt, lastNotifAttemptAt)
+    if (connected && Date.now() - lastReconcile < NOTIF_CONNECTED_RECONCILE_INTERVAL) {
       return
     }
     pollOrderNotifications({ generation }).catch(() => {})
@@ -440,7 +462,7 @@ function handleAppVisibility() {
   }
   // 移动浏览器从后台恢复时，页面冻结期间可能错过通知，立即做一次对账。
   const generation = authGeneration
-  pollOrderNotifications({ generation }).catch(() => {})
+  pollOrderNotifications({ generation, force: true }).catch(() => {})
   notificationsStore.fetchUnreadCount({
     isCurrent: () => authStore.isAuthenticated && generation === authGeneration,
   }).catch(() => {})
@@ -470,9 +492,11 @@ watch(
   () => chatStore.socketStatus,
   async (status) => {
     if (isAuthenticated.value && status === 'connected') {
-      // 半开/断线期间服务端已写库但 WS 没送达的通知，重连后立即补拉一次。
+      // 半开/断线期间服务端已写库但 WS 没送达的通知，重连后立即补拉一次；
+      // 若撞上在飞轮询，force 会排队到 finally 后补跑，不会被吞掉。
       lastNotifReconcileAt = 0
-      pollOrderNotifications({ generation: authGeneration }).catch(() => {})
+      lastNotifAttemptAt = 0
+      pollOrderNotifications({ generation: authGeneration, force: true }).catch(() => {})
       await chatStore.fetchUnreadSummary()
     }
   }

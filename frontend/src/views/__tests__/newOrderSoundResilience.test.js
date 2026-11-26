@@ -15,18 +15,19 @@ const chimeSource = source('../../utils/newOrderChime.js')
 describe('new-order sound resilience contracts', () => {
   it('reconciles notifications while WS claims to be connected and immediately after reconnect', () => {
     expect(appSource).toContain('NOTIF_CONNECTED_RECONCILE_INTERVAL')
-    expect(appSource).toContain('Date.now() - lastNotifReconcileAt < NOTIF_CONNECTED_RECONCILE_INTERVAL')
+    expect(appSource).toContain('Math.max(lastNotifReconcileAt, lastNotifAttemptAt)')
     expect(appSource).toContain("const connected = chatStore.socketStatus === 'connected'")
-    // 重连 watcher 里必须立即补拉，而不是只刷未读摘要
-    expect(appSource).toContain('lastNotifReconcileAt = 0')
-    expect(appSource).toContain('pollOrderNotifications({ generation: authGeneration })')
+    // 重连/回前台必须 force 补拉；在飞时排队到 finally 后补跑
+    expect(appSource).toContain('notifReconcileQueued')
+    expect(appSource).toContain('pollOrderNotifications({ generation: authGeneration, force: true })')
+    expect(appSource).toContain('if (force) notifReconcileQueued = true')
   })
 
   it('plays the hall-list fallback with order-id dedup shared with notifications', () => {
     expect(ordersSource).toContain("from '@/utils/newOrderChime'")
     expect(ordersSource).toContain('playNewOrderOnceForOrders(freshOrderIds)')
     expect(ordersSource).toContain('HALL_NEW_ORDER_SOUND_WINDOW_MS')
-    expect(ordersSource).toContain("context === 'hall' && silent && previous.length > 0")
+    expect(ordersSource).toContain("context === 'hall' && silent && Boolean(previousSnapshot)")
     expect(toastsSource).toContain('soundKey')
     expect(toastsSource).toContain('playNewOrderForOrder(soundKey)')
     expect(notificationsSource).toContain('soundKey: sound === \'new-order\' ? notificationOrderId(payload) : null')

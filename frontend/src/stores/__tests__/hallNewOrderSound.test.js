@@ -105,6 +105,16 @@ describe('hall list new-order sound fallback', () => {
     expect(playNewOrderOnceForOrders).not.toHaveBeenCalled()
   })
 
+  it('rings for the first order after an empty hall cache', async () => {
+    await refreshHall([])
+    expect(playNewOrderOnceForOrders).not.toHaveBeenCalled()
+
+    await refreshHall([order(2)])
+
+    expect(playNewOrderOnceForOrders).toHaveBeenCalledTimes(1)
+    expect(playNewOrderOnceForOrders.mock.calls[0][0]).toEqual([2])
+  })
+
   it('respects global DND / disabled new-order notifications', async () => {
     const settingsStore = useSettingsStore()
     settingsStore.preferences = {

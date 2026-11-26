@@ -66,7 +66,10 @@ function playStaticAudio(src, volume = DEFAULTS.new_order.volume, onFailure = nu
       // 旧代码直接吞掉，导致「该响时没声」；现在失败时明确回退 WebAudio。
       result.then(
         () => {},
-        () => {
+        (error) => {
+          // 新的 play() 打断上一次播放会产生 AbortError，不是自动播放被拦截；
+          // 这种情况不要额外叠加 WebAudio，避免两路声音同时响。
+          if (error && error.name === 'AbortError') return
           try {
             if (typeof onFailure === 'function') onFailure()
           } catch {
